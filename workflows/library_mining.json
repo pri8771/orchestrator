@@ -1,0 +1,18 @@
+{
+  "name": "library_mining",
+  "title": "Mine repos for reusable libraries",
+  "description": "Point it at several existing repos (one per line in target_path.txt). Read-only. The agents find repeated patterns across the portfolio and propose reusable libraries + an extraction plan. No build phase.",
+  "target": "library_mining",
+  "build_phase": null,
+  "phases": [
+    {"key": "portfolio_recon", "folder": "portfolio_recon", "file": "portfolio_recon.md", "title": "Portfolio recon",
+     "purpose": "Map each repo in the portfolio READ-ONLY: language/framework, key third-party dependencies, and the notable structural pieces (models, networking, persistence, onboarding, design system, utilities). Produce a concise per-repo summary. NO recommendations yet.",
+     "rounds": 3, "roles": ["backend", "frontend", "product"], "writes": false, "reads_target": true, "verify": null},
+    {"key": "commonality_analysis", "folder": "commonality_analysis", "file": "commonality_analysis.md", "title": "Commonalities",
+     "purpose": "Debate ACROSS the repos: which patterns are independently reimplemented in multiple repos (networking boilerplate, persistence layer, onboarding flow, design tokens, helpers)? Distinguish genuinely reusable commonalities from superficially-similar-but-different code. Cite the repos/files where each recurs.",
+     "rounds": 4, "roles": ["backend", "qa", "frontend"], "writes": false, "reads_target": true, "verify": null},
+    {"key": "extraction_candidates", "folder": "extraction_candidates", "file": "extraction_candidates.md", "title": "Extraction plan",
+     "purpose": "Rank the top reusable-library candidates by how many repos would benefit, how stable the pattern is (rewritten differently each time = not stable enough to extract yet), and extraction effort. For each: a proposed package name, a public API sketch, which repos would adopt it, and rough effort. End with the top 3 to extract first. Put the final report under a '## Final Output' heading.",
+     "rounds": 2, "roles": ["backend", "delivery", "product"], "writes": false, "reads_target": true, "verify": null}
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "name": "sprint",
+  "title": "Sprint Build (under 1 hour)",
+  "description": "A time-boxed app build with a HARD wall-clock ceiling. Collapses planning to the essentials, caps build iterations, tightens per-turn timeouts, and enforces a run deadline so a working, compiling app lands in under an hour. Same parallel build + verify + iOS-signing machinery as app_build \u2014 just disciplined on time.",
+  "target": "app",
+  "build_phase": "build_coordination",
+  "budget": {
+    "time_budget_minutes": 57,
+    "build_reserve_minutes": 47,
+    "verify_reserve_minutes": 12,
+    "chat_turn_timeout": 100,
+    "build_turn_timeout": 300,
+    "verify_timeout": 240
+  },
+  "phases": [
+    {
+      "key": "initial_discussion",
+      "folder": "initial_discussion",
+      "file": "initial_discussion.md",
+      "title": "Initial Discussion",
+      "purpose": "Rapidly establish what this app is, who it's for, the core problem, hard scope boundaries for a <1-hour build, and the 3-5 must-have features. Be decisive and converge fast \u2014 this is a time-boxed sprint, not an open-ended debate.",
+      "rounds": 2,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "design_discussion",
+      "folder": "design_discussion",
+      "file": "design_discussion.md",
+      "title": "Design Discussion",
+      "purpose": "Decide the key screens, the primary user flow, and the handful of design principles that govern them. Only what's buildable within the time box.",
+      "rounds": 1,
+      "roles": [
+        "design",
+        "frontend",
+        "product"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "tech_specs",
+      "folder": "tech_specs",
+      "file": "tech_specs.md",
+      "title": "Tech Specs",
+      "purpose": "Decide architecture, stack, data model, and how the build splits into parallel lanes. One clear plan; no bikeshedding.",
+      "rounds": 1,
+      "roles": [
+        "frontend",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "build_coordination",
+      "folder": "build_coordination",
+      "file": "agent_messages.md",
+      "title": "Build Coordination",
+      "purpose": "Build the working app in parallel lanes with an integrator turn between iterations. Ship a functional, compiling app within the time box; prefer a smaller app that works over a bigger one that doesn't.",
+      "rounds": 6,
+      "roles": [
+        "frontend",
+        "backend",
+        "design",
+        "qa"
+      ],
+      "writes": true,
+      "verify": {
+        "type": "xcodebuild",
+        "repair_iterations": 2
+      }
+    },
+    {
+      "key": "final_review",
+      "folder": "final_review",
+      "file": "final_review.md",
+      "title": "Final Review",
+      "purpose": "Fast go/no-go: what works, what's stubbed, and the top risks. One round.",
+      "rounds": 1,
+      "roles": [
+        "qa",
+        "product",
+        "delivery"
+      ],
+      "writes": false,
+      "verify": null
+    }
+  ]
+}

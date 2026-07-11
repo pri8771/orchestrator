@@ -1,0 +1,283 @@
+# ============================================================================
+# Autonomous Multi-Agent Orchestrator — configuration
+# ----------------------------------------------------------------------------
+# Parsed by a tiny built-in YAML reader (orchestrator.py). NO PyYAML required.
+# Supported syntax: nested 2-space-indented maps, scalar values, # comments,
+# quoted/unquoted strings, true/false, integers. (No lists/anchors needed.)
+#
+# If a config.json file exists next to this file it takes precedence and is
+# parsed with the standard library json module instead.
+#
+# IMPORTANT: This system primarily uses your already-logged-in local CLIs.
+# run.sh actively unsets OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY /
+# GOOGLE_API_KEY before launching. One exception: the gemini CLI can run
+# headless with a key read from ~/.orchestrator/gemini_api_key (kept OUTSIDE
+# this repo; see models.gemini_api_key_file). Key files are gitignored and
+# run.sh refuses to commit secret-named files.
+# ============================================================================
+
+# Workspace root. Every direct child folder is one orchestrated project.
+# Override per-run with --root PATH or the ORCH_ROOT env var.
+root: "/Users/pchordia/Documents/iOS-App-Factory"
+
+models:
+  # Claude Code model (used with `claude -p --model <model>`)
+  claude: "claude-sonnet-5"
+  # Codex default model (used with `codex exec --model <model>`)
+  codex: "gpt-5.3-codex-spark"
+  # Preferred Codex model, used ONLY if detected as available locally
+  codex_preferred_if_available: "gpt-5.3-codex-spark"
+  # Antigravity (agy) preferred lighter model display name
+  gemini: "Gemini 3.5 Flash (High)"
+  # Gemini CLI fallback model id (used with `gemini -m <id>`)
+  gemini_fallback: "gemini-3.5-flash"
+  # Optional stronger Claude model for the build INTEGRATOR turn only (the
+  # quality chokepoint). Blank = same as models.claude.
+  claude_integrator: ""
+  # Codex reasoning effort. "low" keeps chat turns fast (~10s each) and natural;
+  # the build phase uses a higher effort so generated code is solid.
+  codex_reasoning: "high"
+  codex_build_reasoning: "medium"
+  # Claude reasoning effort (`claude -p --effort <level>`; the installed CLI
+  # accepts low|medium|high|xhigh|max). Same split as the codex pair above:
+  # claude_reasoning for chat/discussion turns, claude_build_reasoning for
+  # build turns. Empty "" omits the flag (the CLI's own default — the
+  # pre-existing behavior). Workflow "overrides.effort" presets map onto these
+  # too (fast -> low, max -> high).
+  claude_reasoning: ""
+  claude_build_reasoning: ""
+  # NOTE: per-PHASE model overrides + the cloud->local fallback live in
+  # model_routing.json next to this file (GUI: Settings -> Routing). Use them to
+  # spend expensive models only on build/verification phases and to keep runs
+  # alive on local models when a cloud CLI fails.
+  # Selected LOCAL model, run via `ollama run <id>` entirely on this Mac (V2 §12).
+  # Curated ids live in local_models.json next to the engine (e.g.
+  # "qwen3-coder:30b", "devstral:24b", "qwen2.5-coder:7b"). Pull one first
+  # with `ollama pull <id>`, then enable agents.ollama_enabled below.
+  ollama: "glm-5.2:latest"
+
+  # Optional local participant roster (comma- or semicolon-separated). Each
+  # entry becomes a distinct local participant: local:qwen3-coder:30b,
+  # local:glm-5.2:latest, etc. Keep this enabled if you want 6-7+ total bots.
+  # Coder-tier models first: they win the participant slots once pulled, so
+  # code review/build fallbacks land on a real coding model (14B/16B) instead
+  # of a 3-4B generalist. 48GB RAM handles both coders resident at once.
+  ollama_roster: "qwen2.5-coder:14b, deepseek-coder-v2:16b, qwen2.5vl:3b, gemma3:4b"
+  # How many roster models actually join runs as participants. Installed models
+  # win the slots first (in roster order), then not-yet-pulled ones. 0 = no
+  # limit (every roster entry joins, today's behavior).
+  local_active_limit: 3
+
+agents:
+  codex_enabled: true
+  claude_enabled: true
+  # Gemini stays enabled, but a STARTUP PROBE decides whether it actually
+  # joins each run: the engine makes one tiny headless `gemini -p` call (like
+  # the codex model probe; verdict cached 4h in .gemini_probe.json). On a
+  # failed probe (exit 41 / missing GEMINI_API_KEY / TTY-tier error) gemini is
+  # auto-disabled for the run with one logged line + an events.jsonl
+  # agent_disabled event — instead of every turn burning its timeout on the
+  # same failure. For reliable headless access, put an API key in
+  # ~/.orchestrator/gemini_api_key (see models.gemini_api_key_file).
+  gemini_enabled: true
+  # Local model via Ollama — OFF by default in docs; enabled here by default for
+  # richer multi-LLM discussion.
+  # Local models join as debate/review/build workers only: they never become the
+  # coordinator while any cloud agent is enabled, and they sit out time-budgeted
+  # (sprint) workflows unless runtime.local_models_in_sprints is true.
+  ollama_enabled: true
+
+# Max rounds per phase. One round = every enabled bot speaks once, so with all
+# 3 bots enabled a phase caps at 27 bot messages (9 rounds x 3). A phase ends
+# early the moment the coordinator declares consensus.
+rounds:
+  prompt_contract: 9
+  initial_discussion: 9
+  product_research: 9
+  portfolio_selection: 9
+  per_app_product_brief: 9
+  next_steps_small: 9
+  detailed_discussion: 9
+  app_features: 9
+  design_discussion: 9
+  design_handoff: 9
+  ios_architecture_review: 9
+  tech_specs: 9
+  project_plan: 9
+  task_assignments: 9
+  implementation_readiness_gate: 9
+  # Build phase gets many iterations so the app can actually be finished; it ends
+  # early when the coordinator judges the app functionally complete.
+  build_coordination: 9
+  build_verification: 9
+  human_qa_checklist: 9
+  app_store_readiness: 9
+  final_review: 9
+  portfolio_audit: 9
+
+runtime:
+  timeout_seconds_per_agent: 1800
+  # Hang guard: kill an agent CLI that emits ZERO bytes (stdout+stderr) for this
+  # many seconds, well before the full per-agent timeout above. Catches a wedged
+  # agent in ~10min instead of 30. Any output resets the timer, so slow-but-
+  # productive turns are safe. Set 0 to disable. Lower it only if your CLIs stream
+  # progress; raise/disable it if a CLI buffers all output until the very end.
+  agent_no_output_heartbeat_seconds: 180
+  # claude -p buffers its whole answer (zero bytes until done), so "no output
+  # for Ns" cannot distinguish a hang from a slow turn — under concurrent-app
+  # load legitimate turns exceed 600s. Disabled (0): timeout_seconds_per_agent
+  # is claude's only (and sufficient) hang backstop.
+  claude_no_output_heartbeat_seconds: 0
+  # Build observer/failover: if the chosen build integrator/coordinator is down
+  # or in cooldown, try the next healthy coordinator before starting another
+  # worker iteration. If no integrator can run for this many consecutive
+  # iterations, abort the phase instead of looping forever on fragmented worker
+  # output. 0 disables the abort cap.
+  coordinator_failover_enabled: true
+  max_build_iterations_without_integrator: 2
+  # When false, engine log lines are written ONLY to logs/orchestrator.log (no
+  # terminal echo). Keep true for GUI runs — the live run-log panel reads stdout.
+  stream_terminal_output: true
+  # Honored by run.sh: when false, its post-run git add/commit/push step is
+  # skipped entirely. (Engine code never commits the workspace itself.)
+  commit_and_push: true
+  # When true, the engine warns at the start of a run if the workspace root is
+  # not a git repo (run.sh's commit/push step would silently no-op).
+  require_git_repo: true
+  # Log hygiene: on startup, per-call JSON logs (and rotated .log.1 files) older
+  # than this many days are deleted, and logs/orchestrator.log rotates at ~5 MB.
+  # 0 disables age-based pruning.
+  log_retention_days: 14
+  # Default workflow for an app that doesn't pick one (via <app>/workflow.txt or a
+  # `workflow: <name>` line in initial_prompt.md). Built-ins: app_build,
+  # answer_question, research, productionize. Editable JSON lives in workflows/.
+  default_workflow: "app_build"
+  # URL ground truth: at run start the ENGINE fetches http(s) links found in
+  # initial_prompt.md (agent CLIs have no web access) into <app>/docs/fetched/
+  # and injects the readable page text into the product-definition phases
+  # (prompt_contract, product_research, per_app_product_brief, app_features).
+  # Prevents the panel from guessing what a linked product is and building the
+  # wrong app; a failed fetch injects an explicit UNVERIFIED warning instead.
+  fetch_prompt_urls: true
+  # Verification loop: after an enabled build, actually compile the project and
+  # run bounded repair iterations feeding compiler errors back to the integrator.
+  # Best-effort — a missing toolchain (no Xcode/swift) just leaves it unverified.
+  verify_build_enabled: true
+  verify_timeout_seconds: 1200
+  verify_repair_iterations: 3
+  # When true, the build_coordination phase lets agents actually create/edit
+  # files inside <app>/app_build (codex runs workspace-write there). Discussion
+  # phases stay read-only in a throwaway dir regardless.
+  build_code_changes_enabled: true
+  # Parallel build: during build_coordination every installed agent builds its
+  # own lane AT THE SAME TIME (concurrent subprocesses), then an integrator turn
+  # wires the shared files together. If only ONE agent CLI is installed, it's
+  # replicated into this many concurrent workers so the build is still parallel.
+  # With 2+ distinct CLIs installed, each distinct agent is one worker instead.
+  build_parallel_workers: 3
+  # Process different app folders concurrently. 1 = sequential, 0 = auto-size
+  # to available CPU cores, N = up to N sibling app projects in parallel.
+  # Bounded for the 7-app portfolio: 3 projects at a time keeps throughput high
+  # without thrashing subscription rate limits (finished apps free the slot).
+  project_parallel_workers: 3
+  # For portfolio prompts, at most this many selected apps become full app_build
+  # children in one run. The remainder still materialize as sibling folders but
+  # fall back to app_spec so the portfolio stays manageable.
+  # Raised for the 7-app portfolio run (this caps build=true children even when
+  # the prompt forces full builds — anything past the cap degrades to app_spec).
+  portfolio_build_limit: 12
+  # V2 §5.2-5.5: isolate each parallel build lane in its own git worktree,
+  # then merge lanes back deterministically. Real conflicts pause the run with a
+  # blocked_conflict marker for manual resolution. Default false = the proven
+  # direct-write build. app_build is persistent either way (per-iteration commits).
+  worktree_isolation: false
+  # V2 §4.5: machine-wide worker cap across concurrent projects (each project
+  # is its own process). Off by default; turn on for heavy parallel use. Uses
+  # a stdlib-sqlite broker at ~/.orchestrator_global/workers.db. Fail-open.
+  # Enabled: multi-app portfolio runs spawn several concurrent projects; the cap
+  # keeps total CLI agents bounded machine-wide. Fail-open — never blocks a run.
+  global_worker_cap_enabled: true
+  global_worker_cap:
+    cli_remote: 12
+    local_model: 1
+  # Locking
+  stale_lock_seconds: 5400
+  # Agent process working dir is an ephemeral temp dir, so discussion-phase
+  # agents physically cannot edit your project files (defense in depth).
+  isolate_agent_cwd: true
+  # Audit workflow: when true, codex/claude ALSO get the target codebase as a
+  # read-only working directory (live grep/read) in addition to the injected
+  # read-only digest. Default false = digest-only (the target is never a cwd at
+  # all). Writes stay off regardless — audit phases are writes=False — so this can
+  # only ever READ the target, never modify it.
+  audit_live_read_cwd: false
+  # V2 §12: keep local participants active even in time-budgeted workflows.
+  # Slow local turns can affect wall-clock; set false if you want stricter
+  # sprint bounds.
+  local_models_in_sprints: false
+  # When true, configured local roster entries that have not been pulled with
+  # `ollama pull <id>` are skipped instead of joining the run and failing their
+  # turns. This keeps the Local Models panel safe even when it lists aspirational
+  # / not-yet-downloaded models.
+  skip_uninstalled_local_models: true
+  # Gemini/Antigravity behavior. agy needs an interactive terminal and has never
+  # worked headless here — false skips its ~35s probe and goes straight to the
+  # gemini CLI (keyed if ~/.orchestrator/gemini_api_key exists, else OAuth tier).
+  gemini_use_agy: false
+  # Per-prompt context budgets (characters). Bigger = longer, more in-depth
+  # conversations that remember more of the discussion.
+  max_prior_output_chars: 8000
+  # Full earlier phase transcripts are injected separately from final decisions
+  # so each section builds on the actual arguments, rejected ideas, and tradeoffs
+  # from every previous section. Raise for deeper/slower runs; lower for sprints.
+  max_prior_discussion_chars: 120000
+  max_transcript_chars: 36000
+  # Phase quality system for app/spec workflows. Round 1 is independent so each
+  # agent gives a real opinion before anchoring on others; when a coordinator
+  # tries to end a phase, a quality evaluator checks phase_rules.json and can
+  # force bounded repair rounds before the next phase begins.
+  # Speed: agents in a discussion round react to the PREVIOUS round's posts, so
+  # their turns run concurrently (round time = slowest agent, not the sum).
+  parallel_discussion_rounds: true
+  # Speed+quality: reuse one claude CLI session per phase/lane — later turns
+  # send only the delta instead of re-sending the full context every call, and
+  # the agent stops losing continuity. Any resume failure falls back to a
+  # stateless full-prompt call automatically.
+  claude_session_reuse: true
+  # Quality: before each integration pass, lanes cross-check each other's
+  # output against the shared contracts (parallel, read-only, cheap via
+  # resumed sessions).
+  build_cross_review: true
+  # Speed: cap the planning-transcript payload injected into BUILD turns
+  # (decisions + machine contracts stay full-size; only the raw debate text is
+  # trimmed). Discussion phases keep max_prior_discussion_chars.
+  build_max_prior_discussion_chars: 30000
+  phase_independent_first_round_enabled: true
+  phase_quality_gates_enabled: true
+  phase_quality_repair_rounds: 2
+
+# Phase rules + knowledge / retrieval (RAG). phase_rules.json gives every app
+# phase an editable playbook: required outputs, acceptance checks, and general
+# one-shot quality rules. Curated cheatsheets in knowledge/<domain>/*.md are
+# scored against each phase's text and spliced into the agents' context — this is
+# what makes them "know iOS" without any fine-tuning. Leave domain blank to auto-
+# pick (ios when the prompt looks iOS-ish, else general).
+knowledge:
+  domain: ""
+  max_chars: 6000
+  top_k: 3
+
+# iOS/Xcode build settings. After the build phase, the orchestrator runs a
+# deterministic pass over any generated *.xcodeproj/project.pbxproj to guarantee
+# the app is signable on a real device (agents can't accidentally ship it with
+# code signing disabled). Leave development_team blank to rely on whatever team
+# is signed into Xcode; set it to your 10-char Team ID in an untracked
+# config.json override (config.json takes precedence over this file) — do NOT
+# commit a personal Team ID here.
+ios:
+  enforce_signing: true
+  development_team: ""
+  code_sign_style: "Automatic"
+  # Optional: if set (e.g. "com.priyansh"), rewrite generated "com.local.*"
+  # bundle identifiers to this reverse-DNS prefix. Blank = leave as generated.
+  bundle_id_prefix: ""

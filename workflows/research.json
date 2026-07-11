@@ -1,0 +1,53 @@
+{
+  "name": "research",
+  "title": "Research a Topic",
+  "description": "A deeper research pipeline: gather what's known, weigh the evidence and resolve contradictions, then write a synthesized, honest report.",
+  "target": "research",
+  "build_phase": null,
+  "phases": [
+    {
+      "key": "gather",
+      "folder": "gather",
+      "file": "gather.md",
+      "title": "Gather",
+      "purpose": "Surface what's known about the topic: the key facts, the sub-questions that matter, competing viewpoints, and where the uncertainty lives.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "analyze",
+      "folder": "analyze",
+      "file": "analyze.md",
+      "title": "Analyze",
+      "purpose": "Weigh the evidence, resolve contradictions, separate strong claims from weak ones, and decide what the balance of reasoning actually supports.",
+      "rounds": 5,
+      "roles": [
+        "qa",
+        "backend",
+        "product"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "report",
+      "folder": "report",
+      "file": "report.md",
+      "title": "Report",
+      "purpose": "Write a clear synthesis with a bottom-line answer, the reasoning behind it, and an explicit note on what remains uncertain.",
+      "rounds": 2,
+      "roles": [
+        "product",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    }
+  ]
+}

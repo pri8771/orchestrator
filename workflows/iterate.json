@@ -1,0 +1,66 @@
+{
+  "name": "iterate",
+  "title": "Iterate on an existing app",
+  "description": "Add a feature or fix a bug on an app that already exists in app_build, without rebuilding from scratch. Short: scope the change, build it, review.",
+  "target": "app",
+  "build_phase": "build_coordination",
+  "budget": {
+    "time_budget_minutes": 90,
+    "build_reserve_minutes": 70,
+    "verify_reserve_minutes": 20,
+    "chat_turn_timeout": 300,
+    "build_turn_timeout": 900,
+    "verify_timeout": 900
+  },
+  "phases": [
+    {
+      "key": "iterate_scope",
+      "folder": "iterate_scope",
+      "file": "iterate_scope.md",
+      "title": "Scope the change",
+      "purpose": "The app ALREADY exists and compiles in app_build. Decide exactly what to change to satisfy the latest requested change (see the '## Change requested' section of the prompt): which files to touch and what to add. Keep it minimal and preserve existing behavior. Do NOT rebuild from scratch.",
+      "rounds": 1,
+      "roles": [
+        "frontend",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null
+    },
+    {
+      "key": "build_coordination",
+      "folder": "build_coordination",
+      "file": "agent_messages.md",
+      "title": "Build the change",
+      "purpose": "Make the requested change to the EXISTING app in app_build. Extend the current code; do not rebuild from scratch and do not delete working features. Ship a compiling app.",
+      "rounds": 4,
+      "roles": [
+        "frontend",
+        "qa"
+      ],
+      "writes": true,
+      "reads_target": false,
+      "verify": {
+        "type": "xcodebuild",
+        "repair_iterations": 2
+      }
+    },
+    {
+      "key": "final_review",
+      "folder": "final_review",
+      "file": "final_review.md",
+      "title": "Review",
+      "purpose": "Go/no-go on the change: what changed, what still works, and the top risks. One round.",
+      "rounds": 1,
+      "roles": [
+        "qa",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "requires_verification": true
+    }
+  ]
+}

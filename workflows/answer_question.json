@@ -1,0 +1,38 @@
+{
+  "name": "answer_question",
+  "title": "Answer a Question",
+  "description": "Point the three agents at a question instead of an app. They reason from different angles, debate to the strongest answer, then write it up. No build phase.",
+  "target": "answer",
+  "build_phase": null,
+  "phases": [
+    {
+      "key": "deliberation",
+      "folder": "deliberation",
+      "file": "deliberation.md",
+      "title": "Deliberation",
+      "purpose": "Reason through the question from genuinely different angles, surface the strongest candidate answers, and pressure-test them against each other.",
+      "rounds": 5,
+      "roles": [
+        "product",
+        "qa",
+        "design"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "answer",
+      "folder": "answer",
+      "file": "answer.md",
+      "title": "Answer",
+      "purpose": "Commit to the single best-supported answer and write it clearly, noting the key reasoning and any honest uncertainty.",
+      "rounds": 2,
+      "roles": [
+        "product",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    }
+  ]
+}

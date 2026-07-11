@@ -1,0 +1,392 @@
+{
+  "name": "app_build_child",
+  "title": "Build an App (portfolio child)",
+  "description": "app_build minus parent-scoped phases \u2014 for portfolio children with fully-specified briefs.",
+  "target": "app",
+  "build_phase": "build_coordination",
+  "budget": null,
+  "phases": [
+    {
+      "key": "prompt_contract",
+      "folder": "prompt_contract",
+      "file": "prompt_contract.md",
+      "title": "Prompt Contract",
+      "purpose": "Preserve the user's original prompt before any discussion, convert it into a clear execution contract, list hard requirements, non-goals, success metrics, production-readiness expectations, and decision rules for every later phase.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "qa",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "initial_discussion",
+      "folder": "initial_discussion",
+      "file": "initial_discussion.md",
+      "title": "Initial Discussion",
+      "purpose": "Establish a shared, precise understanding of what this app is, who it is for, the core problem it solves, hard scope boundaries, and measurable success criteria.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "per_app_product_brief",
+      "folder": "per_app_product_brief",
+      "file": "per_app_product_brief.md",
+      "title": "Per App Product Brief",
+      "purpose": "Create a production-grade product brief for this specific app: target user, paid value, core loop, subscription value, competitive wedge, viral or niche growth mechanism, local-first behavior, cloud-ready extension path, and the real reason the app deserves to exist.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "detailed_discussion",
+      "folder": "detailed_discussion",
+      "file": "detailed_discussion.md",
+      "title": "Detailed Discussion",
+      "purpose": "Deeply analyze requirements, edge cases, constraints, assumptions, risks, and open questions, resolving ambiguity left from earlier phases.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "qa",
+        "backend"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "app_features",
+      "folder": "app_features",
+      "file": "app_features.md",
+      "title": "App Features",
+      "purpose": "Enumerate and prioritize the full feature set with an explicit scoring / MoSCoW model and clear in-scope vs out-of-scope lines.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "design_discussion",
+      "folder": "design_discussion",
+      "file": "design_discussion.md",
+      "title": "Design Discussion",
+      "purpose": "Decide UX flows, information architecture, key screens/states, and the design principles that govern them.",
+      "rounds": 4,
+      "roles": [
+        "design",
+        "frontend",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "design_handoff",
+      "folder": "design_handoff",
+      "file": "design_handoff.md",
+      "title": "Design Handoff",
+      "purpose": "Produce a complete design handoff: screen-by-screen specs, interaction states, motion notes, design tokens, accessibility expectations, and a professional Claude Design prompt or import plan if the run is configured to pause for external design.",
+      "rounds": 4,
+      "roles": [
+        "design",
+        "frontend",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "ios_architecture_review",
+      "folder": "ios_architecture_review",
+      "file": "ios_architecture_review.md",
+      "title": "Ios Architecture Review",
+      "purpose": "Review the app as an iOS product before final tech specs: SwiftUI architecture, Apple framework choices, local persistence, privacy, permissions, offline behavior, StoreKit/subscription architecture, permissive dependency policy, and testability.",
+      "rounds": 4,
+      "roles": [
+        "frontend",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "tech_specs",
+      "folder": "tech_specs",
+      "file": "tech_specs.md",
+      "title": "Tech Specs",
+      "purpose": "Decide architecture, technology stack, data model, interfaces/APIs, and non-functional requirements with justified trade-offs.",
+      "rounds": 4,
+      "roles": [
+        "frontend",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "project_plan",
+      "folder": "project_plan",
+      "file": "project_plan.md",
+      "title": "Project Plan",
+      "purpose": "Produce milestones, sequencing, estimates, dependencies, and a risk-managed delivery plan.",
+      "rounds": 4,
+      "roles": [
+        "delivery",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "task_assignments",
+      "folder": "task_assignments",
+      "file": "task_assignments.md",
+      "title": "Task Assignments",
+      "purpose": "Produce concrete workstreams, file ownership, forbidden edit zones, branch names, merge strategy, testing responsibilities, communication protocol, and a conflict-prevention plan.",
+      "rounds": 4,
+      "roles": [
+        "delivery",
+        "frontend",
+        "backend"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "implementation_readiness_gate",
+      "folder": "implementation_readiness_gate",
+      "file": "implementation_readiness_gate.md",
+      "title": "Implementation Readiness Gate",
+      "purpose": "Before any code is written, audit whether the product brief, design handoff, iOS architecture, tech specs, project plan, and task contracts are coherent enough for a one-shot production build. Resolve blockers or explicitly downgrade scope before build starts.",
+      "rounds": 4,
+      "roles": [
+        "delivery",
+        "qa",
+        "frontend"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "build_coordination",
+      "folder": "build_coordination",
+      "file": "agent_messages.md",
+      "title": "Build Coordination",
+      "purpose": "Iterative build coordination via agent messages. Planning and task assignment only unless build_code_changes_enabled is true.",
+      "rounds": 9,
+      "roles": [
+        "frontend",
+        "backend",
+        "design",
+        "qa"
+      ],
+      "writes": true,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "build_verification",
+      "folder": "build_verification",
+      "file": "build_verification.md",
+      "title": "Build Verification",
+      "purpose": "Compile and verify the generated app, then run bounded repair iterations against real compiler/test failures until it passes or records honest remaining blockers.",
+      "rounds": 9,
+      "roles": [
+        "qa",
+        "frontend",
+        "backend"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": {
+        "type": "xcodebuild",
+        "repair_iterations": 3
+      },
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": true,
+      "doc_sections": [],
+      "test_deliverable": "xcodebuild/test verification plus repair log"
+    },
+    {
+      "key": "human_qa_checklist",
+      "folder": "human_qa_checklist",
+      "file": "human_qa_checklist.md",
+      "title": "Human Qa Checklist",
+      "purpose": "Create a manual simulator/device QA script for every important workflow, including onboarding, empty states, error states, persistence, accessibility, offline behavior, paywall/subscription behavior when relevant, and regression checks.",
+      "rounds": 4,
+      "roles": [
+        "qa",
+        "design",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": true,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "app_store_readiness",
+      "folder": "app_store_readiness",
+      "file": "app_store_readiness.md",
+      "title": "App Store Readiness",
+      "purpose": "Prepare launch readiness: App Store positioning, screenshots/storyboard needs, privacy nutrition labels, permission copy, subscription/paywall review risks, support/contact requirements, and release blockers.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "qa",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": true,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "final_review",
+      "folder": "final_review",
+      "file": "final_review.md",
+      "title": "Final Review",
+      "purpose": "Final review of completeness, consistency, risks, quality gates, and a clear go / no-go decision.",
+      "rounds": 4,
+      "roles": [
+        "qa",
+        "product",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": true,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "portfolio_audit",
+      "folder": "portfolio_audit",
+      "file": "portfolio_audit.md",
+      "title": "Portfolio Audit",
+      "purpose": "For multi-app prompts, audit the portfolio shape: every requested app is a sibling folder, every selected app has the right workflow, child prompts preserve the parent requirements, and no category was silently collapsed. For single-app prompts, record that portfolio audit is not applicable.",
+      "rounds": 9,
+      "roles": [
+        "qa",
+        "delivery",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": true,
+      "doc_sections": [],
+      "test_deliverable": null
+    }
+  ]
+}

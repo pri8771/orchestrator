@@ -1,0 +1,407 @@
+{
+  "schema_version": 1,
+  "global_app_rules": [
+    "Prefer a smaller finished app over a larger half-built app.",
+    "Every generated app must have real user-visible behavior, not only placeholder screens.",
+    "For iOS apps, default to SwiftUI, deterministic local state first, Apple system frameworks, and no third-party package unless it materially reduces risk.",
+    "Every screen needs empty, loading, success, and error states when the workflow can reach those states.",
+    "Treat accessibility, privacy, persistence, and testing as product requirements, not polish.",
+    "Do not declare the app done until build verification and the final review agree on what works and what remains limited."
+  ],
+  "phases": {
+    "prompt_contract": {
+      "rules": [
+        "Preserve the user's original prompt before interpreting it.",
+        "Convert the prompt into hard requirements, non-goals, output shape, quality bar, and decision rules.",
+        "Resolve conflicts by naming the assumption, not by silently changing the assignment."
+      ],
+      "required_output": [
+        "Original prompt excerpt or full prompt reference.",
+        "Hard requirements.",
+        "Non-goals.",
+        "Production-readiness definition.",
+        "Decision rules for later phases."
+      ],
+      "acceptance_checks": [
+        "A later phase can tell whether it is violating the user's prompt.",
+        "Multi-app quantity/category requirements are explicit.",
+        "Production-ready means more than a prototype or spec."
+      ]
+    },
+    "product_research": {
+      "rules": [
+        "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
+        "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
+        "Decide what would make the app feel native and valuable on iPhone, not just technically possible."
+      ],
+      "required_output": [
+        "Audience and use context.",
+        "Comparable apps or patterns to learn from.",
+        "Platform-specific opportunities.",
+        "Major assumptions and risks.",
+        "Implications for the first build."
+      ],
+      "acceptance_checks": [
+        "The next phase can use the output without repeating discovery.",
+        "At least three concrete risks or unknowns are named.",
+        "The research points toward a shippable first version."
+      ]
+    },
+    "portfolio_selection": {
+      "rules": [
+        "If the prompt asks for multiple apps, each selected app must be an independent sibling project.",
+        "Do not let one idea dominate the portfolio; give category-specific opinions before converging.",
+        "Emit portfolio-json when the prompt is a portfolio parent, and set build=true for every selected app when the prompt asks for production-ready apps."
+      ],
+      "required_output": [
+        "Single-app vs portfolio-parent decision.",
+        "Selected app list with category, slug, promise, target user, and build flag.",
+        "Selection rationale and rejected alternatives.",
+        "portfolio-json manifest for portfolio parents."
+      ],
+      "acceptance_checks": [
+        "The selected app count matches the prompt or explains any explicit reduction.",
+        "Each selected app can become a separate folder.",
+        "No requested category is silently collapsed into another app."
+      ]
+    },
+    "initial_discussion": {
+      "rules": [
+        "Turn the user's prompt into one precise product promise.",
+        "Name the primary user, the job-to-be-done, the core loop, and the non-goals.",
+        "Resolve ambiguity decisively when the prompt is underspecified."
+      ],
+      "required_output": [
+        "One-sentence product promise.",
+        "Primary user and scenario.",
+        "Core loop.",
+        "Hard scope boundaries.",
+        "Measurable success criteria."
+      ],
+      "acceptance_checks": [
+        "A developer could explain the app in one sentence.",
+        "The scope is small enough to build in one pass.",
+        "Out-of-scope items are explicit."
+      ]
+    },
+    "per_app_product_brief": {
+      "rules": [
+        "Write a concrete brief for this specific app, not a generic category description.",
+        "Explain why users would pay and what the subscription unlocks as real utility.",
+        "Include local-first behavior and a future cloud path without making cloud a dependency for v1."
+      ],
+      "required_output": [
+        "Target user and use case.",
+        "Paid value and subscription value.",
+        "Core loop.",
+        "Competitive wedge.",
+        "Viral or niche growth angle.",
+        "Local-first and cloud-ready plan."
+      ],
+      "acceptance_checks": [
+        "The app's value is specific enough to build.",
+        "Subscription value is functional, not cosmetic.",
+        "The brief can drive design without more ideation."
+      ]
+    },
+    "next_steps_small": {
+      "rules": [
+        "Find the smallest end-to-end slice that proves the concept.",
+        "Keep the slice emotionally satisfying, not just technically minimal.",
+        "Prefer one polished workflow over many shallow features."
+      ],
+      "required_output": [
+        "MVP slice.",
+        "Must-have interactions.",
+        "Cut list.",
+        "Validation criteria."
+      ],
+      "acceptance_checks": [
+        "The MVP can be built by the later build phase without new product debate.",
+        "The slice includes at least one complete user workflow."
+      ]
+    },
+    "detailed_discussion": {
+      "rules": [
+        "Enumerate edge cases before features expand.",
+        "Identify privacy, data-loss, offline, notification, and permission concerns where relevant.",
+        "Convert open questions into assumptions or explicit exclusions."
+      ],
+      "required_output": [
+        "Resolved requirements.",
+        "Edge cases.",
+        "Data and privacy implications.",
+        "Risk register.",
+        "Final assumptions."
+      ],
+      "acceptance_checks": [
+        "No major ambiguity remains for design or architecture.",
+        "Risks have concrete mitigations or are named as limitations."
+      ]
+    },
+    "app_features": {
+      "rules": [
+        "Prioritize ruthlessly with must/should/could/won't.",
+        "Every must-have feature needs a user story and acceptance criteria.",
+        "Do not include features that cannot fit the chosen build size."
+      ],
+      "required_output": [
+        "Must-have feature list.",
+        "Should/could list.",
+        "Won't-build list.",
+        "Acceptance criteria per must-have."
+      ],
+      "acceptance_checks": [
+        "All must-have features support the product promise.",
+        "The build phase can complete the must-have list."
+      ]
+    },
+    "design_discussion": {
+      "rules": [
+        "Design real screens and states, not vague UX language.",
+        "Make navigation, empty states, errors, onboarding, and persistence visible.",
+        "Use iOS-native patterns unless the prompt clearly demands otherwise."
+      ],
+      "required_output": [
+        "Screen inventory.",
+        "Primary user flow.",
+        "State model per screen.",
+        "Visual direction.",
+        "Accessibility notes."
+      ],
+      "acceptance_checks": [
+        "A SwiftUI developer can create the view hierarchy from this output.",
+        "Every required user workflow has a screen/state path."
+      ]
+    },
+    "design_handoff": {
+      "rules": [
+        "Produce a builder-ready design handoff, not visual adjectives.",
+        "If external Claude Design is desired, provide a clean prompt/upload plan the user can use directly.",
+        "Every primary screen must include layout intent, key components, state variants, accessibility, and motion guidance."
+      ],
+      "required_output": [
+        "Screen-by-screen design specification.",
+        "Design tokens or visual system.",
+        "Component inventory.",
+        "State and interaction notes.",
+        "Accessibility requirements.",
+        "Claude Design prompt or explicit no-external-design decision."
+      ],
+      "acceptance_checks": [
+        "A SwiftUI builder can implement the interface from the handoff.",
+        "The handoff does not depend on hidden design decisions.",
+        "The design direction is premium and category-specific."
+      ]
+    },
+    "ios_architecture_review": {
+      "rules": [
+        "Review the product through iOS-specific constraints before tech_specs locks implementation.",
+        "Prefer SwiftUI, Apple frameworks, local persistence, and permissive dependencies only.",
+        "Call out privacy, permissions, offline behavior, StoreKit, ML/AR feasibility, and testability."
+      ],
+      "required_output": [
+        "SwiftUI architecture recommendation.",
+        "Apple framework choices.",
+        "Persistence and local data plan.",
+        "Permissions/privacy plan.",
+        "Dependency/license decision.",
+        "Testing implications."
+      ],
+      "acceptance_checks": [
+        "The app can be built as a native iOS app without vague architecture gaps.",
+        "Any ML, LLM, or AR use is justified by user value.",
+        "No dependency violates the permissive-license policy."
+      ]
+    },
+    "tech_specs": {
+      "rules": [
+        "Choose the simplest architecture that supports the MVP and tests.",
+        "Specify data models, services, persistence, concurrency boundaries, and error handling.",
+        "Prefer Apple frameworks and permissive dependencies only.",
+        "Emit the required interfaces-json block."
+      ],
+      "required_output": [
+        "Architecture overview.",
+        "File/module layout.",
+        "Data models.",
+        "Persistence strategy.",
+        "Testing strategy.",
+        "interfaces-json contract."
+      ],
+      "acceptance_checks": [
+        "Parallel build lanes can work without inventing incompatible types.",
+        "The spec names how the app will be built and verified."
+      ]
+    },
+    "project_plan": {
+      "rules": [
+        "Sequence work by dependency, not by role preference.",
+        "Keep the plan aligned to the actual build lanes.",
+        "Include verification and repair time as first-class work."
+      ],
+      "required_output": [
+        "Milestones.",
+        "Dependencies.",
+        "Risk mitigations.",
+        "Verification plan."
+      ],
+      "acceptance_checks": [
+        "The plan is executable by the task assignment phase.",
+        "Testing and integration are not left to the end as vague polish."
+      ]
+    },
+    "task_assignments": {
+      "rules": [
+        "Create build tasks that map cleanly to the fixed lane ids.",
+        "Each task must own files, dependencies, and acceptance criteria.",
+        "Avoid overlapping file ownership except for integrator-owned files.",
+        "Emit the required tasks-json block."
+      ],
+      "required_output": [
+        "Lane-by-lane responsibilities.",
+        "Owned files.",
+        "Handoffs and forbidden edit zones.",
+        "tasks-json backlog."
+      ],
+      "acceptance_checks": [
+        "No task is ownerless.",
+        "Dependencies are acyclic.",
+        "The build workers can start immediately."
+      ]
+    },
+    "implementation_readiness_gate": {
+      "rules": [
+        "Act as the final pre-build gate, not another planning brainstorm.",
+        "Check consistency across prompt contract, product brief, design handoff, iOS architecture, tech specs, project plan, and tasks.",
+        "Resolve contradictions by downgrading scope or naming a blocker before code starts."
+      ],
+      "required_output": [
+        "Readiness verdict.",
+        "Cross-phase consistency check.",
+        "Build blockers and fixes.",
+        "Final scope for build.",
+        "Acceptance criteria checklist."
+      ],
+      "acceptance_checks": [
+        "The build phase can start without inventing product/design/architecture decisions.",
+        "Every major workflow has an acceptance criterion.",
+        "Testing responsibilities are explicit."
+      ]
+    },
+    "build_coordination": {
+      "rules": [
+        "Build real files in app_build; do not only describe the solution.",
+        "Keep changes scoped to the assigned lane and leave integration files to the integrator.",
+        "Every iteration should reduce compile, runtime, or product-completeness risk.",
+        "When generating iOS, include unit/UI test targets where feasible."
+      ],
+      "required_output": [
+        "Files created or changed.",
+        "What works now.",
+        "What remains.",
+        "How to run or verify."
+      ],
+      "acceptance_checks": [
+        "The app has a runnable entry point.",
+        "The main user workflow is implemented.",
+        "The integrator has wired lane outputs together."
+      ]
+    },
+    "build_verification": {
+      "rules": [
+        "Run or interpret the real verifier results; do not claim success without tool evidence.",
+        "Repair compile/test failures with minimal changes in app_build.",
+        "Record honest remaining blockers when the verifier cannot pass."
+      ],
+      "required_output": [
+        "Verification command/tool used.",
+        "Pass/fail/unverified status.",
+        "Repairs attempted.",
+        "Remaining compiler/test errors.",
+        "Next repair step if still failing."
+      ],
+      "acceptance_checks": [
+        "The phase contains real verification evidence or a clear reason it could not run.",
+        "Failures are tied to concrete files/errors.",
+        "No new feature work is introduced during repair."
+      ]
+    },
+    "human_qa_checklist": {
+      "rules": [
+        "Cover every important workflow, not only the happy path.",
+        "Include simulator/device steps, expected results, and regression checks.",
+        "Include accessibility, persistence, permissions, offline behavior, and subscription/paywall checks when relevant."
+      ],
+      "required_output": [
+        "Manual QA checklist.",
+        "Workflow-by-workflow test steps.",
+        "Expected results.",
+        "Accessibility checks.",
+        "Known gaps."
+      ],
+      "acceptance_checks": [
+        "A human can run the checklist without asking what to tap.",
+        "Every core feature from app_features appears in QA.",
+        "Failure states are tested, not ignored."
+      ]
+    },
+    "app_store_readiness": {
+      "rules": [
+        "Prepare launch material and review risk assessment, not marketing fluff.",
+        "Treat privacy labels, permission strings, subscriptions, support, and review blockers as required launch work.",
+        "Do not mark launch-ready when verification or QA still has blockers."
+      ],
+      "required_output": [
+        "App Store positioning.",
+        "Screenshot/storyboard plan.",
+        "Privacy label notes.",
+        "Permission copy.",
+        "Subscription/paywall review risks.",
+        "Launch blockers."
+      ],
+      "acceptance_checks": [
+        "The app has an honest launch-readiness verdict.",
+        "Privacy and permissions are specific.",
+        "Subscription value and compliance risks are explicit."
+      ]
+    },
+    "final_review": {
+      "rules": [
+        "Judge the app against the original prompt, the MVP slice, and verification results.",
+        "Do not hide unfinished work.",
+        "Separate launch blockers from nice-to-have follow-up."
+      ],
+      "required_output": [
+        "What was built.",
+        "Verification status.",
+        "Prompt coverage.",
+        "Known limitations.",
+        "Top follow-ups."
+      ],
+      "acceptance_checks": [
+        "The review is honest enough for a user to decide whether to run or iterate.",
+        "Every blocker has an owner or a concrete next step."
+      ]
+    },
+    "portfolio_audit": {
+      "rules": [
+        "For portfolio parents, validate the actual folder/project shape against the user's requested app count/categories.",
+        "For portfolio children, validate parent metadata and workflow selection.",
+        "For single-app runs, explicitly mark the audit not applicable instead of inventing portfolio work."
+      ],
+      "required_output": [
+        "Portfolio applicability decision.",
+        "Expected vs actual app/project count.",
+        "Child folder/workflow check.",
+        "Skipped or collapsed category warnings.",
+        "Backfill readiness notes for Jira/Notion."
+      ],
+      "acceptance_checks": [
+        "A multi-app parent cannot pass if selected apps were collapsed into one project folder.",
+        "Every child has an initial prompt and workflow.",
+        "Any mismatch is recorded as a blocker."
+      ]
+    }
+  }
+}

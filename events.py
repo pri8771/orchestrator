@@ -1,0 +1,118 @@
+"""Per-project structured event log (Native Pro spec §6, milestone M4).
+
+The engine appends one JSON object per line to ``<app_dir>/events.jsonl`` at
+its existing decision points (run/phase/turn transitions, fallback rescues,
+verify results, agent auto-disable). Fallbacks used to be visible only as
+transcript prose the GUI had to parse — this file is the machine-readable
+surface any UI can tail instead. Surfacing, not new logic.
+
+Event kinds emitted by orchestrator.py:
+
+    run_started / run_finished
+    phase_started / phase_completed
+    turn_started / turn_completed
+    agent_fallback      (from_model, to_model, reason, status)
+    agent_disabled      (agent, reason — e.g. the gemini startup probe)
+    verify_result       (status, detail)
+    url_fetched         (url, title, chars — prompt-URL ground truth, urlfetch.py)
+    url_fetch_failed    (url, reason)
+
+Contract:
+  * Best-effort by design — emitting an event must NEVER take a run down.
+    ``emit_event`` swallows every exception and just returns False.
+  * Appends are atomic per line: one write() of one "\\n"-terminated line on
+    an O_APPEND handle, so concurrent writers (parallel build lanes) cannot
+    interleave partial lines.
+  * String fields are secret-redacted (schemas.redact_secrets, §17) and
+    length-capped so an agent's stderr echoed into a reason can never leak a
+    key or bloat the log.
+
+Standard library only, matching the rest of the engine.
+"""
+
+import datetime as _dt
+import json
+import os
+
+try:
+    import schemas as _schemalib
+except Exception:  # noqa: BLE001 - events must work even if schemas breaks
+    _schemalib = None
+
+EVENTS_FILENAME = "events.jsonl"
+
+# The vocabulary above, exported so tests/GUI code can validate against it.
+KINDS = (
+    "run_started", "phase_started", "turn_started", "turn_completed",
+    "agent_fallback", "agent_disabled", "verify_result",
+    "url_fetched", "url_fetch_failed",
+    "phase_completed", "run_finished",
+)
+
+_MAX_FIELD_CHARS = 500
+
+
+def events_path(app_dir):
+    return os.path.join(app_dir, EVENTS_FILENAME)
+
+
+def _clean(value):
+    """Redact + cap string field values; pass everything else through."""
+    if isinstance(value, str):
+        v = value
+        if _schemalib is not None:
+            try:
+                v = _schemalib.redact_secrets(v)
+            except Exception:  # noqa: BLE001 - redaction is defense in depth
+                pass
+        return v[:_MAX_FIELD_CHARS]
+    return value
+
+
+def emit_event(app_dir, kind, **fields):
+    """Append one structured event line to <app_dir>/events.jsonl.
+
+    Returns True when the line was written, False otherwise. Never raises:
+    a broken disk, a missing project dir, or an unserializable field must
+    never crash a run (fields that json can't encode fall back to str()).
+    None-valued fields are dropped so call sites can pass optionals freely.
+    """
+    try:
+        if not app_dir or not kind:
+            return False
+        evt = {"ts": _dt.datetime.now().isoformat(timespec="seconds"),
+               "kind": str(kind)}
+        for k, v in fields.items():
+            if v is None:
+                continue
+            evt[str(k)] = _clean(v)
+        line = json.dumps(evt, default=str)
+        with open(events_path(app_dir), "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        return True
+    except Exception:  # noqa: BLE001 - events are best-effort by contract
+        return False
+
+
+def read_events(app_dir, kinds=None):
+    """Every parseable event, oldest first; corrupt/partial lines are skipped.
+
+    ``kinds`` optionally filters to an iterable of kind strings. Never raises
+    (missing file -> []). Handy for tests and any UI that doesn't tail."""
+    out = []
+    want = set(kinds) if kinds is not None else None
+    try:
+        with open(events_path(app_dir), encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    evt = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(evt, dict) and (want is None or evt.get("kind") in want):
+                    out.append(evt)
+    except OSError:
+        pass
+    return out

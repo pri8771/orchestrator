@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "_docs": "Per-phase model routing + fallback ladder. Edited by the GUI (Settings -> Routing) or by hand; field reference in modelrouting.py. phases.<phase_key> accepts: claude / codex / gemini / ollama (model id overrides), codex_reasoning (low|medium|high), timeout (seconds per turn, for phases that deserve longer thinking), agents (comma list of agent ids, local model tags, or the groups 'cloud' / 'local'). fallback.chains.<agent> is an ordered list of rescue steps tried when that agent fails for any reason (usage cap, rate limit, timeout, logged-out CLI): a same-provider model id like 'gpt-5.3-codex-spark' (usage caps are usually per model tier) or a local tag like 'local:qwen3-coder:30b'. fallback.cloud_to_local adds a final safety net on an installed local model (fallback.local_model, else models.ollama, else the first installed roster model).",
+  "enabled": true,
+  "fallback": {
+    "cloud_to_local": true,
+    "local_model": "",
+    "chains": {}
+  },
+  "phases": {}
+}

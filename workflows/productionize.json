@@ -1,0 +1,103 @@
+{
+  "name": "productionize",
+  "title": "Productionize a Prototype",
+  "description": "Take a working prototype and turn it into something deployable: backend, data model, APIs, infra, and a real integration + production-readiness pass.",
+  "target": "productionize",
+  "build_phase": "build_backend",
+  "phases": [
+    {
+      "key": "assess_prototype",
+      "folder": "assess_prototype",
+      "file": "assess_prototype.md",
+      "title": "Assess Prototype",
+      "purpose": "Review the existing prototype and define exactly what 'production-ready' means for it: what's missing, what must be real, and the acceptance bar.",
+      "rounds": 4,
+      "roles": [
+        "product",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "backend_design",
+      "folder": "backend_design",
+      "file": "backend_design.md",
+      "title": "Backend Design",
+      "purpose": "Design the server: data model, API contracts, service boundaries, and how the client will talk to it.",
+      "rounds": 5,
+      "roles": [
+        "backend",
+        "frontend",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "infra_and_security",
+      "folder": "infra_and_security",
+      "file": "infra_and_security.md",
+      "title": "Infra And Security",
+      "purpose": "Decide hosting, deployment, auth, security, observability, and a rough cost model, with justified trade-offs.",
+      "rounds": 5,
+      "roles": [
+        "backend",
+        "delivery",
+        "qa"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "integration_plan",
+      "folder": "integration_plan",
+      "file": "integration_plan.md",
+      "title": "Integration Plan",
+      "purpose": "Plan how the prototype consumes the backend, the migration/cutover, and the division of build work with conflict-prevention.",
+      "rounds": 4,
+      "roles": [
+        "delivery",
+        "frontend",
+        "backend"
+      ],
+      "writes": false,
+      "verify": null
+    },
+    {
+      "key": "build_backend",
+      "folder": "build_backend",
+      "file": "agent_messages.md",
+      "title": "Build Backend",
+      "purpose": "Iteratively build the backend and wire the prototype to it. Expose a GET /health endpoint returning 200 so the build can be verified by actually booting the server.",
+      "rounds": 30,
+      "roles": [
+        "backend",
+        "frontend",
+        "qa"
+      ],
+      "writes": true,
+      "verify": {
+        "type": "http",
+        "repair_iterations": 3,
+        "ready_timeout": 45
+      }
+    },
+    {
+      "key": "production_review",
+      "folder": "production_review",
+      "file": "production_review.md",
+      "title": "Production Review",
+      "purpose": "Assess production readiness: reliability, rollback, security, and a clear go / no-go decision.",
+      "rounds": 5,
+      "roles": [
+        "qa",
+        "backend",
+        "delivery"
+      ],
+      "writes": false,
+      "verify": null
+    }
+  ]
+}

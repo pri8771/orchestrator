@@ -1,0 +1,18 @@
+# Engine runtime state
+__pycache__/
+*.pyc
+*.log
+logs/
+locks/
+.codex_model_probe.json
+.gemini_probe.json
+
+# GUI build artifacts
+gui/.build/
+gui/dist/
+gui/DerivedData/
+.DS_Store
+
+# Secrets — never committed (see config.yaml)
+gemini_api_key
+*.gemini_api_key

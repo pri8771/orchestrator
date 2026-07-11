@@ -1,0 +1,76 @@
+{
+  "name": "brainstorm",
+  "title": "Brainstorm",
+  "description": "A fast idea-shaping pass: lock the prompt contract, do the product research, and converge on a shared understanding of the concept. No design, build, or QA phases \u2014 effort is capped for quick turnaround.",
+  "target": "app",
+  "build_phase": null,
+  "budget": null,
+  "phases": [
+    {
+      "key": "prompt_contract",
+      "folder": "prompt_contract",
+      "file": "prompt_contract.md",
+      "title": "Prompt Contract",
+      "purpose": "Preserve the user's original prompt before any discussion, convert it into a clear execution contract, list hard requirements, non-goals, success metrics, production-readiness expectations, and decision rules for every later phase.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "qa",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "product_research",
+      "folder": "product_research",
+      "file": "product_research.md",
+      "title": "Product Research",
+      "purpose": "Before product debate begins, infer the likely market, audience, competitors/patterns, platform expectations, risks, and native iOS opportunities from the prompt. Label assumptions clearly and turn the research into implications for the first build.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "initial_discussion",
+      "folder": "initial_discussion",
+      "file": "initial_discussion.md",
+      "title": "Initial Discussion",
+      "purpose": "Establish a shared, precise understanding of what this app is, who it is for, the core problem it solves, hard scope boundaries, and measurable success criteria.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    }
+  ],
+  "overrides": {
+    "effort": "fast"
+  }
+}

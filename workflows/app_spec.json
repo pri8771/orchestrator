@@ -1,0 +1,388 @@
+{
+  "name": "app_spec",
+  "title": "Spec an App",
+  "description": "A per-app specification pipeline for portfolio child projects. Runs the product, design, technical, planning, and review phases for one selected app concept without generating code.",
+  "target": "app_spec",
+  "build_phase": null,
+  "budget": null,
+  "phases": [
+    {
+      "key": "prompt_contract",
+      "folder": "prompt_contract",
+      "file": "prompt_contract.md",
+      "title": "Prompt Contract",
+      "purpose": "Preserve the user's original prompt and convert it into a clear spec contract for this one selected app: requirements, non-goals, success metrics, production expectations, and decision rules.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "qa",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "product_research",
+      "folder": "product_research",
+      "file": "product_research.md",
+      "title": "Product Research",
+      "purpose": "For this one app concept, infer the likely market, audience, competitors/patterns, platform expectations, risks, and native iOS opportunities. Label assumptions clearly and turn the research into implications for this app's v1.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "portfolio_selection",
+      "folder": "portfolio_selection",
+      "file": "portfolio_selection.md",
+      "title": "Portfolio Selection",
+      "purpose": "Confirm this spec is a single portfolio child and not a parent wrapper. Record the parent category/selection rationale and why this child should stay as its own app.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": true,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "initial_discussion",
+      "folder": "initial_discussion",
+      "file": "initial_discussion.md",
+      "title": "Initial Discussion",
+      "purpose": "For this one app concept, establish a precise understanding of what it is, who it is for, the core problem it solves, hard scope boundaries, and measurable success criteria.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "per_app_product_brief",
+      "folder": "per_app_product_brief",
+      "file": "per_app_product_brief.md",
+      "title": "Per App Product Brief",
+      "purpose": "Create a production-grade product brief for this specific app: paid value, core loop, competitive wedge, local-first behavior, cloud-ready path, growth angle, and why the app deserves to exist.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "next_steps_small",
+      "folder": "next_steps_small",
+      "file": "next_steps_small.md",
+      "title": "Next Steps Small",
+      "purpose": "Define this app's smallest valuable local-first slice / immediate next steps that de-risk and validate the concept with minimal effort.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "delivery",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "detailed_discussion",
+      "folder": "detailed_discussion",
+      "file": "detailed_discussion.md",
+      "title": "Detailed Discussion",
+      "purpose": "Deeply analyze this app's requirements, edge cases, constraints, assumptions, risks, and open questions, resolving ambiguity left from earlier phases.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "qa",
+        "backend"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "app_features",
+      "folder": "app_features",
+      "file": "app_features.md",
+      "title": "App Features",
+      "purpose": "Enumerate and prioritize this app's feature set with explicit in-scope vs out-of-scope lines.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "design_discussion",
+      "folder": "design_discussion",
+      "file": "design_discussion.md",
+      "title": "Design Discussion",
+      "purpose": "Decide this app's UX flows, information architecture, key screens/states, design direction, and Claude Design handoff requirements.",
+      "rounds": 9,
+      "roles": [
+        "design",
+        "frontend",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "design_handoff",
+      "folder": "design_handoff",
+      "file": "design_handoff.md",
+      "title": "Design Handoff",
+      "purpose": "Produce a complete design handoff and Claude Design prompt/import plan: screens, states, tokens, motion notes, accessibility, and responsive behavior.",
+      "rounds": 9,
+      "roles": [
+        "design",
+        "frontend",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "ios_architecture_review",
+      "folder": "ios_architecture_review",
+      "file": "ios_architecture_review.md",
+      "title": "Ios Architecture Review",
+      "purpose": "Review the spec as an iOS product: SwiftUI architecture, local persistence, Apple frameworks, privacy, permissions, permissive dependencies, StoreKit when relevant, and testability.",
+      "rounds": 9,
+      "roles": [
+        "frontend",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "tech_specs",
+      "folder": "tech_specs",
+      "file": "tech_specs.md",
+      "title": "Tech Specs",
+      "purpose": "Decide this app's architecture, technology stack, data model, interfaces/APIs, and non-functional requirements with justified trade-offs. This is a spec-only project, so do not emit build tasks.",
+      "rounds": 9,
+      "roles": [
+        "frontend",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "project_plan",
+      "folder": "project_plan",
+      "file": "project_plan.md",
+      "title": "Project Plan",
+      "purpose": "Produce this app's milestones, sequencing, estimates, dependencies, risks, and a future implementation plan.",
+      "rounds": 9,
+      "roles": [
+        "delivery",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "implementation_readiness_gate",
+      "folder": "implementation_readiness_gate",
+      "file": "implementation_readiness_gate.md",
+      "title": "Implementation Readiness Gate",
+      "purpose": "Audit whether the spec is coherent enough for a future one-shot build. Resolve contradictions, downgrade impossible scope, and name any information the builder must still collect.",
+      "rounds": 9,
+      "roles": [
+        "delivery",
+        "qa",
+        "frontend"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "human_qa_checklist",
+      "folder": "human_qa_checklist",
+      "file": "human_qa_checklist.md",
+      "title": "Human Qa Checklist",
+      "purpose": "Draft the manual QA script that a future build must satisfy for every important workflow, state, persistence case, and accessibility check.",
+      "rounds": 9,
+      "roles": [
+        "qa",
+        "design",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "app_store_readiness",
+      "folder": "app_store_readiness",
+      "file": "app_store_readiness.md",
+      "title": "App Store Readiness",
+      "purpose": "Prepare launch-readiness material for a future build: positioning, screenshots, privacy labels, subscription/paywall risks, support needs, and likely review blockers.",
+      "rounds": 9,
+      "roles": [
+        "product",
+        "qa",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": true,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "final_review",
+      "folder": "final_review",
+      "file": "final_review.md",
+      "title": "Final Review",
+      "purpose": "Final review of this app specification's completeness, consistency, risks, and go / no-go recommendation for a future build.",
+      "rounds": 9,
+      "roles": [
+        "qa",
+        "product",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "portfolio_audit",
+      "folder": "portfolio_audit",
+      "file": "portfolio_audit.md",
+      "title": "Portfolio Audit",
+      "purpose": "Confirm this spec child preserves the parent portfolio requirements and has the right sibling-folder/workflow metadata for later Jira/Notion backfill.",
+      "rounds": 9,
+      "roles": [
+        "qa",
+        "delivery",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    }
+  ]
+}

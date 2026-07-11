@@ -1,0 +1,90 @@
+{
+  "name": "audit",
+  "title": "Audit an Existing Codebase",
+  "description": "Point the agents at a PRE-EXISTING codebase (READ-ONLY) and produce a prioritized findings report covering security vulnerabilities, correctness bugs, and modernization/update opportunities. The target is resolved from <app>/target_path.txt (or a 'target:' line in initial_prompt.md), is never written to, and is injected as a read-only digest. No build phase.",
+  "target": "audit",
+  "build_phase": null,
+  "budget": null,
+  "phases": [
+    {
+      "key": "recon",
+      "folder": "recon",
+      "file": "recon.md",
+      "title": "Recon",
+      "purpose": "Map the target READ-ONLY before hunting: identify the language(s)/framework versions, dependency manifests (Package.swift/Podfile.lock, requirements.txt/poetry.lock, package.json/lockfile), entry points and external inputs (routes/handlers/URL schemes/CLI args), trust boundaries, where secrets and persistence live, and the highest-risk surfaces. Produce a concise shared architecture + attack-surface summary later phases build on. NO findings yet.",
+      "rounds": 3,
+      "roles": [
+        "backend",
+        "qa",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": true,
+      "verify": null
+    },
+    {
+      "key": "security",
+      "folder": "security",
+      "file": "security.md",
+      "title": "Security",
+      "purpose": "Hunt SECURITY vulnerabilities: secrets in code, injection (SQL/command/path/template), broken authn/authz, insecure storage (iOS Keychain vs UserDefaults; plaintext creds), network/TLS (disabled cert validation, ATS exceptions, verify=False, rejectUnauthorized:false), over-broad permissions/entitlements and missing usage strings, vulnerable/unpinned dependencies, and PII/privacy leaks. For each finding give severity, category, file:line, a concrete exploit scenario, and a safe fix. Emit each finding as a finding-json block.",
+      "rounds": 4,
+      "roles": [
+        "backend",
+        "qa",
+        "security"
+      ],
+      "writes": false,
+      "reads_target": true,
+      "verify": null
+    },
+    {
+      "key": "bugs",
+      "folder": "bugs",
+      "file": "bugs.md",
+      "title": "Bugs",
+      "purpose": "Find correctness/reliability BUGS: concurrency/data races (Swift main-actor/Sendable, unawaited JS promises, unlocked Python globals), swallowed/incorrect error handling, unhandled edge cases (nil/None/empty/off-by-one/overflow/timezone), memory and lifecycle issues (retain cycles/[weak self], leaked handles/listeners), and logic errors. Each finding: file:line, the input/state that triggers wrong behavior, and a minimal fix. Emit each as a finding-json block.",
+      "rounds": 4,
+      "roles": [
+        "backend",
+        "qa",
+        "frontend"
+      ],
+      "writes": false,
+      "reads_target": true,
+      "verify": null
+    },
+    {
+      "key": "modernization",
+      "folder": "modernization",
+      "file": "modernization.md",
+      "title": "Modernization",
+      "purpose": "Identify UPDATES/modernization: outdated or abandoned dependencies (versions behind, EOL), deprecated/removed APIs, worthwhile modern-idiom refactors (async/await, Codable, type hints, ESM), dead code, and performance issues (N+1, sync I/O on hot paths, main-thread blocking). Cite file:line with current-vs-recommended and the migration effort/risk. Emit each as a finding-json block.",
+      "rounds": 3,
+      "roles": [
+        "backend",
+        "frontend",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": true,
+      "verify": null
+    },
+    {
+      "key": "report",
+      "folder": "report",
+      "file": "report.md",
+      "title": "Report",
+      "purpose": "Synthesize (do NOT vote away) ALL findings from the security, bugs, and modernization phases into ONE prioritized, de-duplicated report grouped Critical/High/Medium/Low. Open with a 3-line severity-count summary and end with the top 5 fixes to do first. The ranked list itself is assembled deterministically by the tool.",
+      "rounds": 2,
+      "roles": [
+        "product",
+        "qa",
+        "delivery"
+      ],
+      "writes": false,
+      "reads_target": true,
+      "verify": null
+    }
+  ]
+}

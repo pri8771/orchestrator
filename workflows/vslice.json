@@ -1,0 +1,27 @@
+{
+  "name": "vslice",
+  "title": "Vertical Slice Smoke Build",
+  "description": "Minimal end-to-end build to verify the V2 pipeline works with the real agent CLIs on this machine.",
+  "target": "app",
+  "build_phase": "build_coordination",
+  "budget": {
+    "time_budget_minutes": 20,
+    "build_reserve_minutes": 15,
+    "verify_reserve_minutes": 6,
+    "chat_turn_timeout": 120,
+    "build_turn_timeout": 300,
+    "verify_timeout": 240
+  },
+  "phases": [
+    {"key": "tech_specs", "folder": "tech_specs", "file": "tech_specs.md", "title": "Plan",
+     "purpose": "Decide the single screen, the state model, and the exact file layout for this tiny SwiftUI app. One clear plan, no bikeshedding.",
+     "rounds": 1, "roles": ["frontend", "product"], "writes": false, "reads_target": false, "verify": null},
+    {"key": "build_coordination", "folder": "build_coordination", "file": "agent_messages.md", "title": "Build",
+     "purpose": "Build the working one-screen SwiftUI app in app_build. Ship a functional, compiling app; prefer a smaller app that works over a bigger one that does not.",
+     "rounds": 2, "roles": ["frontend", "qa"], "writes": true, "reads_target": false,
+     "verify": {"type": "xcodebuild", "repair_iterations": 1}},
+    {"key": "final_review", "folder": "final_review", "file": "final_review.md", "title": "Review",
+     "purpose": "Fast go/no-go: what works, what is stubbed, and the top risks. One round.",
+     "rounds": 1, "roles": ["qa", "product"], "writes": false, "reads_target": false, "verify": null}
+  ]
+}
