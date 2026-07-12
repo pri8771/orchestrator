@@ -102,13 +102,16 @@ def installed_models_cached(ttl=60, run=None):
     local fallback consults this on the failure hot path — it must not pay a
     10s `ollama list` subprocess on every rescued turn."""
     now = time.time()
+    # Single-flight: hold the lock across the refresh so concurrent rescued
+    # turns don't each spawn the 10s `ollama list`. A second caller that was
+    # blocked here re-checks the TTL and returns the just-refreshed cache
+    # instead of running its own subprocess.
     with _CACHE_LOCK:
         if now - _INSTALLED_CACHE["ts"] < ttl:
             return list(_INSTALLED_CACHE["models"])
-    models = installed_models(run=run)
-    with _CACHE_LOCK:
-        _INSTALLED_CACHE.update(ts=now, models=list(models))
-    return list(models)
+        models = installed_models(run=run)
+        _INSTALLED_CACHE.update(ts=time.time(), models=list(models))
+        return list(models)
 
 
 # Hugging Face model search, restricted to GGUF repos — exactly the set Ollama

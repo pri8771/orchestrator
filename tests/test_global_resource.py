@@ -1,4 +1,4 @@
-import os, sqlite3, tempfile, unittest
+import os, sqlite3, tempfile, time, unittest
 import unittest.mock
 import global_resource as gr
 
@@ -33,6 +33,19 @@ class TestWorkerBroker(unittest.TestCase):
 
     def test_release_never_raises_on_missing(self):
         gr.release("cli_remote", pid=os.getpid(), db_path=self.db)  # nothing to release
+
+    def test_stale_slot_reaped_by_age_even_if_pid_alive(self):
+        # A live PID (our own) that has held a slot longer than the max age is a
+        # leak (crashed process, PID recycled). Age-based reaping frees it so the
+        # cap can't be permanently pinned by a reused PID.
+        gr.try_claim("p", "cli_remote", cap=5, pid=os.getpid(), db_path=self.db)
+        # Backdate the claim past the age bound.
+        conn = gr._conn(self.db)
+        conn.execute("UPDATE worker_slots SET claimed_at=?",
+                     (time.time() - gr._MAX_SLOT_AGE_SECONDS - 60,))
+        conn.commit()
+        conn.close()
+        self.assertEqual(gr.active_count("cli_remote", db_path=self.db), 0)
 
     def test_fail_open_on_bad_path(self):
         # an unwritable path -> claim fails open (returns True), never raises

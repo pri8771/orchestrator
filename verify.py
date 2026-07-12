@@ -17,6 +17,7 @@ needs no device, team, or provisioning profile. Device-signing correctness is a
 separate deterministic pass (fix_ios_signing in orchestrator.py).
 """
 
+import contextlib
 import json
 import os
 import re
@@ -24,11 +25,17 @@ import shlex
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
 import procutil
+
+try:
+    import fcntl
+except ImportError:  # non-Unix; the cross-process lock degrades to best-effort
+    fcntl = None
 
 
 def _run(cmd, cwd, timeout):
@@ -305,13 +312,30 @@ def _verify_http(build_dir, spec, timeout):
     env = dict(os.environ)
     env["PORT"] = str(port)
     proc = None
-    out_path = os.path.join(build_dir, ".verify_server.log")
+    server_pgid = None
+    # Write the server log to a temp file OUTSIDE the built project — dropping
+    # it into build_dir pollutes the generated app tree that later gets
+    # committed/shipped.
+    log_fd, out_path = tempfile.mkstemp(prefix="verify_server_", suffix=".log")
+    os.close(log_fd)
     try:
         outfh = open(out_path, "w", encoding="utf-8")
         proc = subprocess.Popen(["/bin/sh", "-lc", start], cwd=cwd, env=env,
                                 stdout=outfh, stderr=subprocess.STDOUT,
                                 start_new_session=True)
+        # Register the server's process group so a run-wide SIGTERM
+        # (procutil.kill_live_groups) also tears it down — otherwise a booted
+        # server leaks past the run.
+        try:
+            server_pgid = os.getpgid(proc.pid)
+        except OSError:
+            server_pgid = proc.pid
+        procutil.track_pgid(server_pgid)
     except (OSError, subprocess.SubprocessError) as exc:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
         return {"ran": True, "ok": False, "tool": "http boot",
                 "summary": "could not start the server (`%s`)" % start,
                 "errors": str(exc)}
@@ -347,6 +371,8 @@ def _verify_http(build_dir, spec, timeout):
                     proc.wait(timeout=5)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+        if server_pgid is not None:
+            procutil.untrack_pgid(server_pgid)
         try:
             outfh.close()
         except OSError:
@@ -358,6 +384,11 @@ def _verify_http(build_dir, spec, timeout):
             log_tail = _errors_tail(fh.read())
     except OSError:
         pass
+    finally:
+        try:
+            os.remove(out_path)   # temp log — never leave it behind
+        except OSError:
+            pass
     if booted:
         return {"ran": True, "ok": True, "tool": "http boot",
                 "summary": "server booted (`%s`) and responded %s on :%d"
@@ -422,6 +453,35 @@ def _vr_path(app_dir):
     return os.path.join(app_dir, "verify_results.json")
 
 
+@contextlib.contextmanager
+def _vr_lock(app_dir):
+    """Exclusive lock (flock) around a verify_results.json read-modify-write so
+    concurrent verifications — parallel portfolio children, or build-worker
+    threads in one process — don't lose each other's records. Best-effort: on a
+    platform without fcntl, or if the lock file can't be opened, it degrades to
+    no locking rather than raising."""
+    if fcntl is None:
+        yield
+        return
+    fh = None
+    try:
+        fh = open(_vr_path(app_dir) + ".lock", "w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        if fh is not None:
+            fh.close()
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
 def load_verify_results(app_dir):
     """Return the list of persisted verification records (oldest first). []
     if none/unreadable. Never raises."""
@@ -457,12 +517,16 @@ def persist_verify_result(app_dir, phase_key, result, attempt=0,
         "tests": result.get("tests"),
     }
     try:
-        records = load_verify_results(app_dir)
-        records.append(record)
-        tmp = _vr_path(app_dir) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            _json.dump(records, fh, indent=2)
-        os.replace(tmp, _vr_path(app_dir))
+        with _vr_lock(app_dir):
+            records = load_verify_results(app_dir)
+            records.append(record)
+            # Per-writer temp name so a concurrent writer on another thread/
+            # process can't clobber this one's half-written file (the flock
+            # serializes, but a unique name is belt-and-suspenders).
+            tmp = "%s.%d.tmp" % (_vr_path(app_dir), os.getpid())
+            with open(tmp, "w", encoding="utf-8") as fh:
+                _json.dump(records, fh, indent=2)
+            os.replace(tmp, _vr_path(app_dir))
     except OSError:
         pass
     return record

@@ -23,6 +23,13 @@ import time
 
 DEFAULT_DB = os.path.expanduser("~/.orchestrator_global/workers.db")
 
+# A single claimed slot maps to one agent turn (minutes). A row older than this
+# is a leak — a crashed process whose PID was recycled (so os.kill(pid,0) sees
+# the NEW process and reports it "alive"), or one owned by another user after
+# reuse. Reaping by age bounds that damage portably, without needing per-OS
+# process start-times.
+_MAX_SLOT_AGE_SECONDS = 6 * 3600
+
 # Lock-contention retry policy for try_claim. A short per-attempt busy timeout
 # plus a few retries bounds worst-case latency while still riding out the normal
 # write-lock contention of many projects claiming at once.
@@ -53,6 +60,9 @@ def _pid_alive(pid):
 
 
 def _reap(conn):
+    # Age-based reap first: bounds PID-reuse leaks regardless of liveness.
+    conn.execute("DELETE FROM worker_slots WHERE claimed_at < ?",
+                 (time.time() - _MAX_SLOT_AGE_SECONDS,))
     for (pid,) in conn.execute("SELECT DISTINCT pid FROM worker_slots").fetchall():
         if not _pid_alive(pid):
             conn.execute("DELETE FROM worker_slots WHERE pid=?", (pid,))

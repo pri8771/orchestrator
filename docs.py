@@ -18,10 +18,20 @@ import schemas
 
 
 def _write(path, text):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
+    # Per-writer temp name so concurrent renders don't share one ".tmp", and
+    # clean it up if the write/replace fails so a stale half-file isn't left
+    # behind (the caller's `except OSError: pass` would otherwise hide it).
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _read_text(path):

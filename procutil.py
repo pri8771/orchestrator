@@ -24,6 +24,11 @@ whole build deadlocks. A 30-minute per-agent timeout then never fires.
 Both the overall-timeout and the heartbeat raise ``subprocess.TimeoutExpired``
 (the heartbeat raises the ``NoOutputTimeout`` subclass), so a single
 ``except subprocess.TimeoutExpired`` handles either.
+
+Platform: POSIX only. ``start_new_session=True`` plus process-group signalling
+(``os.killpg`` / ``os.getpgid``) are Unix APIs; the engine targets macOS/Linux.
+On Windows these calls are unavailable and this module would need a Job-object
+equivalent — out of scope for the current CLI-on-your-Mac deployment.
 """
 
 import os
@@ -61,6 +66,19 @@ def _track_pgid(pgid):
 def _untrack_pgid(pgid):
     with _LIVE_PGIDS_LOCK:
         _LIVE_PGIDS.discard(pgid)
+
+
+def track_pgid(pgid):
+    """Register an externally-spawned process group so kill_live_groups() (the
+    orchestrator's SIGTERM/SIGINT drain) also stops it. For processes started
+    directly with Popen(start_new_session=True) rather than via run_capture —
+    e.g. verify.py booting a server. Pair with untrack_pgid in a finally."""
+    _track_pgid(pgid)
+
+
+def untrack_pgid(pgid):
+    """Stop tracking a process group registered with track_pgid."""
+    _untrack_pgid(pgid)
 
 
 def kill_live_groups(sig=signal.SIGTERM):

@@ -126,6 +126,26 @@ class TestClaudeEffortParity(unittest.TestCase):
         cmd = self._run_claude_cmd(cfg)
         self.assertNotIn("--effort", cmd)
 
+    def test_prompt_passed_on_stdin_not_argv(self):
+        # The prompt (and any secret in it) must not land on argv where `ps` /
+        # /proc/<pid>/cmdline expose it to other local users.
+        captured = {}
+
+        def fake_run(cmd, cwd, timeout, env=None, heartbeat=None, input_text=None):
+            captured["cmd"] = list(cmd)
+            captured["input_text"] = input_text
+            return "ok", "", 0
+
+        orig = orch._run_subprocess
+        orch._run_subprocess = fake_run
+        try:
+            orch.run_claude(_cfg(), "SECRET-PROMPT-BODY", 10)
+        finally:
+            orch._run_subprocess = orig
+        self.assertEqual(captured["input_text"], "SECRET-PROMPT-BODY")
+        self.assertNotIn("SECRET-PROMPT-BODY", captured["cmd"])
+        self.assertEqual(captured["cmd"][:2], ["claude", "-p"])
+
     def test_chat_turn_uses_claude_reasoning(self):
         cfg = _cfg()
         cfg["models"]["claude_reasoning"] = "low"

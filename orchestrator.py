@@ -178,14 +178,22 @@ def _quiet():
     return _QUIET or os.environ.get("ORCH_QUIET", "") == "1"
 
 
+# Serializes the file appends in emit()/live_log(): both are called from
+# parallel discussion/build worker threads, and two threads writing a long
+# redacted line to the same file with plain open("a") can interleave and corrupt
+# it. Stdout printing stays outside the lock (print is already atomic enough).
+_LOG_LOCK = threading.Lock()
+
+
 def emit(msg):
     """Timestamped, immediately-flushed terminal line + append to text log."""
     line = "[%s] %s" % (now_str(), msg)
     if not _quiet():
         print(line, flush=True)
     try:
-        with open(os.path.join(LOG_DIR, "orchestrator.log"), "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        with _LOG_LOCK:
+            with open(os.path.join(LOG_DIR, "orchestrator.log"), "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
     except OSError:
         pass
 
@@ -215,6 +223,28 @@ def _coerce_scalar(raw):
     return s
 
 
+def _strip_inline_comment(val):
+    """Drop a trailing ` # comment` from a scalar value (the config header
+    documents `# comments` as supported), while respecting quotes so a `#`
+    inside a quoted string stays data."""
+    if not val:
+        return val
+    if val[0] == "#":
+        return ""                       # value is only a comment -> null
+    if val[0] in ('"', "'"):
+        q = val[0]
+        end = val.find(q, 1)
+        if end == -1:
+            return val                  # unterminated quote — leave for _coerce_scalar
+        rest = val[end + 1:]
+        cut = rest.find("#")
+        if cut != -1 and (cut == 0 or rest[cut - 1] == " "):
+            return (val[:end + 1] + rest[:cut]).rstrip()
+        return val
+    i = val.find(" #")                   # YAML: a comment needs whitespace before #
+    return val[:i].rstrip() if i != -1 else val
+
+
 def parse_min_yaml(text):
     """Parse the restricted YAML subset used by config.yaml (nested maps only)."""
     root = {}
@@ -229,7 +259,7 @@ def parse_min_yaml(text):
             continue
         key, _, val = line.partition(":")
         key = key.strip()
-        val = val.strip()
+        val = _strip_inline_comment(val.strip())
         # pop to correct parent
         while stack and indent <= stack[-1][0]:
             stack.pop()
@@ -528,6 +558,25 @@ def which(name):
     return shutil.which(name)
 
 
+def _probe_cache_path(filename):
+    """Path for a 4h probe-verdict cache file, in the first writable dir. A
+    bundled/read-only engine dir would otherwise silently fail every write, so
+    the verdict never persists and the CLI re-probes (spending tokens/latency)
+    on every run. Falls back to ~/.orchestrator, then the temp dir. Resolved per
+    call (not cached) so it always tracks the current engine dir."""
+    for d in (HERE, os.path.expanduser("~/.orchestrator")):
+        try:
+            os.makedirs(d, exist_ok=True)
+            probe = os.path.join(d, ".orch_write_test.%d" % os.getpid())
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("")
+            os.remove(probe)
+            return os.path.join(d, filename)
+        except OSError:
+            continue
+    return os.path.join(tempfile.gettempdir(), filename)
+
+
 def detect_codex_model(cfg):
     """Return preferred Codex model if it actually works right now, else the
     configured default, else '' (let Codex use its own default).
@@ -542,7 +591,7 @@ def detect_codex_model(cfg):
     fallback = cget(cfg, "models.codex", "") or ""
     if not (preferred and which("codex")):
         return fallback
-    cache_p = os.path.join(HERE, ".codex_model_probe.json")
+    cache_p = _probe_cache_path(".codex_model_probe.json")
     try:
         with open(cache_p, encoding="utf-8") as fh:
             c = json.load(fh)
@@ -683,7 +732,11 @@ def run_codex(cfg, prompt, timeout):
 def run_claude(cfg, prompt, timeout):
     # Optional per-call model override (e.g. a stronger integrator model).
     model = cfg.get("_claude_model_override") or cfg["_resolved"]["claude_model"]
-    cmd = ["claude", "-p", prompt]
+    # Prompt goes over stdin, not argv: on argv the full prompt (and any secret
+    # spliced into it) is visible to every local user via `ps`/`/proc/<pid>/
+    # cmdline`. `claude -p` reads the prompt from stdin when no positional is
+    # given, matching run_codex/run_ollama.
+    cmd = ["claude", "-p"]
     # CLI-session reuse (set by call_agent_sessioned): the first turn creates a
     # session with a known id; later turns resume it with only the delta prompt,
     # skipping the full-context cold start that dominates per-call latency.
@@ -729,11 +782,12 @@ def run_claude(cfg, prompt, timeout):
     else:
         cwd, ephemeral = _agent_cwd(cfg)
     try:
-        out, err, code = _run_subprocess(cmd, cwd, timeout, heartbeat=hb)
+        out, err, code = _run_subprocess(cmd, cwd, timeout, heartbeat=hb,
+                                         input_text=prompt)
     finally:
         if ephemeral:
             shutil.rmtree(cwd, ignore_errors=True)
-    return out, err, code, _display_cmd(cmd)
+    return out, err, code, _display_cmd(cmd + ["<prompt on stdin>"])
 
 
 # Antigravity/gemini failure fingerprints. `agy` needs a controlling terminal;
@@ -772,7 +826,7 @@ def detect_gemini_available(cfg):
         if which("agy"):
             return True, ""
         return False, "no gemini/agy CLI on PATH"
-    cache_p = os.path.join(HERE, ".gemini_probe.json")
+    cache_p = _probe_cache_path(".gemini_probe.json")
     try:
         with open(cache_p, encoding="utf-8") as fh:
             c = json.load(fh)
@@ -2223,8 +2277,9 @@ def live_log(app_dir, lane, agent, kind, summary):
             "kind": str(kind or ""),
             "summary": schemalib.redact_secrets(" ".join(str(summary or "").split()))[:280],
         }
-        with open(os.path.join(app_dir, "live_log.jsonl"), "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        with _LOG_LOCK:
+            with open(os.path.join(app_dir, "live_log.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
     except Exception:  # noqa: BLE001 - logging must never raise
         pass
 
@@ -3078,6 +3133,40 @@ def _git(build_dir, *args, timeout=60):
         return 1, "", str(exc)
 
 
+# Build artifacts and secret-shaped files that must never enter the persistent
+# build repo. Re-asserted before every `git add -A` so a missing or agent-edited
+# .gitignore can't let DerivedData / node_modules / a stray key slip in.
+_BUILD_GITIGNORE_RULES = [
+    "DerivedData/", "build/", ".build/", "Pods/", ".gradle/", "node_modules/",
+    "*.xcuserstate", ".DS_Store", "*.log",
+    "*.pem", "*.key", "*.p12", ".env", ".env.*", "gemini_api_key", "*_api_key",
+]
+
+
+def _ensure_build_gitignore(build_dir):
+    """Write/restore the build repo's .gitignore so `git add -A` can't stage
+    artifacts or secrets. Preserves any extra user rules; only appends missing
+    managed rules. Best-effort, never raises."""
+    gi = os.path.join(build_dir, ".gitignore")
+    try:
+        existing = ""
+        if os.path.exists(gi):
+            with open(gi, encoding="utf-8") as fh:
+                existing = fh.read()
+        have = set(existing.splitlines())
+        missing = [r for r in _BUILD_GITIGNORE_RULES if r not in have]
+        if not existing:
+            with open(gi, "w", encoding="utf-8") as fh:
+                fh.write("# Managed by the orchestrator — build artifacts + secrets.\n")
+                fh.write("\n".join(_BUILD_GITIGNORE_RULES) + "\n")
+        elif missing:
+            sep = "" if existing.endswith("\n") else "\n"
+            with open(gi, "a", encoding="utf-8") as fh:
+                fh.write(sep + "\n".join(missing) + "\n")
+    except OSError:
+        pass
+
+
 def ensure_build_repo(build_dir):
     """Initialize app_build as a git repo once (idempotent). Adds a .gitignore for
     build artifacts and an empty initial commit so later commits always have a
@@ -3091,13 +3180,7 @@ def ensure_build_repo(build_dir):
         return False
     _git(build_dir, "config", "user.email", "orchestrator@local")
     _git(build_dir, "config", "user.name", "Orchestrator")
-    gi = os.path.join(build_dir, ".gitignore")
-    if not os.path.exists(gi):
-        try:
-            with open(gi, "w", encoding="utf-8") as fh:
-                fh.write("DerivedData/\nbuild/\n*.xcuserstate\n.DS_Store\n")
-        except OSError:
-            pass
+    _ensure_build_gitignore(build_dir)
     _git(build_dir, "add", "-A")
     _git(build_dir, "commit", "-q", "--allow-empty", "-m", "orchestrator: build repo initialized")
     return True
@@ -3108,6 +3191,9 @@ def commit_build_state(build_dir, message):
     or the dir isn't a git repo. Returns the short commit sha or ''."""
     if not build_dir or not os.path.isdir(os.path.join(build_dir, ".git")):
         return ""
+    # Re-assert the ignore rules first: agents may have deleted or rewritten
+    # .gitignore mid-build, and a blind add -A would then commit artifacts/secrets.
+    _ensure_build_gitignore(build_dir)
     _git(build_dir, "add", "-A")
     # Only commit if there's something staged (avoid empty commits per iteration).
     if _git(build_dir, "diff", "--cached", "--quiet")[0] == 0:
@@ -4764,6 +4850,12 @@ def _prepare_url_context(cfg, app, app_dir, prompt):
     cfg["_url_context"] = urlfetchlib.build_url_context(results)
 
 
+# Directories excluded from the target-change signature: VCS/build/dependency
+# churn shouldn't re-trigger a run, and skipping them keeps the walk cheap.
+_TSIG_PRUNE_DIRS = {".git", "node_modules", "DerivedData", ".build", "build",
+                    "Pods", ".gradle", "__pycache__", ".venv", "venv"}
+
+
 def _run_app_pipeline(cfg, app, app_dir, prompt):
     state = load_state(app_dir)
     # Sinks for structured events (§6) + fallback-count aggregation: every
@@ -4852,10 +4944,28 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     _tsig = ""
     if _tgt:
         try:
-            _tsig = "|".join(sorted(
-                os.path.relpath(os.path.join(dp, fn), _tgt)
-                + str(int(os.path.getmtime(os.path.join(dp, fn))))
-                for dp, _dn, fns in os.walk(_tgt) for fn in fns))[:200000]
+            # Cheap aggregate signature instead of a giant sorted relpath+mtime
+            # string: prune heavy/irrelevant dirs and track running (count,
+            # newest-mtime, total-size) in O(1) memory. Any file edit bumps the
+            # mtime; adds/removes change the count/size; a dir mtime catches a
+            # rename that doesn't touch a file. Much faster on large targets.
+            count, newest, total = 0, 0.0, 0
+            for dp, dns, fns in os.walk(_tgt):
+                dns[:] = [d for d in dns if d not in _TSIG_PRUNE_DIRS]
+                try:
+                    newest = max(newest, os.path.getmtime(dp))
+                except OSError:
+                    pass
+                for fn in fns:
+                    try:
+                        st = os.stat(os.path.join(dp, fn))
+                    except OSError:
+                        continue
+                    count += 1
+                    total += st.st_size
+                    if st.st_mtime > newest:
+                        newest = st.st_mtime
+            _tsig = "%d|%.3f|%d" % (count, newest, total)
         except OSError:
             _tsig = _tgt
     phash = sha256_text(prompt + "\n#target:" + _tgt + "\n#tsig:" + sha256_text(_tsig))

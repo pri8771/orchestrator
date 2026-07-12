@@ -22,7 +22,9 @@ import os
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOCK_PATH = os.path.join(HERE, ".lock")
+# Demo-specific lock name so this dev tool's finally-block cleanup can never
+# delete a real run's lock file that happens to live in the engine dir.
+LOCK_PATH = os.path.join(HERE, ".simulate_stream.lock")
 # Default workspace: ORCH_ROOT env, else <repo>/workspace next to this engine dir.
 ROOT_DEFAULT = os.environ.get("ORCH_ROOT") or os.path.join(os.path.dirname(HERE), "workspace")
 
@@ -79,8 +81,11 @@ def header(app, title):
 def load_state(app_dir):
     p = os.path.join(app_dir, "agent_state.json")
     if os.path.exists(p):
-        with open(p, encoding="utf-8") as fh:
-            return json.load(fh)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            pass   # corrupt/unreadable state -> fall through to a fresh demo state
     return {
         "current_phase": None, "current_round": 0, "next_agent": None,
         "prompt_hash": "demo", "completed_phases": [], "phase_outputs": {},

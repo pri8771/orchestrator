@@ -50,6 +50,9 @@ KINDS = (
 )
 
 _MAX_FIELD_CHARS = 500
+# Keep a serialized event line under Linux's PIPE_BUF so concurrent appenders
+# from parallel projects don't interleave mid-line in events.jsonl.
+_MAX_EVENT_LINE_BYTES = 3500
 
 
 def events_path(app_dir):
@@ -87,6 +90,18 @@ def emit_event(app_dir, kind, **fields):
                 continue
             evt[str(k)] = _clean(v)
         line = json.dumps(evt, default=str)
+        # POSIX guarantees an append() write is atomic only up to PIPE_BUF
+        # (>=512; 4096 on Linux). A longer line can interleave with a concurrent
+        # writer's line and corrupt events.jsonl. Per-field caps aren't enough
+        # when there are many fields, so shrink the largest string field until
+        # the whole line fits — keeping it valid JSON.
+        while len(line.encode("utf-8", "replace")) > _MAX_EVENT_LINE_BYTES:
+            longest = max((k for k, v in evt.items() if isinstance(v, str)),
+                          key=lambda k: len(evt[k]), default=None)
+            if longest is None or len(evt[longest]) <= 16:
+                break  # non-string bloat we can't trim — accept best-effort
+            evt[longest] = evt[longest][:len(evt[longest]) // 2] + "…"
+            line = json.dumps(evt, default=str)
         with open(events_path(app_dir), "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
         return True
