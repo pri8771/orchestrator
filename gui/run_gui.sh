@@ -9,8 +9,9 @@ set -euo pipefail
 
 GUI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCH_DIR="$(cd "$GUI_DIR/.." && pwd)"
-# Every direct child folder here is one project.
-ROOT="/Users/pchordia/Documents/iOS-App-Factory"
+# Every direct child folder here is one project. ORCH_ROOT env wins, else a
+# portable home-relative default.
+ROOT="${ORCH_ROOT:-$HOME/Documents/iOS-App-Factory}"
 mkdir -p "$ROOT"
 
 export ORCH_ROOT="$ROOT"

@@ -654,15 +654,28 @@ final class OrchestratorStore: ObservableObject {
 
     // First launch on a machine that never ran the engine: materialize the
     // built-in workflow JSON files so the picker/editors have something to show.
+    // The python seed is spawned and waited on OFF the main thread — doing it
+    // inline (as before) froze the whole UI on first launch until it finished.
     private func seedWorkflowsIfMissing() {
         guard engineAvailable, !fm.fileExists(atPath: workflowsDirURL.path) else { return }
+        // Capture main-actor state here, run the blocking Process on a utility
+        // queue, then refresh back on the main actor so the seeded workflows show.
         let py = resolvePython()
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: py)
-        proc.arguments = [orchDirURL.appendingPathComponent("orchestrator.py").path, "--seed"]
-        proc.currentDirectoryURL = rootURL
-        try? proc.run()
-        proc.waitUntilExit()
+        let scriptPath = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let cwd = rootURL
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.arguments = [scriptPath, "--seed"]
+            proc.currentDirectoryURL = cwd
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                return
+            }
+            Task { @MainActor in self?.refresh() }
+        }
     }
 
     deinit { timer?.invalidate() }
@@ -788,16 +801,36 @@ final class OrchestratorStore: ObservableObject {
 
     private var configURL: URL { orchDirURL.appendingPathComponent("config.yaml") }
 
-    func setAgentEnabled(_ agent: String, _ on: Bool) {
-        guard var text = try? String(contentsOf: configURL, encoding: .utf8) else { return }
-        let pattern = "(\(agent)_enabled:\\s*)(true|false)"
-        if let re = try? NSRegularExpression(pattern: pattern) {
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            text = re.stringByReplacingMatches(in: text, range: range,
-                                               withTemplate: "$1\(on ? "true" : "false")")
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+    /// Persist updated config.yaml text. On failure the error is surfaced in the
+    /// run log instead of being swallowed by `try?`, and false is returned so
+    /// callers skip the matching @Published update — otherwise the UI would show
+    /// a setting that never reached disk. Returns true on a successful write.
+    @discardableResult
+    private func writeConfig(_ text: String) -> Bool {
+        do {
+            try text.write(to: configURL, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            runLog += "Failed to save settings to \(configURL.lastPathComponent): "
+                + "\(error.localizedDescription)\n"
+            return false
         }
-        enabledAgents[agent] = on
+    }
+
+    func setAgentEnabled(_ agent: String, _ on: Bool) {
+        guard var text = try? String(contentsOf: configURL, encoding: .utf8) else {
+            runLog += "Could not read \(configURL.lastPathComponent) to update \(agent).\n"
+            return
+        }
+        let pattern = "(\(agent)_enabled:\\s*)(true|false)"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        text = re.stringByReplacingMatches(in: text, range: range,
+                                           withTemplate: "$1\(on ? "true" : "false")")
+        // Only reflect the toggle in the UI if the write actually landed.
+        if writeConfig(text) {
+            enabledAgents[agent] = on
+        }
     }
 
     // MARK: - macOS notifications (run finished / needs approval / failed)
@@ -1058,10 +1091,14 @@ final class OrchestratorStore: ObservableObject {
             runInTerminal("ollama pull \(id)")
             return
         }
+        guard let pullURL = URL(string: "http://127.0.0.1:11434/api/pull") else {
+            runInTerminal("ollama pull \(id)")
+            return
+        }
         pullProgress[id] = -1
         Task { [weak self] in
             do {
-                var req = URLRequest(url: URL(string: "http://127.0.0.1:11434/api/pull")!)
+                var req = URLRequest(url: pullURL)
                 req.httpMethod = "POST"
                 req.httpBody = try JSONSerialization.data(withJSONObject: ["name": id])
                 req.timeoutInterval = 3600
@@ -1163,7 +1200,7 @@ final class OrchestratorStore: ObservableObject {
                 text.insert(contentsOf: "  ollama_roster: \"\(value)\"\n",
                             at: modelsRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
         objectWillChange.send()
     }
@@ -1351,7 +1388,7 @@ final class OrchestratorStore: ObservableObject {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             text = re.stringByReplacingMatches(in: text, range: range,
                                                withTemplate: "$1\(on ? "true" : "false")")
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
     }
 
@@ -1383,7 +1420,7 @@ final class OrchestratorStore: ObservableObject {
             } else if let runtimeRange = text.range(of: "runtime:\\n") {
                 text.insert(contentsOf: "  \(key): \(v)\n", at: runtimeRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
     }
 
@@ -1399,7 +1436,7 @@ final class OrchestratorStore: ObservableObject {
                 text.insert(contentsOf: "  \(key): \(value ? "true" : "false")\n",
                             at: runtimeRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
     }
 
@@ -1648,9 +1685,10 @@ final class OrchestratorStore: ObservableObject {
                 // insert it under models: so the edit still lands.
                 text.insert(contentsOf: "  \(key): \"\(value)\"\n", at: modelsRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            if writeConfig(text) {
+                agentEfforts[agent] = value
+            }
         }
-        agentEfforts[agent] = value
     }
 
     func setModel(_ agent: String, _ value: String) {
@@ -1662,9 +1700,10 @@ final class OrchestratorStore: ObservableObject {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             let escaped = NSRegularExpression.escapedTemplate(for: "\"\(v)\"")
             text = re.stringByReplacingMatches(in: text, range: range, withTemplate: "$1\(escaped)")
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            if writeConfig(text) {
+                agentModels[agent] = v
+            }
         }
-        agentModels[agent] = v
     }
 
     private func discoverApps() -> [String] {

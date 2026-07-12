@@ -17,8 +17,9 @@
 # ============================================================================
 
 # Workspace root. Every direct child folder is one orchestrated project.
-# Override per-run with --root PATH or the ORCH_ROOT env var.
-root: "/Users/pchordia/Documents/iOS-App-Factory"
+# `~` is expanded, so this is portable across machines. Override per-run with
+# --root PATH or the ORCH_ROOT env var.
+root: "~/Documents/iOS-App-Factory"
 
 models:
   # Claude Code model (used with `claude -p --model <model>`)

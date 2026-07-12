@@ -21,14 +21,15 @@ are the approval decision files (below).
 ## Run it
 
 ```bash
-# Recommended: from the repo root. Builds release + launches, pointed at
-# /Users/pchordia/Documents/iOS-App-Factory via ORCH_ROOT and at this engine via ORCH_DIR.
-bash run-orchestrator.sh
+# Recommended: from the repo root. Builds release + launches, pointed at the
+# workspace via ORCH_ROOT (default ~/Documents/iOS-App-Factory) and at this
+# engine via ORCH_DIR.
+bash gui/run_gui.sh
 
 # Build / test this package directly:
-cd orchestrator-v2-source/gui
+cd gui
 swift build -c release
-swift test                    # 37 unit tests (Tests/OrchestratorGUITests)
+swift test                    # GUI unit tests (Tests/OrchestratorGUITests)
 
 # Package a double-clickable app (bundles the Python engine inside):
 bash build_app.sh             # -> dist/Orchestrator.app
@@ -38,9 +39,9 @@ bash make_dmg.sh              # -> dist/Orchestrator.dmg  (or: make app / make d
 Requires the Swift toolchain (Xcode or Command Line Tools). No external Swift
 packages — SwiftUI/AppKit/Combine only.
 
-Note: `gui/run_gui.sh` and `run-orchestrator.sh` both export `ORCH_ROOT` to
-`/Users/pchordia/Documents/iOS-App-Factory`, so either source launcher reads and
-writes the same project folders.
+Note: `gui/run_gui.sh` exports `ORCH_ROOT` (default
+`~/Documents/iOS-App-Factory`); set that env var to point the app and the CLI at
+the same project folders.
 
 ## How the app finds the engine
 

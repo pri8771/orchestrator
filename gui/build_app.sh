@@ -29,11 +29,21 @@ ENGINE_DEST="$APP/Contents/Resources/engine"
 echo "[build_app] bundling engine from ${ENGINE_SRC}..."
 mkdir -p "$ENGINE_DEST"
 # Copy the engine, excluding the GUI sources, build output, and local runtime.
+# CRITICAL: exclude secret-shaped files. This bundle is redistributed by
+# make_dmg.sh, so a stray API key / credential file in the engine dir must never
+# ship inside the .app. Mirrors run.sh's commit block-list plus config.json
+# (per-machine settings, not for distribution).
 ( cd "$ENGINE_SRC" && \
   find . -type f \
     -not -path './gui/*' -not -path './.git/*' \
     -not -path './logs/*' -not -path './locks/*' -not -path '*/__pycache__/*' \
     -not -path './tests/*' -not -path './sample-run/*' \
+    -not -path './.orchestrator/*' \
+    -not -name 'config.json' \
+    -not -name 'gemini_api_key' -not -name '*_api_key' \
+    -not -name '.env' -not -name '.env.*' \
+    -not -name '*.pem' -not -name '*.key' -not -name '*.p12' \
+    -not -name '*.secret' \
     -print0 | while IFS= read -r -d '' f; do
       mkdir -p "$ENGINE_DEST/$(dirname "$f")"
       cp "$f" "$ENGINE_DEST/$f"
@@ -48,7 +58,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleName</key><string>Orchestrator</string>
   <key>CFBundleDisplayName</key><string>Orchestrator</string>
-  <key>CFBundleIdentifier</key><string>com.pchordia.orchestrator.gui</string>
+  <key>CFBundleIdentifier</key><string>com.orchestrator.gui</string>
   <key>CFBundleVersion</key><string>1.0</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>

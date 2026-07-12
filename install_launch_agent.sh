@@ -11,11 +11,11 @@
 # ============================================================================
 set -uo pipefail
 
-LABEL="com.pchordia.autonomous-orchestrator"
+LABEL="${ORCH_LAUNCH_LABEL:-com.orchestrator.autonomous}"
 # Derive the engine from this script's location. Project output goes to the
-# shared factory workspace below.
+# workspace below (ORCH_ROOT env wins, else a portable home-relative default).
 ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="/Users/pchordia/Documents/iOS-App-Factory"
+ROOT="${ORCH_ROOT:-$HOME/Documents/iOS-App-Factory}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 INTERVAL="${INTERVAL:-1800}"
 
