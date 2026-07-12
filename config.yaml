@@ -54,11 +54,11 @@ models:
   # Curated ids live in local_models.json next to the engine (e.g.
   # "qwen3-coder:30b", "devstral:24b", "qwen2.5-coder:7b"). Pull one first
   # with `ollama pull <id>`, then enable agents.ollama_enabled below.
-  ollama: "glm-5.2:latest"
+  ollama: "glm4:9b"
 
   # Optional local participant roster (comma- or semicolon-separated). Each
   # entry becomes a distinct local participant: local:qwen3-coder:30b,
-  # local:glm-5.2:latest, etc. Keep this enabled if you want 6-7+ total bots.
+  # local:glm4:9b, etc. Keep this enabled if you want 6-7+ total bots.
   # Coder-tier models first: they win the participant slots once pulled, so
   # code review/build fallbacks land on a real coding model (14B/16B) instead
   # of a 3-4B generalist. 48GB RAM handles both coders resident at once.

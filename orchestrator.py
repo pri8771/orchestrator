@@ -1146,10 +1146,13 @@ def _bump_fallback_count(cfg, agent):
         app_dir = cfg.get("_app_dir")
         if st is None or not app_dir:
             return
-        counts = st.setdefault("fallback_counts", {})
-        key = str(agent)
-        counts[key] = int(counts.get(key, 0) or 0) + 1
-        save_state(app_dir, st)
+        # Hold the state lock across the read-modify-write so parallel build
+        # workers bumping different agents don't lose each other's increments.
+        with _STATE_LOCK:
+            counts = st.setdefault("fallback_counts", {})
+            key = str(agent)
+            counts[key] = int(counts.get(key, 0) or 0) + 1
+            save_state(app_dir, st)
     except Exception:  # noqa: BLE001 - a badge must never take a run down
         pass
 
@@ -2168,14 +2171,34 @@ def derive_run_status(state):
     return "running"
 
 
+# Guards every save_state mutation+write. During build_coordination the main
+# thread and several parallel build-worker threads share one `state` dict and
+# one agent_state.json (workers reach save_state via _bump_fallback_count), so
+# an unsynchronized read-modify-write loses updates and two writers racing on the
+# same temp file corrupt it. Reentrant so _bump_fallback_count can hold it across
+# its own save_state call. One global lock is fine — saves are small and rare.
+_STATE_LOCK = threading.RLock()
+
+
 def save_state(app_dir, state):
-    state["runner_pid"] = os.getpid()
-    state["last_processed"] = now_str()
-    state["status"] = derive_run_status(state)
-    tmp = state_path(app_dir) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(state, fh, indent=2)
-    os.replace(tmp, state_path(app_dir))
+    with _STATE_LOCK:
+        state["runner_pid"] = os.getpid()
+        state["last_processed"] = now_str()
+        state["status"] = derive_run_status(state)
+        # Per-writer temp name so concurrent savers never clobber one shared
+        # ".tmp" mid-write; the os.replace onto the real path stays atomic.
+        tmp = "%s.%d.%x.tmp" % (state_path(app_dir), os.getpid(),
+                                threading.get_ident())
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(state, fh, indent=2)
+            os.replace(tmp, state_path(app_dir))
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def sha256_text(text):
@@ -2457,24 +2480,26 @@ QUALITY_FAIL_RE = re.compile(r"QUALITY:\s*FAIL", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 # Audit findings: parse agent-emitted finding-json blocks, dedupe, rank, render.
 # ---------------------------------------------------------------------------
-_FIND_RE = re.compile(r"```finding-json\s*(\{.*?\})\s*```", re.DOTALL)
 SEV_RANK = {"Critical": 4, "High": 3, "Med": 2, "Low": 1}
 _CONF_W = {"high": 1.0, "medium": 0.6, "low": 0.3}
 _CAT_ORDER = {"security": 0, "bug": 1, "update": 2}
 _CAT_PREFIX = {"security": "SEC", "bug": "BUG", "update": "UPD"}
+# Cosmetic only: strip finding-json fences out of a human-facing summary blob.
+# Parsing goes through schemas.extract_structured_blocks; this just deletes the
+# fenced regions (lazy-to-first-close is correct for removal).
+_FIND_STRIP_RE = re.compile(r"```finding-json\b.*?```", re.DOTALL)
 
 
 def parse_finding_blocks(text):
     """Extract every ```finding-json``` block from text; normalize so malformed
-    agent output never crashes the render."""
+    agent output never crashes the render.
+
+    Uses schemas.extract_structured_blocks — a lazy ```finding-json\\s*(\\{.*?\\})```
+    regex (the old approach) can't match array/multi-object bodies and swallows
+    text across an unclosed fence, silently dropping real findings. The shared
+    extractor scans fence-to-fence and recovers from truncated blocks."""
     out = []
-    for m in _FIND_RE.finditer(text or ""):
-        try:
-            d = json.loads(m.group(1))
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(d, dict):
-            continue
+    for d in schemalib.extract_structured_blocks(text or "", "finding-json"):
         sev = str(d.get("severity", "Med")).strip().title()
         sev = {"Medium": "Med", "Moderate": "Med", "Info": "Low",
                "Informational": "Low", "Critical": "Critical", "High": "High",
@@ -2592,10 +2617,10 @@ def enabled_agents(cfg):
     a model exists in configuration. A roster may list multiple local models:
 
       - models.ollama: "qwen2.5-coder:7b" (legacy single model)
-      - models.ollama_roster: "glm-5.2:latest, qwen3.7:latest"
+      - models.ollama_roster: "glm4:9b, qwen3:14b"
 
     When a roster exists, each entry becomes an explicit local identity,
-    e.g. "local:glm5.2:latest". If no roster exists, legacy "ollama"
+    e.g. "local:glm4:9b". If no roster exists, legacy "ollama"
     (single identity) is used for backward compatibility.
 
     Sprint/time-budgeted workflows drop local participants unless
@@ -2749,13 +2774,21 @@ def build_worker_roster(cfg, active):
     lane. With only ONE installed, replicate it into `build_parallel_workers`
     concurrent workers (e.g. three Codex workers) so the build is still parallel
     and fast today. With none installed, return the enabled agents unchanged so
-    call_agent surfaces a clear error."""
+    call_agent surfaces a clear error.
+
+    Either way the roster covers EVERY build lane: the planner is told all of
+    BUILD_LANE_IDS are valid owner_lane values, so with fewer workers than lanes
+    a lane like polish_resilience would own no worker and its tasks.json items
+    would be shown to nobody and silently never built. Extra slots beyond the
+    distinct CLIs round-robin the available CLIs."""
     target = int(cget(cfg, "runtime.build_parallel_workers", 3) or 3)
+    n_lanes = len(BUILD_LANE_IDS)
     avail = [a for a in ordered_agents(active) if _agent_available(a)]
     if len(avail) >= 2:
-        agents = avail
+        n = max(len(avail), n_lanes)
+        agents = [avail[i % len(avail)] for i in range(n)]
     elif len(avail) == 1:
-        agents = [avail[0]] * max(1, target)
+        agents = [avail[0]] * max(1, target, n_lanes)
     else:
         agents = ordered_agents(active) or list(active)
 
@@ -2994,8 +3027,24 @@ def fix_ios_signing(build_dir, team="", style="Automatic", bundle_prefix=""):
         text = re.sub(r"CODE_SIGN_STYLE\s*=\s*Manual\s*;",
                       "CODE_SIGN_STYLE = %s;" % style, text)
         if team:
-            text = re.sub(r'DEVELOPMENT_TEAM\s*=\s*(""|"")\s*;',
-                          "DEVELOPMENT_TEAM = %s;" % team, text)
+            team_val = team.strip()
+            # Xcode writes team IDs bare (alnum); quote anything else so the
+            # pbxproj stays valid.
+            repl = team_val if re.fullmatch(r"[A-Za-z0-9]+", team_val) \
+                else '"%s"' % team_val.replace('"', "")
+            team_line = "DEVELOPMENT_TEAM = %s;" % repl
+            # Point every existing assignment at the team — the old
+            # `(""|"")` alternation was two identical dead branches that only
+            # matched an empty "" value, so a stale or bare team id slipped
+            # through. `[^;]*` covers empty, quoted, and bare-id forms.
+            text = re.sub(r'DEVELOPMENT_TEAM\s*=\s*[^;]*;', team_line, text)
+            # If the key is absent entirely (the common case for generated
+            # projects — the old regex left these unsigned), add it to each
+            # target that declares a bundle id.
+            if "DEVELOPMENT_TEAM" not in text:
+                text = re.sub(
+                    r'(PRODUCT_BUNDLE_IDENTIFIER\s*=\s*[^;]*;)',
+                    lambda m: m.group(1) + "\n\t\t\t\t" + team_line, text)
         if bundle_prefix:
             text = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*com\.local\.',
                           "PRODUCT_BUNDLE_IDENTIFIER = %s." % bundle_prefix.rstrip("."),
@@ -4179,7 +4228,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         rep_dir = os.path.join(app_dir, "report")
         os.makedirs(rep_dir, exist_ok=True)
         agents = ", ".join(DISPLAY[a] for a in active)
-        summary = _FIND_RE.sub("", final_output or "").strip()[:800]
+        summary = _FIND_STRIP_RE.sub("", final_output or "").strip()[:800]
         rendered = render_audit_report(findings, app, cfg.get("_target_path"),
                                        agents=agents, summary=summary)
         try:

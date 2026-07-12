@@ -54,5 +54,46 @@ class TestSchemePicking(unittest.TestCase):
         self.assertIsNone(verify._pick_scheme([], "/x/App.xcodeproj"))
 
 
+class TestDetectStartInjection(unittest.TestCase):
+    """A generated server file's name is interpolated into a `/bin/sh -lc`
+    command; a crafted filename must not be able to inject shell."""
+
+    def _write(self, d, name, body):
+        path = os.path.join(d, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    def test_malicious_fastapi_filename_is_skipped(self):
+        d = tempfile.mkdtemp()
+        # File name ends with "main.py" (so _find matches it) but embeds shell.
+        self._write(d, "evil;touch pwned main.py", "app = FastAPI()\n")
+        start, cwd, port = verify._detect_start(d, 8000)
+        # mod "evil;touch pwned main" is not a Python identifier -> skipped.
+        self.assertIsNone(start)
+        self.assertFalse(os.path.exists(os.path.join(d, "pwned")))
+
+    def test_normal_fastapi_filename_detected(self):
+        d = tempfile.mkdtemp()
+        self._write(d, "main.py", "from fastapi import FastAPI\napp = FastAPI()\n")
+        start, cwd, port = verify._detect_start(d, 8000)
+        self.assertIsNotNone(start)
+        self.assertIn("main:app", start)
+        self.assertNotIn(";", start)
+
+    def test_flask_filename_is_shell_quoted(self):
+        d = tempfile.mkdtemp()
+        self._write(d, "weird name app.py", "app = Flask(__name__)\n")
+        start, cwd, port = verify._detect_start(d, 8000)
+        self.assertIsNotNone(start)
+        # The space-bearing filename must be quoted as a single shell token.
+        self.assertIn(shlex_quote("weird name app.py"), start)
+
+
+def shlex_quote(s):
+    import shlex
+    return shlex.quote(s)
+
+
 if __name__ == "__main__":
     unittest.main()

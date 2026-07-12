@@ -20,6 +20,7 @@ separate deterministic pass (fix_ios_signing in orchestrator.py).
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -255,11 +256,20 @@ def _detect_start(build_dir, port):
             cwd = os.path.dirname(hit)
             mod = os.path.basename(hit)[:-3]
             if "FastAPI(" in src or "fastapi" in src.lower():
+                # `mod` is interpolated into a command later run via `/bin/sh
+                # -lc`, so an agent-authored file named e.g. `x;whoami main.py`
+                # would inject shell. A uvicorn import target must be a valid
+                # Python identifier anyway; reject anything else and fall
+                # through to the compile/import check.
+                if not mod.isidentifier():
+                    continue
                 if shutil.which("uvicorn"):
                     return "uvicorn %s:app --host 127.0.0.1 --port %d" % (mod, port), cwd, port
                 return "python3 -m uvicorn %s:app --host 127.0.0.1 --port %d" % (mod, port), cwd, port
             if "Flask(" in src:
-                return "python3 %s" % os.path.basename(hit), cwd, port
+                # Same shell exposure — quote the filename so a crafted name
+                # can't break out of the `python3 <file>` invocation.
+                return "python3 %s" % shlex.quote(os.path.basename(hit)), cwd, port
     return None, None, None
 
 

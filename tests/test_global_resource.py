@@ -1,4 +1,5 @@
-import os, tempfile, unittest
+import os, sqlite3, tempfile, unittest
+import unittest.mock
 import global_resource as gr
 
 
@@ -36,6 +37,35 @@ class TestWorkerBroker(unittest.TestCase):
     def test_fail_open_on_bad_path(self):
         # an unwritable path -> claim fails open (returns True), never raises
         self.assertTrue(gr.try_claim("p", "cli_remote", cap=0, pid=1, db_path="/proc/nonexistent/x.db"))
+
+    def test_lock_contention_fails_closed_not_open(self):
+        # Persistent write-lock contention must NOT be mistaken for broker
+        # unavailability: if it failed open, the machine-wide cap would be
+        # silently exceeded exactly under the concurrency it exists to bound.
+        locked = sqlite3.OperationalError("database is locked")
+        with unittest.mock.patch.object(gr, "_claim_once", side_effect=locked), \
+                unittest.mock.patch.object(gr.time, "sleep", lambda *_: None):
+            self.assertFalse(
+                gr.try_claim("p", "cli_remote", cap=5, pid=os.getpid(),
+                             db_path=self.db))
+
+    def test_transient_contention_then_success(self):
+        # One lock blip, then the claim succeeds on retry (cap not yet full).
+        real = gr._claim_once
+        calls = {"n": 0}
+
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real(*args, **kwargs)
+
+        with unittest.mock.patch.object(gr, "_claim_once", side_effect=flaky), \
+                unittest.mock.patch.object(gr.time, "sleep", lambda *_: None):
+            self.assertTrue(
+                gr.try_claim("p", "cli_remote", cap=5, pid=os.getpid(),
+                             db_path=self.db))
+        self.assertEqual(calls["n"], 2)
 
 
 if __name__ == "__main__":

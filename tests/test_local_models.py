@@ -20,16 +20,21 @@ class TestRegistry(unittest.TestCase):
         reg = lm.load_registry(HERE)
         self.assertEqual(reg["schema_version"], 1)
         ids = [m["id"] for m in reg["models"]]
-        self.assertEqual(ids, ["qwen3-coder:30b", "glm-5.2:latest", "qwen3-max:latest",
-                               "kimi-k2-thinking:latest", "kimi-k2.6:latest", "qwen3.7:latest",
+        self.assertEqual(ids, ["qwen3-coder:30b", "glm4:9b", "qwen3:32b",
+                               "qwq:32b", "qwen3:8b", "qwen3:14b",
                                "qwen2.5-coder:7b", "devstral:24b", "deepseek-r1:8b",
-                               "deepseek-r1:14b", "deepseek-v4-pro:latest",
+                               "deepseek-r1:14b", "deepseek-r1:32b",
                                "qwen2.5vl:3b", "gemma3:12b", "gemma3:4b",
                                "phi4:14b", "llama3.2:3b", "mistral:7b",
                                "qwen2.5-coder:14b", "deepseek-coder-v2:16b"])
+        # Registry tags must be real ollama pull targets (a fictional tag like
+        # glm-5.2:latest fails hard at `ollama pull`). Guard the naming shapes
+        # that previously slipped through.
+        for bad in ("glm-5.2", "qwen3-max", "qwen3.7", "kimi-k2", "deepseek-v4"):
+            self.assertFalse(any(bad in i for i in ids), "fictional tag %r" % bad)
         # Licenses that back a commercial_use=true claim: permissive OSS plus
         # the vendor terms that explicitly permit commercial use.
-        commercial_ok_licenses = ("MIT", "Apache-2.0", "Gemma", "Llama")
+        commercial_ok_licenses = ("MIT", "Apache-2.0", "Gemma", "Llama", "GLM")
         for m in reg["models"]:
             self.assertEqual(m["runtime"], "ollama")
             self.assertEqual(m["pull_command"], ["ollama", "pull", m["id"]])
@@ -41,6 +46,9 @@ class TestRegistry(unittest.TestCase):
                 )
             self.assertTrue(m["license_url"].startswith("https://"))
             self.assertGreaterEqual(m["min_ram_gb"], 8)
+            # context_tokens is normalized to be present on every entry.
+            self.assertIsInstance(m.get("context_tokens"), int)
+            self.assertGreater(m["context_tokens"], 0)
             self.assertTrue(m["roles"])
 
     def test_missing_file_yields_empty_registry(self):
@@ -127,7 +135,7 @@ class TestRosterGating(unittest.TestCase):
 
     def test_can_skip_uninstalled_roster_models(self):
         c = self.cfg()
-        c["models"]["ollama_roster"] = "qwen2.5-coder:7b,glm-5.2:latest,gemma3:4b"
+        c["models"]["ollama_roster"] = "qwen2.5-coder:7b,glm4:9b,gemma3:4b"
         c["runtime"]["skip_uninstalled_local_models"] = True
         c["_installed_ollama_models"] = ["gemma3:4b"]
         self.assertEqual(orch.enabled_agents(c),
@@ -136,11 +144,11 @@ class TestRosterGating(unittest.TestCase):
 
     def test_uses_resolved_roster_when_present(self):
         c = self.cfg()
-        c["_resolved"] = {"ollama_roster": ["glm-5.2:latest", "kimi-k2-thinking:latest"]}
+        c["_resolved"] = {"ollama_roster": ["glm4:9b", "qwq:32b"]}
         c["models"]["ollama_roster"] = "qwen3-coder:30b"
         self.assertEqual(orch.enabled_agents(c),
                          ["codex", "claude", "gemini",
-                          "local:glm-5.2:latest", "local:kimi-k2-thinking:latest"])
+                          "local:glm4:9b", "local:qwq:32b"])
 
     def test_enabled_without_model_is_excluded(self):
         c = self.cfg()

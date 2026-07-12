@@ -8,10 +8,13 @@ so claim/release are serialized across processes. Two independently-capped resou
 classes: `cli_remote` (network CLI turns) and `local_model` (resident Ollama
 generations, which are far heavier per-slot).
 
-EVERY operation is fail-open: if the DB can't be opened or a query errors, claims
-succeed and releases are no-ops, so the broker can never block or crash an agent
-turn — it only throttles when it's healthy. Dead-PID rows are reaped on each claim,
-so a crashed process never leaks slots.
+Failure handling: if the DB can't be opened or a query errors unexpectedly,
+claims fail OPEN (succeed) and releases are no-ops, so the broker can never crash
+an agent turn. The one exception is lock contention — `BEGIN IMMEDIATE` timing
+out because other processes hold the write lock is EXACTLY when the cap matters,
+so a busy DB is retried and, if still contended, the claim fails CLOSED rather
+than silently letting the cap be exceeded. Dead-PID rows are reaped on each
+claim, so a crashed process never leaks slots.
 """
 
 import os
@@ -19,6 +22,13 @@ import sqlite3
 import time
 
 DEFAULT_DB = os.path.expanduser("~/.orchestrator_global/workers.db")
+
+# Lock-contention retry policy for try_claim. A short per-attempt busy timeout
+# plus a few retries bounds worst-case latency while still riding out the normal
+# write-lock contention of many projects claiming at once.
+_CLAIM_BUSY_TIMEOUT_MS = 2000
+_CLAIM_RETRIES = 5
+_CLAIM_BACKOFF = 0.1
 
 
 def _conn(db_path):
@@ -48,28 +58,62 @@ def _reap(conn):
             conn.execute("DELETE FROM worker_slots WHERE pid=?", (pid,))
 
 
+def _claim_once(conn, project_id, resource_class, cap, pid):
+    """One claim transaction. Returns True/False; may raise on lock contention."""
+    conn.execute("BEGIN IMMEDIATE")
+    _reap(conn)
+    n = conn.execute("SELECT COUNT(*) FROM worker_slots WHERE resource_class=?",
+                     (resource_class,)).fetchone()[0]
+    if n >= cap:
+        conn.rollback()
+        return False
+    conn.execute("INSERT INTO worker_slots VALUES (?,?,?,?)",
+                 (pid, project_id, resource_class, time.time()))
+    conn.commit()
+    return True
+
+
 def try_claim(project_id, resource_class, cap, pid=None, db_path=DEFAULT_DB):
-    """Try to take one slot. Returns True if taken (or if the broker is
-    unavailable — fail open), False only if the cap is genuinely full."""
+    """Try to take one slot. Returns True if taken, False if the cap is full.
+
+    Fails OPEN (True) only when the broker is genuinely unavailable (can't open
+    the DB, unexpected error). Lock contention is NOT treated as unavailability:
+    the whole point of the cap is to hold under concurrency, so a busy DB is
+    retried and, if still contended, the claim fails CLOSED (False) — the caller
+    (claim_slot) then polls, rather than the cap being silently exceeded."""
     pid = pid or os.getpid()
     try:
         conn = _conn(db_path)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            _reap(conn)
-            n = conn.execute("SELECT COUNT(*) FROM worker_slots WHERE resource_class=?",
-                             (resource_class,)).fetchone()[0]
-            if n >= cap:
-                conn.rollback()
-                return False
-            conn.execute("INSERT INTO worker_slots VALUES (?,?,?,?)",
-                         (pid, project_id, resource_class, time.time()))
-            conn.commit()
-            return True
-        finally:
-            conn.close()
     except Exception:
-        return True   # fail open
+        return True   # broker unavailable — fail open
+    try:
+        # Shorter busy timeout than the default connection so each attempt is
+        # responsive; retries cover the rest.
+        try:
+            conn.execute("PRAGMA busy_timeout=%d" % _CLAIM_BUSY_TIMEOUT_MS)
+        except Exception:
+            pass
+        for attempt in range(_CLAIM_RETRIES):
+            try:
+                return _claim_once(conn, project_id, resource_class, cap, pid)
+            except sqlite3.OperationalError:
+                # "database is locked/busy": other claimers hold the write lock.
+                # Roll back and retry so the cap is still enforced.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt < _CLAIM_RETRIES - 1:
+                    time.sleep(_CLAIM_BACKOFF * (attempt + 1))
+        # Still contended after retries: fail closed so the cap holds.
+        return False
+    except Exception:
+        return True   # unexpected broker error — fail open
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def release(resource_class, pid=None, db_path=DEFAULT_DB):

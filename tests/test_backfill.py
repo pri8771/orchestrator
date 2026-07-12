@@ -139,6 +139,40 @@ class TestRunBackfill(_Base):
         self.assertEqual(self.state["completed_phases"], [])
         self.assertFalse(self._marker_exists())
 
+    def test_empty_reply_does_not_complete_phase(self):
+        # A blank reply must be treated like NOT_COVERED, not blessed as a doc.
+        for empty in ("", "   ", "\n\t"):
+            self._arm()
+            state = {"completed_phases": [], "phase_outputs": {}}
+            fake = _FakeAgent(replies={"initial_discussion": empty})
+            backfill.run_backfill({}, "tides", self.dir, PHASES, state, fake)
+            self.assertEqual(state["completed_phases"], [], repr(empty))
+            self.assertFalse(os.path.exists(
+                os.path.join(self.dir, "initial_discussion")), repr(empty))
+            self.assertFalse(self._marker_exists())
+
+    def test_requires_verification_and_reads_target_are_live_only(self):
+        for extra in ({"requires_verification": True}, {"reads_target": True}):
+            phase = _phase("some_phase")
+            phase.update(extra)
+            self._arm()
+            state = {"completed_phases": [], "phase_outputs": {}}
+            fake = _FakeAgent()
+            backfill.run_backfill({}, "tides", self.dir, [phase], state, fake)
+            self.assertEqual(fake.calls, [], str(extra))
+            self.assertEqual(state["completed_phases"], [])
+
+    def test_path_traversal_folder_is_refused(self):
+        outside = os.path.join(os.path.dirname(self.dir), "escaped.md")
+        phase = _phase("evil")
+        phase["folder"] = "../.."
+        phase["file"] = "escaped.md"
+        fake = _FakeAgent()
+        backfill.run_backfill({}, "tides", self.dir, [phase], self.state, fake)
+        self.assertEqual(self.state["completed_phases"], [])
+        self.assertFalse(os.path.exists(outside))
+        self.assertFalse(self._marker_exists())
+
     def test_refuses_writes_verify_and_qa_phases_first(self):
         for phase in (_phase("build_coordination", writes=True),
                       _phase("build_verification",

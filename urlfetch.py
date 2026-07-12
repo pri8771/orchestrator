@@ -28,8 +28,10 @@ Wired in orchestrator.py:
 """
 
 import datetime as _dt
+import ipaddress
 import os
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -172,29 +174,106 @@ def _looks_like_html(content_type, body):
 
 
 # ---------------------------------------------------------------------------
+# SSRF protection
+#
+# URLs here come straight from a user's prompt, and the engine (unlike the agent
+# CLIs) has network access, so an unguarded fetch is a classic SSRF: a link to
+# http://169.254.169.254/… reaches cloud metadata, http://127.0.0.1:<port>/ hits
+# internal admin services, and RFC1918 hosts reach the LAN. We resolve the host
+# and refuse if ANY resolved address is loopback/private/link-local/reserved,
+# and we re-validate every redirect hop (a public URL can 302 to an internal
+# one). `allow_private_hosts=True` opts out — only tests that hit a local
+# http.server use it; production always resolves against the block-list.
+# ---------------------------------------------------------------------------
+def _ip_is_blocked(ip_str):
+    """True when `ip_str` is a non-public address a prompt URL must never reach."""
+    try:
+        ip = ipaddress.ip_address((ip_str or "").split("%")[0])  # drop scope id
+    except ValueError:
+        return True  # unparseable — refuse rather than guess
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:  # e.g. ::ffff:127.0.0.1 must be judged as 127.0.0.1
+        ip = mapped
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+
+
+def _host_is_safe(host):
+    """Resolve `host` and return (safe, reason). Unsafe when it doesn't resolve
+    or ANY resolved address is blocked (so a name that points at 127.0.0.1 or a
+    metadata IP is caught, not just literal-IP URLs). Never raises."""
+    if not host:
+        return False, "empty host"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, socket.error, UnicodeError, ValueError):
+        return False, "could not resolve host %r" % host
+    if not infos:
+        return False, "host %r resolved to no addresses" % host
+    for info in infos:
+        ip_str = info[4][0]
+        if _ip_is_blocked(ip_str):
+            return False, ("host %r resolves to a non-public address (%s)"
+                           % (host, ip_str))
+    return True, ""
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follows redirects only to http(s) URLs whose host passes _host_is_safe,
+    closing the "public URL 302s to an internal address" SSRF bypass."""
+
+    def __init__(self, allow_private=False):
+        self.allow_private = allow_private
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parts = urllib.parse.urlsplit(newurl)
+        if parts.scheme.lower() not in ("http", "https"):
+            raise urllib.error.URLError(
+                "redirect to non-http(s) scheme blocked: %r" % parts.scheme)
+        if not self.allow_private:
+            safe, reason = _host_is_safe(parts.hostname)
+            if not safe:
+                raise urllib.error.URLError("redirect blocked (%s)" % reason)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _opener_for(allow_private):
+    """An opener whose redirect handler validates every hop."""
+    return urllib.request.build_opener(_SafeRedirectHandler(allow_private))
+
+
+# ---------------------------------------------------------------------------
 # Fetching
 # ---------------------------------------------------------------------------
-def fetch_url(url, timeout=DEFAULT_TIMEOUT, max_bytes=DEFAULT_MAX_BYTES):
+def fetch_url(url, timeout=DEFAULT_TIMEOUT, max_bytes=DEFAULT_MAX_BYTES,
+              allow_private_hosts=False):
     """Fetch one URL and reduce it to readable text.
 
     Returns {"url", "ok", "title", "text", "error"} and NEVER raises: DNS
     failures, timeouts, 4xx/5xx, TLS errors, binary garbage — everything
-    degrades to ok=False plus a short error string. Redirects are followed
-    (urllib's default opener). Only http/https is allowed, so a prompt can
-    never make the engine read file:// paths."""
+    degrades to ok=False plus a short error string. Only http/https is allowed
+    (no file://), and by default the host must resolve to a public address —
+    loopback/private/link-local/reserved targets (and redirects to them) are
+    refused as SSRF. Redirects to safe hosts are followed."""
     result = {"url": url, "ok": False, "title": "", "text": "", "error": ""}
     try:
-        scheme = urllib.parse.urlsplit(url).scheme.lower()
+        parts = urllib.parse.urlsplit(url)
+        scheme = parts.scheme.lower()
         if scheme not in ("http", "https"):
             result["error"] = "unsupported URL scheme: %r" % scheme
             return result
+        if not allow_private_hosts:
+            safe, reason = _host_is_safe(parts.hostname)
+            if not safe:
+                result["error"] = "blocked host: %s" % reason
+                return result
         req = urllib.request.Request(url, headers={
             "User-Agent": USER_AGENT,
             "Accept": ("text/html,application/xhtml+xml,application/xml;"
                        "q=0.9,*/*;q=0.8"),
             "Accept-Language": "en-US,en;q=0.9",
         })
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _opener_for(allow_private_hosts).open(req, timeout=timeout) as resp:
             raw = resp.read(max_bytes)
             content_type = resp.headers.get("Content-Type", "") or ""
             charset = resp.headers.get_content_charset() or "utf-8"
@@ -253,16 +332,26 @@ def _write_cache_file(cache_dir, res):
 
 
 def fetch_all(prompt_text, cache_dir, timeout=DEFAULT_TIMEOUT,
-              max_bytes=DEFAULT_MAX_BYTES, fetcher=None):
+              max_bytes=DEFAULT_MAX_BYTES, fetcher=None,
+              allow_private_hosts=False):
     """Fetch every URL in `prompt_text` (extract_urls rules), write one
     markdown cache file per URL under `cache_dir`, and return the list of
-    result dicts. Never raises; a broken disk just skips the cache write."""
+    result dicts. Never raises; a broken disk just skips the cache write.
+
+    `allow_private_hosts` is forwarded to the default fetcher only (an injected
+    `fetcher` keeps its own signature); production leaves it False so SSRF
+    targets are refused."""
     results = []
     try:
         urls = extract_urls(prompt_text)
         if not urls:
             return results
-        fetch = fetcher or fetch_url
+        if fetcher is None:
+            def fetch(u, timeout=DEFAULT_TIMEOUT, max_bytes=DEFAULT_MAX_BYTES):
+                return fetch_url(u, timeout=timeout, max_bytes=max_bytes,
+                                 allow_private_hosts=allow_private_hosts)
+        else:
+            fetch = fetcher
         try:
             os.makedirs(cache_dir, exist_ok=True)
         except OSError:

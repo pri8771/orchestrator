@@ -140,7 +140,8 @@ class TestHtmlToText(unittest.TestCase):
 
 class TestFetchUrl(_LocalServerMixin):
     def test_success_extracts_title_and_text(self):
-        res = urlfetch.fetch_url(self.base + "/page", timeout=10)
+        res = urlfetch.fetch_url(self.base + "/page", timeout=10,
+                                 allow_private_hosts=True)
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["url"], self.base + "/page")
         self.assertEqual(res["title"], "Ordinal — Home inventory for humans")
@@ -149,21 +150,23 @@ class TestFetchUrl(_LocalServerMixin):
         self.assertEqual(res["error"], "")
 
     def test_follows_redirects(self):
-        res = urlfetch.fetch_url(self.base + "/redirect", timeout=10)
+        res = urlfetch.fetch_url(self.base + "/redirect", timeout=10,
+                                 allow_private_hosts=True)
         self.assertTrue(res["ok"], res)
         self.assertIn("Know what you own", res["text"])
 
     def test_http_error_is_ok_false_not_raise(self):
-        res = urlfetch.fetch_url(self.base + "/missing", timeout=10)
+        res = urlfetch.fetch_url(self.base + "/missing", timeout=10,
+                                 allow_private_hosts=True)
         self.assertFalse(res["ok"])
         self.assertIn("404", res["error"])
 
     def test_unroutable_domain_is_ok_false_not_raise(self):
-        with unittest.mock.patch("urllib.request.urlopen",
-                                 side_effect=urllib.error.URLError("no route to host")):
-            res = urlfetch.fetch_url("https://definitely-not-routable.invalid/")
+        # `.invalid` is guaranteed non-resolvable (RFC 6761); the SSRF host
+        # check refuses it up front without any network round-trip.
+        res = urlfetch.fetch_url("https://definitely-not-routable.invalid/")
         self.assertFalse(res["ok"])
-        self.assertIn("no route", res["error"])
+        self.assertTrue(res["error"])
         self.assertEqual(res["text"], "")
 
     def test_malformed_url_never_raises(self):
@@ -177,6 +180,62 @@ class TestFetchUrl(_LocalServerMixin):
         self.assertIn("scheme", res["error"])
 
 
+class TestSSRFProtection(_LocalServerMixin):
+    """The engine has network access and fetches URLs straight from a prompt, so
+    loopback/private/link-local/metadata targets — and redirects to them — must
+    be refused unless a caller explicitly opts into local hosts."""
+
+    def test_loopback_blocked_by_default(self):
+        res = urlfetch.fetch_url(self.base + "/page", timeout=10)
+        self.assertFalse(res["ok"])
+        self.assertIn("blocked host", res["error"])
+
+    def test_cloud_metadata_ip_blocked(self):
+        res = urlfetch.fetch_url("http://169.254.169.254/latest/meta-data/")
+        self.assertFalse(res["ok"])
+        self.assertIn("blocked host", res["error"])
+
+    def test_private_rfc1918_ip_blocked(self):
+        for url in ("http://10.0.0.1/", "http://192.168.1.1/",
+                    "http://172.16.0.1/", "http://127.0.0.1:8080/admin"):
+            res = urlfetch.fetch_url(url)
+            self.assertFalse(res["ok"], url)
+            self.assertIn("blocked host", res["error"], url)
+
+    def test_ipv4_mapped_ipv6_loopback_blocked(self):
+        self.assertTrue(urlfetch._ip_is_blocked("::ffff:127.0.0.1"))
+        self.assertTrue(urlfetch._ip_is_blocked("::1"))
+        self.assertTrue(urlfetch._ip_is_blocked("0.0.0.0"))
+
+    def test_public_ip_not_blocked(self):
+        self.assertFalse(urlfetch._ip_is_blocked("93.184.216.34"))  # example.com
+        self.assertFalse(urlfetch._ip_is_blocked("8.8.8.8"))
+
+    def test_redirect_handler_refuses_internal_target(self):
+        # The redirect handler is what closes the "public URL 302s to an
+        # internal address" bypass; exercise it directly since a local test
+        # server is itself loopback and would be blocked at the initial hop.
+        handler = urlfetch._SafeRedirectHandler(allow_private=False)
+        req = urllib.request.Request("https://example.com/")
+        for target in ("http://169.254.169.254/latest/", "http://127.0.0.1/x",
+                       "file:///etc/passwd"):
+            with self.assertRaises(urllib.error.URLError, msg=target):
+                handler.redirect_request(req, None, 302, "Found", {}, target)
+
+    def test_redirect_handler_allows_public_target(self):
+        handler = urlfetch._SafeRedirectHandler(allow_private=False)
+        req = urllib.request.Request("https://example.com/")
+        out = handler.redirect_request(req, None, 302, "Found", {},
+                                       "https://example.com/next")
+        self.assertIsNotNone(out)
+
+    def test_allow_private_opt_in_permits_local_redirect(self):
+        # With the opt-in flag, a local server that redirects is followed.
+        res = urlfetch.fetch_url(self.base + "/redirect", timeout=10,
+                                 allow_private_hosts=True)
+        self.assertTrue(res["ok"], res)
+
+
 class TestFetchAllAndCache(_LocalServerMixin):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="orch_urlfetch_")
@@ -188,7 +247,8 @@ class TestFetchAllAndCache(_LocalServerMixin):
     def test_fetch_all_writes_cache_files_and_returns_results(self):
         prompt = ("Build something like this: %s/page and this broken one "
                   "%s/missing" % (self.base, self.base))
-        results = urlfetch.fetch_all(prompt, self.cache, timeout=10)
+        results = urlfetch.fetch_all(prompt, self.cache, timeout=10,
+                                     allow_private_hosts=True)
         self.assertEqual(len(results), 2)
         self.assertTrue(results[0]["ok"])
         self.assertFalse(results[1]["ok"])
@@ -216,7 +276,8 @@ class TestFetchAllAndCache(_LocalServerMixin):
         with open(blocker, "w", encoding="utf-8") as fh:
             fh.write("a file where a dir should go")
         results = urlfetch.fetch_all("see %s/page" % self.base,
-                                     os.path.join(blocker, "sub"), timeout=10)
+                                     os.path.join(blocker, "sub"), timeout=10,
+                                     allow_private_hosts=True)
         self.assertEqual(len(results), 1)   # fetch still happened
         self.assertTrue(results[0]["ok"])
 
@@ -232,7 +293,7 @@ class TestFetchAllAndCache(_LocalServerMixin):
 
     def test_load_cached_roundtrip(self):
         urlfetch.fetch_all("read %s/page and %s/missing" % (self.base, self.base),
-                           self.cache, timeout=10)
+                           self.cache, timeout=10, allow_private_hosts=True)
         cached = urlfetch.load_cached(self.cache)
         self.assertEqual(len(cached), 2)
         by_url = {r["url"]: r for r in cached}
@@ -246,7 +307,8 @@ class TestFetchAllAndCache(_LocalServerMixin):
 
     def test_cache_is_fresh_all_ok(self):
         url = self.base + "/page"
-        urlfetch.fetch_all("see %s" % url, self.cache, timeout=10)
+        urlfetch.fetch_all("see %s" % url, self.cache, timeout=10,
+                           allow_private_hosts=True)
         self.assertTrue(urlfetch.cache_is_fresh(self.cache, [url]))
 
     def test_cache_is_fresh_false_when_missing_stale_or_failed(self):
@@ -255,7 +317,7 @@ class TestFetchAllAndCache(_LocalServerMixin):
         # missing dir / missing url
         self.assertFalse(urlfetch.cache_is_fresh(self.cache, [url_ok]))
         urlfetch.fetch_all("see %s and %s" % (url_ok, url_bad), self.cache,
-                           timeout=10)
+                           timeout=10, allow_private_hosts=True)
         # a FAILED entry must force a refetch
         self.assertFalse(urlfetch.cache_is_fresh(self.cache, [url_ok, url_bad]))
         # a stale OK entry must force a refetch
