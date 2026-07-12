@@ -341,12 +341,24 @@ private enum BackgroundConfigLoader {
         return out
     }
 
+    // PATH plus the common install locations a Finder-launched app (which
+    // inherits a minimal PATH) would otherwise miss: Homebrew, /usr/local,
+    // user-local, and the per-tool bins these CLIs ship into (npm global, codex,
+    // bun, cargo). Shared by detectCLIs / ollamaOnPath so both look in one place.
+    static func cliSearchDirs() -> [String] {
+        let home = NSHomeDirectory()
+        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+                     "\(home)/.local/bin", "\(home)/.codex/bin",
+                     "\(home)/.npm-global/bin", "\(home)/.bun/bin",
+                     "\(home)/.cargo/bin"]
+        return (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":").map(String.init) + extra
+    }
+
     // Which agent CLIs are actually invokable on PATH (codex/claude/gemini or agy).
     static func detectCLIs() -> [String: Bool] {
         let fm = FileManager.default
-        let dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map(String.init)
-            + ["\(NSHomeDirectory())/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+        let dirs = cliSearchDirs()
         func has(_ names: [String]) -> Bool {
             for d in dirs { for n in names {
                 let p = (d as NSString).appendingPathComponent(n)
@@ -472,8 +484,15 @@ final class OrchestratorStore: ObservableObject {
     // Run queue: projects waiting to run one at a time (FIFO). advanceQueueIfIdle()
     // launches the next as soon as nothing is running.
     @Published var runQueue: [String] = []
+    // Pause/resume the engine (design §3 toolbar): when paused, queued projects
+    // are NOT auto-launched. In-flight runs are left alone — pause holds the
+    // queue, it doesn't kill work.
+    @Published var enginePaused = false
     // Menu-bar command relay (⌘N/⌘R/⌘L) — ContentView observes and handles.
     @Published var uiCommand: UICommand?
+    // ⌘K command palette overlay (design §3/§8). Commands chosen in it are
+    // dispatched through uiCommand, so there's one command path.
+    @Published var showCommandPalette = false
     private var launchingName: String?      // just-launched, not yet seen as running
     private var launchingAt: Date?
     // Pre-refresh seed must match the engine default (local model OFF) so the
@@ -1367,10 +1386,9 @@ final class OrchestratorStore: ObservableObject {
     }
 
     func ollamaOnPath() -> Bool {
-        let dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map(String.init)
-            + ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "\(NSHomeDirectory())/.local/bin"]
-        return dirs.contains { fm.isExecutableFile(atPath: ($0 as NSString).appendingPathComponent("ollama")) }
+        return OrchestratorStore.cliSearchDirs().contains {
+            fm.isExecutableFile(atPath: ($0 as NSString).appendingPathComponent("ollama"))
+        }
     }
 
     // Open Terminal running a fixed command (install/pull). No user free-text reaches
@@ -2307,10 +2325,17 @@ final class OrchestratorStore: ObservableObject {
             let stale = Date().timeIntervalSince(launchingAt ?? Date()) > 20
             if running || stale { launchingName = nil }
         }
+        // Paused: hold the queue (don't auto-launch the next project).
+        if enginePaused { return }
         if !orchestratorRunning && launchingName == nil, let next = runQueue.first {
             runQueue.removeFirst()
             launchQueued(next)
         }
+    }
+
+    func toggleEnginePaused() {
+        enginePaused.toggle()
+        if !enginePaused { advanceQueueIfIdle() }   // resume: pick up where we left off
     }
 
     func runProject(_ name: String) {

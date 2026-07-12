@@ -1,9 +1,36 @@
 # Top 100 Tasks
 
 Prioritized backlog produced from a full audit of the engine (`*.py`), the SwiftUI GUI
-(`gui/`), the shell scripts, the workflow/config JSON, the docs, and the test suite
-(all 390 tests currently pass). Priorities: **P1** = correctness/security bug,
-**P2** = robustness/portability, **P3** = cleanup/enhancement.
+(`gui/`), the shell scripts, the workflow/config JSON, the docs, and the test suite.
+Priorities: **P1** = correctness/security bug, **P2** = robustness/portability,
+**P3** = cleanup/enhancement.
+
+## Status: all 100 addressed
+
+Completed across eight commits (P1 → P3). The Python engine suite grew from 390 to
+476 tests, green in strict-warnings mode. GUI (SwiftUI) changes were reviewed by hand
+and are gated by the new macOS CI job (`.github/workflows/ci.yml`) — there is no Swift
+toolchain in the authoring environment.
+
+A few items were **resolved as "already correct" or consciously deferred** rather than
+changed, with rationale:
+
+- **#72 (config `rounds:` block):** kept — it is still referenced as a legacy
+  round-count fallback in `process_phase`, so it isn't dead.
+- **#86 (digest traversal caps):** no change — `build_target_digest` already breaks the
+  walk at `tree_max` and char-budgets output, so the traversal is already bounded.
+- **#93 (dedup the two demo scripts):** deferred — `seed_demo.py` and
+  `simulate_stream.py` already carry *different* phase lists, so forcing a shared list
+  would change behavior for marginal benefit. The real bug in that area (non-deterministic
+  `hash()`) was fixed under #88.
+- **#97 (delete the GUI's duplicate loader methods):** deferred — the methods are
+  referenced within a self-contained cluster and deleting ~300 lines of Swift can't be
+  compile-verified here; dead code is benign, a broken build is not.
+- **#99 (queue-FIFO / transcript-reader tests):** partially done — added tests for the
+  now-unified `slugify`; the queue and transcript logic are `@MainActor` + disk I/O and
+  aren't unit-testable without first making `OrchestratorStore` constructible in tests.
+
+---
 
 ## P1 — Critical: security and correctness bugs (1–21)
 

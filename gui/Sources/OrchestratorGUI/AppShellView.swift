@@ -140,6 +140,10 @@ struct AppShellView: View {
             NewAppIntakeSheet { slug in selection = .project(slug) }
                 .environmentObject(store)
         }
+        .sheet(isPresented: Binding(get: { store.showCommandPalette },
+                                    set: { store.showCommandPalette = $0 })) {
+            CommandPaletteView().environmentObject(store)
+        }
         .onChange(of: store.uiCommand) { _, cmd in
             guard let cmd else { return }
             switch cmd {
@@ -193,6 +197,14 @@ struct AppShellView: View {
                 }
                 .help("Stop this run")
             }
+
+            Button { store.toggleEnginePaused() } label: {
+                Label(store.enginePaused ? "Resume Engine" : "Pause Engine",
+                      systemImage: store.enginePaused ? "play.circle" : "pause.circle")
+            }
+            .help(store.enginePaused
+                  ? "Resume auto-launching queued projects"
+                  : "Pause the engine: queued projects won't auto-launch (running work continues)")
 
             Button { showNewApp = true } label: {
                 Label("New App", systemImage: "plus")

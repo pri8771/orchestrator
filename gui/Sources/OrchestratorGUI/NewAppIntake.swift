@@ -53,9 +53,9 @@ struct NewAppIntakeSheet: View {
     // Same slug rule as the factory intake (lowercase, spaces→hyphens,
     // [a-z0-9-] only).
     static func slugify(_ s: String) -> String {
-        String(s.lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-            .filter { ($0.isLetter && $0.isASCII) || ($0.isNumber && $0.isASCII) || $0 == "-" })
+        // Delegate to the store's slugify so folder names are consistent — the
+        // old local version left consecutive hyphens (e.g. "Åpp Ünïq" -> "pp--nq").
+        OrchestratorStore.slugify(s)
     }
 
     // The prompt written when docs are attached and the idea box stays empty.

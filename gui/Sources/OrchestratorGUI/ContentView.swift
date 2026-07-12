@@ -330,6 +330,69 @@ struct ActionErrorBanner: View {
     }
 }
 
+// ⌘K command palette (design §3/§8): a searchable overlay that dispatches the
+// same actions as the menu bar through store.uiCommand.
+struct CommandPaletteView: View {
+    @EnvironmentObject var store: OrchestratorStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private struct Command: Identifiable {
+        let id = UUID()
+        let title: String
+        let shortcut: String
+        let action: UICommand
+    }
+
+    private let commands: [Command] = [
+        Command(title: "New App", shortcut: "⌘N", action: .newChat),
+        Command(title: "Run Selected Project", shortcut: "⌘R", action: .runSelected),
+        Command(title: "Toggle Run Log", shortcut: "⌘L", action: .toggleLog),
+        Command(title: "Toggle Inspector", shortcut: "⌥⌘I", action: .toggleInspector),
+        Command(title: "Find Project", shortcut: "⌘F", action: .focusSearch),
+    ]
+
+    private var filtered: [Command] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty ? commands : commands.filter { $0.title.lowercased().contains(q) }
+    }
+
+    private func run(_ c: Command) {
+        dismiss()
+        store.uiCommand = c.action
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TextField("Type a command…", text: $query)
+                .textFieldStyle(.plain)
+                .font(.title3)
+                .padding(14)
+                .accessibilityLabel("Command palette search")
+            Divider()
+            if filtered.isEmpty {
+                Text("No matching commands")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 80)
+            } else {
+                List(filtered) { c in
+                    Button { run(c) } label: {
+                        HStack {
+                            Text(c.title)
+                            Spacer()
+                            Text(c.shortcut).foregroundStyle(.secondary).font(.callout)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.plain)
+            }
+        }
+        .frame(width: 460, height: 320)
+    }
+}
+
 struct IterateSheet: View {
     @EnvironmentObject var store: OrchestratorStore
     @Environment(\.dismiss) private var dismiss

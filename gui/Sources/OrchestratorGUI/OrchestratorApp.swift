@@ -92,6 +92,8 @@ struct OrchestratorApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New App") { store.uiCommand = .newChat }
                     .keyboardShortcut("n", modifiers: .command)
+                Button("Command Palette") { store.showCommandPalette = true }
+                    .keyboardShortcut("k", modifiers: .command)
             }
             // Native Pro shell: inspector toggle + project search focus.
             CommandGroup(after: .sidebar) {
@@ -155,7 +157,12 @@ struct MenuBarContent: View {
             Divider()
             ForEach(store.projects) { p in
                 let mark = p.running ? "▶︎" : (p.status == .done ? "✓" : (p.status == .aborted ? "✗" : "•"))
+                // Status word for VoiceOver — the glyph alone conveys state by
+                // shape/color, which a screen reader can't announce.
+                let word = p.running ? "running" : (p.status == .done ? "done"
+                    : (p.status == .aborted ? "failed" : "idle"))
                 Text("\(mark)  \(p.name)")
+                    .accessibilityLabel("\(p.name), \(word)")
             }
         }
         Divider()
