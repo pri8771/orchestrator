@@ -336,6 +336,7 @@ struct CommandPaletteView: View {
     @EnvironmentObject var store: OrchestratorStore
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var selection: Command.ID?
     @FocusState private var searchFocused: Bool
 
     private struct Command: Identifiable {
@@ -345,13 +346,19 @@ struct CommandPaletteView: View {
         let action: UICommand
     }
 
-    private let commands: [Command] = [
-        Command(title: "New App", shortcut: "⌘N", action: .newChat),
-        Command(title: "Run Selected Project", shortcut: "⌘R", action: .runSelected),
-        Command(title: "Toggle Run Log", shortcut: "⌘L", action: .toggleLog),
-        Command(title: "Toggle Inspector", shortcut: "⌥⌘I", action: .toggleInspector),
-        Command(title: "Find Project", shortcut: "⌘F", action: .focusSearch),
-    ]
+    // Computed (not a stored constant) so the Pause/Resume entry's title
+    // reflects the engine's current paused state.
+    private var commands: [Command] {
+        [
+            Command(title: "New App", shortcut: "⌘N", action: .newChat),
+            Command(title: "Run Selected Project", shortcut: "⌘R", action: .runSelected),
+            Command(title: store.enginePaused ? "Resume Engine" : "Pause Engine",
+                   shortcut: "", action: .togglePause),
+            Command(title: "Toggle Run Log", shortcut: "⌘L", action: .toggleLog),
+            Command(title: "Toggle Inspector", shortcut: "⌥⌘I", action: .toggleInspector),
+            Command(title: "Find Project", shortcut: "⌘F", action: .focusSearch),
+        ]
+    }
 
     private var filtered: [Command] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -361,6 +368,15 @@ struct CommandPaletteView: View {
     private func run(_ c: Command) {
         dismiss()
         store.uiCommand = c.action
+    }
+
+    private func runSelectedOrFirst() {
+        let list = filtered
+        if let sel = selection, let c = list.first(where: { $0.id == sel }) {
+            run(c)
+        } else if let first = list.first {
+            run(first)
+        }
     }
 
     var body: some View {
@@ -375,14 +391,23 @@ struct CommandPaletteView: View {
                     // Focus on the next runloop turn: SwiftUI can drop a focus
                     // request issued in the same tick the sheet is presented.
                     DispatchQueue.main.async { searchFocused = true }
+                    selection = filtered.first?.id
                 }
+                .onChange(of: query) { _, _ in
+                    // Keep a selection alive as filtering narrows the list, so
+                    // Return always has something to activate.
+                    if !filtered.contains(where: { $0.id == selection }) {
+                        selection = filtered.first?.id
+                    }
+                }
+                .onSubmit { runSelectedOrFirst() }
             Divider()
             if filtered.isEmpty {
                 Text("No matching commands")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 80)
             } else {
-                List(filtered) { c in
+                List(filtered, selection: $selection) { c in
                     Button { run(c) } label: {
                         HStack {
                             Text(c.title)

@@ -28,11 +28,14 @@ import socket
 import subprocess
 import tempfile
 import time
+import types
+import typing
 import urllib.error
 import urllib.request
 
 import procutil
 
+fcntl: typing.Optional[types.ModuleType]
 try:
     import fcntl
 except ImportError:  # non-Unix; the cross-process lock degrades to best-effort

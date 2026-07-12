@@ -109,8 +109,8 @@ a different temperament each phase. The pairing is deterministic (a resumed run
 reproduces it).
 
 **Knowledge.** For phases that benefit, the orchestrator scores the curated
-cheatsheets in `knowledge/<domain>/` (ios / backend / web) against the phase
-text and splices the top few into the agents' context.
+cheatsheets in `knowledge/<domain>/` (ios / backend / web / general) against
+the phase text and splices the top few into the agents' context.
 
 **Consensus / vote.** Each phase runs up to a configurable number of rounds. If
 the coordinator declares `CONSENSUS: YES`, the phase ends. Otherwise a **forced
@@ -332,7 +332,7 @@ orchestrator/             # repo root (engine at top level)
 ├── localmodels.py / local_models.json    # Ollama detection, curated registry, HF search
 ├── roles.py / roles.json  # roles + rotating-personality assignment
 ├── knowledge.py           # keyword retrieval / RAG injection
-├── knowledge/{ios,backend,web}/*.md
+├── knowledge/{ios,backend,web,general}/*.md
 ├── verify.py              # compile/boot-the-build verification loop
 ├── docs.py                # deterministic per-project docs renderer (docs/)
 ├── schemas.py             # structured-block parsing + secret redaction

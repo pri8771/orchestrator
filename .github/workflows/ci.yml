@@ -20,6 +20,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run engine test suite (strict warnings)
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
+      - name: Doctor smoke test (text + JSON)
+        run: |
+          python orchestrator.py --doctor
+          python orchestrator.py --doctor --json | python -c "import json,sys; json.load(sys.stdin)"
 
   # Lint is advisory for now — the monolith predates the linter, so failures
   # here shouldn't block a green build until it's decomposed.

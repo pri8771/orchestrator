@@ -7,13 +7,15 @@
 
 PYTHON ?= python3
 
-.PHONY: help test test-strict doctor gui-build gui-test app dmg verify clean
+.PHONY: help test test-strict doctor lint typecheck gui-build gui-test app dmg verify clean
 
 help:
 	@echo "Engine (any platform):"
 	@echo "  make test         run the engine unittest suite"
 	@echo "  make test-strict  run the suite with warnings promoted to errors"
 	@echo "  make doctor       environment preflight"
+	@echo "  make lint         ruff check (config: pyproject.toml)"
+	@echo "  make typecheck    mypy (config: pyproject.toml)"
 	@echo "GUI (macOS only):"
 	@echo "  make gui-build    build the SwiftUI app"
 	@echo "  make gui-test     run the GUI unit tests"
@@ -30,6 +32,12 @@ test-strict:
 doctor:
 	$(PYTHON) orchestrator.py --doctor
 
+lint:
+	ruff check .
+
+typecheck:
+	mypy . --config-file pyproject.toml
+
 gui-build:
 	cd gui && swift build -c release
 
@@ -42,7 +50,9 @@ app:
 dmg:
 	bash gui/make_dmg.sh
 
-# The full local gate (macOS). CI on Linux runs `make test-strict doctor`.
+# The full local gate (macOS). CI (.github/workflows/ci.yml) runs the Python
+# suite directly (not through `make`) across 3.9/3.11/3.12 on Linux, advisory
+# ruff, and builds+tests the GUI on macOS — see that file for the exact steps.
 verify: test-strict gui-build gui-test doctor
 	@echo "verify: all gates passed"
 

@@ -33,7 +33,10 @@ Standard library only, matching the rest of the engine.
 import datetime as _dt
 import json
 import os
+import types
+import typing
 
+_schemalib: typing.Optional[types.ModuleType]
 try:
     import schemas as _schemalib
 except Exception:  # noqa: BLE001 - events must work even if schemas breaks

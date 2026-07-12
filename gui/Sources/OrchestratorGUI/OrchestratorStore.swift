@@ -351,8 +351,19 @@ private enum BackgroundConfigLoader {
                      "\(home)/.local/bin", "\(home)/.codex/bin",
                      "\(home)/.npm-global/bin", "\(home)/.bun/bin",
                      "\(home)/.cargo/bin"]
-        return (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map(String.init) + extra
+        let fromPath = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+        // Drop empties (a leading/trailing/doubled ":" in PATH would otherwise
+        // resolve to the process's own cwd) and de-duplicate while preserving
+        // order, so detectCLIs()/ollamaOnPath() don't repeat the same stat
+        // calls for a directory listed in both PATH and the extras above.
+        var seen = Set<String>()
+        var out: [String] = []
+        for dir in fromPath + extra where !dir.isEmpty && !seen.contains(dir) {
+            seen.insert(dir)
+            out.append(dir)
+        }
+        return out
     }
 
     // Which agent CLIs are actually invokable on PATH (codex/claude/gemini or agy).
@@ -461,6 +472,7 @@ enum UICommand: Equatable {
     case toggleInspector   // ⌥⌘I — Native Pro shell inspector
     case focusSearch       // ⌘F — focus the sidebar project filter
     case openPlanTab       // Inspector "Open Plan tab" jump (§3 region 3)
+    case togglePause       // Pause/Resume Engine (toolbar + Command Palette)
 }
 
 // Reads everything the orchestrator writes to disk and republishes it on a
@@ -486,8 +498,12 @@ final class OrchestratorStore: ObservableObject {
     @Published var runQueue: [String] = []
     // Pause/resume the engine (design §3 toolbar): when paused, queued projects
     // are NOT auto-launched. In-flight runs are left alone — pause holds the
-    // queue, it doesn't kill work.
-    @Published var enginePaused = false
+    // queue, it doesn't kill work. Persisted (UserDefaults, matching
+    // workspaceRoot's pattern) so a user who paused and quit isn't silently
+    // un-paused on next launch with no indication anything changed.
+    @Published var enginePaused = UserDefaults.standard.bool(forKey: "enginePaused") {
+        didSet { UserDefaults.standard.set(enginePaused, forKey: "enginePaused") }
+    }
     // Menu-bar command relay (⌘N/⌘R/⌘L) — ContentView observes and handles.
     @Published var uiCommand: UICommand?
     // ⌘K command palette overlay (design §3/§8). Commands chosen in it are

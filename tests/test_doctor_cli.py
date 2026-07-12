@@ -3,12 +3,17 @@
 that had no test; all external probes are stubbed so nothing shells out.
 """
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
 
 import orchestrator as orch
 import localmodels as lm
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class _NoExternalTools(unittest.TestCase):
@@ -112,6 +117,40 @@ class TestNoRunnableAgentWarning(_NoExternalTools):
                 orch.process_app(cfg, d, "app-a")
                 orch.process_app(cfg, d, "app-b")
             self.assertEqual(sum("no agent is runnable" in m for m in msgs), 1)
+
+
+class TestDoctorJsonRealSubprocess(unittest.TestCase):
+    """A real `python3 orchestrator.py --doctor --json` subprocess call —
+    catches exactly the class of bug the unittest-level mocks can't: any log/
+    warning line (e.g. from resolve_models' gemini startup probe) printed to
+    stdout ahead of the JSON blob, which breaks every real consumer (CI, the
+    GUI's onboarding flow) piping stdout straight into a JSON parser."""
+
+    def test_stdout_is_pure_json(self):
+        env = dict(os.environ)
+        env["ORCH_ROOT"] = tempfile.mkdtemp()
+        proc = subprocess.run(
+            [sys.executable, os.path.join(HERE, "orchestrator.py"),
+             "--doctor", "--json"],
+            capture_output=True, text=True, timeout=60, env=env, cwd=HERE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        try:
+            report = json.loads(proc.stdout)
+        except ValueError as exc:
+            self.fail("stdout was not pure JSON (%s): %r" % (exc, proc.stdout[:300]))
+        self.assertIn("schema_version", report)
+
+    def test_search_models_json_is_pure_json(self):
+        env = dict(os.environ)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(HERE, "orchestrator.py"),
+             "--search-models", "qwen", "--json"],
+            capture_output=True, text=True, timeout=60, env=env, cwd=HERE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        try:
+            json.loads(proc.stdout)
+        except ValueError as exc:
+            self.fail("stdout was not pure JSON (%s): %r" % (exc, proc.stdout[:300]))
 
 
 class TestSearchModels(_NoExternalTools):

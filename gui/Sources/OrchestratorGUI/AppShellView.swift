@@ -156,6 +156,7 @@ struct AppShellView: View {
             case .toggleInspector: showInspector.toggle()
             case .focusSearch: searchFocused = true
             case .toggleLog: withAnimation { showRunLog.toggle() }
+            case .togglePause: store.toggleEnginePaused()
             case .openPlanTab: return     // handled by ProjectShellContent
             }
             store.uiCommand = nil

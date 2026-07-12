@@ -5505,6 +5505,15 @@ def main():
                          "combine with --json for machine-readable output")
     args = ap.parse_args()
 
+    # --json means stdout must be ONLY the JSON blob (any consumer — CI, the
+    # GUI's onboarding flow — parses stdout directly). Silence emit()'s
+    # terminal printing up front, before anything below (workflow seeding,
+    # resolve_models' gemini probe, etc.) can print a log line ahead of it.
+    # emit() still writes to orchestrator.log either way.
+    if args.json:
+        global _QUIET
+        _QUIET = True
+
     # Always materialize built-in workflows to workflows/*.json (never clobbers an
     # existing file), so the engine and the GUI both have editable definitions.
     wflib.ensure_seeded(HERE)
@@ -5529,9 +5538,11 @@ def main():
     cfg = load_config()
     resolve_models(cfg)
     # runtime.stream_terminal_output=false: engine lines go only to the log file
-    # (the GUI's live run log needs the default true).
+    # (the GUI's live run log needs the default true). `_QUIET` was already
+    # declared global above (for the --json case); Python forbids repeating a
+    # `global` statement for a name once it's been assigned earlier in the
+    # function, so this just assigns.
     if not bool(cget(cfg, "runtime.stream_terminal_output", True)):
-        global _QUIET
         _QUIET = True
     # Log hygiene: prune old per-call logs + rotate orchestrator.log at ~5 MB.
     prune_logs(retention_days=cget(cfg, "runtime.log_retention_days", 14))
