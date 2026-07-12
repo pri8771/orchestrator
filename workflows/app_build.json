@@ -5,6 +5,7 @@
   "target": "app",
   "build_phase": "build_coordination",
   "budget": null,
+  "overrides": null,
   "phases": [
     {
       "key": "prompt_contract",

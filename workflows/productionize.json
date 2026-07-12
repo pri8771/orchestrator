@@ -4,6 +4,8 @@
   "description": "Take a working prototype and turn it into something deployable: backend, data model, APIs, infra, and a real integration + production-readiness pass.",
   "target": "productionize",
   "build_phase": "build_backend",
+  "budget": null,
+  "overrides": null,
   "phases": [
     {
       "key": "assess_prototype",
@@ -18,7 +20,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "backend_design",
@@ -33,7 +41,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "infra_and_security",
@@ -48,7 +62,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "integration_plan",
@@ -63,7 +83,13 @@
         "backend"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "build_backend",
@@ -78,11 +104,17 @@
         "qa"
       ],
       "writes": true,
+      "reads_target": false,
       "verify": {
         "type": "http",
         "repair_iterations": 3,
         "ready_timeout": 45
-      }
+      },
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "production_review",
@@ -97,7 +129,13 @@
         "delivery"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     }
   ]
 }

@@ -12,6 +12,7 @@
     "build_turn_timeout": 900,
     "verify_timeout": 900
   },
+  "overrides": null,
   "phases": [
     {
       "key": "iterate_scope",
@@ -26,7 +27,12 @@
       ],
       "writes": false,
       "reads_target": false,
-      "verify": null
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "build_coordination",
@@ -44,7 +50,12 @@
       "verify": {
         "type": "xcodebuild",
         "repair_iterations": 2
-      }
+      },
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "final_review",
@@ -60,7 +71,11 @@
       "writes": false,
       "reads_target": false,
       "verify": null,
-      "requires_verification": true
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": true,
+      "doc_sections": [],
+      "test_deliverable": null
     }
   ]
 }

@@ -149,18 +149,16 @@ class Workflow:
         return next((p for p in self.phases if p.key == key), None)
 
     def to_json(self):
-        d = {
+        # Every field is emitted (budget/overrides as null when unset) so the
+        # on-disk shape is uniform and consumers can rely on each key's presence.
+        return {
             "name": self.name, "title": self.title,
             "description": self.description, "target": self.target,
             "build_phase": self.build_phase,
             "budget": self.budget,
+            "overrides": self.overrides,
             "phases": [p.to_json() for p in self.phases],
         }
-        # Only serialized when set, so workflows without a preset stay
-        # byte-identical to what they were before "overrides" existed.
-        if self.overrides:
-            d["overrides"] = self.overrides
-        return d
 
     @staticmethod
     def from_json(d):

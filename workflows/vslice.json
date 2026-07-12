@@ -12,16 +12,70 @@
     "build_turn_timeout": 300,
     "verify_timeout": 240
   },
+  "overrides": null,
   "phases": [
-    {"key": "tech_specs", "folder": "tech_specs", "file": "tech_specs.md", "title": "Plan",
-     "purpose": "Decide the single screen, the state model, and the exact file layout for this tiny SwiftUI app. One clear plan, no bikeshedding.",
-     "rounds": 1, "roles": ["frontend", "product"], "writes": false, "reads_target": false, "verify": null},
-    {"key": "build_coordination", "folder": "build_coordination", "file": "agent_messages.md", "title": "Build",
-     "purpose": "Build the working one-screen SwiftUI app in app_build. Ship a functional, compiling app; prefer a smaller app that works over a bigger one that does not.",
-     "rounds": 2, "roles": ["frontend", "qa"], "writes": true, "reads_target": false,
-     "verify": {"type": "xcodebuild", "repair_iterations": 1}},
-    {"key": "final_review", "folder": "final_review", "file": "final_review.md", "title": "Review",
-     "purpose": "Fast go/no-go: what works, what is stubbed, and the top risks. One round.",
-     "rounds": 1, "roles": ["qa", "product"], "writes": false, "reads_target": false, "verify": null}
+    {
+      "key": "tech_specs",
+      "folder": "tech_specs",
+      "file": "tech_specs.md",
+      "title": "Plan",
+      "purpose": "Decide the single screen, the state model, and the exact file layout for this tiny SwiftUI app. One clear plan, no bikeshedding.",
+      "rounds": 1,
+      "roles": [
+        "frontend",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "build_coordination",
+      "folder": "build_coordination",
+      "file": "agent_messages.md",
+      "title": "Build",
+      "purpose": "Build the working one-screen SwiftUI app in app_build. Ship a functional, compiling app; prefer a smaller app that works over a bigger one that does not.",
+      "rounds": 2,
+      "roles": [
+        "frontend",
+        "qa"
+      ],
+      "writes": true,
+      "reads_target": false,
+      "verify": {
+        "type": "xcodebuild",
+        "repair_iterations": 1
+      },
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    },
+    {
+      "key": "final_review",
+      "folder": "final_review",
+      "file": "final_review.md",
+      "title": "Review",
+      "purpose": "Fast go/no-go: what works, what is stubbed, and the top risks. One round.",
+      "rounds": 1,
+      "roles": [
+        "qa",
+        "product"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
+    }
   ]
 }

@@ -229,10 +229,12 @@ class TestWorkflowJsonRoundtrip(unittest.TestCase):
         w2 = wf.Workflow.from_json(d)
         self.assertEqual(w2.overrides, {"effort": "fast", "rounds_scale": 0.5})
 
-    def test_no_overrides_not_serialized(self):
-        # Workflows without a preset stay byte-identical to the pre-overrides
-        # serialization (no new key appears in seeded JSON).
-        self.assertNotIn("overrides", _mk_workflow(None).to_json())
+    def test_overrides_serialized_as_null_when_unset(self):
+        # to_json now emits every field for a uniform on-disk shape: `overrides`
+        # is always present, null when there's no preset.
+        d = _mk_workflow(None).to_json()
+        self.assertIn("overrides", d)
+        self.assertIsNone(d["overrides"])
         self.assertIsNone(wf.Workflow.from_json(
             {"name": "x", "phases": []}).overrides)
 

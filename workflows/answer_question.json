@@ -4,6 +4,8 @@
   "description": "Point the three agents at a question instead of an app. They reason from different angles, debate to the strongest answer, then write it up. No build phase.",
   "target": "answer",
   "build_phase": null,
+  "budget": null,
+  "overrides": null,
   "phases": [
     {
       "key": "deliberation",
@@ -18,7 +20,13 @@
         "design"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "answer",
@@ -32,7 +40,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     }
   ]
 }

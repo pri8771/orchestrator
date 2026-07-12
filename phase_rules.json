@@ -402,6 +402,353 @@
         "Every child has an initial prompt and workflow.",
         "Any mismatch is recorded as a blocker."
       ]
+    },
+    "recon": {
+      "rules": [
+        "Map the target READ-ONLY before hunting; never propose edits in this phase.",
+        "Identify languages/framework versions, dependency manifests, entry points, external inputs, and trust boundaries.",
+        "Locate where secrets, persistence, and network I/O live, and rank the highest-risk surfaces.",
+        "Emit NO findings here \u2014 this phase only produces the shared map later phases build on."
+      ],
+      "required_output": [
+        "Architecture + attack-surface summary.",
+        "Languages/frameworks and their versions.",
+        "Entry points and external inputs (routes/handlers/CLI/URL schemes).",
+        "Trust boundaries and where secrets/persistence live.",
+        "Ranked list of highest-risk areas to investigate."
+      ],
+      "acceptance_checks": [
+        "A later phase can find each risky surface from this map alone.",
+        "No finding-json blocks were emitted yet.",
+        "Dependency manifests and versions are enumerated, not guessed."
+      ]
+    },
+    "security": {
+      "rules": [
+        "Hunt real vulnerabilities: injection, broken authn/authz, insecure storage, weak TLS, over-broad permissions, vulnerable deps, PII leaks.",
+        "Cite file:line for every claim; a finding without a location is a guess.",
+        "Give a concrete exploit scenario and a safe, minimal fix per finding.",
+        "Emit each finding as a finding-json block with severity, category, confidence, file, title, fix."
+      ],
+      "required_output": [
+        "One finding-json block per vulnerability.",
+        "Severity (Critical/High/Med/Low) and confidence per finding.",
+        "Exploit scenario and concrete fix per finding.",
+        "file:line for each."
+      ],
+      "acceptance_checks": [
+        "Every finding is reproducible from its file:line + scenario.",
+        "No finding restates a guess as fact.",
+        "Severity reflects real exploitability, not theoretical risk."
+      ]
+    },
+    "bugs": {
+      "rules": [
+        "Find correctness/reliability bugs: races, swallowed errors, unhandled edges (nil/empty/off-by-one/overflow/timezone), lifecycle/leak issues, logic errors.",
+        "State the input or state that triggers the wrong behavior.",
+        "Cite file:line and give a minimal fix.",
+        "Emit each as a finding-json block."
+      ],
+      "required_output": [
+        "One finding-json block per bug.",
+        "Triggering input/state per finding.",
+        "Minimal fix per finding.",
+        "file:line for each."
+      ],
+      "acceptance_checks": [
+        "Each bug has a concrete trigger, not just a code smell.",
+        "Fixes are minimal and don't drop features.",
+        "Severity matches real user/data impact."
+      ]
+    },
+    "modernization": {
+      "rules": [
+        "Identify outdated/abandoned deps, deprecated APIs, worthwhile modern-idiom refactors, dead code, and performance issues.",
+        "Give current-vs-recommended and the migration effort/risk.",
+        "Do not propose churn for its own sake \u2014 tie each item to a concrete benefit.",
+        "Emit each as a finding-json block."
+      ],
+      "required_output": [
+        "One finding-json block per update.",
+        "Current vs recommended per item.",
+        "Effort/risk estimate per item.",
+        "file:line for each."
+      ],
+      "acceptance_checks": [
+        "Each recommendation names a concrete benefit.",
+        "Breaking-change risk is called out where it exists.",
+        "No pure-style churn without payoff."
+      ]
+    },
+    "report": {
+      "rules": [
+        "Synthesize ALL prior findings into ONE prioritized, de-duplicated report; do NOT vote findings away.",
+        "Group Critical/High/Medium/Low and open with a 3-line severity-count summary.",
+        "End with the top 5 fixes to do first.",
+        "The ranked list itself is assembled deterministically by the tool \u2014 keep prose honest and non-duplicative."
+      ],
+      "required_output": [
+        "Severity-count summary (3 lines).",
+        "De-duplicated findings grouped by severity.",
+        "Top 5 fixes to do first.",
+        "Honest note on coverage limits."
+      ],
+      "acceptance_checks": [
+        "No finding from an earlier phase was dropped.",
+        "Duplicates are merged, not repeated.",
+        "A reader knows the top 5 things to fix first."
+      ]
+    },
+    "gather": {
+      "rules": [
+        "Surface what's known: key facts, the sub-questions that matter, competing viewpoints, and where uncertainty lives.",
+        "Separate established facts from claims that need weighing.",
+        "Note the source or basis for each significant claim.",
+        "Do not conclude yet \u2014 this phase collects, the next phase judges."
+      ],
+      "required_output": [
+        "Key facts.",
+        "Sub-questions that must be answered.",
+        "Competing viewpoints.",
+        "Explicit list of what's uncertain."
+      ],
+      "acceptance_checks": [
+        "The next phase has enough to weigh the evidence.",
+        "Facts and unverified claims are distinguished.",
+        "No premature conclusion."
+      ]
+    },
+    "analyze": {
+      "rules": [
+        "Weigh the evidence, resolve contradictions, and separate strong claims from weak ones.",
+        "Decide what the balance of reasoning actually supports.",
+        "Name the assumptions behind each conclusion.",
+        "Flag where the evidence is thin rather than papering over it."
+      ],
+      "required_output": [
+        "Judgment on each major sub-question.",
+        "Which claims are strong vs weak and why.",
+        "Assumptions behind the conclusions.",
+        "Remaining uncertainty."
+      ],
+      "acceptance_checks": [
+        "Conclusions follow from the gathered evidence.",
+        "Contradictions are resolved, not ignored.",
+        "Uncertainty is stated, not hidden."
+      ]
+    },
+    "assess_prototype": {
+      "rules": [
+        "Define exactly what 'production-ready' means for THIS prototype: what's missing, what must be real, the acceptance bar.",
+        "Distinguish demo shortcuts (mocked data, no auth) from genuine gaps.",
+        "Prioritize by risk and user impact, not by ease."
+      ],
+      "required_output": [
+        "Production-readiness definition and acceptance bar.",
+        "Inventory of what's mocked/stubbed vs real.",
+        "Prioritized gap list.",
+        "Explicit non-goals for this pass."
+      ],
+      "acceptance_checks": [
+        "A builder knows exactly what 'done' means.",
+        "Every demo shortcut is identified.",
+        "Scope is bounded, not open-ended."
+      ]
+    },
+    "backend_design": {
+      "rules": [
+        "Design the server: data model, API contracts, service boundaries, and how the client talks to it.",
+        "Specify exact endpoint shapes, status codes, and error envelopes.",
+        "Choose sessions vs tokens per surface and justify it.",
+        "Design for revocation, validation, and least privilege from the start."
+      ],
+      "required_output": [
+        "Data model.",
+        "API contract (endpoints, methods, request/response, error shape).",
+        "Service boundaries.",
+        "Auth approach with justification."
+      ],
+      "acceptance_checks": [
+        "The client team could code against the contract as written.",
+        "Error and auth behavior are specified, not implied.",
+        "Trade-offs are justified."
+      ]
+    },
+    "infra_and_security": {
+      "rules": [
+        "Decide hosting, deployment, auth, security, observability, and a rough cost model with justified trade-offs.",
+        "Name the secrets-management approach \u2014 never secrets in code or config committed to git.",
+        "Specify how you'll know it's healthy (health checks, logs, metrics) and how you'll roll back."
+      ],
+      "required_output": [
+        "Hosting + deployment plan.",
+        "Auth/security controls.",
+        "Observability (health/logs/metrics).",
+        "Rollback plan.",
+        "Rough cost model."
+      ],
+      "acceptance_checks": [
+        "Secrets never live in the repo.",
+        "There is a concrete way to detect and roll back a bad deploy.",
+        "Cost is estimated, not ignored."
+      ]
+    },
+    "integration_plan": {
+      "rules": [
+        "Plan how the prototype consumes the backend, the migration/cutover, and the division of build work with conflict-prevention.",
+        "Sequence the work so the app keeps compiling/running at each step.",
+        "Name file ownership per lane to prevent merge conflicts."
+      ],
+      "required_output": [
+        "Integration/cutover sequence.",
+        "Per-lane work division and file ownership.",
+        "Rollback/fallback if integration fails.",
+        "Definition of a successful cutover."
+      ],
+      "acceptance_checks": [
+        "No step leaves the app broken.",
+        "Lanes don't contend for the same files.",
+        "Cutover success is measurable."
+      ]
+    },
+    "build_backend": {
+      "rules": [
+        "Iteratively build the backend and wire the prototype to it; keep it booting at every iteration.",
+        "Expose GET /health returning 200 so the build can be verified by actually booting the server.",
+        "Validate all external input; return typed error envelopes, never raw stack traces.",
+        "Do not commit secrets or artifacts."
+      ],
+      "required_output": [
+        "A server that boots and answers GET /health.",
+        "Implemented API per the contract.",
+        "Wired-up client calls.",
+        "Honest note on any endpoint still stubbed."
+      ],
+      "acceptance_checks": [
+        "The server boots and /health returns 200.",
+        "Endpoints match the agreed contract.",
+        "No secret or artifact was committed."
+      ]
+    },
+    "production_review": {
+      "rules": [
+        "Assess production readiness: reliability, rollback, security, observability, and a clear go/no-go.",
+        "Verify the acceptance bar from assess_prototype is actually met.",
+        "State residual risks plainly rather than declaring victory."
+      ],
+      "required_output": [
+        "Go / no-go decision.",
+        "Which acceptance criteria are met vs not.",
+        "Residual risks.",
+        "Rollback readiness."
+      ],
+      "acceptance_checks": [
+        "The decision is backed by the acceptance bar, not vibes.",
+        "Unmet criteria are named.",
+        "Rollback is confirmed to work."
+      ]
+    },
+    "deliberation": {
+      "rules": [
+        "Reason from genuinely different angles; surface the strongest candidate answers and pressure-test them against each other.",
+        "Attack the best answer, not a strawman.",
+        "Separate what's known from what's assumed."
+      ],
+      "required_output": [
+        "Candidate answers considered.",
+        "The strongest case for and against each.",
+        "Assumptions each answer depends on."
+      ],
+      "acceptance_checks": [
+        "More than one serious answer was weighed.",
+        "The leading answer survived a real challenge.",
+        "Assumptions are explicit."
+      ]
+    },
+    "answer": {
+      "rules": [
+        "Commit to the single best-supported answer and write it clearly.",
+        "Note the key reasoning and any honest uncertainty.",
+        "Answer the question actually asked \u2014 no hedging into non-answers."
+      ],
+      "required_output": [
+        "The answer, stated directly.",
+        "The key reasoning behind it.",
+        "Honest uncertainty or caveats."
+      ],
+      "acceptance_checks": [
+        "A reader gets a clear answer, not a menu.",
+        "The reasoning supports the answer.",
+        "Uncertainty is acknowledged where real."
+      ]
+    },
+    "portfolio_recon": {
+      "rules": [
+        "Read the target repos READ-ONLY; map each one's shape, stack, and the responsibilities they share.",
+        "Identify recurring patterns and duplicated concerns across repos.",
+        "Emit no extraction proposals yet \u2014 this phase maps."
+      ],
+      "required_output": [
+        "Per-repo shape/stack summary.",
+        "Cross-repo shared responsibilities.",
+        "Candidate areas of duplication."
+      ],
+      "acceptance_checks": [
+        "Later phases can spot commonality from this map.",
+        "No repo was written to.",
+        "Duplication is located, not assumed."
+      ]
+    },
+    "commonality_analysis": {
+      "rules": [
+        "Weigh which shared patterns are genuinely reusable vs superficially similar.",
+        "Distinguish a real abstraction from coincidental duplication.",
+        "Name the cost of extracting each candidate."
+      ],
+      "required_output": [
+        "Ranked reusable patterns.",
+        "Real-abstraction vs coincidence judgment per pattern.",
+        "Extraction cost/benefit per candidate."
+      ],
+      "acceptance_checks": [
+        "Each candidate has a genuine reuse case.",
+        "Coincidental similarity is filtered out.",
+        "Cost is weighed, not ignored."
+      ]
+    },
+    "extraction_candidates": {
+      "rules": [
+        "Propose concrete library extraction candidates with a clear interface and the repos that would consume them.",
+        "Prefer a small, stable interface over a large speculative one.",
+        "Note migration effort and risk per candidate."
+      ],
+      "required_output": [
+        "Extraction candidates with proposed interfaces.",
+        "Consuming repos per candidate.",
+        "Migration effort/risk per candidate."
+      ],
+      "acceptance_checks": [
+        "Each candidate has at least two real consumers.",
+        "Interfaces are minimal and stable.",
+        "Migration risk is stated."
+      ]
+    },
+    "iterate_scope": {
+      "rules": [
+        "Scope the feature/fix precisely against the EXISTING app; change the minimum needed.",
+        "Identify which existing files/interfaces are affected and what must NOT change.",
+        "Define acceptance criteria for the change before building."
+      ],
+      "required_output": [
+        "Precise change scope.",
+        "Affected files/interfaces and forbidden-edit zones.",
+        "Acceptance criteria for the change."
+      ],
+      "acceptance_checks": [
+        "The change is bounded, not a rewrite.",
+        "Existing behavior outside scope is protected.",
+        "Done is defined before building."
+      ]
     }
   }
 }
