@@ -206,6 +206,7 @@ struct AppShellView: View {
             .help(store.enginePaused
                   ? "Resume auto-launching queued projects"
                   : "Pause the engine: queued projects won't auto-launch (running work continues)")
+            .accessibilityValue(store.enginePaused ? "Paused" : "Running")
 
             Button { showNewApp = true } label: {
                 Label("New App", systemImage: "plus")

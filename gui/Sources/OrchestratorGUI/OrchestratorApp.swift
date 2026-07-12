@@ -89,27 +89,35 @@ struct OrchestratorApp: App {
         // The Native Pro shell owns selection/sheet state, so the actions
         // relay through store.uiCommand (observed in AppShellView).
         .commands {
+            // Titles/shortcuts for the commands shared with the Command Palette
+            // come from MenuCommandSpec.all (OrchestratorStore.swift) so the two
+            // surfaces can't drift apart.
             CommandGroup(replacing: .newItem) {
-                Button("New App") { store.uiCommand = .newChat }
-                    .keyboardShortcut("n", modifiers: .command)
+                let s = MenuCommandSpec.spec(for: .newChat)
+                Button(s.title) { store.uiCommand = s.action }
+                    .keyboardShortcut(s.key, modifiers: s.modifiers)
                 Button("Command Palette") { store.showCommandPalette = true }
                     .keyboardShortcut("k", modifiers: .command)
             }
             // Native Pro shell: inspector toggle + project search focus.
             CommandGroup(after: .sidebar) {
-                Button("Toggle Inspector") { store.uiCommand = .toggleInspector }
-                    .keyboardShortcut("i", modifiers: [.option, .command])
-                Button("Find Project") { store.uiCommand = .focusSearch }
-                    .keyboardShortcut("f", modifiers: .command)
+                let inspector = MenuCommandSpec.spec(for: .toggleInspector)
+                Button(inspector.title) { store.uiCommand = inspector.action }
+                    .keyboardShortcut(inspector.key, modifiers: inspector.modifiers)
+                let search = MenuCommandSpec.spec(for: .focusSearch)
+                Button(search.title) { store.uiCommand = search.action }
+                    .keyboardShortcut(search.key, modifiers: search.modifiers)
             }
             CommandMenu("Run") {
-                Button("Run Selected Project") { store.uiCommand = .runSelected }
-                    .keyboardShortcut("r", modifiers: .command)
+                let run = MenuCommandSpec.spec(for: .runSelected)
+                Button(run.title) { store.uiCommand = run.action }
+                    .keyboardShortcut(run.key, modifiers: run.modifiers)
                 Button("Refresh Workspace") { store.refresh() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                 Divider()
-                Button("Toggle Run Log") { store.uiCommand = .toggleLog }
-                    .keyboardShortcut("l", modifiers: .command)
+                let log = MenuCommandSpec.spec(for: .toggleLog)
+                Button(log.title) { store.uiCommand = log.action }
+                    .keyboardShortcut(log.key, modifiers: log.modifiers)
             }
         }
 

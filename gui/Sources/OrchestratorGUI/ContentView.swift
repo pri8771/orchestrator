@@ -347,16 +347,22 @@ struct CommandPaletteView: View {
     }
 
     // Computed (not a stored constant) so the Pause/Resume entry's title
-    // reflects the engine's current paused state.
+    // reflects the engine's current paused state. Titles/shortcuts for the
+    // commands also on the menu bar come from MenuCommandSpec.all
+    // (OrchestratorStore.swift), the shared source both surfaces read from.
     private var commands: [Command] {
-        [
-            Command(title: "New App", shortcut: "⌘N", action: .newChat),
-            Command(title: "Run Selected Project", shortcut: "⌘R", action: .runSelected),
+        func spec(_ action: UICommand) -> Command {
+            let s = MenuCommandSpec.spec(for: action)
+            return Command(title: s.title, shortcut: s.shortcutDisplay, action: s.action)
+        }
+        return [
+            spec(.newChat),
+            spec(.runSelected),
             Command(title: store.enginePaused ? "Resume Engine" : "Pause Engine",
                    shortcut: "", action: .togglePause),
-            Command(title: "Toggle Run Log", shortcut: "⌘L", action: .toggleLog),
-            Command(title: "Toggle Inspector", shortcut: "⌥⌘I", action: .toggleInspector),
-            Command(title: "Find Project", shortcut: "⌘F", action: .focusSearch),
+            spec(.toggleLog),
+            spec(.toggleInspector),
+            spec(.focusSearch),
         ]
     }
 
@@ -403,9 +409,13 @@ struct CommandPaletteView: View {
                 .onSubmit { runSelectedOrFirst() }
             Divider()
             if filtered.isEmpty {
-                Text("No matching commands")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 80)
+                VStack(spacing: 4) {
+                    Text("No matching commands")
+                    Text("Clear the search to see all \(commands.count) commands")
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 80)
             } else {
                 List(filtered, selection: $selection) { c in
                     Button { run(c) } label: {

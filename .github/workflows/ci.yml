@@ -11,6 +11,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.11", "3.12"]
     steps:
@@ -44,6 +45,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: gui/.build
+          key: ${{ runner.os }}-spm-${{ hashFiles('gui/Package.swift', 'gui/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
       - name: Build GUI (release)
         working-directory: gui
         run: swift build -c release

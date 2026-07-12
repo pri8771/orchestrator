@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import Combine
 import UserNotifications
+import SwiftUI
 
 private enum BackgroundProjectLoader {
     static func discoverApps(rootURL: URL) -> [String] {
@@ -467,12 +468,53 @@ private enum FactoryScanner {
 // Commands routed from the menu bar (⌘N / ⌘R / ⌥⌘I / ⌘F / …) into the active
 // shell (ContentView / AppShellView), which owns the selection and sheet
 // state the actions need. One action layer, several invocation surfaces.
-enum UICommand: Equatable {
+enum UICommand: Equatable, Hashable {
     case newChat, runSelected, toggleLog
     case toggleInspector   // ⌥⌘I — Native Pro shell inspector
     case focusSearch       // ⌘F — focus the sidebar project filter
     case openPlanTab       // Inspector "Open Plan tab" jump (§3 region 3)
     case togglePause       // Pause/Resume Engine (toolbar + Command Palette)
+}
+
+// Single source of truth for the commands that appear in both the menu bar
+// (OrchestratorApp's .commands{}) and the ⌘K Command Palette
+// (CommandPaletteView), so their titles/shortcuts can't drift apart.
+// Pause/Resume is deliberately excluded: it's toolbar + palette only (no
+// menu-bar entry) and its title is dynamic (depends on store.enginePaused).
+struct MenuCommandSpec: Identifiable {
+    let action: UICommand
+    let title: String
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+    var id: UICommand { action }
+
+    // "⌘N" / "⌥⌘I" style label for the palette; the menu bar renders its own
+    // shortcut glyph from key/modifiers via .keyboardShortcut().
+    var shortcutDisplay: String {
+        var s = ""
+        if modifiers.contains(.control) { s += "⌃" }
+        if modifiers.contains(.option) { s += "⌥" }
+        if modifiers.contains(.shift) { s += "⇧" }
+        if modifiers.contains(.command) { s += "⌘" }
+        return s + String(key.character).uppercased()
+    }
+
+    static let all: [MenuCommandSpec] = [
+        MenuCommandSpec(action: .newChat, title: "New App", key: "n", modifiers: .command),
+        MenuCommandSpec(action: .toggleInspector, title: "Toggle Inspector",
+                         key: "i", modifiers: [.option, .command]),
+        MenuCommandSpec(action: .focusSearch, title: "Find Project", key: "f", modifiers: .command),
+        MenuCommandSpec(action: .runSelected, title: "Run Selected Project",
+                         key: "r", modifiers: .command),
+        MenuCommandSpec(action: .toggleLog, title: "Toggle Run Log", key: "l", modifiers: .command),
+    ]
+
+    static func spec(for action: UICommand) -> MenuCommandSpec {
+        guard let s = all.first(where: { $0.action == action }) else {
+            fatalError("MenuCommandSpec.spec(for:) called with an action not in .all: \(action)")
+        }
+        return s
+    }
 }
 
 // Reads everything the orchestrator writes to disk and republishes it on a
@@ -490,8 +532,17 @@ final class OrchestratorStore: ObservableObject {
 
     /// Report a user-facing error both in the run log and as a banner.
     func surfaceError(_ msg: String) {
-        runLog += msg.hasSuffix("\n") ? msg : msg + "\n"
-        lastError = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+        let (logLine, banner) = OrchestratorStore.formatSurfacedError(msg)
+        runLog += logLine
+        lastError = banner
+    }
+
+    // Pure formatting split out of surfaceError() so it's unit-testable
+    // without a live store instance: (line appended to runLog, banner text).
+    static func formatSurfacedError(_ msg: String) -> (logLine: String, banner: String) {
+        let logLine = msg.hasSuffix("\n") ? msg : msg + "\n"
+        let banner = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (logLine, banner)
     }
     // Run queue: projects waiting to run one at a time (FIFO). advanceQueueIfIdle()
     // launches the next as soon as nothing is running.
@@ -874,6 +925,12 @@ final class OrchestratorStore: ObservableObject {
         let pattern = "(\(agent)_enabled:\\s*)(true|false)"
         guard let re = try? NSRegularExpression(pattern: pattern) else { return }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        // No match means the key doesn't exist in config.yaml — surface that
+        // instead of silently no-op'ing, matching the read/write-failure siblings.
+        guard re.firstMatch(in: text, range: range) != nil else {
+            surfaceError("Could not find \(agent)_enabled in \(configURL.lastPathComponent).")
+            return
+        }
         text = re.stringByReplacingMatches(in: text, range: range,
                                            withTemplate: "$1\(on ? "true" : "false")")
         // Only reflect the toggle in the UI if the write actually landed.

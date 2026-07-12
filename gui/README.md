@@ -1,17 +1,10 @@
 # Orchestrator GUI
 
 A native macOS SwiftUI app for driving the autonomous multi-agent
-orchestrator — a three-pane, Apple Mail-style window:
-
-```
-Projects            Phases                  Live transcript
-─────────────       ──────────────────      ─────────────────────────────
-● taskquill         ✓ initial_discussion    Round 2
-  invoice-app       ✓ next_steps_small      Cx  Codex      …
-✓ ledgerly          ● detailed_discussion   Cl  Claude     …
-⚠ notes_sync          app_features          Gm  Gemini     …
-                      …                     Co  Coordinator — CONSENSUS: YES
-```
+orchestrator — the "Native Pro" shell (see `DESIGN-NATIVE-PRO.md`): one
+window, `NavigationSplitView` sidebar (projects) + content (phases, live
+transcript, routing grid, run health) + a trailing `.inspector` (⌥⌘I), plus
+a toolbar and a ⌘K command palette for the primary actions.
 
 It watches the `agent_state.json`, `verify_results.json`, `live_log.jsonl` and
 per-phase Markdown that `orchestrator.py` writes, polling every 1.5s so the

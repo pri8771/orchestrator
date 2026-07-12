@@ -17,6 +17,15 @@ mkdir -p "$ROOT"
 export ORCH_ROOT="$ROOT"
 export ORCH_DIR="$ORCH_DIR"
 
+# Package.swift requires .v14 (macOS 14 Sonoma); swift build on an older OS
+# fails with a generic compiler error, not this. Fail fast with a clear message.
+OS_MAJOR="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+if [ -n "$OS_MAJOR" ] && [ "$OS_MAJOR" -lt 14 ]; then
+  echo "[run_gui] ERROR: this GUI requires macOS 14 (Sonoma) or later;" >&2
+  echo "          detected macOS $(sw_vers -productVersion)." >&2
+  exit 1
+fi
+
 echo "[run_gui] root=$ROOT"
 echo "[run_gui] building (release)…"
 cd "$GUI_DIR"

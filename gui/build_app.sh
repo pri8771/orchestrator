@@ -11,6 +11,15 @@ set -euo pipefail
 GUI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$GUI_DIR/dist/Orchestrator.app"
 
+# Package.swift requires .v14 (macOS 14 Sonoma); swift build on an older OS
+# fails with a generic compiler error, not this. Fail fast with a clear message.
+OS_MAJOR="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+if [ -n "$OS_MAJOR" ] && [ "$OS_MAJOR" -lt 14 ]; then
+  echo "[build_app] ERROR: this GUI requires macOS 14 (Sonoma) or later;" >&2
+  echo "            detected macOS $(sw_vers -productVersion)." >&2
+  exit 1
+fi
+
 cd "$GUI_DIR"
 echo "[build_app] building (release)…"
 swift build -c release
@@ -33,6 +42,14 @@ mkdir -p "$ENGINE_DEST"
 # make_dmg.sh, so a stray API key / credential file in the engine dir must never
 # ship inside the .app. Mirrors run.sh's commit block-list plus config.json
 # (per-machine settings, not for distribution).
+# NOTE: the -not -name filters below match by filename only, not full path —
+# any file named e.g. config.yaml or *_api_key anywhere under $ENGINE_SRC is
+# dropped, even in a subdirectory unrelated to the top-level ones this is
+# meant for. That's the safer failure mode for the secret-shaped names (better
+# to over-exclude a credential than ship it), and today's tree only has one
+# config.yaml/config.json at the root, so it's a non-issue in practice. If the
+# engine ever grows nested config.yaml/config.json files that should ship,
+# switch those two filters to -not -path "./config.yaml" etc.
 ( cd "$ENGINE_SRC" && \
   find . -type f \
     -not -path './gui/*' -not -path './.git/*' \

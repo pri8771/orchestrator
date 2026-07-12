@@ -36,8 +36,9 @@ Add or update tests for any behavior change. New modules should ship with a
 Built-in workflows live in `workflows.py` and are seeded to `workflows/*.json`
 on first run (`--seed`); on-disk JSON always wins so GUI edits persist. Every
 workflow/phase carries a **uniform set of fields** — `tests/test_workflows_schema.py`
-enforces the shape, referential integrity (a `build_phase` must be a real phase,
-no duplicate phase keys), and that every phase key has a `phase_rules.json`
+enforces the shape (`WF_FIELDS` for each workflow, `PHASE_FIELDS` for each of
+its phases), referential integrity (a `build_phase` must be a real phase, no
+duplicate phase keys), and that every phase key has a `phase_rules.json`
 quality-playbook entry. If you add a phase, add its rules and keep the schema
 test green.
 

@@ -1,5 +1,7 @@
 # Autonomous Multi-Agent Orchestrator (V2 engine)
 
+[![CI](https://github.com/pri8771/orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/pri8771/orchestrator/actions/workflows/ci.yml)
+
 A local, **no-extra-API-cost** engine that makes the AI CLIs you're **already
 logged into** — **Codex**, **Claude** (Claude Code), and **Gemini/Antigravity**,
 optionally joined by a **local Ollama model** — debate to consensus and then

@@ -119,6 +119,8 @@ Leading: sidebar toggle. Principal: **Fleet Health capsule** + **Fallback bell**
 
 A floating overlay dispatching **through the existing `store.uiCommand` enum — one action layer, two invocation surfaces.** v1 scope: fuzzy project jump ("bri…" → Brinekeeper), parameterless verbs (Pause queue, Retry failed), and structured-argument verbs via picker steps ("Set lanes to…" → number row; "Apply preset…" → preset list; "Retry codex on…" → project list). No natural-language parsing — arguments are palette pages, which is buildable and faster anyway.
 
+**Shipped scope is narrower than the above.** `CommandPaletteView` (ContentView.swift) is a fixed, filterable list of the six menu-bar/toolbar parameterless verbs (New App, Run Selected Project, Pause/Resume Engine, Toggle Run Log, Toggle Inspector, Find Project) — no fuzzy project jump and no structured-argument verbs/picker steps. Those remain future work if the palette grows beyond command dispatch.
+
 ### Secondary surfaces
 
 - **New App intake** — sheet 560×620 (§4.5)
