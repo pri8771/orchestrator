@@ -299,6 +299,37 @@ struct EngineMissingBanner: View {
     }
 }
 
+// A dismissible top banner for a failed GUI action (config write, lock clear,
+// message queue…). Surfaces errors that would otherwise hide in the ⌘L run log.
+struct ActionErrorBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(.subheadline)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss error")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
+        .overlay(Divider(), alignment: .bottom)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Action failed")
+        .accessibilityValue(message)
+    }
+}
+
 struct IterateSheet: View {
     @EnvironmentObject var store: OrchestratorStore
     @Environment(\.dismiss) private var dismiss

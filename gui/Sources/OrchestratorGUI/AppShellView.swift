@@ -84,6 +84,19 @@ struct AppShellView: View {
         store.agentOrder.contains { (store.enabledAgents[$0] ?? false) && (store.cliAvailable[$0] ?? false) }
     }
 
+    // Explains why Run is enabled or disabled, so a greyed-out button isn't a
+    // mystery (the common cause is no logged-in agent CLI).
+    private var runButtonHelp: String {
+        if selectedProject == nil { return "Select a project to run" }
+        if selectedProject?.running ?? false { return "This project is already running" }
+        if store.runQueue.contains(selectedProject?.name ?? "") { return "This project is already queued" }
+        if !anyRunnable {
+            return "No agent is runnable — enable one and make sure its CLI is "
+                + "installed and logged in (codex / claude / gemini), or enable a local model"
+        }
+        return "Run the selected project (queues if the engine is busy)"
+    }
+
     // MARK: Body
 
     var body: some View {
@@ -114,8 +127,13 @@ struct AppShellView: View {
         .shellSearchFocused($searchFocused)
         .toolbar { toolbarContent }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if !store.engineAvailable {
-                EngineMissingBanner(message: store.engineMissingMessage)
+            VStack(spacing: 0) {
+                if !store.engineAvailable {
+                    EngineMissingBanner(message: store.engineMissingMessage)
+                }
+                if let err = store.lastError {
+                    ActionErrorBanner(message: err) { store.lastError = nil }
+                }
             }
         }
         .sheet(isPresented: $showNewApp) {
@@ -167,7 +185,7 @@ struct AppShellView: View {
             }
             .disabled(selectedProject == nil || (selectedProject?.running ?? false)
                       || store.runQueue.contains(selectedProject?.name ?? "") || !anyRunnable)
-            .help("Run the selected project (queues if the engine is busy)")
+            .help(runButtonHelp)
 
             if let p = selectedProject, p.running || store.canStop(p.name) {
                 Button { store.stopRun(p.name) } label: {

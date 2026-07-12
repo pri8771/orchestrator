@@ -292,7 +292,9 @@ private enum BackgroundConfigLoader {
         var out = ["codex": true, "claude": true, "gemini": true, "ollama": false]
         guard let text = try? String(contentsOf: configURL, encoding: .utf8) else { return out }
         for agent in agentOrder {
-            if let m = firstMatch(in: text, pattern: "\(agent)_enabled:\\s*(true|false)") {
+            // Anchor to line start (ignoring indent) so a commented-out line like
+            // `# ollama_enabled: true` can't be mis-read as the live setting.
+            if let m = firstMatch(in: text, pattern: "(?m)^\\s*\(agent)_enabled:\\s*(true|false)") {
                 out[agent] = (m == "true")
             }
         }
@@ -458,6 +460,15 @@ final class OrchestratorStore: ObservableObject {
     @Published var projects: [Project] = []
     @Published var orchestratorRunning = false
     @Published var runLog: String = ""   // tail of the most recent action's output
+    // A failed action's message, shown as a dismissible top banner so errors
+    // don't hide in the ⌘L-collapsed run log. Set via surfaceError().
+    @Published var lastError: String?
+
+    /// Report a user-facing error both in the run log and as a banner.
+    func surfaceError(_ msg: String) {
+        runLog += msg.hasSuffix("\n") ? msg : msg + "\n"
+        lastError = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     // Run queue: projects waiting to run one at a time (FIFO). advanceQueueIfIdle()
     // launches the next as soon as nothing is running.
     @Published var runQueue: [String] = []
@@ -465,8 +476,11 @@ final class OrchestratorStore: ObservableObject {
     @Published var uiCommand: UICommand?
     private var launchingName: String?      // just-launched, not yet seen as running
     private var launchingAt: Date?
+    // Pre-refresh seed must match the engine default (local model OFF) so the
+    // first render doesn't briefly show Ollama enabled; refresh() then loads the
+    // real config value.
     @Published var enabledAgents: [String: Bool] = ["codex": true, "claude": true,
-                                                    "gemini": true, "ollama": true]
+                                                    "gemini": true, "ollama": false]
     @Published var agentModels: [String: String] = [:]   // provider -> chosen model
     @Published var agentEfforts: [String: String] = [:]  // provider -> reasoning effort
     @Published var customModelPresets: [String: [String]] = [:] // provider -> user-added menu options
@@ -811,15 +825,15 @@ final class OrchestratorStore: ObservableObject {
             try text.write(to: configURL, atomically: true, encoding: .utf8)
             return true
         } catch {
-            runLog += "Failed to save settings to \(configURL.lastPathComponent): "
-                + "\(error.localizedDescription)\n"
+            surfaceError("Failed to save settings to \(configURL.lastPathComponent): "
+                + error.localizedDescription)
             return false
         }
     }
 
     func setAgentEnabled(_ agent: String, _ on: Bool) {
         guard var text = try? String(contentsOf: configURL, encoding: .utf8) else {
-            runLog += "Could not read \(configURL.lastPathComponent) to update \(agent).\n"
+            surfaceError("Could not read \(configURL.lastPathComponent) to update \(agent).")
             return
         }
         let pattern = "(\(agent)_enabled:\\s*)(true|false)"
@@ -1371,7 +1385,12 @@ final class OrchestratorStore: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         p.arguments = ["-e", script]
-        try? p.run()
+        do {
+            try p.run()
+        } catch {
+            surfaceError("Could not open Terminal for `\(command)`: "
+                + error.localizedDescription)
+        }
     }
 
     // MARK: - Global worker cap toggle (config.yaml)
@@ -1583,7 +1602,11 @@ final class OrchestratorStore: ObservableObject {
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !lines.isEmpty else { return }
         let url = rootURL.appendingPathComponent(name).appendingPathComponent("target_path.txt")
-        try? (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            surfaceError("Could not save target paths for \(name): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Per-project run config (autonomy / completeness / stop target)
@@ -2025,7 +2048,13 @@ final class OrchestratorStore: ObservableObject {
         let url = inboxURL(project)
         var existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         if !existing.isEmpty && !existing.hasSuffix("\n") { existing += "\n" }
-        try? (existing + msg + "\n").write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try (existing + msg + "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            // Don't silently drop the user's message — tell them it didn't queue.
+            surfaceError("Could not queue your message for \(project.name): "
+                + error.localizedDescription)
+        }
         refresh()
     }
 
@@ -2341,7 +2370,16 @@ final class OrchestratorStore: ObservableObject {
                 let ownedByStopped = ownerPid == pid
                 let ownerAlive = ownerPid.map { kill($0, 0) == 0 } ?? false
                 if ownedByStopped || !ownerAlive {
-                    try? self.fm.removeItem(at: lockURL)
+                    do {
+                        try self.fm.removeItem(at: lockURL)
+                    } catch {
+                        // A lock we can't clear leaves the lane looking "running"
+                        // forever — surface it (skip the benign already-gone case).
+                        if self.fm.fileExists(atPath: lockURL.path) {
+                            self.surfaceError("Could not clear stale lock for \(name) at "
+                                + "\(lockURL.path): \(error.localizedDescription)")
+                        }
+                    }
                 }
             }
             self.refresh()
@@ -2407,8 +2445,20 @@ final class OrchestratorStore: ObservableObject {
     }
 
     private func resolvePython() -> String {
-        for p in ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]
-        where fm.isExecutableFile(atPath: p) { return p }
+        // Common install locations first (a Finder-launched app inherits a
+        // minimal PATH), THEN whatever is actually on PATH — the old version
+        // hardcoded three dirs and blindly returned /usr/bin/python3 even when
+        // it didn't exist, aborting every launch.
+        var dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+        if let path = ProcessInfo.processInfo.environment["PATH"] {
+            dirs += path.split(separator: ":").map(String.init)
+        }
+        for dir in dirs {
+            for name in ["python3", "python"] {
+                let p = (dir as NSString).appendingPathComponent(name)
+                if fm.isExecutableFile(atPath: p) { return p }
+            }
+        }
         return "/usr/bin/python3"
     }
 
@@ -2500,6 +2550,19 @@ final class OrchestratorStore: ObservableObject {
     // their own sessions; SIGKILL after 5s), then clear the lock so the lane
     // frees. Deliberately NOT killpg: a shepherd-launched run shares its
     // process group with shepherd.sh and every other lane.
+    // Remove a run lock, surfacing failure (a lock we can't delete keeps the
+    // lane pinned "running"). Silent on the benign already-gone case.
+    private func clearLockFile(_ url: URL, _ name: String) {
+        do {
+            try fm.removeItem(at: url)
+        } catch {
+            if fm.fileExists(atPath: url.path) {
+                surfaceError("Could not clear the run lock for \(name) at \(url.path): "
+                    + error.localizedDescription)
+            }
+        }
+    }
+
     func stopRun(_ name: String) {
         if canStop(name) {
             stopProject(name)
@@ -2508,7 +2571,7 @@ final class OrchestratorStore: ObservableObject {
         let lockURL = rootURL.appendingPathComponent(".orch-locks/\(name).lock")
         manualStops[name] = Date()
         guard let pid = appLocks[name]?.pid, pid > 0 else {
-            try? fm.removeItem(at: lockURL)
+            clearLockFile(lockURL, name)
             refresh()
             return
         }
@@ -2521,7 +2584,7 @@ final class OrchestratorStore: ObservableObject {
                 kill(pid, SIGKILL)
                 self.runLog += "\(name) didn't exit within 5s — killed.\n"
             }
-            try? self.fm.removeItem(at: lockURL)
+            self.clearLockFile(lockURL, name)
             self.refresh()
         }
         refresh()

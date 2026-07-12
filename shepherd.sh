@@ -55,8 +55,12 @@ while true; do
 
   # Children next — builds are the bottleneck. The GUI queue file
   # (.orch-queue-order.json) sets which apps launch first; everything else
-  # follows in directory order.
+  # follows in directory order. IFS=newline for this loop so a workspace path
+  # containing spaces doesn't word-split the command-substitution output (the
+  # "$ROOT"/*/ glob is already space-safe; command sub is not).
+  _oldifs=$IFS; IFS=$'\n'
   for d in $(queue_order_dirs) "$ROOT"/*/; do
+    IFS=$_oldifs
     [ "$builds_running" -ge "$MAX_BUILDS" ] && break
     a=$(basename "$d")
     [ -f "$d/initial_prompt/initial_prompt.md" ] || continue
@@ -67,6 +71,7 @@ while true; do
     if has_error "$a"; then retry_ok "$a" || continue; fi
     launch "$a"; builds_running=$((builds_running+1)); sleep 3
   done
+  IFS=$_oldifs
 
   # Parents next, in program order. Guard the array expansion: with no parents
   # configured, "${PARENTS[@]}" under set -u errors on bash 3.2.
