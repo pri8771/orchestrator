@@ -50,10 +50,17 @@ struct PhaseRoute: Equatable {
     var ollama = ""
     var agents = ""
     var timeout = 0            // seconds per turn; 0 = run default
+    // Per-phase debate budget: nil = workflow default, 0 = unlimited (until
+    // natural consensus — the engine skips the forced vote), 1-99 = a cap.
+    var rounds: Int? = nil
+    // Operator instructions for THIS project's version of the phase — the
+    // engine splices them into every turn's context (binding guidance).
+    var instructions = ""
     var isEmpty: Bool {
         claude.isEmpty && codex.isEmpty && codexReasoning.isEmpty
             && claudeReasoning.isEmpty && gemini.isEmpty && ollama.isEmpty
-            && agents.isEmpty && timeout == 0
+            && agents.isEmpty && timeout == 0 && rounds == nil
+            && instructions.isEmpty
     }
 
     // Grid accessors: the per-phase model / effort override for one agent.
@@ -126,6 +133,8 @@ struct ModelRouting: Equatable {
             p.ollama = (ov["ollama"] as? String) ?? ""
             p.agents = (ov["agents"] as? String) ?? ""
             p.timeout = (ov["timeout"] as? Int) ?? 0
+            p.rounds = ov["rounds"] as? Int
+            p.instructions = (ov["instructions"] as? String) ?? ""
             if !p.isEmpty { r.phases[key] = p }
         }
         return r
@@ -143,6 +152,8 @@ struct ModelRouting: Equatable {
             if !p.ollama.isEmpty { ov["ollama"] = p.ollama }
             if !p.agents.isEmpty { ov["agents"] = p.agents }
             if p.timeout > 0 { ov["timeout"] = p.timeout }
+            if let r = p.rounds { ov["rounds"] = r }
+            if !p.instructions.isEmpty { ov["instructions"] = p.instructions }
             phasesObj[key] = ov
         }
         var fb: [String: Any] = ["cloud_to_local": cloudToLocal,
@@ -161,6 +172,22 @@ struct ModelRouting: Equatable {
             try? data.write(to: url, options: .atomic)
         }
     }
+}
+
+// MARK: - Library types: reusable phase-prompt snippets + saved run profiles
+
+struct PromptSnippet: Identifiable, Equatable {
+    var name: String
+    var phase: String      // "" = usable in any phase
+    var text: String
+    var id: String { name }
+}
+
+struct RunProfile: Identifiable, Equatable {
+    var name: String
+    var workflow: String
+    var url: URL
+    var id: String { url.path }
 }
 
 // Compact count formatting for download numbers ("2.4M", "51k").

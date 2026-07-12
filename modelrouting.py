@@ -119,6 +119,25 @@ def load_routing(here):
                 t = 0
             if 0 < t <= 7200:
                 clean["timeout"] = t
+            # Per-phase rounds override: how long this phase may debate.
+            # 0 = unlimited (run until natural consensus, no forced vote) —
+            # the same contract as a workflow phase's rounds <= 0.
+            if "rounds" in ov:
+                try:
+                    r = int(ov.get("rounds"))
+                except (TypeError, ValueError):
+                    r = None
+                if r is not None and 0 <= r <= 99:
+                    clean["rounds"] = r
+            # Per-phase free-text instructions, spliced into every turn's
+            # context for the phase. Control characters (except newline/tab)
+            # are stripped and length is capped so a runaway paste can't
+            # balloon every prompt.
+            instr = ov.get("instructions")
+            if isinstance(instr, str) and instr.strip():
+                instr = "".join(ch for ch in instr
+                                if ch in "\n\t" or ord(ch) >= 32)
+                clean["instructions"] = instr.strip()[:4000]
             if clean:
                 out["phases"][key.strip()] = clean
     return out
@@ -131,24 +150,40 @@ def load_routing_for_app(here, app_dir):
 
     Mirrors the GUI's RoutingMatrix.cell resolution exactly: per phase, per
     field, a non-empty value in the app's file wins over the fleet's; unset
-    fields fall through to the fleet value. "enabled"/"fallback"/"chains"
-    always come from the fleet file — the grid never edits those at project
-    scope, so an app's file always round-trips harmless defaults for them
-    (ModelRouting.save always writes enabled=true, cloud_to_local=true) that
-    must not shadow a deliberately different fleet setting."""
+    fields fall through to the fleet value.
+
+    Fallback overrides (the Plan tab's per-project ladders): a NON-EMPTY
+    project chain for an agent wins over the fleet chain, and a non-empty
+    project local_model wins — empty/absent entries inherit. "enabled" and
+    "cloud_to_local" stay fleet-owned: the project file round-trips harmless
+    defaults for those (ModelRouting.save always writes enabled=true,
+    cloud_to_local=true) that must not shadow a deliberately different fleet
+    setting."""
     fleet = load_routing(here)
     if not app_dir or os.path.abspath(app_dir) == os.path.abspath(here):
         return fleet
     if not os.path.exists(os.path.join(app_dir, ROUTING_FILENAME)):
         return fleet
     project = load_routing(app_dir)
-    if not project["phases"]:
+    proj_fb = project.get("fallback") or {}
+    if not project["phases"] and not proj_fb.get("chains") \
+            and not proj_fb.get("local_model"):
         return fleet
     out = dict(fleet)
     merged_phases = {key: dict(ov) for key, ov in fleet["phases"].items()}
     for key, ov in project["phases"].items():
         merged_phases[key] = dict(merged_phases.get(key, {}), **ov)
     out["phases"] = merged_phases
+    if proj_fb.get("chains") or proj_fb.get("local_model"):
+        fb = dict(out.get("fallback") or {})
+        chains = dict(fb.get("chains") or {})
+        for agent, steps in (proj_fb.get("chains") or {}).items():
+            if steps:
+                chains[agent] = list(steps)
+        fb["chains"] = chains
+        if proj_fb.get("local_model"):
+            fb["local_model"] = proj_fb["local_model"]
+        out["fallback"] = fb
     return out
 
 

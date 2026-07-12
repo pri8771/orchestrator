@@ -120,6 +120,8 @@ private enum BackgroundProjectLoader {
         proj.awaitingApproval = (awaiting?.isEmpty == false) ? awaiting : nil
         proj.blockedConflict = blocked
         proj.manuallyStopped = stopped
+        proj.archived = fm.fileExists(
+            atPath: dir.appendingPathComponent(".orch_archived").path)
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
         proj.latestVerify = VerifyResultsParser.latest(verifyRecords)
@@ -1200,6 +1202,218 @@ final class OrchestratorStore: ObservableObject {
         objectWillChange.send()
     }
 
+    // MARK: - Library: reusable phase-prompt snippets + saved run profiles
+    //
+    // Snippets: <engine>/library/snippets.json — [{name, phase, text}]; phase
+    // "" = usable anywhere. Profiles: <engine>/library/profiles/<slug>.json —
+    // a model_routing.json-shaped file (per-phase models/effort/rounds/
+    // instructions + fallback chains) plus profile_name/workflow keys the
+    // engine loader ignores. Applying a profile materializes the project's
+    // model_routing.json and workflow.txt, so different apps can carry
+    // different requirements with one click.
+
+    var libraryDirURL: URL { orchDirURL.appendingPathComponent("library", isDirectory: true) }
+    var snippetsURL: URL { libraryDirURL.appendingPathComponent("snippets.json") }
+    var profilesDirURL: URL { libraryDirURL.appendingPathComponent("profiles", isDirectory: true) }
+
+    func loadSnippets() -> [PromptSnippet] {
+        guard let data = try? Data(contentsOf: snippetsURL),
+              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+        else { return [] }
+        return arr.compactMap { o in
+            guard let name = o["name"] as? String, !name.isEmpty,
+                  let text = o["text"] as? String, !text.isEmpty else { return nil }
+            return PromptSnippet(name: name, phase: (o["phase"] as? String) ?? "",
+                                 text: text)
+        }
+    }
+
+    func saveSnippets(_ snippets: [PromptSnippet]) {
+        try? fm.createDirectory(at: libraryDirURL, withIntermediateDirectories: true)
+        let arr = snippets.map { ["name": $0.name, "phase": $0.phase, "text": $0.text] }
+        if let data = try? JSONSerialization.data(withJSONObject: arr,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: snippetsURL, options: .atomic)
+        }
+        objectWillChange.send()
+    }
+
+    func listProfiles() -> [RunProfile] {
+        guard let items = try? fm.contentsOfDirectory(atPath: profilesDirURL.path)
+        else { return [] }
+        return items.filter { $0.hasSuffix(".json") }.sorted().compactMap { fn in
+            let url = profilesDirURL.appendingPathComponent(fn)
+            guard let data = try? Data(contentsOf: url),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { return nil }
+            return RunProfile(name: (obj["profile_name"] as? String)
+                                ?? fn.replacingOccurrences(of: ".json", with: ""),
+                              workflow: (obj["workflow"] as? String) ?? "",
+                              url: url)
+        }
+    }
+
+    // Snapshot a project's per-phase setup (routing + rounds + instructions +
+    // fallback chains) and its workflow as a named, reusable profile.
+    func saveProfile(named name: String, from project: Project) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        try? fm.createDirectory(at: profilesDirURL, withIntermediateDirectories: true)
+        var obj: [String: Any] = [:]
+        if let data = try? Data(contentsOf: projectRoutingURL(project)),
+           let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            obj = parsed
+        } else {
+            obj = ["schema_version": 1, "enabled": true,
+                   "fallback": ["cloud_to_local": true, "local_model": ""],
+                   "phases": [:] as [String: Any]]
+        }
+        obj["profile_name"] = trimmed
+        obj["workflow"] = project.workflow
+        let slug = NewAppIntakeSheet.slugify(trimmed)
+        let url = profilesDirURL.appendingPathComponent(slug + ".json")
+        if let data = try? JSONSerialization.data(withJSONObject: obj,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: url, options: .atomic)
+            runLog += "Saved profile “\(trimmed)” (\(slug).json).\n"
+        }
+        objectWillChange.send()
+    }
+
+    // Materialize a profile onto a project: per-phase routing file + workflow.
+    func applyProfile(_ profile: RunProfile, toProjectNamed name: String) {
+        guard let data = try? Data(contentsOf: profile.url),
+              var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return }
+        obj.removeValue(forKey: "profile_name")
+        let wf = obj.removeValue(forKey: "workflow") as? String
+        let dir = rootURL.appendingPathComponent(name)
+        let routingURL = dir.appendingPathComponent("model_routing.json")
+        if let out = try? JSONSerialization.data(withJSONObject: obj,
+                                                 options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: routingURL, options: .atomic)
+            modelRoutingCache[routingURL] = nil
+        }
+        if let wf, !wf.isEmpty {
+            try? (wf + "\n").write(to: dir.appendingPathComponent("workflow.txt"),
+                                   atomically: true, encoding: .utf8)
+        }
+        runLog += "Applied profile “\(profile.name)” to \(name).\n"
+        objectWillChange.send()
+    }
+
+    func deleteProfile(_ profile: RunProfile) {
+        try? fm.trashItem(at: profile.url, resultingItemURL: nil)
+        objectWillChange.send()
+    }
+
+    // Human rating (fleet learning): <project>/rating.json — consumed by the
+    // engine's presort/anti-pattern ledger/eval harness (--fleet-report).
+    func rateProject(_ project: Project, verdict: String?) {
+        let url = project.dirURL.appendingPathComponent("rating.json")
+        if let verdict {
+            let obj: [String: Any] = ["verdict": verdict,
+                                      "ts": ISO8601DateFormatter().string(from: Date())]
+            if let data = try? JSONSerialization.data(withJSONObject: obj,
+                                                      options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: url, options: .atomic)
+                runLog += "Rated \(project.name) \(verdict).\n"
+                // A good project immediately teaches: its phase outputs
+                // become few-shot exemplars future phase runs see.
+                if verdict == "good" {
+                    launch(args: ["orchestrator.py", "--root", rootURL.path,
+                                  "--save-exemplar", project.name])
+                }
+            }
+        } else {
+            try? fm.removeItem(at: url)
+            runLog += "Cleared rating on \(project.name).\n"
+        }
+        objectWillChange.send()
+    }
+
+    // MARK: - Concierge chat (Home)
+    //
+    // One headless `claude -p` call per user message — the same logged-in CLI
+    // and no-API-key contract as engine launches (key env vars stripped, so
+    // the chat costs subscription tokens only). nonisolated static: runs off
+    // the main actor. nil = CLI missing / errored / empty (the view degrades
+    // to the static mode cards).
+    nonisolated static func conciergeAsk(history: [(String, String)],
+                                         workflowList: [String]) async -> String? {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        let candidates = ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude",
+                          "/usr/local/bin/claude"]
+        guard let bin = candidates.first(where: { fm.isExecutableFile(atPath: $0) })
+        else { return nil }
+
+        let system = """
+        You are the concierge for Orchestrator, a local multi-agent app factory. \
+        The user chats with you to shape work into a "run". A run = a project \
+        folder + a workflow the debate engine executes with several AI CLIs.
+
+        Available workflows:
+        \(workflowList.joined(separator: "\n"))
+
+        The six front-door modes: Ask (answer_question) answers a question; \
+        Plan (brainstorm) explores ideas cheaply; Spec (app_spec) produces a \
+        full product spec with no code; Create (app_build) runs the full \
+        debate→spec→design→build→verify pipeline; Research (research) produces \
+        a sourced report; Audit (audit) reviews an existing repo read-only.
+
+        Be brief and concrete. Ask at most ONE clarifying question at a time, \
+        and only when genuinely blocking. As soon as the idea is actionable, \
+        propose a run by appending exactly one fenced block:
+
+        ```run-json
+        {"name": "short-app-name", "workflow": "<workflow name>", "prompt": "<the full initial prompt the agents will receive — self-contained, specific, includes the user's requirements verbatim where possible>"}
+        ```
+
+        The user sees a Create button for your proposal — never claim a run \
+        was started. Plain text otherwise; no other fenced blocks.
+        """
+        var convo = ""
+        for (role, text) in history.suffix(12) {
+            convo += "\n\(role): \(text)\n"
+        }
+        let prompt = system + "\n===== CONVERSATION =====" + convo + "\nASSISTANT:"
+
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: bin)
+                p.arguments = ["-p", prompt]
+                var env = ProcessInfo.processInfo.environment
+                for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+                          "GOOGLE_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                          "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL",
+                          "GOOGLE_APPLICATION_CREDENTIALS"] {
+                    env.removeValue(forKey: k)
+                }
+                p.environment = env
+                let out = Pipe()
+                p.standardOutput = out
+                p.standardError = Pipe()
+                do { try p.run() } catch {
+                    cont.resume(returning: nil)
+                    return
+                }
+                // Watchdog: a hung CLI must not strand the chat forever.
+                DispatchQueue.global().asyncAfter(deadline: .now() + 120) {
+                    if p.isRunning { p.terminate() }
+                }
+                // Read to EOF BEFORE waitUntilExit — the safe order when the
+                // reply could exceed the 64KB pipe buffer.
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                let s = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                cont.resume(returning: (p.terminationStatus == 0 && !s.isEmpty) ? s : nil)
+            }
+        }
+    }
+
     // Short wall-clock TTL, not a stat()-based cache: measured, an
     // attributesOfItem(atPath:) call to check (mtime, size) costs MORE than
     // just re-reading+parsing these small (~1KB) warm-cache files outright —
@@ -1470,14 +1684,61 @@ final class OrchestratorStore: ObservableObject {
 
     // Delete the whole project folder — to the Trash, never a hard rm.
     func deleteProject(_ project: Project) {
-        guard !project.running else {
-            runLog += "Stop \(project.name) before deleting it.\n"
-            return
+        removeProject(project, deleteFolder: true)
+    }
+
+    // Unified "Remove…" flow (any sidebar section): stop the run if we own or
+    // can signal one, drop the project from both queues, then either archive
+    // (marker file — folder untouched, engine scans skip it) or move the whole
+    // folder to the Trash. A live run gets a grace period before the Trash
+    // move so the SIGTERM→SIGKILL escalation in stopProject can finish.
+    func removeProject(_ project: Project, deleteFolder: Bool) {
+        let name = project.name
+        let wasRunning = project.running || canStop(name) || appLocks[name] != nil
+        if wasRunning {
+            if runningProcesses[name] != nil { stopProject(name) } else { stopRun(name) }
         }
-        removeFromQueue(project.name)
-        removeRecoverably(project.dirURL)
-        runLog += "Moved \(project.name) to the Trash.\n"
+        removeFromQueue(name)
+        removeFromQueueOrder(name)
+        if deleteFolder {
+            if wasRunning {
+                runLog += "Stopping \(name), then moving it to the Trash…\n"
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 6_000_000_000)
+                    self?.removeRecoverably(project.dirURL)
+                    self?.refresh()
+                }
+            } else {
+                removeRecoverably(project.dirURL)
+                runLog += "Moved \(name) to the Trash.\n"
+            }
+        } else {
+            let marker = project.dirURL.appendingPathComponent(".orch_archived")
+            fm.createFile(atPath: marker.path, contents: Data())
+            runLog += "Archived \(name) — hidden from the queue and engine scans; "
+                + "the folder is untouched.\n"
+        }
         refresh()
+    }
+
+    // Restore an archived project: delete the marker; it reappears in its
+    // status-appropriate sidebar section on the next tick.
+    func unarchiveProject(_ project: Project) {
+        try? fm.removeItem(at: project.dirURL.appendingPathComponent(".orch_archived"))
+        runLog += "Restored \(project.name) from the archive.\n"
+        refresh()
+    }
+
+    // Staged continuation: re-open a (typically done) project under a DIFFERENT
+    // workflow. The engine's --continue-with does the state surgery: rewrites
+    // workflow.txt, re-arms the new workflow's phases, and carries prior phase
+    // outputs forward as context (research now → full build later).
+    func continueProject(_ name: String, workflow: String) {
+        requestNotificationAuthIfNeeded()
+        runLog = "Continuing \(name) with the \(workflow) workflow…\n"
+        launch(args: ["orchestrator.py", "--root", rootURL.path,
+                      "--app", name, "--continue-with", workflow],
+               project: name)
     }
 
     // The generated Xcode project/workspace under <project>/app_build, if any —
@@ -1757,6 +2018,8 @@ final class OrchestratorStore: ObservableObject {
         proj.awaitingApproval = (awaiting?.isEmpty == false) ? awaiting : nil
         proj.blockedConflict = blocked
         proj.manuallyStopped = stopped
+        proj.archived = fm.fileExists(
+            atPath: dir.appendingPathComponent(".orch_archived").path)
         // Latest verification outcome (defensive parse; [] on any problem).
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
@@ -2388,6 +2651,14 @@ final class OrchestratorStore: ObservableObject {
 
     func appendToQueueOrder(_ name: String) {
         if !queueOrder.contains(name) { queueOrder.append(name) }
+        persistQueueFile()
+    }
+
+    // Drop a removed/archived project from the persisted queue order so the
+    // shepherd never tries to launch it again.
+    func removeFromQueueOrder(_ name: String) {
+        guard queueOrder.contains(name) else { return }
+        queueOrder.removeAll { $0 == name }
         persistQueueFile()
     }
 

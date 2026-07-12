@@ -53,7 +53,9 @@ class TestPortfolioExpansion(unittest.TestCase):
         self.assertFalse(port.child_autorun_disabled(os.path.join(root, "goeasy")))
         self.assertFalse(port.child_autorun_disabled(os.path.join(root, "storm-nudge")))
         with open(os.path.join(root, "goeasy", "workflow.txt"), encoding="utf-8") as fh:
-            self.assertEqual(fh.read().strip(), "app_build")
+            # Build children get the purpose-built child workflow (app_build
+            # minus parent-scoped phases; falls back to app_build if removed).
+            self.assertEqual(fh.read().strip(), "app_build_child")
         with open(os.path.join(root, "storm-nudge", "workflow.txt"), encoding="utf-8") as fh:
             self.assertEqual(fh.read().strip(), "app_spec")
         self.assertTrue(os.path.exists(os.path.join(parent, "portfolio_manifest.json")))
@@ -123,7 +125,9 @@ class TestPortfolioExpansion(unittest.TestCase):
             self.assertTrue(json.load(fh)["build"])
         with open(os.path.join(root, "storm-nudge", "workflow.txt"),
                   encoding="utf-8") as fh:
-            self.assertEqual(fh.read().strip(), "app_build")
+            # Build children get the purpose-built child workflow (app_build
+            # minus parent-scoped phases; falls back to app_build if removed).
+            self.assertEqual(fh.read().strip(), "app_build_child")
 
     def test_apply_build_plan_caps_builds_by_priority(self):
         manifest, _errors = port.parse_portfolio_manifest(PORTFOLIO_BLOCK)

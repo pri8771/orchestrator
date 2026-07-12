@@ -84,3 +84,70 @@ start of the pass; also clean under `-W error::ResourceWarning`) + GUI
   error banner (no hardcoded fallback path).
 - **Gate.** New repo-root `Makefile`; `make verify` is the canonical check —
   this repo has no git remote, so there is no hosted CI.
+
+## 2026-07-11 — Operator-control + quality release (M1–M5)
+
+All verified: 419 engine tests pass, GUI builds clean and all Swift test suites pass.
+
+**Project management (GUI + engine)**
+- Unified "Remove…" on every sidebar row: *Remove from list — keep folder* (writes `<project>/.orch_archived`; new collapsed Archived section with Restore) or *Remove and move folder to Trash*. Running projects are stopped first. `find_apps` skips archived projects, so watch/shepherd passes never relaunch them.
+- Clicking a project now lands on the Transcript tab (phases + discussions center-stage); Run/Plan/History unchanged one segment away.
+- New App sheet: **Save location** picker (workspace switch before creation) and a **profile** picker.
+- Staged continuation: `--continue-with <workflow>` + a "Continue with workflow…" menu on done projects. Prior-workflow outputs persist in `carryover_outputs` and are injected ahead of prior phase decisions (research now → build later). Tests: `tests/test_continue_with.py`.
+- Fixed `run-orchestrator.sh` pointing at a nonexistent `orchestrator-v2-source/` dir.
+
+**Per-run control + library**
+- Per-phase `rounds` (0 = unlimited/until natural consensus — no forced vote) and free-text `instructions` in `model_routing.json` (fleet or per-project), honored by the engine (`_apply_phase_routing` → `_routed_rounds` / `OPERATOR INSTRUCTIONS` context block). Plan tab gained a "Phase Rounds & Instructions" editor with an ∞ option and snippet insertion.
+- Library: reusable prompt snippets (`library/snippets.json`) and saved run **profiles** (`library/profiles/*.json` — workflow + per-phase models/effort/rounds/instructions + fallback chains). Save from the Plan tab, apply from the New App sheet.
+
+**Models & resilience**
+- Per-project fallback chains and `local_model` in `<app>/model_routing.json` are now honored by the engine (non-empty project values win; round-tripped defaults never shadow fleet). The Plan tab's Fallback Overrides editor is no longer write-only.
+- Provider pacing: `runtime.provider_min_gap_seconds` (default 8) staggers same-provider calls across threads/lanes to avoid burst rate-limits.
+- Local-model RAM gate: `runtime.enforce_local_ram_gate` (default true) benches roster models whose registry `min_ram_gb` exceeds physical RAM (`localmodels.total_ram_gb`).
+- Fixed the selected local model (glm-5.2 was never installed → now `qwen2.5-coder:14b`), pulled **qwen3-coder:30b** (19 GB, fits 48 GB RAM) and promoted it to the head of the roster.
+
+**Build quality + token diet**
+- **Prompt-adherence gate** (`runtime.adherence_gate`, default true): before a build workflow is marked done, one strong agent grades the built app against the ORIGINAL prompt's requirements; verdict + per-requirement grades land in `docs/adherence.json`; unmet core requirements route into the bounded iterate-repair loop. "It compiles" is no longer the only bar for "done".
+- **PASS protocol**: from round 2 on, an agent with nothing new replies `PASS` — recorded as one line, keeps the round alive, shrinks every later turn's context.
+- Round ceilings tuned: app_build/full_max discussion phases 9→3 (consensus still ends phases early), contract phases 4, build 6.
+- `phase_rules.json`: design_handoff now requires a Swift-ready design-system spec (exact hexes light+dark, type ramp, spacing, radii) and per-screen state variants; build_coordination requires DesignSystem.swift first, token-only styling, and empty/loading/error states.
+
+**Chat homepage**
+- New default Home pane: a concierge chat backed by the logged-in `claude` CLI (API-key env stripped — subscription only). Explains the six modes (Ask/Plan/Spec/Create/Research/Audit), asks clarifying questions, and proposes runs as ```run-json``` cards with a one-click **Create run**. Degrades to static mode cards when the CLI is unavailable.
+
+## 2026-07-11 — Visual QA gate (the "does it LOOK finished" bar)
+
+- New `visualqa.py` + `runtime.visual_qa_*` config: after the release gate, the engine builds the app for the simulator (proper ad-hoc signing — verify's CODE_SIGNING_ALLOWED=NO bundles are uninstallable), boots/reuses a simulator, installs (with a one-shot rescue that strips un-installable app-extension placeholders), launches, and screenshots the app in BOTH light and dark mode into `<app>/docs/screenshots/`.
+- Screens are graded by a PANEL of installed local vision models (gemma3 + qwen2.5vl over the Ollama loopback — zero cloud tokens) using a binary OK/BAD contract per image (measured: small VLMs echo JSON rubrics back; qwen2.5vl:3b alone false-fails good screens). Only a UNANIMOUS BAD fails a screen — a false FAIL burns a repair loop, a false PASS just stays quiet.
+- A FAIL routes into the same bounded iterate-repair loop as the release/adherence gates (`status="visual_qa_repair"`), with the graders' notes in the repair reason. Verdict persists to `<app>/docs/visual_qa.json`.
+- Verified END-TO-END on a real factory app (backtimer): install-rescue exercised, both screenshots captured, panel graded PASS on a genuinely finished onboarding screen in ~53s. 437 engine tests pass.
+
+## 2026-07-11 — UI crawl gate (tap everything, replay every declared journey)
+
+- New `uitest-runner/` (one generic XCUITest bundle, XcodeGen-generated, built once and cached): drives ANY installed app by bundle id. `testCrawl` BFS-crawls the app — taps every hittable element, fingerprints screens via an accessibility signature, records DEAD TAPS (tap changed nothing), verifies back-navigation restores the previous screen, screenshots every screen, and records crashes WITH the tap path that reached them. `testFlows` interprets declared user journeys (flows.json steps as DATA — agents never generate test code).
+- New `uicrawl.py` gate after visual QA: crashes and failed declared flows FAIL the run into the bounded repair loop; dead buttons/back violations warn until promoted (`runtime.ui_crawl_fail_on_dead_buttons`). Every flow and the crawl each start from a VIRGIN install (one-shot onboarding state cannot leak between scenarios).
+- Self-learning: a crash's recorded tap path is appended to `<app>/flows.json` as a permanent regression flow (origin=ui_crawl_crash) — future runs replay the exact edge case; the spec's flows never overwrite learned regressions.
+- New ```flows-json``` machine contract on task_assignments (+ phase rule): 3-8 declared journeys covering every primary promise; persisted to `<app>/flows.json`. Build rule added: every interactive element sets .accessibilityIdentifier.
+- Verified END-TO-END on backtimer: found a real dead button ("Restore Purchases" does nothing), a real back-navigation violation, passed a genuine onboarding flow on virgin install, and precisely caught a deliberately-missing feature ("no tappable element 'Export as PDF'"). 446 engine tests pass.
+
+## 2026-07-11 — The 17-task batch: gates, fleet learning, per-phase teaching
+
+All verified: 467 engine tests pass, GUI + crawler runner build clean, fleet report runs on the real factory.
+
+- **Design lint gate** (designlint.py + tech_stack.json): deterministic errors for inline colors/font sizes outside DesignSystem.swift and banned SPM packages; warnings for TODOs, missing design system, unlisted packages. **Golden scaffold** (scaffold/ios_app) seeds empty builds with a starter DesignSystem.swift + binding conventions.
+- **Screenshot-driven repair**: every gate failure's repair prompt now carries the exact artifacts (screenshot paths to OPEN, lint findings, failing flow step, crawl report).
+- **Fleet learning** (fleetlearn.py): blamed incidents per gate (per-phase attribution), 👍/👎 project ratings (GUI Rate menu → rating.json), presort of the whole factory by implicit failure signals, anti-pattern ledger into knowledge/anti_patterns.md, per-phase exemplar export (--save-exemplar), phase scorecards (--fleet-report).
+- **Definition of Done** (definition_of_done.json + completeness.dod_items): editable per-tier checklists, inherited upward, graded by the adherence gate alongside the new **requirements-json contract** (app_features emits numbered requirements → requirements.json → adherence grades exactly those).
+- **Discussion-phase quality**: research source check (local model cross-checks claims against fetched URL text → docs/research_verification.json + incident), Red Team role in prompt_contract/tech_specs, per-role standards in personas, model-role pinning (Claude=design, Codex=backend), fattened phase rubrics.
+- **Vertical slices**: tasks.json topo-layered into dependency waves; build iteration k works wave k only ("extend, don't rewrite"). **Rolling summaries**: local model compresses each closed discussion phase; later phases read summaries instead of raw transcripts.
+- **Eval harness** (evalharness.py + evals/golden/): --eval-report scores any project set on compile/adherence/visual/flows/crawl/lint + composite, with human ratings alongside.
+- **A11y audit** in the UI crawler (iOS 17 performAccessibilityAudit per screen, recorded as warnings). **GUI**: gate verdict chips in the Run tab, Rate… menu. **Doc distiller**: --distill-doc PATH_OR_URL → dense knowledge/ cheatsheet via the claude CLI.
+- Cleanups: due_for_probe dead code removed; portfolio build-children now use app_build_child; README refreshed.
+
+## 2026-07-12 — Calibration findings + closing wires
+
+- **Calibration run (calib-tip-splitter) validated the whole batch live**: all 11 planning phases closed under the 2-round prototype ceilings; machine contracts landed (25 requirements, 11 flows, 24 tasks, 32 interfaces); golden scaffold seeded; 6 dependency waves computed; rolling summaries generated for every discussion phase; Red Team + model-role pinning active in personas.
+- **Calibration finding — locals in build lanes**: local models debate in 10-30s but take 25+ min WRITING a lane, and each build round waits for its slowest worker. Locals are now excluded from build lanes by default (`runtime.locals_in_build_lanes: false` — they keep discussing and backstopping fallbacks), and any single local turn is capped (`runtime.local_turn_timeout_seconds: 600`). Tests cover lane exclusion, opt-in, and the local-only fallback.
+- **Multi-screen visual grading**: the UI crawl's per-screen screenshots now go through the same local vision panel (warn-only; verdicts recorded as screen_grades in docs/ui_crawl.json) — visual coverage extends past the main screen for free.
+- **Learning loop closed tighter**: the anti-pattern ledger auto-refreshes after every finished run, and a 👍 rating in the GUI auto-exports that project's phase outputs as exemplars (engine --save-exemplar).
+- Pulled gemma3:12b as a sharper third judge for the vision panel (auto-joins VISION_CANDIDATES).

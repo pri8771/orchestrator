@@ -86,15 +86,6 @@ def in_cooldown(health, now):
     return ra is not None and now < ra
 
 
-def due_for_probe(health, now):
-    """True if the agent is ``down`` but its cooldown has elapsed — eligible for a
-    single half-open recovery probe at the next phase boundary."""
-    if not health or health.get("status") != "down":
-        return False
-    ra = health.get("retry_after")
-    return ra is not None and now >= ra
-
-
 def health_map_for(agents):
     """A fresh health map for a list of agent ids."""
     return {a: new_health() for a in agents}

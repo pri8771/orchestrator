@@ -1,0 +1,28 @@
+{
+  "_docs": "Definition of Done per completeness tier (task #8). Edit freely; the adherence gate grades the built app against the ACTIVE tier's checklist, and designlint enforces the machine-checkable items. Tiers inherit: mvp includes prototype's items, v1 includes mvp's, production_draft includes v1's.",
+  "_functionality_rule": "BINDING at every tier, checked first: the app is NOT a cosmetic prototype. A screen that LOOKS finished but whose controls don't actually work (taps that do nothing, fake/hardcoded data instead of real state, calculations not performed, nothing persisted) is UNMET regardless of visual polish. Looking done and being done are graded separately; only being done counts.",
+  "prototype": [
+    "Every core feature in the prompt/requirements is FUNCTIONALLY implemented, not just visually present: real logic runs, real data is produced/stored, real state changes persist across navigation and relaunch where the feature implies it should.",
+    "The primary user workflow works end-to-end (create/see/act on the core object) using REAL data entered by the user, not hardcoded placeholder content standing in for it.",
+    "The app launches to a real screen, not a placeholder.",
+    "No crash on the primary workflow."
+  ],
+  "mvp": [
+    "Every screen has empty, loading, and error states \u2014 not just the happy path.",
+    "Dark mode is styled (both palettes from the design handoff, readable).",
+    "Onboarding or a self-explanatory first screen exists.",
+    "All views style through DesignSystem tokens (no inline colors/fonts).",
+    "Every interactive element has an accessibilityIdentifier."
+  ],
+  "v1": [
+    "All declared user flows (flows.json) pass against the built app.",
+    "No TODO/FIXME markers left in source.",
+    "Settings/preferences screen exists where the prompt implies configurability.",
+    "App icon and display name are set."
+  ],
+  "production_draft": [
+    "Unit or UI test target exists and runs.",
+    "Accessibility audit issues addressed (labels, contrast, dynamic type).",
+    "No dead buttons (every tappable does something)."
+  ]
+}

@@ -33,6 +33,13 @@ struct NewAppIntakeSheet: View {
     @AppStorage("defaultCompleteness") private var completeness = ""
     @State private var stopAfter = ""
     @State private var targetPaths = ""
+    // Output directory: nil = the current workspace. Picking another folder
+    // switches the whole app to that workspace (projects are its children).
+    @State private var workspaceURL: URL? = nil
+    // Saved run profiles (Library): workflow + per-phase models/effort/rounds/
+    // instructions, applied onto the new project after creation.
+    @State private var profiles: [RunProfile] = []
+    @State private var selectedProfile: RunProfile? = nil
 
     enum QueuePosition: String, CaseIterable, Identifiable {
         case endOfQueue, next, runNow
@@ -68,9 +75,10 @@ struct NewAppIntakeSheet: View {
         return firstLine(idea)
     }
     private var slug: String { Self.slugify(effectiveName) }
+    private var effectiveRoot: URL { workspaceURL ?? store.rootURL }
     private var folderExists: Bool {
         !slug.isEmpty && FileManager.default.fileExists(
-            atPath: store.rootURL.appendingPathComponent(slug).path)
+            atPath: effectiveRoot.appendingPathComponent(slug).path)
     }
     // Audit / library-mining workflows analyze an existing repo, so they need
     // at least one target path (same rule as the classic New-chat sheet).
@@ -130,6 +138,7 @@ struct NewAppIntakeSheet: View {
                     runOptionsSection
                     routingSection
                     positionSection
+                    locationSection
                 }
                 .padding(.horizontal, 2)
             }
@@ -309,7 +318,27 @@ struct NewAppIntakeSheet: View {
 
     private var workflowSection: some View {
         VStack(alignment: .leading, spacing: DS.space.xxs) {
-            Text("Workflow").font(DS.font.callout).foregroundStyle(.secondary)
+            HStack(spacing: DS.space.xs) {
+                Text("Workflow").font(DS.font.callout).foregroundStyle(.secondary)
+                Spacer()
+                if !profiles.isEmpty {
+                    Menu(selectedProfile.map { "Profile: \($0.name)" } ?? "Apply profile…") {
+                        Button("None") { selectedProfile = nil }
+                        Divider()
+                        ForEach(profiles) { p in
+                            Button(p.workflow.isEmpty ? p.name
+                                   : "\(p.name) (\(p.workflow))") {
+                                selectedProfile = p
+                                if !p.workflow.isEmpty { workflow = p.workflow }
+                            }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .font(DS.font.caption)
+                    .fixedSize()
+                    .help("A saved profile applies its workflow plus per-phase models, effort, rounds, and instructions to the new app.")
+                }
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: DS.space.xs) {
                     ForEach(workflowOptions) { wf in
@@ -319,6 +348,7 @@ struct NewAppIntakeSheet: View {
                 .padding(.vertical, 2)
             }
         }
+        .onAppear { profiles = store.listProfiles() }
     }
 
     private func workflowCard(_ wf: WorkflowDef) -> some View {
@@ -461,9 +491,53 @@ struct NewAppIntakeSheet: View {
         }
     }
 
+    // MARK: Save location (output directory)
+
+    private var locationSection: some View {
+        VStack(alignment: .leading, spacing: DS.space.xxs) {
+            Text("Save location").font(DS.font.callout).foregroundStyle(.secondary)
+            HStack(spacing: DS.space.xs) {
+                Image(systemName: "folder")
+                    .foregroundStyle(DS.textSecondary)
+                Text(effectiveRoot.path)
+                    .font(DS.font.monoInline)
+                    .lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Choose…") { pickWorkspace() }
+                if workspaceURL != nil {
+                    Button("Reset") { workspaceURL = nil }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(DS.accent.color)
+                }
+            }
+            Text("The project folder “\(slug.isEmpty ? "…" : slug)” is created here. "
+                 + "Choosing a different folder switches the app to that workspace.")
+                .font(DS.font.caption).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func pickWorkspace() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = effectiveRoot
+        panel.prompt = "Use as Workspace"
+        if panel.runModal() == .OK, let url = panel.url {
+            workspaceURL = url.path == store.rootURL.path ? nil : url
+        }
+    }
+
     // MARK: Create
 
     private func create() {
+        // A different save location switches the workspace root BEFORE the
+        // project is created, so createFactoryApp and the queue file target it.
+        if let ws = workspaceURL, ws.path != store.rootURL.path {
+            store.setWorkspaceRoot(ws)
+        }
         var effectiveIdea = idea.trimmingCharacters(in: .whitespacesAndNewlines)
         if effectiveIdea.isEmpty && !attachedDocs.isEmpty {
             effectiveIdea = Self.docsPlaceholderPrompt
@@ -476,6 +550,11 @@ struct NewAppIntakeSheet: View {
         // the same store calls the classic New-chat sheet made.
         store.writeRunConfig(project: slug, autonomy: autonomy,
                              completeness: completeness, stopAfter: stopAfter)
+        // A selected profile materializes its per-phase routing (models/effort/
+        // rounds/instructions) + workflow onto the fresh project.
+        if let profile = selectedProfile {
+            store.applyProfile(profile, toProjectNamed: slug)
+        }
         if needsTargets,
            !targetPaths.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             store.writeTargetPaths(project: slug, paths: targetPaths)

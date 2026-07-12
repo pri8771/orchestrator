@@ -20,19 +20,23 @@
         "Hard requirements.",
         "Non-goals.",
         "Production-readiness definition.",
-        "Decision rules for later phases."
+        "Decision rules for later phases.",
+        "A NUMBERED list of testable requirements extracted from the user's prompt \u2014 each one verifiable by using the app."
       ],
       "acceptance_checks": [
         "A later phase can tell whether it is violating the user's prompt.",
         "Multi-app quantity/category requirements are explicit.",
-        "Production-ready means more than a prototype or spec."
+        "Production-ready means more than a prototype or spec.",
+        "Every promise in the original prompt maps to a numbered requirement; nothing is silently dropped."
       ]
     },
     "product_research": {
       "rules": [
         "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
         "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
-        "Decide what would make the app feel native and valuable on iPhone, not just technically possible."
+        "Decide what would make the app feel native and valuable on iPhone, not just technically possible.",
+        "Every factual claim cites its source (URL from the prompt's fetched context, or is marked ASSUMPTION).",
+        "Include a concrete competitor comparison (names, what they do well, the gap this app exploits)."
       ],
       "required_output": [
         "Audience and use context.",
@@ -44,7 +48,8 @@
       "acceptance_checks": [
         "The next phase can use the output without repeating discovery.",
         "At least three concrete risks or unknowns are named.",
-        "The research points toward a shippable first version."
+        "The research points toward a shippable first version.",
+        "No unsourced factual claims \u2014 each is cited or explicitly marked ASSUMPTION."
       ]
     },
     "portfolio_selection": {
@@ -149,7 +154,8 @@
         "Must-have feature list.",
         "Should/could list.",
         "Won't-build list.",
-        "Acceptance criteria per must-have."
+        "Acceptance criteria per must-have.",
+        "requirements-json machine contract: the numbered, testable requirements this build will be graded against (the adherence gate reads it directly)."
       ],
       "acceptance_checks": [
         "All must-have features support the product promise.",
@@ -177,20 +183,21 @@
     "design_handoff": {
       "rules": [
         "Produce a builder-ready design handoff, not visual adjectives.",
-        "If external Claude Design is desired, provide a clean prompt/upload plan the user can use directly.",
-        "Every primary screen must include layout intent, key components, state variants, accessibility, and motion guidance."
+        "Define a CONCRETE design system first: named colors (hex, light+dark), a type ramp (font/size/weight per role), spacing scale, corner radii, and the reusable components \u2014 written so it can be pasted into a DesignSystem.swift.",
+        "Every primary screen must include layout intent, key components, state variants (loading/empty/error/populated), accessibility, and motion guidance.",
+        "If external Claude Design is desired, provide a clean prompt/upload plan the user can use directly."
       ],
       "required_output": [
-        "Screen-by-screen design specification.",
-        "Design tokens or visual system.",
-        "Component inventory.",
+        "DesignSystem spec: exact color hexes (light+dark), type ramp, spacing scale, radii, and component list \u2014 Swift-ready naming.",
+        "Screen-by-screen design specification with state variants.",
+        "Component inventory mapped to the screens that use each one.",
         "State and interaction notes.",
         "Accessibility requirements.",
         "Claude Design prompt or explicit no-external-design decision."
       ],
       "acceptance_checks": [
-        "A SwiftUI builder can implement the interface from the handoff.",
-        "The handoff does not depend on hidden design decisions.",
+        "A SwiftUI builder can implement DesignSystem.swift from the spec without inventing a single value.",
+        "Every screen's empty, loading, and error states are specified \u2014 not just the happy path.",
         "The design direction is premium and category-specific."
       ]
     },
@@ -219,7 +226,8 @@
         "Choose the simplest architecture that supports the MVP and tests.",
         "Specify data models, services, persistence, concurrency boundaries, and error handling.",
         "Prefer Apple frameworks and permissive dependencies only.",
-        "Emit the required interfaces-json block."
+        "Emit the required interfaces-json block.",
+        "The Red Team's job here: name at least one requirement or edge case the spec missed before closing."
       ],
       "required_output": [
         "Architecture overview.",
@@ -262,7 +270,8 @@
         "Lane-by-lane responsibilities.",
         "Owned files.",
         "Handoffs and forbidden edit zones.",
-        "tasks-json backlog."
+        "tasks-json backlog.",
+        "flows-json machine contract: 3-8 declared user journeys covering every primary promise of the app (executed against the real build by the UI-crawl gate)."
       ],
       "acceptance_checks": [
         "No task is ownerless.",
@@ -292,6 +301,9 @@
     "build_coordination": {
       "rules": [
         "Build real files in app_build; do not only describe the solution.",
+        "FIRST create DesignSystem.swift from the design handoff's token spec; every view must use its tokens \u2014 no inline hex colors, no raw font sizes.",
+        "Every interactive element (buttons, cells, fields, toggles) must set .accessibilityIdentifier \u2014 the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support.",
+        "Implement screens with ALL specified states: empty, loading, error, and populated. A screen with only the happy path is incomplete.",
         "Keep changes scoped to the assigned lane and leave integration files to the integrator.",
         "Every iteration should reduce compile, runtime, or product-completeness risk.",
         "When generating iOS, include unit/UI test targets where feasible."
@@ -304,7 +316,10 @@
       ],
       "acceptance_checks": [
         "The app has a runnable entry point.",
-        "The main user workflow is implemented.",
+        "DesignSystem.swift exists and views consume its tokens.",
+        "Interactive elements carry accessibilityIdentifiers (crawl/flow targetable).",
+        "The main user workflow is implemented end-to-end.",
+        "Empty/loading/error states exist for the primary screens.",
         "The integrator has wired lane outputs together."
       ]
     },

@@ -203,6 +203,10 @@ struct Project: Identifiable, Equatable {
     // True when the user pressed Stop on this run from this GUI session (the
     // state-file mtime heuristic would otherwise show "running" for minutes).
     var manuallyStopped: Bool = false
+    // True when <project>/.orch_archived exists — removed from the sidebar's
+    // active sections and invisible to engine scans (find_apps skips it), but
+    // kept on disk so Restore can bring it back.
+    var archived: Bool = false
 
     var id: String { name }
 

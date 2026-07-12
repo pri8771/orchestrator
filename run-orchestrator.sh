@@ -4,7 +4,8 @@
 # Each direct child of /Users/pchordia/Documents/iOS-App-Factory is one project.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export ORCH_DIR="$REPO/orchestrator-v2-source"
+# The engine lives at the repo root (orchestrator.py is a sibling of this script).
+export ORCH_DIR="$REPO"
 export ORCH_ROOT="/Users/pchordia/Documents/iOS-App-Factory"
 mkdir -p "$ORCH_ROOT"
 GUI_DIR="$ORCH_DIR/gui"

@@ -156,3 +156,81 @@ def load_run_config(app_dir):
 
 def _phase_key(ph):
     return ph.key if hasattr(ph, "key") else (ph[0] if isinstance(ph, (list, tuple)) else ph)
+
+
+# ---------------------------------------------------------------------------
+# Definition of Done (task #8): an editable per-tier checklist of what
+# "complete" MEANS, consumed by the adherence gate (grading) and design lint
+# (machine-checkable items). Tiers inherit upward: prototype < mvp < v1 <
+# production_draft. definition_of_done.json overrides the defaults per tier.
+# ---------------------------------------------------------------------------
+DOD_FILENAME = "definition_of_done.json"
+DOD_ORDER = ("prototype", "mvp", "v1", "production_draft")
+DEFAULT_DOD = {
+    "prototype": [
+        "Every core feature is FUNCTIONALLY implemented, not just visually "
+        "present: real logic runs, real data is produced/stored, state "
+        "persists where the feature implies it should. A screen that looks "
+        "finished but whose controls don't actually work (taps that do "
+        "nothing, hardcoded placeholder data, unperformed calculations) is "
+        "UNMET regardless of visual polish.",
+        "The primary user workflow works end-to-end using REAL user-entered "
+        "data, not hardcoded content standing in for it.",
+        "The app launches to a real screen, not a placeholder.",
+        "No crash on the primary workflow.",
+    ],
+    "mvp": [
+        "Every screen has empty, loading, and error states.",
+        "Dark mode is styled and readable.",
+        "Onboarding or a self-explanatory first screen exists.",
+        "All views style through DesignSystem tokens.",
+        "Every interactive element has an accessibilityIdentifier.",
+    ],
+    "v1": [
+        "All declared user flows pass against the built app.",
+        "No TODO/FIXME markers left in source.",
+        "App icon and display name are set.",
+    ],
+    "production_draft": [
+        "Unit or UI test target exists and runs.",
+        "Accessibility audit issues addressed.",
+        "No dead buttons.",
+    ],
+}
+
+
+def load_dod(orch_dir):
+    """definition_of_done.json as {tier: [items]}; missing/corrupt -> defaults."""
+    out = {k: list(v) for k, v in DEFAULT_DOD.items()}
+    try:
+        with open(os.path.join(orch_dir, DOD_FILENAME), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return out
+    if isinstance(data, dict):
+        for tier in DOD_ORDER:
+            v = data.get(tier)
+            if isinstance(v, list) and v:
+                out[tier] = [str(i) for i in v if str(i).strip()]
+    return out
+
+
+def dod_items(orch_dir, tier):
+    """The ACTIVE checklist for a tier: its items plus every lower tier's
+    (inheritance). Unknown tier -> v1."""
+    tier = tier if tier in DOD_ORDER else "v1"
+    dod = load_dod(orch_dir)
+    items = []
+    for t in DOD_ORDER:
+        items.extend(dod.get(t) or [])
+        if t == tier:
+            break
+    return items
+
+
+def render_dod(orch_dir, tier):
+    """Prompt block for the adherence gate ('' never happens — defaults exist)."""
+    items = dod_items(orch_dir, tier)
+    return ("===== DEFINITION OF DONE (tier: %s — grade against EVERY item) =====\n"
+            % (tier if tier in DOD_ORDER else "v1")
+            + "\n".join("%d. %s" % (i + 1, it) for i, it in enumerate(items)))
