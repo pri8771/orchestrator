@@ -30,6 +30,20 @@ WORKFLOWS_DIR = os.path.join(HERE, "workflows")
 DEFAULT_WORKFLOW = "app_build"
 
 
+def phase_key(phase):
+    """The canonical way to read a phase's key from any of its shapes: a Phase
+    object (``.key``), a dict (``["key"]``), or a legacy ``(key, ...)`` tuple.
+    Centralizes the three ad-hoc accessors that had drifted across modules."""
+    if hasattr(phase, "key"):
+        return phase.key
+    if hasattr(phase, "get"):
+        return phase.get("key")
+    try:
+        return phase[0]
+    except (TypeError, IndexError, KeyError):
+        return None
+
+
 class Phase:
     """One phase of a workflow.
 

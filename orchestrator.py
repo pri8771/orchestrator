@@ -62,7 +62,6 @@ import procutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(HERE, "logs")
-LOCK_PATH = os.path.join(HERE, ".lock")   # legacy global lock (kept for compat)
 # Per-app locks. Default is engine-local, but main() re-points this at
 # <root>/.orch-locks once the workspace root is known: two engine copies (a
 # repo checkout and the GUI's Application Support install) must contend for the
@@ -330,43 +329,9 @@ def _is_stale_running_state(app_dir, state, stale_seconds=5400):
     return True
 
 
-def acquire_lock(stale_seconds):
-    if os.path.exists(LOCK_PATH):
-        age = time.time() - os.path.getmtime(LOCK_PATH)
-        try:
-            with open(LOCK_PATH, encoding="utf-8") as fh:
-                info = fh.read().strip()
-        except OSError:
-            info = "(unreadable)"
-        lock_pid = _extract_lock_pid(info)
-        alive = _pid_alive(lock_pid)
-        if alive and age <= stale_seconds:
-            emit("Another orchestrator run holds the lock (age %ds): %s" % (int(age), info))
-            emit("Refusing to start. If this is wrong, delete %s" % LOCK_PATH)
-            return False
-        if alive:
-            emit("Found STALE lock (age %ds > %ds) from live pid=%s. Reclaiming. Was: %s"
-                 % (int(age), stale_seconds, lock_pid, info))
-        else:
-            emit("Found orphaned lock (pid=%s, age %ds). Reclaiming. Was: %s"
-                 % (lock_pid, int(age), info))
-        try:
-            os.remove(LOCK_PATH)
-        except OSError:
-            pass
-    payload = "pid=%d host=%s started=%s" % (os.getpid(), socket.gethostname(), now_str())
-    with open(LOCK_PATH, "w", encoding="utf-8") as fh:
-        fh.write(payload + "\n")
-    return True
-
-
-def release_lock():
-    try:
-        if os.path.exists(LOCK_PATH):
-            os.remove(LOCK_PATH)
-            emit("Released lock.")
-    except OSError:
-        pass
+# NOTE: the legacy machine-wide global lock (acquire_lock/release_lock/LOCK_PATH)
+# was removed — locking is per-app (<workspace>/.orch-locks/<app>.lock), handled
+# by the functions below.
 
 
 # Per-app locks: different apps run concurrently; one app can't run twice.
@@ -592,18 +557,19 @@ def _run_subprocess(cmd, cwd, timeout, env=None, heartbeat=None, input_text=None
 def _gemini_api_key(cfg):
     """A Gemini API key from the environment or a local key file. With a key,
     the gemini CLI runs reliably headless over HTTP — unlike agy, which needs an
-    interactive terminal. The default key file lives OUTSIDE the repo
-    (~/.orchestrator/gemini_api_key) so a real key can never be committed or
-    pushed by run.sh's auto-commit; the legacy in-repo path is still read as a
-    fallback but is gitignored. Returns None if no key is set."""
+    interactive terminal. The key file lives OUTSIDE the repo
+    (~/.orchestrator/gemini_api_key, or models.gemini_api_key_file) so a real key
+    can never be committed or pushed by run.sh's auto-commit. Returns None if no
+    key is set."""
     for var in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
         v = os.environ.get(var)
         if v and v.strip():
             return v.strip()
+    # Only outside-the-repo locations: the legacy in-repo path is dropped so a
+    # real key is never read from (and at risk of being committed from) the repo.
     paths = [cget(cfg, "models.gemini_api_key_file", "")] if \
         cget(cfg, "models.gemini_api_key_file", "") else [
             os.path.expanduser("~/.orchestrator/gemini_api_key"),
-            os.path.join(HERE, "gemini_api_key"),  # legacy location (gitignored)
         ]
     for path in paths:
         try:
@@ -930,9 +896,11 @@ def run_ollama(cfg, prompt, timeout):
 def run_local(cfg, prompt, timeout, model=None):
     """Local-model adapter (V2 spec §12): talks to Ollama's loopback-only HTTP
     API. Never sends data off the machine. ``model`` is an Ollama tag like
-    'qwen2.5-coder:7b' (defaults to config or llama3.1:8b). Returns the same
+    'qwen2.5-coder:7b'. Defaults to models.local_default, then the configured
+    models.ollama, then llama3.1:8b as a last resort. Returns the same
     (out, err, code, command) shape as the CLI runners."""
-    model = model or cget(cfg, "models.local_default", "") or "llama3.1:8b"
+    model = (model or cget(cfg, "models.local_default", "")
+             or cget(cfg, "models.ollama", "") or "llama3.1:8b")
     url = "http://127.0.0.1:11434/api/generate"
     payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
     cmd = "ollama:generate model=%s" % model
@@ -1397,7 +1365,13 @@ def ensure_signature(text, agent):
     # Sign-offs are no longer required — the orchestrator already labels every
     # speaker. Strip any "From X" a model tacked on so the chat reads naturally.
     tail = text.rstrip()
-    for sig in SIGNATURE.values():
+    # SIGNATURE.values() only holds the four static ids; SIGNATURE[agent] derives
+    # the right "From <display>" for a dynamic local:<model> id so its sign-off
+    # is stripped too.
+    candidates = list(SIGNATURE.values())
+    if SIGNATURE[agent] not in candidates:
+        candidates.append(SIGNATURE[agent])
+    for sig in candidates:
         if tail.endswith(sig):
             tail = tail[: -len(sig)].rstrip()
             break
@@ -1472,8 +1446,8 @@ How to talk in this room:
 - Go deep and be specific. Make a real argument with concrete examples and think
   out loud. A couple of rich paragraphs, not a shallow blurb.
 - React to what the others actually just said, by name (Codex / Claude /
-  Gemini / and the human if they chimed in). Quote or paraphrase their point,
-  then build on it or push back on it.
+  Gemini / any local model in the room / and the human if they chimed in).
+  Quote or paraphrase their point, then build on it or push back on it.
 - Genuinely try to CONVINCE the group of whatever you think is the single best
   idea right now — it does NOT have to be your own. If someone makes a better
   case, say so and change your mind out loud.
@@ -2206,7 +2180,8 @@ def live_log(app_dir, lane, agent, kind, summary):
     try:
         entry = {
             "schema_version": schemalib.SCHEMA_VERSION,
-            "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+            # tz-aware so live_log entries order unambiguously across DST.
+            "ts": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "lane": str(lane or ""),
             "agent": str(agent or ""),
             "kind": str(kind or ""),
@@ -2247,7 +2222,20 @@ def parse_tasks_blocks(text):
             t.setdefault("depends_on", [])
             t.setdefault("acceptance_criteria", [])
             byid[str(t["id"])] = t
-    return list(byid.values()), errors
+    # Report (don't drop) two planning errors the build would otherwise swallow:
+    # an owner_lane the roster can't route (falls back to showing the task to
+    # every worker), and a depends_on pointing at a task that doesn't exist.
+    tasks = list(byid.values())
+    known_ids = set(byid)
+    for t in tasks:
+        lane = t.get("owner_lane")
+        if lane is not None and str(lane) not in BUILD_LANE_IDS:
+            errors.append("task %r has unknown owner_lane %r (expected one of: %s)"
+                          % (t.get("id"), lane, ", ".join(BUILD_LANE_IDS)))
+        for d in t.get("depends_on") or []:
+            if str(d) not in known_ids:
+                errors.append("task %r depends_on unknown id %r" % (t.get("id"), d))
+    return tasks, errors
 
 
 def find_task_cycles(tasks):
@@ -3669,7 +3657,9 @@ def _apply_phase_routing(cfg, key):
         routing = cfg["_routing"] = mrlib.load_routing_for_app(HERE, cfg.get("_app_dir"))
     # Shared mutable run state must exist BEFORE the copy so every phase-scoped
     # copy aliases the same dicts (cooldowns/sessions survive across phases).
-    cfg.setdefault("_health", {})
+    # The health map is _agent_health everywhere else — the old "_health" key was
+    # written here and never read, so cooldowns didn't actually survive the copy.
+    cfg.setdefault("_agent_health", {})
     cfg.setdefault("_claude_sessions", {})
     c = dict(cfg)
     c["_phase_key"] = key
@@ -3762,7 +3752,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # Verification gate (§16): a requires_verification phase (e.g. final review) is
     # fed the real persisted verification result as context. Set-or-CLEAR each phase.
     _needs_vlabel = (bool(phasedef.get("requires_verification", False)) if hasattr(phasedef, "get")
-                     else False) or key in ("final_review", "launch_readiness_review")
+                     else False) or key == "final_review"
     if _needs_vlabel:
         _vr = verifylib.load_verify_results(app_dir)
         _latest = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
@@ -4324,6 +4314,16 @@ def _should_pause_after(cfg, phasedef):
     return False
 
 
+def _approval_timeout(cfg):
+    """How long a checkpoint waits for a human decision before proceeding. In
+    parallel-project mode this bounds how long a blocked thread is held, so it's
+    configurable (runtime.approval_timeout_seconds); default 2h."""
+    try:
+        return int(cget(cfg, "runtime.approval_timeout_seconds", 7200) or 7200)
+    except (TypeError, ValueError):
+        return 7200
+
+
 def _await_approval(app_dir, phase_key, state, timeout=7200, poll=2.0):
     """Pause after a checkpoint phase until the GUI (or a human) drops one of
     three decision files under <app>/approvals/ (V2 §3.1 approval flow), or the
@@ -4469,6 +4469,11 @@ def _portfolio_manifest_blob(state, latest_output=""):
 def _maybe_materialize_portfolio_children(cfg, root, app, app_dir, prompt, state,
                                           latest_output=""):
     """Parse the portfolio manifest, if present, and create sibling projects."""
+    # Materialized once already (recorded on state): the children exist and
+    # materialize_children would just re-skip them. Skip the re-parse + fs walk
+    # this call site does at the top of every phase iteration.
+    if state.get("portfolio_manifest"):
+        return None
     if not portfoliolib.is_portfolio_parent_prompt(prompt):
         return None
     manifest, errors = portfoliolib.parse_portfolio_manifest(
@@ -4944,7 +4949,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             # skipping the human decision.
             emit("Re-arming interrupted approval checkpoint after phase '%s'."
                  % pending_approval)
-            decision, payload = _await_approval(app_dir, pending_approval, state)
+            decision, payload = _await_approval(app_dir, pending_approval, state,
+                                                timeout=_approval_timeout(cfg))
             if decision == "changes_requested":
                 if pending_approval in state.get("completed_phases", []):
                     state["completed_phases"].remove(pending_approval)
@@ -5100,7 +5106,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             # V2 §3: semi-autonomous / manual checkpoint pause. Fully-autonomous
             # (the default) never pauses. Not for the last phase (nothing follows).
             if i < len(phases) - 1 and _should_pause_after(cfg, phasedef):
-                decision, payload = _await_approval(app_dir, key, state)
+                decision, payload = _await_approval(app_dir, key, state,
+                                                    timeout=_approval_timeout(cfg))
                 if decision == "edited" and (payload or "").strip():
                     # Edit & Approve: the human's text REPLACES the phase output
                     # everywhere downstream phases read it.

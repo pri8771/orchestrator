@@ -53,41 +53,50 @@ PORTFOLIO_JSON_INSTRUCTION = (
 )
 
 
+# Signals that a prompt is intentionally a multi-app portfolio. Hoisted to module
+# scope (from inside the function) so the boundaries are inspectable and unit
+# tested — this classifier gates whether the engine fans a prompt out into
+# sibling child projects, so a misclassification is expensive.
+PORTFOLIO_SIGNALS = (
+    "one folder per selected app",
+    "one folder per app",
+    "for every selected app",
+    "each selected app",
+    "selected app list",
+    "apps 1-8",
+    "required app map",
+    "do not build 63 apps",
+    "multiple apps",
+    "more than one app",
+    "one unique app for each",
+    "1 unique app for each",
+    "one app for each",
+    "out of these categories",
+    "these categories",
+    "each app should",
+    "all these apps",
+)
+APP_CATEGORY_NAMES = (
+    "business", "finance", "food & drink", "graphics & design",
+    "health & fitness", "medical", "navigation", "news",
+    "photo & video", "productivity", "reference", "social networking",
+    "travel", "utilities", "weather", "sports", "shopping",
+)
+# The "distributive" phrases that, alongside several category names, imply
+# "one app per category".
+_PORTFOLIO_DISTRIBUTIVE = ("one app", "1 app", "unique app", "each app", "for each")
+
+
 def is_portfolio_parent_prompt(prompt):
     """Heuristic guard for prompts that are intentionally multi-app portfolios."""
     text = (prompt or "").lower()
     if "portfolio_child_project:" in text:
         return False
-    signals = (
-        "one folder per selected app",
-        "one folder per app",
-        "for every selected app",
-        "each selected app",
-        "selected app list",
-        "apps 1-8",
-        "required app map",
-        "do not build 63 apps",
-        "multiple apps",
-        "more than one app",
-        "one unique app for each",
-        "1 unique app for each",
-        "one app for each",
-        "out of these categories",
-        "these categories",
-        "each app should",
-        "all these apps",
-    )
-    category_names = (
-        "business", "finance", "food & drink", "graphics & design",
-        "health & fitness", "medical", "navigation", "news",
-        "photo & video", "productivity", "reference", "social networking",
-        "travel", "utilities", "weather", "sports", "shopping",
-    )
-    category_hits = sum(1 for name in category_names if name in text)
-    return ("portfolio" in text and sum(1 for s in signals if s in text) >= 1) \
-        or sum(1 for s in signals if s in text) >= 2 \
-        or (category_hits >= 4 and any(s in text for s in (
-            "one app", "1 app", "unique app", "each app", "for each")))
+    signal_hits = sum(1 for s in PORTFOLIO_SIGNALS if s in text)
+    category_hits = sum(1 for name in APP_CATEGORY_NAMES if name in text)
+    return ("portfolio" in text and signal_hits >= 1) \
+        or signal_hits >= 2 \
+        or (category_hits >= 4 and any(s in text for s in _PORTFOLIO_DISTRIBUTIVE))
 
 
 def requires_built_children(prompt):

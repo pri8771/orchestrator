@@ -92,7 +92,10 @@ def sha256_text(text):
 
 
 def agent_message(agent, phase_title, rnd, others):
-    crit = others[(hash(phase_title + agent) % len(others))]
+    # Deterministic critic pick: builtin hash() is per-process salted for str
+    # (PYTHONHASHSEED), which would break the "deterministic/idempotent" contract
+    # — a re-run must reproduce the same demo transcript.
+    crit = others[int(sha256_text(phase_title + agent), 16) % len(others)]
     return (
         "%s Honestly, for the %s stage I keep landing in the same place: keep it "
         "dead simple and get something real in front of people fast. %s made a fair "

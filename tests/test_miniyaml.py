@@ -18,8 +18,10 @@ class TestCoerceScalar(unittest.TestCase):
         self.assertEqual(miniyaml.coerce_scalar('"hi"'), "hi")
         self.assertEqual(miniyaml.coerce_scalar("'hi'"), "hi")
 
-    def test_unterminated_quote_returned_verbatim(self):
-        self.assertEqual(miniyaml.coerce_scalar('"oops'), '"oops')
+    def test_unterminated_quote_leading_stripped(self):
+        # An unmatched leading quote is dropped, not kept as a corrupting prefix.
+        self.assertEqual(miniyaml.coerce_scalar('"oops'), "oops")
+        self.assertEqual(miniyaml.coerce_scalar('"123'), 123)
 
 
 class TestStripInlineComment(unittest.TestCase):

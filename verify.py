@@ -211,6 +211,18 @@ def _verify_spm(build_dir, timeout):
             "errors": "" if ok else _errors_tail(out + "\n" + err)}
 
 
+def _has_python_tests(build_dir):
+    """True if the project ships a discoverable test suite (test_*.py / *_test.py
+    / conftest.py) — worth running to catch unresolved imports."""
+    if _find(build_dir, "conftest.py"):
+        return True
+    for hit in _find(build_dir, ".py"):
+        base = os.path.basename(hit)
+        if base.startswith("test_") or base.endswith("_test.py"):
+            return True
+    return False
+
+
 def _verify_shell(build_dir, command, timeout):
     if not command:
         # Auto-detect a sensible check.
@@ -220,7 +232,14 @@ def _verify_shell(build_dir, command, timeout):
         if kind == "node" and shutil.which("node"):
             command = "npm run build --if-present || node -e \"process.exit(0)\""
         elif kind == "python" and shutil.which("python3"):
-            command = "python3 -m compileall -q ."
+            # compileall is syntax-only and would bless code with unresolved
+            # imports as "verified". If the project ships tests, run them too —
+            # they exercise real imports/behavior — otherwise keep the syntax check.
+            if _has_python_tests(build_dir):
+                command = ("python3 -m compileall -q . && "
+                           "python3 -m unittest discover -q")
+            else:
+                command = "python3 -m compileall -q ."
         else:
             return {"ran": False, "ok": False, "tool": "shell",
                     "summary": "no verification command and no auto-detectable "

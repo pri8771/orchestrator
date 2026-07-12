@@ -32,6 +32,10 @@ models:
   gemini: "Gemini 3.5 Flash (High)"
   # Gemini CLI fallback model id (used with `gemini -m <id>`)
   gemini_fallback: "gemini-3.5-flash"
+  # Optional path to a file holding the Gemini API key for headless runs. Blank
+  # (the default) falls back to ~/.orchestrator/gemini_api_key. Keep the key file
+  # OUTSIDE this repo — secret-shaped names are gitignored and never committed.
+  gemini_api_key_file: ""
   # Optional stronger Claude model for the build INTEGRATOR turn only (the
   # quality chokepoint). Blank = same as models.claude.
   claude_integrator: ""

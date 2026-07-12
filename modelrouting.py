@@ -34,6 +34,7 @@ Every reader is best-effort: a missing/corrupt file or unknown phase key
 degrades to "no overrides" and can never take down a run.
 """
 
+import copy as _copy
 import json
 import os
 import re
@@ -145,6 +146,11 @@ def load_routing_for_app(here, app_dir):
     if not project["phases"]:
         return fleet
     out = dict(fleet)
+    # dict(fleet) is shallow: without this, out["fallback"]/out["chains"] alias
+    # the fleet's nested dicts, so a downstream mutation of the per-app view would
+    # bleed into the fleet view.
+    out["fallback"] = _copy.deepcopy(fleet.get("fallback"))
+    out["chains"] = _copy.deepcopy(fleet.get("chains"))
     merged_phases = {key: dict(ov) for key, ov in fleet["phases"].items()}
     for key, ov in project["phases"].items():
         merged_phases[key] = dict(merged_phases.get(key, {}), **ov)

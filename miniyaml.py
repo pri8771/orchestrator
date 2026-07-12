@@ -11,10 +11,13 @@ JSON handled by `json`.
 
 def coerce_scalar(raw):
     """Coerce a raw scalar string to bool/int/float/None/str, stripping matched
-    surrounding quotes. An unmatched leading quote is returned verbatim."""
+    surrounding quotes. An unmatched leading quote is dropped (rather than kept
+    as a corrupting prefix) and the remainder coerced."""
     s = raw.strip()
     if (len(s) >= 2) and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
         return s[1:-1]
+    if s[:1] in ('"', "'"):
+        s = s[1:].strip()   # unmatched leading quote -> don't keep it verbatim
     low = s.lower()
     if low == "true":
         return True

@@ -56,6 +56,15 @@ class TestAssignPersonas(unittest.TestCase):
         for v in a.values():
             self.assertIn(v["role"]["id"], subset)
 
+    def test_empty_pools_do_not_raise(self):
+        # A caller passing gutted pools must not hit ZeroDivisionError; falls
+        # back to the built-in defaults so every agent still gets a persona.
+        a = roles.assign_personas(0, self.agents, [], [])
+        self.assertEqual(set(a), set(self.agents))
+        for v in a.values():
+            self.assertIn("id", v["role"])
+            self.assertIn("id", v["personality"])
+
     def test_persona_label_is_short_tag(self):
         a = self._assign(0)
         label = roles.persona_label(a["codex"])

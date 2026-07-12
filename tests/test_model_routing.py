@@ -249,8 +249,9 @@ class TestApplyPhaseRouting(unittest.TestCase):
         c = orch._apply_phase_routing(cfg, "initial_discussion")
         self.assertEqual(c["_resolved"], cfg["_resolved"])
         self.assertEqual(c["_phase_key"], "initial_discussion")
-        # cooldowns/sessions are SHARED dicts across phase copies
-        self.assertIs(c["_health"], cfg["_health"])
+        # cooldowns/sessions are SHARED dicts across phase copies. The health map
+        # is _agent_health (the old "_health" key was written but never read).
+        self.assertIs(c["_agent_health"], cfg["_agent_health"])
         self.assertIs(c["_claude_sessions"], cfg["_claude_sessions"])
 
     def test_enabled_agents_applies_phase_filter(self):

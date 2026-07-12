@@ -50,9 +50,8 @@ def _pget(phase, key, default=None):
 
 
 def _phase_key(phase):
-    if hasattr(phase, "get"):
-        return phase.get("key")
-    return phase[0]  # legacy 4-tuple compatibility
+    import workflows
+    return workflows.phase_key(phase)  # one shared accessor across modules
 
 
 def _remove_marker(app_dir):

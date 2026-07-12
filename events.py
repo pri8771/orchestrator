@@ -83,7 +83,9 @@ def emit_event(app_dir, kind, **fields):
     try:
         if not app_dir or not kind:
             return False
-        evt = {"ts": _dt.datetime.now().isoformat(timespec="seconds"),
+        # tz-aware (local + offset) so event ordering is unambiguous across DST
+        # boundaries, unlike a naive datetime.now().
+        evt = {"ts": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                "kind": str(kind)}
         for k, v in fields.items():
             if v is None:

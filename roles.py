@@ -146,6 +146,13 @@ def assign_personas(phase_index, agents, personalities, roles, phase_role_ids=No
     Returns {agent: {"role": <role dict>, "personality": <personality dict>}}.
     """
     role_pool = _role_pool_for_phase(roles, phase_role_ids)
+    # Guard the modulo below against empty pools (a caller passing gutted
+    # roles/personalities would otherwise raise ZeroDivisionError). Fall back to
+    # the built-in defaults so every agent still gets a (role, personality).
+    if not personalities:
+        personalities = DEFAULT_PERSONALITIES
+    if not role_pool:
+        role_pool = DEFAULT_ROLES
     by_role_id = {r.get("id"): r for r in roles}
     overrides = agent_role_overrides or {}
     out = {}

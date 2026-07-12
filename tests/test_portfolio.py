@@ -148,6 +148,30 @@ class TestPortfolioExpansion(unittest.TestCase):
         self.assertFalse(port.is_portfolio_parent_prompt(
             "PORTFOLIO_CHILD_PROJECT: true\nBuild GoEasy."))
 
+    def test_portfolio_detection_boundaries(self):
+        # Single, ordinary app request — must NOT be classified as a portfolio.
+        self.assertFalse(port.is_portfolio_parent_prompt(
+            "Build me a simple weather app with a clean SwiftUI design."))
+        self.assertFalse(port.is_portfolio_parent_prompt(""))
+        self.assertFalse(port.is_portfolio_parent_prompt(None))
+        # "portfolio" word + exactly one signal -> parent.
+        self.assertTrue(port.is_portfolio_parent_prompt(
+            "This is a portfolio; build multiple apps."))
+        # Two distinct signals, no "portfolio" word -> parent.
+        self.assertTrue(port.is_portfolio_parent_prompt(
+            "There are multiple apps here; each selected app gets its own folder."))
+        # Only categories, but no distributive phrase -> not enough.
+        self.assertFalse(port.is_portfolio_parent_prompt(
+            "Business, Finance, Weather, Sports are all interesting spaces."))
+        # A child project is explicitly excluded even if it lists categories.
+        self.assertFalse(port.is_portfolio_parent_prompt(
+            "portfolio_child_project: true\nBusiness Finance Weather Sports, one app for each"))
+
+    def test_heuristic_signals_are_module_constants(self):
+        # The signal tables are hoisted so they can be inspected/tuned/tested.
+        self.assertIn("multiple apps", port.PORTFOLIO_SIGNALS)
+        self.assertIn("weather", port.APP_CATEGORY_NAMES)
+
     def test_prompt_requires_built_children_for_production_multi_app_request(self):
         prompt = (
             "Business\nFinance\nFood & Drink\nHealth & Fitness\n"
