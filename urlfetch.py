@@ -28,6 +28,7 @@ Wired in orchestrator.py:
 """
 
 import datetime as _dt
+import hashlib
 import http.client
 import ipaddress
 import os
@@ -408,11 +409,16 @@ def fetch_url(url, timeout=DEFAULT_TIMEOUT, max_bytes=DEFAULT_MAX_BYTES,
 # Cache files under <app>/docs/fetched/
 # ---------------------------------------------------------------------------
 def cache_filename(url):
-    """Deterministic <slugified-domain-path>.md name for a URL's cache file."""
+    """Deterministic <slugified-domain-path>-<hash>.md name for a URL's cache
+    file. The 8-char hash suffix disambiguates two distinct long URLs whose
+    first chars of slug happen to match after the 80-char truncation below —
+    without it they'd silently share one cache file and a later read would
+    return the wrong page's content."""
     parts = urllib.parse.urlsplit(url)
     slug = re.sub(r"[^a-z0-9]+", "-",
                   ("%s%s" % (parts.netloc, parts.path)).lower()).strip("-")
-    return (slug or "url")[:80] + ".md"
+    digest = hashlib.sha256(url.encode("utf-8", "replace")).hexdigest()[:8]
+    return (slug or "url")[:80] + "-" + digest + ".md"
 
 
 def _write_cache_file(cache_dir, res):
@@ -430,8 +436,12 @@ def _write_cache_file(cache_dir, res):
               "---\n\n" % (res.get("title") or res["url"], res["url"],
                            _dt.datetime.now().isoformat(timespec="seconds"),
                            status))
-    with open(path, "w", encoding="utf-8") as fh:
+    # Atomic write: a process killed mid-write must never leave a truncated
+    # cache file that _parse_cache_file then mis-parses or accepts as fetched.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(header + (res.get("text") or ""))
+    os.replace(tmp, path)
     return path
 
 

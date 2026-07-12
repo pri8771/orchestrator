@@ -13,6 +13,7 @@ Standard library only.
 
 import json
 import os
+import re
 
 import schemas
 
@@ -74,6 +75,16 @@ def _phase_meta(phase):
     }
 
 
+def _jira_label(value, default):
+    """Sanitize a value for use as a Jira label. Jira rejects whitespace (and
+    is picky about other punctuation) in labels; `owner_lane` normally comes
+    from the fixed BUILD_LANE_IDS set (no spaces), but a malformed/free-text
+    value from an agent could still reach here, so this is a defensive
+    normalization rather than trusting the source. Never returns ''."""
+    s = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip("-")
+    return s or default
+
+
 def _issue_from_task(task, app, epic_key):
     tid = str(task.get("id") or "")
     title = str(task.get("title") or tid or "Untitled task")
@@ -93,7 +104,7 @@ def _issue_from_task(task, app, epic_key):
         "description": "\n".join(desc).strip(),
         "status": str(task.get("status") or "pending"),
         "epic_external_id": epic_key,
-        "labels": ["orchestrator", "generated-app", str(task.get("owner_lane") or "lane")],
+        "labels": ["orchestrator", "generated-app", _jira_label(task.get("owner_lane"), "lane")],
         "fields": {
             "owner_lane": task.get("owner_lane"),
             "files": task.get("files") or [],

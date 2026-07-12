@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
 import localmodels as lm
 import modelrouting as mr
@@ -362,6 +363,43 @@ class TestFallbackChains(unittest.TestCase):
                             "phases": {"tech_specs": {"timeout": 1800}}}}
         c = orch._apply_phase_routing(cfg, "tech_specs")
         self.assertEqual(c["_routed_turn_timeout"], 1800)
+
+    def test_ollama_override_shadowed_by_roster_is_logged(self):
+        # A phase-level models.ollama override has NO effect on participants
+        # when models.ollama_roster is configured (the roster wins in
+        # enabled_agents()) — that silent no-op must be surfaced, not hidden.
+        cfg = {"models": {"ollama_roster": "model-a, model-b"},
+              "_resolved": {"ollama_roster": ["model-a", "model-b"]},
+              "runtime": {}, "agents": {},
+              "_routing": {"enabled": True, "fallback": {},
+                           "phases": {"initial_discussion": {"ollama": "model-c"}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "initial_discussion")
+        self.assertTrue(any("has no effect on participants" in m for m in msgs))
+
+    def test_ollama_override_not_shadowed_when_in_roster(self):
+        # When the override DOES name a roster member, no confusing warning.
+        cfg = {"models": {"ollama_roster": "model-a, model-b"},
+              "_resolved": {"ollama_roster": ["model-a", "model-b"]},
+              "runtime": {}, "agents": {},
+              "_routing": {"enabled": True, "fallback": {},
+                           "phases": {"initial_discussion": {"ollama": "model-a"}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "initial_discussion")
+        self.assertFalse(any("has no effect on participants" in m for m in msgs))
+
+    def test_ollama_override_not_shadowed_when_no_roster(self):
+        # With no roster at all, the legacy single-model override IS honored,
+        # so no warning should fire.
+        cfg = {"models": {}, "_resolved": {}, "runtime": {}, "agents": {},
+              "_routing": {"enabled": True, "fallback": {},
+                           "phases": {"initial_discussion": {"ollama": "model-c"}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "initial_discussion")
+        self.assertFalse(any("has no effect on participants" in m for m in msgs))
 
 
 class TestCallAgentChain(unittest.TestCase):

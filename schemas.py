@@ -212,6 +212,18 @@ _ENTROPY_ALLOW = re.compile(
     r"|[0-9a-f]{40}|[0-9a-f]{64})$", re.IGNORECASE)                       # sha1/sha256 hex
 _TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{24,}")
 
+# Fenced structured blocks (```finding-json, ```tasks-json, ```interfaces-json,
+# ```phase-output-json, ```portfolio-json, ... — the "-json" naming convention
+# extract_structured_blocks parses). The entropy fallback below is a heuristic
+# and will false-positive on legitimate long identifiers (a git SHA fragment, a
+# localization key, a base64 asset id) — fine to lose in ordinary transcript
+# prose, but a false-positive redaction INSIDE one of these blocks corrupts a
+# field value the engine's own downstream parsing depends on (tasks.json file
+# paths, finding file:line, etc). The precise/labeled patterns above still run
+# everywhere, including inside these blocks — a real secret shape is still
+# worth catching there. Only the entropy guess is skipped inside them.
+_JSON_FENCE_SPAN_RE = re.compile(r"```[A-Za-z][\w-]*-json\b.*?```", re.DOTALL)
+
 
 def _shannon_entropy(s):
     if not s:
@@ -225,9 +237,12 @@ def _shannon_entropy(s):
 
 def redact_secrets(text):
     """Redact recognizable secrets in ``text``, replacing each with
-    ``[REDACTED:<type>]``. Applies known key-shape patterns, then an
-    entropy fallback for unlabeled high-entropy tokens (skipping UUIDs/hashes to
-    avoid false positives). Returns the redacted string; never raises."""
+    ``[REDACTED:<type>]``. Applies known key-shape patterns everywhere, then an
+    entropy fallback for unlabeled high-entropy tokens (skipping UUIDs/hashes,
+    and skipping the body of fenced ```*-json``` structured blocks entirely —
+    see _JSON_FENCE_SPAN_RE — since a false-positive entropy redaction there
+    corrupts a field value downstream parsing depends on, not just prose).
+    Returns the redacted string; never raises."""
     if not text:
         return text
     try:
@@ -247,7 +262,20 @@ def redact_secrets(text):
                     and any(c.isalpha() for c in tok):
                 return "[REDACTED:high_entropy]"
             return tok
-        out = _TOKEN_RE.sub(_maybe, out)
-        return out
+
+        json_spans = [m.span() for m in _JSON_FENCE_SPAN_RE.finditer(out)]
+        if not json_spans:
+            return _TOKEN_RE.sub(_maybe, out)
+        # Run the entropy pass only on the gaps BETWEEN fenced-json spans, and
+        # pass each fenced span through untouched (after the strict patterns
+        # above already ran over the whole string, including these spans).
+        pieces = []
+        pos = 0
+        for start, end in json_spans:
+            pieces.append(_TOKEN_RE.sub(_maybe, out[pos:start]))
+            pieces.append(out[start:end])
+            pos = end
+        pieces.append(_TOKEN_RE.sub(_maybe, out[pos:]))
+        return "".join(pieces)
     except Exception:
         return text

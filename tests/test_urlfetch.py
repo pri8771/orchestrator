@@ -282,6 +282,24 @@ class TestSSRFProtection(_LocalServerMixin):
         self.assertTrue(urlfetch._is_proxied(req))
 
 
+class TestCacheFilename(unittest.TestCase):
+    def test_distinct_long_urls_do_not_collide(self):
+        # Two URLs whose first 80 slug characters are identical (differing only
+        # after the truncation point) must not produce the same cache filename
+        # — that would silently overwrite one page's cache with the other's.
+        long_common_prefix = "https://example.com/" + "a" * 90
+        a = urlfetch.cache_filename(long_common_prefix + "-first")
+        b = urlfetch.cache_filename(long_common_prefix + "-second")
+        self.assertNotEqual(a, b)
+
+    def test_deterministic_for_the_same_url(self):
+        url = "https://example.com/page"
+        self.assertEqual(urlfetch.cache_filename(url), urlfetch.cache_filename(url))
+
+    def test_ends_in_md(self):
+        self.assertTrue(urlfetch.cache_filename("https://a.com/x").endswith(".md"))
+
+
 class TestFetchAllAndCache(_LocalServerMixin):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="orch_urlfetch_")

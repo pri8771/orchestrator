@@ -1245,6 +1245,13 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
     if reslib.in_cooldown(health, time.time()):
         raise AgentError("%s skipped — in cooldown (%s)."
                          % (DISPLAY[agent], health.get("failure_signature") or "repeated failures"))
+    # due_for_probe: cooldown just elapsed but status is still "down" (nothing
+    # has recorded success/failure since). The call below IS the half-open
+    # probe — this only makes that moment visible in the log, so "agent came
+    # back after a cooldown" reads differently from "agent's first call ever."
+    if reslib.due_for_probe(health, time.time()):
+        emit("%s: cooldown elapsed — attempting recovery probe (%s)."
+             % (DISPLAY[agent], health.get("failure_signature") or "repeated failures"))
     # Global cross-project worker cap (§4.5): claim a machine-wide slot before
     # spending an agent turn, so many concurrent projects can't oversubscribe the
     # machine or the provider rate limits. Fail-open + timeout-safe (proceeds rather
@@ -3690,6 +3697,22 @@ def _apply_phase_routing(cfg, key):
             resolved["gemini_model"] = ov["gemini"]
     if ov.get("ollama"):
         models["ollama"] = resolved["ollama_model"] = ov["ollama"]
+        # enabled_agents() only falls back to models.ollama as a participant
+        # when NO roster is configured — with a roster active, this override
+        # is silently ignored for participant purposes (the roster's own
+        # entries win). Surface that once instead of leaving a routing edit
+        # that looks like it should do something quietly do nothing.
+        _roster_now = _split_local_roster(
+            resolved.get("ollama_roster") or cget(c, "models.ollama_roster", []))
+        if _roster_now and ov["ollama"] not in _roster_now:
+            _memo = "_noted_ollama_override_shadowed_%s" % key
+            if not cfg.get(_memo):
+                cfg[_memo] = True
+                emit("Phase '%s': routing sets models.ollama=%r, but "
+                     "models.ollama_roster is configured and doesn't include "
+                     "it — the roster's own entries are used for this phase "
+                     "instead; the override has no effect on participants."
+                     % (key, ov["ollama"]))
     if ov.get("timeout"):
         # Per-phase turn timeout: strong models get room to think on the
         # phases that deserve it. process_phase folds this into _turn_timeout.
@@ -4446,6 +4469,18 @@ def process_app(cfg, root, app):
         cfg["_warned_no_git_repo"] = True
         emit("WARN runtime.require_git_repo=true but %s is not a git repo — "
              "run.sh will skip its commit/push step (run `git init` there to fix)." % root)
+    # No agent runnable at all (every cloud CLI disabled/missing AND no local
+    # model pulled) is otherwise discovered deep in phase 1's call_agent —
+    # every turn fails one at a time with no upfront diagnosis. Check once per
+    # run (not per app) and give a single clear pointer to --doctor.
+    if not cfg.get("_checked_any_agent_runnable"):
+        cfg["_checked_any_agent_runnable"] = True
+        if not any(_agent_available(a) for a in enabled_agents(cfg)):
+            emit("WARN no agent is runnable: every enabled agent's CLI is "
+                 "missing/logged-out, and no local Ollama model is enabled+pulled. "
+                 "Every phase will fail immediately. Run `--doctor` to see what's "
+                 "wired up, or enable/log in to at least one of codex/claude/"
+                 "gemini, or pull+enable a local model.")
     # Per-app lock so different apps can run at the same time.
     stale = int(cget(cfg, "runtime.stale_lock_seconds", 5400))
     if not acquire_app_lock(app, stale):

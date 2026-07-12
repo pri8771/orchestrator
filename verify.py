@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -229,7 +230,11 @@ def _verify_shell(build_dir, command, timeout):
         kind = detect_project(build_dir)
         if kind == "spm":
             return _verify_spm(build_dir, timeout)
-        if kind == "node" and shutil.which("node"):
+        if kind == "node" and shutil.which("npm"):
+            # The auto-detected command runs `npm`, so that's the binary to
+            # gate on — checking only `node` let a node-without-npm install
+            # (rare but possible, e.g. a minimal node runtime) through to a
+            # command-not-found shell failure instead of the clean "skip" path.
             command = "npm run build --if-present || node -e \"process.exit(0)\""
         elif kind == "python" and shutil.which("python3"):
             # compileall is syntax-only and would bless code with unresolved
@@ -267,10 +272,14 @@ def _detect_start(build_dir, port):
             continue
         scripts = (data.get("scripts") or {})
         cwd = os.path.dirname(pkg)
+        # Use the caller's `port` (env PORT is set to it by _verify_http) rather
+        # than a hardcoded 3000 — the old hardcode both ignored an explicit
+        # spec["port"] and collided under concurrent verifications regardless
+        # of the free-port allocation above.
         if "start" in scripts:
-            return "npm start", cwd, 3000
+            return "npm start", cwd, port
         if "dev" in scripts:
-            return "npm run dev", cwd, 3000
+            return "npm run dev", cwd, port
     # Python: a module exposing a FastAPI/Flask `app`.
     for cand in ("main.py", "app.py", "server.py"):
         for hit in _find(build_dir, cand):
@@ -299,6 +308,18 @@ def _detect_start(build_dir, port):
     return None, None, None
 
 
+def _free_port():
+    """An ephemeral TCP port that's free at the moment of the call. Best-effort:
+    a small race remains between closing this probe socket and the server
+    binding it (the same trade-off test frameworks like pytest-xdist accept) —
+    but it's vastly cheaper than a fixed port (the old default 8000/3000)
+    colliding when two verifications run at once (parallel portfolio children
+    or build workers each booting a server to verify)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def _http_ok(url, timeout=3):
     """Return the HTTP status if the server responds at all (any status), else None."""
     try:
@@ -312,7 +333,11 @@ def _http_ok(url, timeout=3):
 
 
 def _verify_http(build_dir, spec, timeout):
-    port = int(spec.get("port") or 8000)
+    # An explicit spec["port"] is honored as-is; otherwise allocate a free
+    # ephemeral port rather than a fixed default (was 8000) so two
+    # verifications running at once — parallel portfolio children or build
+    # workers — don't collide and one falsely report "did not respond".
+    port = int(spec.get("port") or _free_port())
     start = spec.get("start")
     cwd = build_dir
     if start:

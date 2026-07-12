@@ -160,6 +160,11 @@ def assign_personas(phase_index, agents, personalities, roles, phase_role_ids=No
         personalities = DEFAULT_PERSONALITIES
     if not role_pool:
         role_pool = DEFAULT_ROLES
+    # agent_role_overrides is looked up against the FULL roster, not the
+    # phase-restricted role_pool: an override is a deliberate per-agent admin
+    # choice (roles.json / GUI "Configure -> Sub-agents") and is meant to win
+    # over a phase's generic role restriction — see
+    # test_agent_role_overrides_drive_personas, which pins this intentionally.
     by_role_id = {r.get("id"): r for r in roles}
     overrides = agent_role_overrides or {}
     out = {}

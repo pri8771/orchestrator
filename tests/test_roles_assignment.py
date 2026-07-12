@@ -50,6 +50,19 @@ class TestAssignPersonas(unittest.TestCase):
                                   agent_role_overrides={"claude": override_role})
         self.assertEqual(a["claude"]["role"]["id"], override_role)
 
+    def test_override_wins_even_outside_phase_role_restriction(self):
+        # agent_role_overrides is a deliberate per-agent admin choice
+        # (roles.json / GUI "Configure -> Sub-agents") and is meant to win over
+        # a phase's generic role restriction — see
+        # test_agent_role_overrides_drive_personas in test_agent_identity.py,
+        # which pins this as intentional, not a bug.
+        subset = [self.roles[0]["id"], self.roles[1]["id"]]
+        excluded_role = self.roles[2]["id"]
+        a = roles.assign_personas(0, self.agents, self.personalities, self.roles,
+                                  phase_role_ids=subset,
+                                  agent_role_overrides={"claude": excluded_role})
+        self.assertEqual(a["claude"]["role"]["id"], excluded_role)
+
     def test_phase_role_subset_restricts_pool(self):
         subset = [self.roles[0]["id"], self.roles[1]["id"]]
         a = roles.assign_personas(0, self.agents, self.personalities, self.roles,

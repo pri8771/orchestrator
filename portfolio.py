@@ -234,7 +234,10 @@ def child_autorun_disabled(child_dir):
 
 
 def _write_json(path, payload):
-    tmp = path + ".tmp"
+    # Per-writer temp name: two orchestrator processes expanding portfolio
+    # manifests concurrently (different parent apps) must not share one fixed
+    # ".tmp" path and clobber each other's half-written file.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
     os.replace(tmp, path)
@@ -242,8 +245,10 @@ def _write_json(path, payload):
 
 def _write_text(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text.rstrip() + "\n")
+    os.replace(tmp, path)
 
 
 def _unique_slug(root, preferred, reserved):
@@ -394,8 +399,17 @@ def materialize_children(root, parent_app, parent_dir, parent_prompt, manifest,
         if os.path.exists(child_dir) and not os.path.exists(meta_path):
             result["skipped"].append(slug)
             continue
-        existed = os.path.exists(child_dir)
-        os.makedirs(child_dir, exist_ok=True)
+        # Determine "did THIS call create the dir" atomically via makedirs'
+        # own FileExistsError, rather than a separate os.path.exists() check
+        # beforehand — the two-step check-then-create was a TOCTOU: a second
+        # orchestrator process (a different parent portfolio run) claiming the
+        # same slug between the check and the create would have its directory
+        # silently relabeled "updated" instead of the race being visible.
+        try:
+            os.makedirs(child_dir)
+            existed = False
+        except FileExistsError:
+            existed = True
         _write_json(meta_path, {
             "schema_version": schemalib.SCHEMA_VERSION,
             "parent": parent_app,

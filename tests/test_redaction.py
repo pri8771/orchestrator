@@ -53,6 +53,38 @@ class TestRedaction(unittest.TestCase):
         self.assertEqual(schemas.redact_secrets(""), "")
         self.assertIsNone(schemas.redact_secrets(None))
 
+    def test_entropy_fallback_skipped_inside_json_fences(self):
+        # A high-entropy-looking but legitimate identifier (a hash reference, a
+        # long id) inside a ```finding-json``` block must survive intact — a
+        # false-positive redaction there corrupts a field value downstream
+        # parsing (extract_structured_blocks) depends on, not just prose.
+        long_id = "a1b2c3d4e5f6789012345678deadBEEF00"
+        block = ('```finding-json\n{"title": "t", "fix": "see %s"}\n```'
+                % long_id)
+        self.assertIn(long_id, schemas.redact_secrets(block))
+
+    def test_entropy_fallback_still_applies_outside_json_fences(self):
+        # The same class of token, in ordinary prose (not inside a fenced
+        # structured block), is still caught by the entropy heuristic. Phrased
+        # to avoid the labeled "key:/token=" patterns so this exercises the
+        # entropy fallback specifically, not the strict assignment pattern.
+        token = "sk1a2B3c4D5e6F7g8H9i0JkLmNoPqRs"
+        red = schemas.redact_secrets("here is a value you might recognize: %s ok" % token)
+        self.assertNotIn(token, red)
+        self.assertIn("[REDACTED:high_entropy]", red)
+
+    def test_strict_patterns_still_redact_inside_json_fences(self):
+        # A REAL secret shape (not just an entropy guess) inside a structured
+        # block must still be caught — only the heuristic fallback is skipped.
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        block = '```finding-json\n{"title": "t", "fix": "rotate %s"}\n```' % secret
+        red = schemas.redact_secrets(block)
+        self.assertNotIn(secret, red)
+        self.assertIn("[REDACTED:aws_key]", red)
+
+    def test_json_fence_skip_never_raises_on_unclosed_fence(self):
+        schemas.redact_secrets("```finding-json\n{\"a\": \"unclosed")
+
 
 if __name__ == "__main__":
     unittest.main()

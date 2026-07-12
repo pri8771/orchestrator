@@ -90,7 +90,19 @@ def try_claim(project_id, resource_class, cap, pid=None, db_path=DEFAULT_DB):
     the DB, unexpected error). Lock contention is NOT treated as unavailability:
     the whole point of the cap is to hold under concurrency, so a busy DB is
     retried and, if still contended, the claim fails CLOSED (False) — the caller
-    (claim_slot) then polls, rather than the cap being silently exceeded."""
+    (claim_slot) then polls, rather than the cap being silently exceeded.
+
+    A non-positive `cap` (0, negative — a bad config value, since nothing here
+    validates runtime.global_worker_cap.* before it reaches this call) is
+    treated as a misconfiguration, not an intentional "block everything": it
+    fails OPEN so a typo'd/broken cap degrades to uncapped instead of silently
+    wedging every single claim for the resource class shut."""
+    try:
+        cap = int(cap)
+    except (TypeError, ValueError):
+        cap = 0
+    if cap <= 0:
+        return True
     pid = pid or os.getpid()
     try:
         conn = _conn(db_path)

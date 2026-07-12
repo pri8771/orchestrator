@@ -185,8 +185,14 @@ def write_prompt(app_dir, prompt):
 
 def save_state(app_dir, state):
     state["last_processed"] = now_str()
-    with open(os.path.join(app_dir, "agent_state.json"), "w", encoding="utf-8") as fh:
+    # Atomic write (per-writer temp + os.replace), matching simulate_stream.py's
+    # sibling — an interrupted seed run must not leave a corrupt agent_state.json
+    # the GUI/engine can't parse.
+    path = os.path.join(app_dir, "agent_state.json")
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=2)
+    os.replace(tmp, path)
 
 
 def base_state(prompt):

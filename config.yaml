@@ -140,6 +140,12 @@ runtime:
   # output. 0 disables the abort cap.
   coordinator_failover_enabled: true
   max_build_iterations_without_integrator: 2
+  # Semi-Autonomous / Manual mode (run_config.json "autonomy"): how long a
+  # checkpoint phase waits under <app>/approvals/ for a human decision
+  # (approve/edit/request-changes) before proceeding on its own rather than
+  # hanging forever. Fully Autonomous mode (the default) never pauses, so this
+  # only matters if you've opted a project into Semi-Autonomous/Manual.
+  approval_timeout_seconds: 7200
   # When false, engine log lines are written ONLY to logs/orchestrator.log (no
   # terminal echo). Keep true for GUI runs — the live run-log panel reads stdout.
   stream_terminal_output: true

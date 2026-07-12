@@ -89,6 +89,40 @@ class TestDetectStartInjection(unittest.TestCase):
         # The space-bearing filename must be quoted as a single shell token.
         self.assertIn(shlex_quote("weird name app.py"), start)
 
+    def test_node_start_script_uses_the_passed_port_not_a_hardcode(self):
+        # Regression: node detection used to hardcode 3000 regardless of the
+        # `port` argument, both ignoring an explicit spec["port"] and colliding
+        # with any other verification using the same fixed port.
+        d = tempfile.mkdtemp()
+        pkg = os.path.join(d, "package.json")
+        with open(pkg, "w", encoding="utf-8") as fh:
+            fh.write('{"scripts": {"start": "node server.js"}}')
+        start, cwd, port = verify._detect_start(d, 54321)
+        self.assertEqual(start, "npm start")
+        self.assertEqual(port, 54321)
+
+    def test_node_dev_script_uses_the_passed_port(self):
+        d = tempfile.mkdtemp()
+        pkg = os.path.join(d, "package.json")
+        with open(pkg, "w", encoding="utf-8") as fh:
+            fh.write('{"scripts": {"dev": "vite"}}')
+        start, cwd, port = verify._detect_start(d, 41000)
+        self.assertEqual(port, 41000)
+
+
+class TestFreePort(unittest.TestCase):
+    def test_returns_a_bindable_port(self):
+        import socket
+        port = verify._free_port()
+        self.assertIsInstance(port, int)
+        self.assertGreater(port, 0)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", port))  # must not raise: port was actually free
+
+    def test_consecutive_calls_do_not_collide(self):
+        ports = {verify._free_port() for _ in range(10)}
+        self.assertEqual(len(ports), 10)
+
 
 def shlex_quote(s):
     import shlex

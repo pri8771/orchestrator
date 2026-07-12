@@ -178,12 +178,22 @@ def run_backfill(cfg, app, app_dir, phases, state, call_agent):
                   "— stopping backfill." % (app, folder, fname))
             _remove_marker(app_dir)
             return
+        # Atomic write (per-writer temp name + os.replace): a crash/kill mid-
+        # write must never leave a truncated file that completed/outputs/
+        # save_state below then treat as a legitimately backfilled phase.
+        body = ("# %s — %s\n\n_Backfilled from user-supplied docs._\n\n%s"
+               % (app, title, reply))
+        tmp = "%s.%d.tmp" % (dest, os.getpid())
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "w", encoding="utf-8") as fh:
-                fh.write("# %s — %s\n\n_Backfilled from user-supplied docs._"
-                         "\n\n%s" % (app, title, reply))
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.replace(tmp, dest)
         except OSError as exc:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             _emit("App '%s': backfill could not write %s/%s (%s) — stopping "
                   "backfill." % (app, folder, fname, exc))
             _remove_marker(app_dir)

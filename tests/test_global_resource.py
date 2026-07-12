@@ -49,7 +49,21 @@ class TestWorkerBroker(unittest.TestCase):
 
     def test_fail_open_on_bad_path(self):
         # an unwritable path -> claim fails open (returns True), never raises
-        self.assertTrue(gr.try_claim("p", "cli_remote", cap=0, pid=1, db_path="/proc/nonexistent/x.db"))
+        self.assertTrue(gr.try_claim("p", "cli_remote", cap=5, pid=1, db_path="/proc/nonexistent/x.db"))
+
+    def test_nonpositive_cap_fails_open_not_closed(self):
+        # cap=0/negative is a misconfiguration (nothing upstream validates
+        # runtime.global_worker_cap.*), not an intentional "block everything" —
+        # it must degrade to uncapped rather than silently wedging every claim
+        # shut with no diagnostic.
+        self.assertTrue(gr.try_claim("p", "cli_remote", cap=0, pid=os.getpid(), db_path=self.db))
+        self.assertTrue(gr.try_claim("p", "cli_remote", cap=-1, pid=os.getpid(), db_path=self.db))
+
+    def test_non_integer_cap_fails_open(self):
+        self.assertTrue(gr.try_claim("p", "cli_remote", cap="not-a-number",
+                                     pid=os.getpid(), db_path=self.db))
+        self.assertTrue(gr.try_claim("p", "cli_remote", cap=None,
+                                     pid=os.getpid(), db_path=self.db))
 
     def test_lock_contention_fails_closed_not_open(self):
         # Persistent write-lock contention must NOT be mistaken for broker
