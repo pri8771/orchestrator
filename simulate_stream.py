@@ -22,9 +22,16 @@ import os
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Demo-specific lock name so this dev tool's finally-block cleanup can never
-# delete a real run's lock file that happens to live in the engine dir.
-LOCK_PATH = os.path.join(HERE, ".simulate_stream.lock")
+
+
+def lock_path(app):
+    """Demo-specific, per-app lock name: two concurrent `--app` demo runs must
+    not delete each other's lock in the finally-block cleanup, and this dev
+    tool's lock must never collide with a real run's lock file in the engine
+    dir either."""
+    return os.path.join(HERE, ".simulate_stream.%s.lock" % app)
+
+
 # Default workspace: ORCH_ROOT env, else <repo>/workspace next to this engine dir.
 ROOT_DEFAULT = os.environ.get("ORCH_ROOT") or os.path.join(os.path.dirname(HERE), "workspace")
 
@@ -57,8 +64,8 @@ def now_str():
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def touch_lock():
-    with open(LOCK_PATH, "w", encoding="utf-8") as fh:
+def touch_lock(path):
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("pid=%d host=simulate started=%s\n" % (os.getpid(), now_str()))
 
 
@@ -112,6 +119,7 @@ def main():
     app_dir = os.path.join(args.root, args.app)
     if not os.path.isdir(app_dir):
         raise SystemExit("No such project: %s" % app_dir)
+    lock = lock_path(args.app)
 
     state = load_state(app_dir)
     # Choose the phase to stream into: current, else first incomplete, else first.
@@ -133,14 +141,14 @@ def main():
     state["current_phase"] = key
     state["current_round"] = rnd
     save_state(app_dir, state)
-    touch_lock()
+    touch_lock(lock)
     append(md, "\n### Round %d\n\n" % rnd)
 
     try:
         for agent in ORDER:
             state["next_agent"] = agent
             save_state(app_dir, state)
-            touch_lock()
+            touch_lock(lock)
             print("  %s is thinking…" % DISPLAY[agent])
             time.sleep(args.delay)
             block = "**%s — Round %d**\n\n%s\n\n%s\n" % (
@@ -151,7 +159,7 @@ def main():
         # Coordinator declares consensus and completes the phase.
         state["next_agent"] = "gemini"
         save_state(app_dir, state)
-        touch_lock()
+        touch_lock(lock)
         time.sleep(args.delay)
         final = ("Decision: adopt the safe atomic-write approach with a recovery "
                  "path. Owners and thresholds fixed; feeds the next phase.")
@@ -177,9 +185,9 @@ def main():
         save_state(app_dir, state)
         print("Phase '%s' complete. Next: %s" % (key, nxt or "(all done)"))
     finally:
-        if os.path.exists(LOCK_PATH):
+        if os.path.exists(lock):
             try:
-                os.remove(LOCK_PATH)
+                os.remove(lock)
             except OSError:
                 pass
 

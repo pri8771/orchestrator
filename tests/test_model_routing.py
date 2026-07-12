@@ -119,6 +119,21 @@ class TestLoadRoutingForApp(unittest.TestCase):
         self.assertEqual(mr.load_routing_for_app(self.fleet, self.fleet),
                          mr.load_routing(self.fleet))
 
+    def test_empty_phases_with_default_fallback_does_not_warn(self):
+        write_routing(self.app, {"enabled": True,
+                                 "fallback": {"cloud_to_local": True, "local_model": ""}})
+        warned = []
+        mr.load_routing_for_app(self.fleet, self.app, on_warn=warned.append)
+        self.assertEqual(warned, [])
+
+    def test_empty_phases_with_real_override_warns(self):
+        write_routing(self.app, {"enabled": False})
+        warned = []
+        r = mr.load_routing_for_app(self.fleet, self.app, on_warn=warned.append)
+        self.assertEqual(r, mr.load_routing(self.fleet))
+        self.assertEqual(len(warned), 1)
+        self.assertIn("ignored", warned[0])
+
 
 class TestOverridesAndFilter(unittest.TestCase):
     ROUTING = {"schema_version": 1, "enabled": True,
@@ -363,6 +378,25 @@ class TestFallbackChains(unittest.TestCase):
                             "phases": {"tech_specs": {"timeout": 1800}}}}
         c = orch._apply_phase_routing(cfg, "tech_specs")
         self.assertEqual(c["_routed_turn_timeout"], 1800)
+
+    def test_routed_timeout_exceeding_hard_timeout_is_logged(self):
+        cfg = {"models": {}, "_resolved": {}, "runtime": {"timeout_seconds_per_agent": 600},
+               "_routing": {"enabled": True, "fallback": {},
+                            "phases": {"tech_specs": {"timeout": 1800}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            c = orch._apply_phase_routing(cfg, "tech_specs")
+        self.assertEqual(c["_routed_turn_timeout"], 1800)
+        self.assertTrue(any("exceeds" in m for m in msgs))
+
+    def test_routed_timeout_within_hard_timeout_is_quiet(self):
+        cfg = {"models": {}, "_resolved": {}, "runtime": {"timeout_seconds_per_agent": 3600},
+               "_routing": {"enabled": True, "fallback": {},
+                            "phases": {"tech_specs": {"timeout": 1800}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "tech_specs")
+        self.assertFalse(any("exceeds" in m for m in msgs))
 
     def test_ollama_override_shadowed_by_roster_is_logged(self):
         # A phase-level models.ollama override has NO effect on participants

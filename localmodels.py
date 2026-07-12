@@ -40,6 +40,30 @@ REGISTRY_PUBLIC_FIELDS = (
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 
 
+_STRING_FIELDS = ("label", "runtime", "license", "license_url", "notes")
+_NUMERIC_FIELDS = ("min_ram_gb", "recommended_ram_gb", "size_gb", "context_tokens")
+
+
+def _entry_is_well_formed(m):
+    """id-presence was the only check; a GUI/hand edit can still ship a
+    numeric label, a roles STRING instead of a list, or a non-numeric RAM
+    figure that later breaks a doctor/GUI consumer expecting the documented
+    shape. Reject those here instead of letting them ship silently."""
+    if not isinstance(m, dict) or not str(m.get("id", "")).strip():
+        return False
+    for field in _STRING_FIELDS:
+        if field in m and not isinstance(m[field], str):
+            return False
+    for field in _NUMERIC_FIELDS:
+        if field in m and not isinstance(m[field], (int, float)):
+            return False
+    if "roles" in m and not isinstance(m["roles"], list):
+        return False
+    if "commercial_use" in m and not isinstance(m["commercial_use"], bool):
+        return False
+    return True
+
+
 def load_registry(here):
     """The curated local-model registry (spec §12.3) as a dict. A missing,
     unreadable, or malformed file NEVER raises — it yields an empty registry
@@ -53,9 +77,9 @@ def load_registry(here):
         return empty
     if not isinstance(data, dict) or not isinstance(data.get("models"), list):
         return empty
-    # Keep only well-formed entries (an id is the one field everything keys on).
-    data["models"] = [m for m in data["models"]
-                      if isinstance(m, dict) and str(m.get("id", "")).strip()]
+    # Keep only well-formed entries: an id is required, and any of the
+    # documented fields present must be the right basic type.
+    data["models"] = [m for m in data["models"] if _entry_is_well_formed(m)]
     return data
 
 

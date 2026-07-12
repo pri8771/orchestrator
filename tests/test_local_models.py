@@ -73,6 +73,16 @@ class TestRegistry(unittest.TestCase):
                                       {"id": "mistral:7b", "label": "ok"}]}, fh)
             self.assertEqual([m["id"] for m in lm.load_registry(d)["models"]],
                              ["mistral:7b"])
+            # basic type validation beyond id presence: a numeric "label" or a
+            # "roles" string instead of a list must be dropped, not shipped.
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "models": [
+                    {"id": "bad-label", "label": 12345},
+                    {"id": "bad-roles", "roles": "implementation"},
+                    {"id": "bad-ram", "min_ram_gb": "lots"},
+                    {"id": "good", "label": "ok", "roles": ["review"], "min_ram_gb": 8},
+                ]}, fh)
+            self.assertEqual([m["id"] for m in lm.load_registry(d)["models"]], ["good"])
 
 
 class TestOllamaListParsing(unittest.TestCase):

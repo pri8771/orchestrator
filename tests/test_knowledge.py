@@ -59,6 +59,29 @@ class TestRetrieve(unittest.TestCase):
         out = k.retrieve(HERE, "nonexistent-domain", "unrelated query terms")
         self.assertNotIn("KNOWLEDGE", out.upper())
 
+    def test_docs_read_from_disk_once_across_repeated_queries(self):
+        with tempfile.TemporaryDirectory() as d:
+            domain_dir = os.path.join(d, "knowledge", "general")
+            os.makedirs(domain_dir)
+            doc_path = os.path.join(domain_dir, "one.md")
+            with open(doc_path, "w", encoding="utf-8") as fh:
+                fh.write("<!-- keywords: widgets -->\nAll about widgets.\n")
+            real_open = open
+            calls = []
+
+            def counting_open(p, *a, **kw):
+                if p == doc_path:
+                    calls.append(p)
+                return real_open(p, *a, **kw)
+
+            import unittest.mock
+            with unittest.mock.patch("builtins.open", counting_open):
+                out1 = k.retrieve(d, "general", "widgets")
+                out2 = k.retrieve(d, "general", "widgets and gizmos")
+            self.assertEqual(len(calls), 1)
+            self.assertIn("widgets", out1.lower())
+            self.assertIn("widgets", out2.lower())
+
 
 class TestShouldInject(unittest.TestCase):
     def test_returns_bool(self):

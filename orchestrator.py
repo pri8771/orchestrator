@@ -208,6 +208,9 @@ from miniyaml import parse_min_yaml, coerce_scalar as _coerce_scalar, \
 
 
 def load_config():
+    """Load config.json (if present) else config.yaml via the built-in mini-YAML
+    reader. Platform: like resolve_root below, path handling here assumes POSIX
+    (os.path.join / os.path.exists on forward-slash paths) — untested on Windows."""
     json_path = os.path.join(HERE, "config.json")
     yaml_path = os.path.join(HERE, "config.yaml")
     if os.path.exists(json_path):
@@ -226,7 +229,13 @@ def resolve_root(cfg, cli_root=None):
     `~/Documents/iOS-App-Factory`, is portable across machines even though it
     isn't repo-relative: it depends only on the current user's home directory,
     never a hardcoded absolute path baked in for one specific machine/user
-    (V2 spec §27)."""
+    (V2 spec §27).
+
+    Platform: POSIX paths only, same as procutil (the engine targets macOS/
+    Linux). ``os.path.expanduser``'s `~` expansion and the forward-slash join
+    below assume a POSIX-shaped HOME; on Windows this needs `~` -> USERPROFILE
+    handling and drive-letter-aware path joining, neither of which is
+    implemented here."""
     root = cli_root or os.environ.get("ORCH_ROOT") or cfg.get("root") or ""
     root = os.path.expanduser(str(root))
     if root and not os.path.isabs(root):
@@ -2231,6 +2240,8 @@ def parse_tasks_blocks(text):
                 continue
             t.setdefault("depends_on", [])
             t.setdefault("acceptance_criteria", [])
+            status = str(t.get("status", "pending")).strip().lower()
+            t["status"] = status if status in schemalib.TASK_STATUS else "pending"
             byid[str(t["id"])] = t
     # Report (don't drop) two planning errors the build would otherwise swallow:
     # an owner_lane the roster can't route (falls back to showing the task to
@@ -2497,6 +2508,8 @@ def parse_finding_blocks(text):
         d["confidence"] = conf if conf in _CONF_W else "medium"
         cat = str(d.get("category", "bug")).strip().lower()
         d["category"] = cat if cat in _CAT_ORDER else "bug"
+        src = str(d.get("source", "audit")).strip().lower()
+        d["source"] = src if src in schemalib.FINDING_SOURCE else "audit"
         d["file"] = str(d.get("file", "")).strip()
         d["title"] = str(d.get("title", "")).strip()
         if not d["title"]:
@@ -3664,7 +3677,8 @@ def _apply_phase_routing(cfg, key):
     apply the phase's participant filter. No overrides -> plain tagged copy."""
     routing = cfg.get("_routing")
     if routing is None:
-        routing = cfg["_routing"] = mrlib.load_routing_for_app(HERE, cfg.get("_app_dir"))
+        routing = cfg["_routing"] = mrlib.load_routing_for_app(
+            HERE, cfg.get("_app_dir"), on_warn=emit)
     # Shared mutable run state must exist BEFORE the copy so every phase-scoped
     # copy aliases the same dicts (cooldowns/sessions survive across phases).
     # The health map is _agent_health everywhere else — the old "_health" key was
@@ -3716,7 +3730,14 @@ def _apply_phase_routing(cfg, key):
     if ov.get("timeout"):
         # Per-phase turn timeout: strong models get room to think on the
         # phases that deserve it. process_phase folds this into _turn_timeout.
-        c["_routed_turn_timeout"] = int(ov["timeout"])
+        routed_timeout = int(ov["timeout"])
+        hard_timeout = int(cget(c, "runtime.timeout_seconds_per_agent", 1200) or 0)
+        if hard_timeout and routed_timeout > hard_timeout:
+            emit("Phase '%s': routing timeout %ds exceeds the configured "
+                 "runtime.timeout_seconds_per_agent (%ds) — the routed timeout "
+                 "wins on this phase, giving it more room than the general cap."
+                 % (key, routed_timeout, hard_timeout))
+        c["_routed_turn_timeout"] = routed_timeout
     c["models"], c["_resolved"] = models, resolved
     emit("Phase '%s': model routing active (%s)."
          % (key, ", ".join("%s=%s" % (k, v) for k, v in sorted(ov.items()))))
@@ -3770,7 +3791,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     personas = roleslib.assign_personas(
         phase_index, speaking, cfg.get("_personalities", roleslib.DEFAULT_PERSONALITIES),
         cfg.get("_roles", roleslib.DEFAULT_ROLES), phase_roles,
-        cfg.get("_agent_role_overrides", {}))
+        cfg.get("_agent_role_overrides", {}), cfg.get("_role_by_id"))
     if personas:
         emit("Personas — " + "; ".join(
             "%s: %s" % (DISPLAY[a], roleslib.persona_label(personas[a])) for a in speaking))
@@ -4891,6 +4912,9 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     cfg["_workflow_target"] = workflow.target
     cfg["_personalities"], cfg["_roles"] = roleslib.load_roles(HERE)
     cfg["_agent_role_overrides"] = roleslib.load_agent_role_overrides(HERE)
+    # Precomputed once per run (not rebuilt on every process_phase call) — see
+    # assign_personas' role_by_id parameter.
+    cfg["_role_by_id"] = {r.get("id"): r for r in cfg["_roles"]}
 
     # Audit target: the read-only pre-existing codebase this app analyzes.
     cfg["_target_path"] = wflib.read_target_path(app_dir, HERE)

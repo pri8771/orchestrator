@@ -69,17 +69,41 @@ _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]\}]+", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 # URL extraction
 # ---------------------------------------------------------------------------
+_TRACKING_PARAM_RE = re.compile(
+    r"^(utm_|ref$|ref_|fbclid$|gclid$|mc_cid$|mc_eid$|igshid$)", re.IGNORECASE)
+
+
+def _dedup_key(url):
+    """Normalize a URL for near-duplicate detection only (the returned URL
+    itself is untouched — this is purely the `seen` comparison key): lowercase
+    scheme+host, drop a trailing "/" on the path, and drop common tracking
+    query params. Without this, "https://x.com/" and "https://x.com?utm_
+    source=x" count as two of the MAX_URLS=5 slots and can crowd out a
+    genuinely distinct link the prompt also linked."""
+    parts = urllib.parse.urlsplit(url)
+    path = parts.path.rstrip("/") or "/"
+    kept = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+           if not _TRACKING_PARAM_RE.match(k)]
+    query = urllib.parse.urlencode(sorted(kept))
+    return urllib.parse.urlunsplit(
+        (parts.scheme.lower(), parts.netloc.lower(), path, query, ""))
+
+
 def extract_urls(text):
     """Every distinct http(s) URL in `text`, in order of first appearance,
     capped at MAX_URLS. Trailing sentence punctuation is stripped so
-    "see https://x.com." doesn't produce a 404."""
+    "see https://x.com." doesn't produce a 404". Near-duplicates (a trailing
+    slash, a tracking query param) are deduped against the same normalized
+    key so they don't crowd out a genuinely distinct link within the cap —
+    the first-seen spelling of each is what's returned."""
     urls = []
     seen = set()
     for match in _URL_RE.finditer(text or ""):
         url = match.group(0).rstrip(".,;:!?")
-        if url in seen:
+        key = _dedup_key(url)
+        if key in seen:
             continue
-        seen.add(url)
+        seen.add(key)
         urls.append(url)
         if len(urls) >= MAX_URLS:
             break

@@ -41,6 +41,13 @@ class TestParseFindingBlocks(unittest.TestCase):
         self.assertEqual(got[0]["confidence"], "high")
         self.assertEqual(got[0]["category"], "bug")        # unknown -> bug
 
+    def test_normalizes_source(self):
+        text = _block('{"title":"E","category":"bug","file":"e.py","source":"CODE_REVIEW"}')
+        got = orch.parse_finding_blocks(text)
+        self.assertEqual(got[0]["source"], "code_review")
+        bad = _block('{"title":"F","category":"bug","file":"f.py","source":"made-up"}')
+        self.assertEqual(orch.parse_finding_blocks(bad)[0]["source"], "audit")
+
     def test_titleless_block_skipped(self):
         text = _block('{"severity":"High","category":"bug","file":"e.py"}')
         self.assertEqual(orch.parse_finding_blocks(text), [])

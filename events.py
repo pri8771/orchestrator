@@ -35,6 +35,7 @@ import json
 import os
 import types
 import typing
+import warnings
 
 _schemalib: typing.Optional[types.ModuleType]
 try:
@@ -86,6 +87,17 @@ def emit_event(app_dir, kind, **fields):
     try:
         if not app_dir or not kind:
             return False
+        if kind not in KINDS:
+            # A typo'd kind would still write successfully but stay invisible to
+            # any UI/tooling that filters read_events(kinds=...) against KINDS —
+            # surface it immediately instead of silently shipping an
+            # unfilterable event. Still written below (best-effort, not blocked);
+            # a warnings-as-errors test filter must not swallow the event itself.
+            try:
+                warnings.warn("emit_event: unknown kind %r (not in events.KINDS)" % kind,
+                              stacklevel=2)
+            except Warning:
+                pass
         # tz-aware (local + offset) so event ordering is unambiguous across DST
         # boundaries, unlike a naive datetime.now().
         evt = {"ts": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),

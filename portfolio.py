@@ -25,6 +25,10 @@ FENCE = "portfolio-json"
 MANIFEST_NAME = "portfolio_manifest.json"
 CHILD_META_NAME = "portfolio_child.json"
 AUTORUN_DISABLED_NAME = ".orchestrator_autorun_disabled"
+# Well under the 255-byte filename limit most filesystems (ext4/APFS) enforce —
+# an agent-emitted app "name" can run to a full sentence, and that becomes a
+# folder name via slugify(). Leaves room for a "-<n>" dedup suffix too.
+MAX_SLUG_LEN = 80
 
 
 PORTFOLIO_JSON_INSTRUCTION = (
@@ -127,9 +131,11 @@ def requires_built_children(prompt):
 
 
 def slugify(value, fallback="app"):
-    """Folder-safe lowercase slug."""
+    """Folder-safe lowercase slug, capped at MAX_SLUG_LEN so an agent-emitted
+    full-sentence "name" can never produce a filesystem-rejected folder name."""
     s = re.sub(r"[^a-zA-Z0-9]+", "-", str(value or "").strip().lower())
     s = re.sub(r"-+", "-", s).strip("-")
+    s = s[:MAX_SLUG_LEN].rstrip("-")
     return s or fallback
 
 

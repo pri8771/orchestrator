@@ -125,7 +125,7 @@ def load_routing(here):
     return out
 
 
-def load_routing_for_app(here, app_dir):
+def load_routing_for_app(here, app_dir, on_warn=None):
     """Fleet routing (model_routing.json next to the engine) with the app's
     own model_routing.json phase overrides layered on top — the engine side
     of the GUI's per-project Plan tab (DESIGN-NATIVE-PRO.md #5.7).
@@ -136,7 +136,12 @@ def load_routing_for_app(here, app_dir):
     always come from the fleet file — the grid never edits those at project
     scope, so an app's file always round-trips harmless defaults for them
     (ModelRouting.save always writes enabled=true, cloud_to_local=true) that
-    must not shadow a deliberately different fleet setting."""
+    must not shadow a deliberately different fleet setting.
+
+    ``on_warn(msg)`` (optional) is called when the project's file has no
+    per-phase overrides but DOES carry a non-default enabled/fallback value —
+    those are silently ignored by design (see above), which used to be
+    indistinguishable from "the file is a no-op"; surfaced instead of hidden."""
     fleet = load_routing(here)
     if not app_dir or os.path.abspath(app_dir) == os.path.abspath(here):
         return fleet
@@ -144,6 +149,11 @@ def load_routing_for_app(here, app_dir):
         return fleet
     project = load_routing(app_dir)
     if not project["phases"]:
+        if on_warn and (not project.get("enabled", True)
+                        or project.get("fallback") != _DEFAULT["fallback"]):
+            on_warn("Project routing file %s has no phase overrides — its "
+                    "enabled/fallback settings are ignored (those are fleet-scoped "
+                    "only)." % os.path.join(app_dir, ROUTING_FILENAME))
         return fleet
     out = dict(fleet)
     # dict(fleet) is shallow: without this, out["fallback"]/out["chains"] alias

@@ -24,6 +24,18 @@ PORTFOLIO_BLOCK = """```portfolio-json
 ```"""
 
 
+class TestSlugify(unittest.TestCase):
+    def test_long_name_capped_below_filesystem_limit(self):
+        long_name = "A " * 200  # an agent-emitted full sentence, not a short name
+        slug = port.slugify(long_name)
+        self.assertLessEqual(len(slug), port.MAX_SLUG_LEN)
+        self.assertTrue(slug)
+
+    def test_cap_does_not_leave_a_trailing_dash(self):
+        slug = port.slugify("x" * (port.MAX_SLUG_LEN - 1) + "-y-z-z-z-z")
+        self.assertFalse(slug.endswith("-"))
+
+
 class TestPortfolioExpansion(unittest.TestCase):
     def test_parse_portfolio_manifest(self):
         manifest, errors = port.parse_portfolio_manifest(PORTFOLIO_BLOCK)

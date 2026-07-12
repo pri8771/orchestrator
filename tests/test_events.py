@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 import events as evlib
 import orchestrator as orch
@@ -83,6 +84,18 @@ class TestEmitEvent(unittest.TestCase):
     def test_read_events_missing_file_is_empty(self):
         self.assertEqual(evlib.read_events(self.dir), [])
         self.assertEqual(evlib.read_events(os.path.join(self.dir, "nope")), [])
+
+    def test_unknown_kind_warns_but_still_writes(self):
+        # A typo'd kind would silently vanish from any UI filtering on
+        # events.KINDS — it must at least warn, and still write (best-effort).
+        with self.assertWarns(Warning):
+            self.assertTrue(evlib.emit_event(self.dir, "phase_finshed"))
+        self.assertEqual(evlib.read_events(self.dir)[0]["kind"], "phase_finshed")
+
+    def test_known_kind_does_not_warn(self):
+        with unittest.mock.patch("warnings.warn") as mock_warn:
+            evlib.emit_event(self.dir, "run_started")
+        mock_warn.assert_not_called()
 
 
 class _RunnerStub:

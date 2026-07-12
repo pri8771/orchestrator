@@ -38,6 +38,20 @@ class TestTasksJsonParsing(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("owner_lane", errors[0])
 
+    def test_status_normalized_against_vocabulary(self):
+        odd = _task("T-010")
+        odd["status"] = "DONE "
+        text = "```tasks-json\n%s\n```" % json.dumps(odd)
+        tasks, errors = orch.parse_tasks_blocks(text)
+        self.assertEqual(tasks[0]["status"], "done")
+        self.assertEqual(errors, [])
+
+        bogus = _task("T-011")
+        bogus["status"] = "made-up-status"
+        text = "```tasks-json\n%s\n```" % json.dumps(bogus)
+        tasks, errors = orch.parse_tasks_blocks(text)
+        self.assertEqual(tasks[0]["status"], "pending")
+
     def test_duplicate_id_last_emission_wins(self):
         first = _task("T-001"); first["title"] = "draft"
         second = _task("T-001"); second["title"] = "final revision"

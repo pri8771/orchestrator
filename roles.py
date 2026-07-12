@@ -142,13 +142,18 @@ def _role_pool_for_phase(roles, phase_role_ids):
 
 
 def assign_personas(phase_index, agents, personalities, roles, phase_role_ids=None,
-                    agent_role_overrides=None):
+                    agent_role_overrides=None, role_by_id=None):
     """Deterministically hand each agent a (role, personality) for this phase.
 
     Rotation guarantees:
       * within a phase, agents get different personalities (agent index shifts),
       * across phases, a given agent's personality changes (phase index shifts),
     so nobody is ever locked to one personality.
+
+    ``role_by_id`` lets a caller that invokes this once per phase (every phase
+    of a run, same ``roles`` list) precompute the full-roster id lookup once
+    per run instead of rebuilding it on every call; omitted, it's built here
+    same as before.
 
     Returns {agent: {"role": <role dict>, "personality": <personality dict>}}.
     """
@@ -165,7 +170,7 @@ def assign_personas(phase_index, agents, personalities, roles, phase_role_ids=No
     # choice (roles.json / GUI "Configure -> Sub-agents") and is meant to win
     # over a phase's generic role restriction — see
     # test_agent_role_overrides_drive_personas, which pins this intentionally.
-    by_role_id = {r.get("id"): r for r in roles}
+    by_role_id = role_by_id if role_by_id is not None else {r.get("id"): r for r in roles}
     overrides = agent_role_overrides or {}
     out = {}
     for j, agent in enumerate(agents):

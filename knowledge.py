@@ -25,6 +25,13 @@ import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Per-file (kws, body_terms, body) cache keyed by (path, mtime). The query
+# changes every call so scoring itself can't be cached, but the read+parse of
+# each cheatsheet (unchanged between phases within a run) can be — this file
+# set is small and rarely edited, so an mtime check is cheap insurance against
+# ever serving a stale parse after an on-disk edit.
+_DOC_CACHE = {}
+
 _KW_RE = re.compile(r"<!--\s*keywords:\s*(.*?)\s*-->", re.IGNORECASE | re.DOTALL)
 _WORD_RE = re.compile(r"[a-z0-9@._+]+")
 
@@ -119,6 +126,28 @@ def should_inject(phase_key):
     return phase_key not in _SKIP_PHASES
 
 
+def _load_doc(path):
+    """(kws, body_terms, body) for one cheatsheet, cached by (path, mtime) so
+    repeated retrieve() calls within a run don't re-read/re-parse every file
+    from disk every time. Returns None on any read error."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        _DOC_CACHE.pop(path, None)
+        return None
+    cached = _DOC_CACHE.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError:
+        return None
+    parsed = (_doc_keywords(body), _terms(body), body)
+    _DOC_CACHE[path] = (mtime, parsed)
+    return parsed
+
+
 def retrieve(orch_dir, domain, query_text, max_chars=6000, top_k=3):
     """Return concatenated markdown from the top-scoring docs in ``domain``
     (or "" if none are relevant / the dir is missing)."""
@@ -130,12 +159,11 @@ def retrieve(orch_dir, domain, query_text, max_chars=6000, top_k=3):
     for fn in sorted(os.listdir(d)):
         if not fn.endswith(".md"):
             continue
-        try:
-            with open(os.path.join(d, fn), encoding="utf-8") as fh:
-                body = fh.read()
-        except OSError:
+        parsed = _load_doc(os.path.join(d, fn))
+        if parsed is None:
             continue
-        s = _score(query_terms, _doc_keywords(body), _terms(body))
+        kws, body_terms, body = parsed
+        s = _score(query_terms, kws, body_terms)
         if s > 0:
             scored.append((s, fn, body))
     if not scored:

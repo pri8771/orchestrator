@@ -111,6 +111,29 @@ class TestExtractUrls(unittest.TestCase):
         self.assertEqual(urlfetch.extract_urls(""), [])
         self.assertEqual(urlfetch.extract_urls(None), [])
 
+    def test_dedups_trailing_slash_near_duplicate(self):
+        text = "https://x.com https://x.com/"
+        self.assertEqual(urlfetch.extract_urls(text), ["https://x.com"])
+
+    def test_dedups_tracking_query_param_near_duplicate(self):
+        text = "https://x.com/a?utm_source=twitter https://x.com/a"
+        self.assertEqual(urlfetch.extract_urls(text), ["https://x.com/a?utm_source=twitter"])
+
+    def test_near_duplicate_does_not_crowd_out_a_distinct_link(self):
+        # Regression for the MAX_URLS=5 cap: near-dupes must not eat a slot a
+        # genuinely distinct link needed.
+        text = " ".join([
+            "https://a.com/", "https://a.com", "https://a.com?utm_source=x",
+            "https://b.com", "https://c.com",
+        ])
+        self.assertEqual(urlfetch.extract_urls(text),
+                         ["https://a.com/", "https://b.com", "https://c.com"])
+
+    def test_distinct_query_params_stay_distinct(self):
+        text = "https://x.com/a?id=1 https://x.com/a?id=2"
+        self.assertEqual(urlfetch.extract_urls(text),
+                         ["https://x.com/a?id=1", "https://x.com/a?id=2"])
+
 
 class TestHtmlToText(unittest.TestCase):
     def test_drops_script_style_nav_footer_keeps_content(self):

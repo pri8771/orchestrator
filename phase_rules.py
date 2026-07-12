@@ -10,15 +10,44 @@ Best-effort by design: missing/malformed files return no playbook instead of
 breaking a run.
 """
 
+import copy
 import json
 import os
 
 RULES_FILENAME = "phase_rules.json"
 
+# Per-phase list fields. A GUI edit that turns one of these into a string (e.g.
+# "rules": "be careful") must not reach _bullets(), which would silently
+# iterate the string's characters instead of mis-rendering loudly.
+_PHASE_LIST_FIELDS = ("rules", "required_output", "acceptance_checks")
+
+# mtime-keyed so a run only re-parses phase_rules.json once per phase pair of
+# calls (render_phase_playbook + render_phase_quality_rubric) instead of
+# hitting disk every time, while an on-disk edit (mtime change) still busts it.
+_CACHE = {}
+
+
+def _clean_phase(phase):
+    if not isinstance(phase, dict):
+        return {}
+    out = dict(phase)
+    for field in _PHASE_LIST_FIELDS:
+        if field in out and not isinstance(out[field], list):
+            out[field] = []
+    return out
+
 
 def load_rules(orch_dir):
     empty = {"schema_version": 1, "global_app_rules": [], "phases": {}}
     path = os.path.join(orch_dir, RULES_FILENAME)
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        _CACHE.pop(path, None)
+        return empty
+    cached = _CACHE.get(path)
+    if cached is not None and cached[0] == mtime:
+        return copy.deepcopy(cached[1])
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -28,9 +57,11 @@ def load_rules(orch_dir):
         return empty
     if not isinstance(data.get("global_app_rules"), list):
         data["global_app_rules"] = []
-    if not isinstance(data.get("phases"), dict):
-        data["phases"] = {}
-    return data
+    phases = data.get("phases")
+    data["phases"] = {k: _clean_phase(v) for k, v in phases.items()} \
+        if isinstance(phases, dict) else {}
+    _CACHE[path] = (mtime, data)
+    return copy.deepcopy(data)
 
 
 def _bullets(items):

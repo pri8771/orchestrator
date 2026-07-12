@@ -21,6 +21,7 @@ Design constraints (unchanged from the rest of the project):
     when present (that's how GUI edits to rounds/roles persist).
 """
 
+import copy
 import json
 import os
 
@@ -150,14 +151,16 @@ class Workflow:
             (p.key for p in phases if p.writes), None)
         # Optional time-budget parameters (dict). When present, the engine enforces
         # a hard wall-clock ceiling for the whole run (see Sprint mode). None means
-        # unbounded — the normal behavior for every other workflow.
-        self.budget = dict(budget) if budget else None
+        # unbounded — the normal behavior for every other workflow. Deep-copied (like
+        # modelrouting's per-phase overrides) so a caller mutating the Workflow's copy
+        # can never bleed back into the caller's own budget dict.
+        self.budget = copy.deepcopy(dict(budget)) if budget else None
         # Optional per-run preset (dict): claude_model / codex_model / effort
         # ("fast" | "standard" | "max") / rounds_scale (0.5-2.0). Applied by the
         # engine where the workflow is loaded for a run; None (the default, and
         # anything that isn't a dict) leaves every existing workflow untouched.
-        self.overrides = dict(overrides) if isinstance(overrides, dict) and overrides \
-            else None
+        self.overrides = copy.deepcopy(dict(overrides)) \
+            if isinstance(overrides, dict) and overrides else None
 
     def phase(self, key):
         return next((p for p in self.phases if p.key == key), None)
