@@ -199,78 +199,13 @@ def emit(msg):
 
 
 # ---------------------------------------------------------------------------
-# Minimal YAML / JSON config loader (stdlib only)
+# Minimal YAML / JSON config loader (stdlib only). The mini-YAML parser now
+# lives in miniyaml.py (extracted to start decomposing this monolith); it's
+# re-exported here so existing references (orchestrator.parse_min_yaml, the
+# tests) keep working unchanged.
 # ---------------------------------------------------------------------------
-def _coerce_scalar(raw):
-    s = raw.strip()
-    if (len(s) >= 2) and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
-        return s[1:-1]
-    low = s.lower()
-    if low == "true":
-        return True
-    if low == "false":
-        return False
-    if low in ("null", "~", ""):
-        return None
-    try:
-        return int(s)
-    except ValueError:
-        pass
-    try:
-        return float(s)
-    except ValueError:
-        pass
-    return s
-
-
-def _strip_inline_comment(val):
-    """Drop a trailing ` # comment` from a scalar value (the config header
-    documents `# comments` as supported), while respecting quotes so a `#`
-    inside a quoted string stays data."""
-    if not val:
-        return val
-    if val[0] == "#":
-        return ""                       # value is only a comment -> null
-    if val[0] in ('"', "'"):
-        q = val[0]
-        end = val.find(q, 1)
-        if end == -1:
-            return val                  # unterminated quote — leave for _coerce_scalar
-        rest = val[end + 1:]
-        cut = rest.find("#")
-        if cut != -1 and (cut == 0 or rest[cut - 1] == " "):
-            return (val[:end + 1] + rest[:cut]).rstrip()
-        return val
-    i = val.find(" #")                   # YAML: a comment needs whitespace before #
-    return val[:i].rstrip() if i != -1 else val
-
-
-def parse_min_yaml(text):
-    """Parse the restricted YAML subset used by config.yaml (nested maps only)."""
-    root = {}
-    # stack of (indent, container)
-    stack = [(-1, root)]
-    for rawline in text.splitlines():
-        if not rawline.strip() or rawline.lstrip().startswith("#"):
-            continue
-        indent = len(rawline) - len(rawline.lstrip(" "))
-        line = rawline.strip()
-        if ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        key = key.strip()
-        val = _strip_inline_comment(val.strip())
-        # pop to correct parent
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        parent = stack[-1][1]
-        if val == "":
-            child = {}
-            parent[key] = child
-            stack.append((indent, child))
-        else:
-            parent[key] = _coerce_scalar(val)
-    return root
+from miniyaml import parse_min_yaml, coerce_scalar as _coerce_scalar, \
+    strip_inline_comment as _strip_inline_comment  # noqa: E402,F401
 
 
 def load_config():

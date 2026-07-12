@@ -14,6 +14,10 @@ a prototype — you pick the workflow.
 - **Workspace (projects):** `~/Documents/iOS-App-Factory/` by default. Every
   direct child folder is one project. Override per run with `--root PATH` or the
   `ORCH_ROOT` env var (or `root:` in `config.yaml`).
+- **Platform:** the engine runs on POSIX (macOS/Linux; process-group control and
+  the file locks are Unix APIs). The **GUI**, the **iOS build/verify**
+  (`xcodebuild`, simulator, code-signing), and `install_launch_agent.sh` are
+  **macOS-only**; on Linux use the CLI and schedule `run.sh` with cron/systemd.
 - **Dependencies:** Python 3 standard library only. No API keys — `run.sh` and
   the GUI strip `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` /
   `GOOGLE_API_KEY` (and related vars) before launching, so every call counts

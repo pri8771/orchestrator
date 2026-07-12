@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # The real gate: the stdlib-only engine test suite, run with warnings promoted
+  # to errors (the same strict mode the repo has always used locally).
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run engine test suite (strict warnings)
+        run: python -W error::ResourceWarning -m unittest discover -s tests -v
+
+  # Lint is advisory for now — the monolith predates the linter, so failures
+  # here shouldn't block a green build until it's decomposed.
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check .
+
+  # Compile the SwiftUI GUI on macOS. The Python engine has no bearing on this;
+  # it catches GUI regressions the Linux jobs can't.
+  gui-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build GUI (release)
+        working-directory: gui
+        run: swift build -c release
+      - name: Run GUI unit tests
+        working-directory: gui
+        run: swift test

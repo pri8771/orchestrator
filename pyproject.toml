@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestrator"
+version = "2.0.0"
+description = "Autonomous multi-agent orchestrator (V2 engine) — makes the AI CLIs you're already logged into debate to consensus and then act, driven through pluggable workflows."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Priyansh Chordia" }]
+keywords = ["ai", "agents", "orchestrator", "codex", "claude", "gemini", "ollama"]
+# Zero runtime dependencies by design: standard library only. No API keys.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/pri8771/orchestrator"
+
+[project.scripts]
+orchestrator = "orchestrator:main"
+
+# The engine is a flat set of stdlib modules at the repo root (not a package),
+# so there's nothing to auto-discover; keep packaging minimal.
+[tool.setuptools]
+py-modules = [
+    "orchestrator", "workflows", "phase_rules", "schemas", "verify", "docs",
+    "backfill", "completeness", "events", "global_resource", "knowledge",
+    "localmodels", "miniyaml", "modelrouting", "portfolio", "procutil",
+    "resilience", "roles", "urlfetch",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff (linter). Conservative rule set so it can be a passing gate on a large
+# existing codebase: real-bug checks (pyflakes) + a few hygiene rules, with the
+# noisier stylistic rules left off until the monolith is decomposed.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = ["gui", "sample-run"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "W6"]   # pyflakes, syntax errors, deprecated-ish warnings
+ignore = ["F401"]            # re-export shims intentionally import names
+
+# ---------------------------------------------------------------------------
+# Mypy (optional local type checking). Lenient: the codebase is untyped by
+# design (stdlib-only, duck-typed config dicts), so this only surfaces genuine
+# import/attribute mistakes rather than demanding annotations everywhere.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = false
+exclude = ["gui/", "sample-run/"]

@@ -11,6 +11,14 @@
 # ============================================================================
 set -uo pipefail
 
+# LaunchAgents are a macOS mechanism. On Linux, schedule run.sh with cron or a
+# systemd timer instead.
+if [ "$(uname)" != "Darwin" ]; then
+  echo "install_launch_agent.sh installs a macOS LaunchAgent, but this is $(uname)." >&2
+  echo "On Linux, schedule 'bash run.sh --once' with cron or a systemd timer." >&2
+  exit 1
+fi
+
 LABEL="${ORCH_LAUNCH_LABEL:-com.orchestrator.autonomous}"
 # Derive the engine from this script's location. Project output goes to the
 # workspace below (ORCH_ROOT env wins, else a portable home-relative default).
