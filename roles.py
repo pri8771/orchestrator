@@ -23,6 +23,7 @@ edit them. If that file is missing we fall back to the built-in defaults below,
 so the engine keeps working with zero config.
 """
 
+import copy as _copy
 import json
 import os
 
@@ -88,7 +89,13 @@ def _valid_pool(obj, keys):
 
 def load_roles(orch_dir=None):
     """Return (personalities, roles). Reads roles.json if present and valid;
-    otherwise the built-in defaults. Never raises."""
+    otherwise the built-in defaults. Never raises.
+
+    Always returns fresh copies, never the module-level DEFAULT_* lists by
+    reference: a caller that mutates its result in place (e.g. filtering,
+    `assign_personas`'s empty-pool fallback) would otherwise corrupt the
+    built-in defaults for the rest of the process, including every other
+    concurrent project that later falls back to them."""
     path = os.path.join(orch_dir, "roles.json") if orch_dir else ROLES_PATH
     personalities, roles = DEFAULT_PERSONALITIES, DEFAULT_ROLES
     try:
@@ -104,7 +111,7 @@ def load_roles(orch_dir=None):
             roles = r
     except (OSError, ValueError):
         pass
-    return personalities, roles
+    return _copy.deepcopy(personalities), _copy.deepcopy(roles)
 
 
 def load_agent_role_overrides(orch_dir=None):

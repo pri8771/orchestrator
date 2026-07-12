@@ -7,6 +7,7 @@ malformed verify block, or an unknown target won't silently ship.
 import glob
 import json
 import os
+import tempfile
 import unittest
 
 import workflows as wf
@@ -77,6 +78,39 @@ class TestWorkflowsSchema(unittest.TestCase):
             w = wf.Workflow.from_json(d)
             self.assertEqual(len(w.phases), len(d["phases"]))
             self.assertEqual(w.name, d["name"])
+
+    def test_every_shipped_workflow_has_an_in_memory_fallback(self):
+        # Every workflows/*.json name must have a _BUILTINS entry — otherwise a
+        # missing/corrupt on-disk file for that name silently substitutes
+        # app_build instead of the correct workflow (e.g. `iterate` silently
+        # becoming a full rebuild instead of a surgical change).
+        names = {os.path.basename(f)[:-5] for f in _files()}
+        self.assertEqual(names - set(wf._BUILTINS), set(),
+                         "workflows with no _BUILTINS fallback: %s"
+                         % sorted(names - set(wf._BUILTINS)))
+
+    def test_corrupt_json_falls_back_to_the_correct_workflow_not_app_build(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf.ensure_seeded(d)
+            path = os.path.join(d, "workflows", "iterate.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{not valid json")
+            loaded = wf.load_workflow("iterate", d)
+        self.assertEqual(loaded.name, "iterate")
+
+    def test_missing_json_falls_back_to_the_correct_workflow_not_app_build(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf.ensure_seeded(d)
+            os.remove(os.path.join(d, "workflows", "vslice.json"))
+            loaded = wf.load_workflow("vslice", d)
+        self.assertEqual(loaded.name, "vslice")
+
+    def test_ensure_seeded_recreates_every_shipped_workflow(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf.ensure_seeded(d)
+            seeded = {f[:-5] for f in os.listdir(os.path.join(d, "workflows"))
+                     if f.endswith(".json")}
+        self.assertEqual(seeded, set(wf._BUILTINS))
 
     def test_phase_rules_cover_every_phase(self):
         # Every phase key used by any workflow has a quality playbook entry (or

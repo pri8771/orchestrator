@@ -28,6 +28,7 @@ Wired in orchestrator.py:
 """
 
 import datetime as _dt
+import http.client
 import ipaddress
 import os
 import re
@@ -198,29 +199,126 @@ def _ip_is_blocked(ip_str):
                 or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
-def _host_is_safe(host):
-    """Resolve `host` and return (safe, reason). Unsafe when it doesn't resolve
-    or ANY resolved address is blocked (so a name that points at 127.0.0.1 or a
-    metadata IP is caught, not just literal-IP URLs). Never raises."""
+def _resolve_safe_ip(host):
+    """Resolve `host` once and validate every returned address; return
+    (ip, error) — non-None ip and empty error means safe. Unsafe when the host
+    doesn't resolve or ANY resolved address is blocked (so a name that points at
+    127.0.0.1 or a metadata IP is caught, not just literal-IP URLs). Never raises.
+
+    This single getaddrinfo() result is later used to open the actual socket
+    (see the _Pinned*Connection classes below) instead of letting the http
+    client re-resolve the hostname at connect time. Checking the name and then
+    connecting to the name (two separate lookups) is a classic DNS-rebinding
+    TOCTOU: an attacker-controlled domain with a short TTL can answer a public
+    IP for the check and a private/metadata IP moments later for the connect.
+    Resolving once and pinning the connection to that exact address closes it."""
     if not host:
-        return False, "empty host"
+        return None, "empty host"
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, socket.error, UnicodeError, ValueError):
-        return False, "could not resolve host %r" % host
+        return None, "could not resolve host %r" % host
     if not infos:
-        return False, "host %r resolved to no addresses" % host
+        return None, "host %r resolved to no addresses" % host
     for info in infos:
         ip_str = info[4][0]
         if _ip_is_blocked(ip_str):
-            return False, ("host %r resolves to a non-public address (%s)"
-                           % (host, ip_str))
-    return True, ""
+            return None, ("host %r resolves to a non-public address (%s)"
+                          % (host, ip_str))
+    return infos[0][4][0], ""
+
+
+def _host_is_safe(host):
+    """(safe, reason) yes/no check used by the redirect pre-check. Delegates to
+    _resolve_safe_ip — kept as a separate name since callers only need the
+    boolean, not the resolved address."""
+    ip, err = _resolve_safe_ip(host)
+    return (ip is not None), err
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """An HTTPConnection that connects to a fixed, pre-validated IP (set via
+    `pinned_ip`) instead of re-resolving `self.host` at connect() time. Only
+    ever instantiated for a DIRECT (non-proxied) connection — see the handlers
+    below — so there is never a CONNECT tunnel to preserve here."""
+    pinned_ip = None
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self.pinned_ip or self.host, self.port),
+            self.timeout, self.source_address)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS counterpart of _PinnedHTTPConnection. TLS SNI/hostname
+    verification still uses the real hostname (`self.host`) — only the TCP
+    connect target is pinned to the pre-validated address."""
+    pinned_ip = None
+
+    def connect(self):
+        sock = socket.create_connection(
+            (self.pinned_ip or self.host, self.port),
+            self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _pinned_conn_factory(conn_cls, pinned_ip):
+    def factory(host, **kwargs):
+        conn = conn_cls(host, **kwargs)
+        conn.pinned_ip = pinned_ip
+        return conn
+    return factory
+
+
+def _is_proxied(req):
+    """True when `req` will actually connect to an HTTP(S) proxy rather than
+    the target directly. ProxyHandler (which runs before these handlers, per
+    urllib's handler_order) rewrites `req.host` to the proxy's address when
+    http_proxy/https_proxy is configured — comparing it against the target
+    hostname from the original URL detects that rewrite. Pinning only makes
+    sense for a direct connection: when a proxy is in play, IT resolves the
+    target's DNS, not this process, so pinning here would either connect
+    straight to the target (bypassing the proxy and any CONNECT tunnel/auth)
+    or be a meaningless no-op. Proxied requests fall back to plain urllib
+    behavior; the target host is still checked by _SafeRedirectHandler and the
+    caller's own _host_is_safe pre-check."""
+    target = urllib.parse.urlsplit(req.full_url).hostname
+    conn_hostname = urllib.parse.urlsplit("//" + (req.host or "")).hostname
+    return conn_hostname != target
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    """Resolves+validates the request's host and pins the connection to that
+    exact address — the actual SSRF/rebinding defense (see _resolve_safe_ip)."""
+
+    def http_open(self, req):
+        if _is_proxied(req):
+            return super().http_open(req)
+        hostname = urllib.parse.urlsplit(req.full_url).hostname
+        ip, err = _resolve_safe_ip(hostname)
+        if err:
+            raise urllib.error.URLError("blocked host: %s" % err)
+        return self.do_open(_pinned_conn_factory(http.client.HTTPConnection, ip), req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        if _is_proxied(req):
+            return super().https_open(req)
+        hostname = urllib.parse.urlsplit(req.full_url).hostname
+        ip, err = _resolve_safe_ip(hostname)
+        if err:
+            raise urllib.error.URLError("blocked host: %s" % err)
+        return self.do_open(_pinned_conn_factory(http.client.HTTPSConnection, ip),
+                            req, context=self._context)
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Follows redirects only to http(s) URLs whose host passes _host_is_safe,
-    closing the "public URL 302s to an internal address" SSRF bypass."""
+    closing the "public URL 302s to an internal address" SSRF bypass. This is a
+    fast pre-check for a clear error message; the pinned handlers above are
+    what actually enforce it against DNS rebinding on every hop, including this
+    one (they resolve+pin again when the redirected request is opened)."""
 
     def __init__(self, allow_private=False):
         self.allow_private = allow_private
@@ -238,8 +336,14 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _opener_for(allow_private):
-    """An opener whose redirect handler validates every hop."""
-    return urllib.request.build_opener(_SafeRedirectHandler(allow_private))
+    """An opener whose redirect handler validates every hop and — for the
+    default (secure) case — whose HTTP(S) handlers connect to the exact
+    pre-validated IP they resolved, never a second (potentially rebound)
+    resolution at connect time."""
+    handlers = [_SafeRedirectHandler(allow_private)]
+    if not allow_private:
+        handlers += [_PinnedHTTPHandler(), _PinnedHTTPSHandler()]
+    return urllib.request.build_opener(*handlers)
 
 
 # ---------------------------------------------------------------------------

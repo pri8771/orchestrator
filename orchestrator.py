@@ -221,9 +221,12 @@ def load_config():
 
 def resolve_root(cfg, cli_root=None):
     """Resolve the workspace root. Precedence: --root CLI flag > ORCH_ROOT env >
-    config root. A relative path is resolved against this repo (the parent of the
-    engine dir), so the shipped default `./workspace` means <repo>/workspace on
-    any machine — never a hardcoded absolute path (V2 spec §27)."""
+    config root. `~` is expanded, and a relative path is resolved against this
+    repo (the parent of the engine dir) — so the shipped default,
+    `~/Documents/iOS-App-Factory`, is portable across machines even though it
+    isn't repo-relative: it depends only on the current user's home directory,
+    never a hardcoded absolute path baked in for one specific machine/user
+    (V2 spec §27)."""
     root = cli_root or os.environ.get("ORCH_ROOT") or cfg.get("root") or ""
     root = os.path.expanduser(str(root))
     if root and not os.path.isabs(root):

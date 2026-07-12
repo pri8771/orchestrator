@@ -3,6 +3,7 @@
 The README promises the pairing is deterministic (a resumed run reproduces it)
 and that personalities rotate so no agent is locked to one temperament.
 """
+import tempfile
 import unittest
 
 import roles
@@ -55,6 +56,28 @@ class TestAssignPersonas(unittest.TestCase):
                                   phase_role_ids=subset)
         for v in a.values():
             self.assertIn(v["role"]["id"], subset)
+
+    def test_load_roles_returns_independent_copies_on_fallback(self):
+        # With no roles.json present, load_roles falls back to the built-in
+        # DEFAULT_PERSONALITIES/DEFAULT_ROLES. Each call must return an
+        # independent copy — a caller mutating its result must not corrupt the
+        # module-level defaults (and therefore every other concurrent caller).
+        with tempfile.TemporaryDirectory() as d:
+            personalities_a, roles_a = roles.load_roles(d)
+            personalities_a.append({"id": "poisoned"})
+            roles_a.append({"id": "poisoned"})
+            personalities_b, roles_b = roles.load_roles(d)
+        self.assertNotIn("poisoned", [p.get("id") for p in personalities_b])
+        self.assertNotIn("poisoned", [r.get("id") for r in roles_b])
+        self.assertNotIn("poisoned", [p.get("id") for p in roles.DEFAULT_PERSONALITIES])
+        self.assertNotIn("poisoned", [r.get("id") for r in roles.DEFAULT_ROLES])
+
+    def test_load_roles_mutating_returned_dicts_does_not_leak(self):
+        with tempfile.TemporaryDirectory() as d:
+            personalities_a, _ = roles.load_roles(d)
+            personalities_a[0]["name"] = "POISONED"
+            personalities_b, _ = roles.load_roles(d)
+        self.assertNotEqual(personalities_b[0]["name"], "POISONED")
 
     def test_empty_pools_do_not_raise(self):
         # A caller passing gutted pools must not hit ZeroDivisionError; falls

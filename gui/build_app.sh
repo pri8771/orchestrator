@@ -39,7 +39,7 @@ mkdir -p "$ENGINE_DEST"
     -not -path './logs/*' -not -path './locks/*' -not -path '*/__pycache__/*' \
     -not -path './tests/*' -not -path './sample-run/*' \
     -not -path './.orchestrator/*' \
-    -not -name 'config.json' \
+    -not -name 'config.json' -not -name 'config.yaml' \
     -not -name 'gemini_api_key' -not -name '*_api_key' \
     -not -name '.env' -not -name '.env.*' \
     -not -name '*.pem' -not -name '*.key' -not -name '*.p12' \
@@ -48,6 +48,19 @@ mkdir -p "$ENGINE_DEST"
       mkdir -p "$ENGINE_DEST/$(dirname "$f")"
       cp "$f" "$ENGINE_DEST/$f"
   done )
+# config.yaml is excluded from the generic copy above and handled separately:
+# it's the file the GUI's Settings panel writes into (root path, model roster,
+# reasoning effort, etc.), so the BUILDER's live working-tree copy can carry
+# personal customization. Ship the clean, git-tracked version instead so a
+# distributed .app/DMG never bakes in whoever built it's local settings.
+if git -C "$ENGINE_SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    && git -C "$ENGINE_SRC" show HEAD:config.yaml > "$ENGINE_DEST/config.yaml" 2>/dev/null; then
+  echo "[build_app] bundled config.yaml from git HEAD (not the working-tree copy)."
+else
+  echo "[build_app] WARNING: could not read config.yaml from git HEAD — falling"
+  echo "            back to the working-tree copy, which may carry local settings."
+  cp "$ENGINE_SRC/config.yaml" "$ENGINE_DEST/config.yaml"
+fi
 # Version stamp so the app re-copies the engine when it changes.
 date -u +"%Y%m%d%H%M%S" > "$ENGINE_DEST/VERSION"
 

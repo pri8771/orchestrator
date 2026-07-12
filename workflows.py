@@ -598,6 +598,40 @@ _BUILTINS = {w.name: w for w in (_APP_BUILD, _APP_SPEC, _ANSWER_QUESTION, _RESEA
                                  _PRODUCTIONIZE, _SPRINT, _AUDIT)}
 
 
+def _load_shipped_fallbacks():
+    """Give every workflow name that ships as JSON next to this module (not a
+    project's orch_dir — the packaged copy under WORKFLOWS_DIR) an in-memory
+    fallback in _BUILTINS, for the names that only exist as JSON
+    (app_build_child, brainstorm, full_max, iterate, library_mining, prototype,
+    vslice — everything not hand-authored above as a Python Workflow).
+
+    Without this, load_workflow() falls back to `if name in _BUILTINS: ...
+    else return _BUILTINS[DEFAULT_WORKFLOW]` for those 7 names, meaning a
+    missing/corrupt on-disk iterate.json silently turns an intended surgical
+    `iterate` run into a full `app_build` rebuild — a correctness bug with real
+    consequences, not just a degraded fallback. Sourcing the fallback from the
+    same shipped JSON (rather than hand-duplicating it as Python prose) means
+    it can never drift from the on-disk version. This also fixes
+    ensure_seeded()'s self-healing for these 7 files, which previously only
+    covered the 7 hand-authored ones. Best-effort at import time; a bad shipped
+    file is skipped rather than breaking import."""
+    try:
+        names = [fn[:-5] for fn in os.listdir(WORKFLOWS_DIR) if fn.endswith(".json")]
+    except OSError:
+        return
+    for name in names:
+        if name in _BUILTINS:
+            continue  # hand-authored Python version already covers it
+        try:
+            with open(os.path.join(WORKFLOWS_DIR, name + ".json"), encoding="utf-8") as fh:
+                _BUILTINS[name] = Workflow.from_json(json.load(fh))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+
+
+_load_shipped_fallbacks()
+
+
 # ---------------------------------------------------------------------------
 # Loading / seeding
 # ---------------------------------------------------------------------------

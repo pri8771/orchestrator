@@ -336,6 +336,7 @@ struct CommandPaletteView: View {
     @EnvironmentObject var store: OrchestratorStore
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @FocusState private var searchFocused: Bool
 
     private struct Command: Identifiable {
         let id = UUID()
@@ -368,7 +369,13 @@ struct CommandPaletteView: View {
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .padding(14)
+                .focused($searchFocused)
                 .accessibilityLabel("Command palette search")
+                .onAppear {
+                    // Focus on the next runloop turn: SwiftUI can drop a focus
+                    // request issued in the same tick the sheet is presented.
+                    DispatchQueue.main.async { searchFocused = true }
+                }
             Divider()
             if filtered.isEmpty {
                 Text("No matching commands")
