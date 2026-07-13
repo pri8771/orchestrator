@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build (if needed) and launch the Orchestrator GUI from source.
 #
-#   bash orchestrator-v2-source/gui/run_gui.sh
+#   bash gui/run_gui.sh   # from the repo root
 #
 # Passes the factory workspace root + orchestrator dir to the app via env vars
 # so it reads the same files orchestrator.py writes.

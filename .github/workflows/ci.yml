@@ -48,6 +48,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: gui/.build
+          # gui/Package.resolved doesn't exist today (zero external SPM deps),
+          # so hashFiles ignores it; the key only varies with Package.swift
+          # until a real dependency is added.
           key: ${{ runner.os }}-spm-${{ hashFiles('gui/Package.swift', 'gui/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-spm-

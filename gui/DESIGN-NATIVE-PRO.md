@@ -267,7 +267,7 @@ The grid IS `model_routing.json` — per-project file in the project dir, resolv
 
 ## 8. Migration Plan — six milestones, each independently shippable
 
-All GUI paths under `orchestrator-v2-source/gui/Sources/OrchestratorGUI/`. `OrchestratorStore.swift` (2,378 lines) remains the single ObservableObject throughout; new surfaces get lightweight derived models, never a store rewrite. Realistic total: **4–6 weeks part-time** (the judges rated 3 weeks as ~50% optimistic).
+All GUI paths under `gui/Sources/OrchestratorGUI/` (repo root). `OrchestratorStore.swift` (2,378 lines) remains the single ObservableObject throughout; new surfaces get lightweight derived models, never a store rewrite. Realistic total: **4–6 weeks part-time** (the judges rated 3 weeks as ~50% optimistic).
 
 **M0 — Tokens + guardrails (1–2 days, zero visual risk).** Create `ThemeTokens.swift` (`DS` enum: dynamic NSColor pairs from §2, spacing/radius scales, type ramp, `AgentIdentity` map with tint/symbol/effort-capability). Bump `Package.swift` platforms `.macOS(.v13)` → `.v14` (required for `.inspector`). Mechanically sweep the 27 `Color(red` sites (Models.swift ×18, ContentView.swift ×5, TranscriptView.swift ×3, Components.swift ×1) — both legacy UIs instantly share one palette with correct light/dark. Add the CI grep rejecting `Color(red:` and hardcoded font sizes outside `ThemeTokens.swift`. Build the component kit in `Components.swift` (or a `Components/` folder): StatusPill, AgentAvatar, EffortGauge, Sparkline, StatTile, Chip — pure views, `#Preview` in both schemes.
 

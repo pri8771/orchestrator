@@ -3,7 +3,7 @@
 This project doesn't yet cut tagged releases; entries below track the two
 audit-driven fix passes against `pyproject.toml`'s `version = "2.0.0"`.
 
-## Round 2 (in progress) — `TASKS_ROUND2.md`
+## Round 2 — `TASKS_ROUND2.md`
 
 Fresh audit after the Round 1 pass, scrutinizing both old code and what Round 1
 itself added (`miniyaml.py`, Command Palette, Pause/Resume, `surfaceError`).

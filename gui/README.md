@@ -127,11 +127,11 @@ doctor `local_models` block, shipped workflow coverage, and the engine-dir
 resolution precedence.
 
 ```bash
-cd orchestrator-v2-source/gui && swift test
+cd gui && swift test   # from the repo root
 ```
 
 ## Seeding demo data
 
 ```bash
-cd orchestrator-v2-source && python3 seed_demo.py   # writes demo projects into the workspace
+python3 seed_demo.py   # from the repo root; writes demo projects into the workspace
 ```

@@ -20,6 +20,9 @@ Homepage = "https://github.com/pri8771/orchestrator"
 [project.scripts]
 orchestrator = "orchestrator:main"
 
+[project.optional-dependencies]
+dev = ["ruff", "mypy"]
+
 # The engine is a flat set of stdlib modules at the repo root (not a package),
 # so there's nothing to auto-discover; keep packaging minimal.
 [tool.setuptools]

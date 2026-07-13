@@ -57,5 +57,5 @@ verify: test-strict gui-build gui-test doctor
 	@echo "verify: all gates passed"
 
 clean:
-	rm -rf gui/.build gui/dist
+	rm -rf gui/.build gui/dist .mypy_cache .ruff_cache *.egg-info dist
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

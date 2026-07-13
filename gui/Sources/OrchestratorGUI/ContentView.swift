@@ -340,7 +340,7 @@ struct CommandPaletteView: View {
     @FocusState private var searchFocused: Bool
 
     private struct Command: Identifiable {
-        let id = UUID()
+        var id: UICommand { action }
         let title: String
         let shortcut: String
         let action: UICommand
@@ -422,7 +422,7 @@ struct CommandPaletteView: View {
                         HStack {
                             Text(c.title)
                             Spacer()
-                            Text(c.shortcut).foregroundStyle(.secondary).font(.callout)
+                            Text(c.shortcut.isEmpty ? "—" : c.shortcut).foregroundStyle(.secondary).font(.callout)
                         }
                         .contentShape(Rectangle())
                     }
