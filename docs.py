@@ -179,7 +179,7 @@ def render_project_management_backfill(app, original_prompt, ordered_phases,
         "notion": {
             "project_properties": {
                 "Name": app,
-                "Status": "Done" if verify_summary.upper().startswith("VERIFIED")
+                "Status": "Done" if (verify_summary or "").upper().startswith("VERIFIED")
                 else "Needs review",
                 "Source": "Orchestrator",
                 "Workflow Phases": len(ordered_phases),

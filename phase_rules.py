@@ -22,10 +22,15 @@ RULES_FILENAME = "phase_rules.json"
 # iterate the string's characters instead of mis-rendering loudly.
 _PHASE_LIST_FIELDS = ("rules", "required_output", "acceptance_checks")
 
-# mtime-keyed so a run only re-parses phase_rules.json once per phase pair of
-# calls (render_phase_playbook + render_phase_quality_rubric) instead of
-# hitting disk every time, while an on-disk edit (mtime change) still busts it.
-_CACHE: typing.Dict[str, typing.Tuple[float, typing.Dict[str, typing.Any]]] = {}
+# Keyed on (st_mtime_ns, st_size) so a run only re-parses phase_rules.json
+# once per phase pair of calls (render_phase_playbook +
+# render_phase_quality_rubric) instead of hitting disk every time, while an
+# on-disk edit still busts it — including a same-second replacement, which an
+# mtime-alone key served stale. A same-second, same-length rewrite is still
+# theoretically stale; mtime_ns+size is the accepted stdlib-only tradeoff
+# (no content hashing on this hot path).
+_CACHE: typing.Dict[str, typing.Tuple[typing.Tuple[int, int],
+                                      typing.Dict[str, typing.Any]]] = {}
 
 
 def _clean_phase(phase):
@@ -42,12 +47,13 @@ def load_rules(orch_dir):
     empty = {"schema_version": 1, "global_app_rules": [], "phases": {}}
     path = os.path.join(orch_dir, RULES_FILENAME)
     try:
-        mtime = os.path.getmtime(path)
+        st = os.stat(path)
     except OSError:
         _CACHE.pop(path, None)
         return empty
+    key = (st.st_mtime_ns, st.st_size)
     cached = _CACHE.get(path)
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == key:
         return copy.deepcopy(cached[1])
     try:
         with open(path, encoding="utf-8") as fh:
@@ -61,7 +67,7 @@ def load_rules(orch_dir):
     phases = data.get("phases")
     data["phases"] = {k: _clean_phase(v) for k, v in phases.items()} \
         if isinstance(phases, dict) else {}
-    _CACHE[path] = (mtime, data)
+    _CACHE[path] = (key, data)
     return copy.deepcopy(data)
 
 

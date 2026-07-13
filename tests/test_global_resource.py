@@ -42,7 +42,7 @@ class TestWorkerBroker(unittest.TestCase):
         remaining = conn.execute("SELECT rowid FROM worker_slots WHERE resource_class=?",
                                  ("cli_remote",)).fetchall()
         conn.close()
-        self.assertEqual([row[0] for row in remaining], [token2])
+        self.assertEqual([row[0] for row in remaining], [token2[0]])
 
     def test_dead_pid_reaped(self):
         # a very unlikely-to-exist pid is reaped so its slot frees
@@ -52,14 +52,66 @@ class TestWorkerBroker(unittest.TestCase):
         self.assertTrue(gr.try_claim("p", "cli_remote", cap=1, pid=os.getpid(), db_path=self.db))
 
     def test_release_never_raises_on_missing(self):
-        gr.release("cli_remote", 99999, pid=os.getpid(), db_path=self.db)  # nothing to release
+        gr.release("cli_remote", (99999, "no-such-uuid"),
+                   pid=os.getpid(), db_path=self.db)  # nothing to release
 
-    def test_release_noop_on_non_int_token(self):
+    def test_release_noop_on_malformed_token(self):
         # A fail-open claim (cap<=0, broker unavailable) returns True, not a
-        # real rowid — release() must treat that as a no-op, not attempt to
-        # delete some arbitrary row.
-        gr.release("cli_remote", True, pid=os.getpid(), db_path=self.db)
-        gr.release("cli_remote", False, pid=os.getpid(), db_path=self.db)
+        # real (rowid, uuid) token — release() must treat that (and any other
+        # non-token shape, including a bare legacy rowid int) as a no-op, not
+        # attempt to delete some arbitrary row.
+        for bad in (True, False, 7, "7", (True, "x"), (7,), (7, 8), None):
+            gr.release("cli_remote", bad, pid=os.getpid(), db_path=self.db)
+
+    def test_stale_double_release_cannot_free_recycled_rowid(self):
+        # SQLite reuses max-rowid: claim A, release A, claim B — B may get A's
+        # rowid back. A buggy second release(A) must NOT delete B's row; the
+        # per-claim uuid in the token makes the stale token miss structurally.
+        pid = os.getpid()
+        token_a = gr.try_claim("p", "cli_remote", cap=5, pid=pid, db_path=self.db)
+        gr.release("cli_remote", token_a, pid=pid, db_path=self.db)
+        token_b = gr.try_claim("p", "cli_remote", cap=5, pid=pid, db_path=self.db)
+        self.assertEqual(token_b[0], token_a[0])  # rowid actually recycled
+        gr.release("cli_remote", token_a, pid=pid, db_path=self.db)  # stale double release
+        self.assertEqual(gr.active_count("cli_remote", db_path=self.db), 1,
+                         "stale double release deleted the recycled-rowid claim")
+        gr.release("cli_remote", token_b, pid=pid, db_path=self.db)
+        self.assertEqual(gr.active_count("cli_remote", db_path=self.db), 0)
+
+    def test_reap_survives_cap_full_claim_rollback(self):
+        # The reap runs in its own committed transaction: a cap-full claim's
+        # rollback used to undo the reap's deletes, so garbage rows were never
+        # purged under sustained contention.
+        gr.try_claim("p", "cli_remote", cap=2, pid=999999, db_path=self.db)  # dead pid
+        live = gr.try_claim("p", "cli_remote", cap=2, pid=os.getpid(), db_path=self.db)
+        self.assertTrue(live)
+        # Backdate nothing; fill the cap so the next claim fails AFTER reaping.
+        conn = gr._conn(self.db)
+        conn.execute("INSERT INTO worker_slots VALUES (?,?,?,?,?)",
+                     (os.getpid(), "p", "cli_remote", time.time(), "u2"))
+        conn.commit()
+        conn.close()
+        self.assertFalse(gr.try_claim("p", "cli_remote", cap=2,
+                                      pid=os.getpid(), db_path=self.db))
+        conn = gr._conn(self.db)
+        dead_rows = conn.execute("SELECT COUNT(*) FROM worker_slots WHERE pid=?",
+                                 (999999,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(dead_rows, 0, "cap-full rollback undid the reap")
+
+    def test_old_schema_db_migrated_in_place(self):
+        # A DB created by the previous release has no claim_uuid column; _conn
+        # must ALTER it in place so claims/releases keep working.
+        os.makedirs(os.path.dirname(self.db), exist_ok=True)
+        conn = sqlite3.connect(self.db)
+        conn.execute("CREATE TABLE worker_slots "
+                     "(pid INTEGER, project_id TEXT, resource_class TEXT, claimed_at REAL)")
+        conn.commit()
+        conn.close()
+        token = gr.try_claim("p", "cli_remote", cap=2, pid=os.getpid(), db_path=self.db)
+        self.assertIsInstance(token, tuple)
+        gr.release("cli_remote", token, pid=os.getpid(), db_path=self.db)
+        self.assertEqual(gr.active_count("cli_remote", db_path=self.db), 0)
 
     def test_stale_slot_reaped_by_age_even_if_pid_alive(self):
         # A live PID (our own) that has held a slot longer than the max age is a

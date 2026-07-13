@@ -182,6 +182,37 @@ class TestTurnEvents(unittest.TestCase):
         self.assertEqual(text, "hello")   # events never affect the turn
 
 
+class TestGlobalSlotReleasedOnSetupFailure(unittest.TestCase):
+    """A claimed global-worker slot must be released even when setup BETWEEN
+    the claim and the runner call raises — Thread.start() can genuinely raise
+    RuntimeError under thread exhaustion (realistic exactly when many parallel
+    workers run), and the slot used to leak until the 6-hour age reap."""
+
+    def test_slot_released_when_heartbeat_thread_start_raises(self):
+        cfg = {"models": {"claude": "sonnet"},
+               "_resolved": {"claude_model": "sonnet"},
+               "runtime": {"global_worker_cap_enabled": True}}
+        token = 4242
+        released = []
+
+        class _BoomThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        with unittest.mock.patch.object(orch.grlib, "claim_slot",
+                                        return_value=token), \
+                unittest.mock.patch.object(
+                    orch.grlib, "release",
+                    side_effect=lambda rc, tok, **kw: released.append((rc, tok))), \
+                unittest.mock.patch.object(orch.threading, "Thread", _BoomThread):
+            with self.assertRaises(RuntimeError):
+                orch._call_agent_once(cfg, "appx", "tech_specs", 1, "claude", "hi")
+        self.assertEqual(released, [("cli_remote", token)])
+
+
 class TestFallbackEventsAndCounts(unittest.TestCase):
     """call_agent's ladder: agent_fallback events + fallback_counts badge."""
 

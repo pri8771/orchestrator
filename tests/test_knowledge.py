@@ -82,6 +82,27 @@ class TestRetrieve(unittest.TestCase):
             self.assertIn("widgets", out1.lower())
             self.assertIn("widgets", out2.lower())
 
+    def test_same_mtime_different_size_replacement_busts_cache(self):
+        # A same-second file replacement used to serve a stale parse because
+        # the cache key was mtime alone; keying on (mtime_ns, size) catches a
+        # replacement whose length differs even with an identical mtime.
+        with tempfile.TemporaryDirectory() as d:
+            domain_dir = os.path.join(d, "knowledge", "general")
+            os.makedirs(domain_dir)
+            doc_path = os.path.join(domain_dir, "one.md")
+            with open(doc_path, "w", encoding="utf-8") as fh:
+                fh.write("<!-- keywords: widgets -->\nAll about widgets.\n")
+            st = os.stat(doc_path)
+            self.assertIn("all about widgets",
+                          k.retrieve(d, "general", "widgets").lower())  # prime
+            with open(doc_path, "w", encoding="utf-8") as fh:
+                fh.write("<!-- keywords: widgets -->\nFresh widget content here.\n")
+            # Pin the mtime back to the original — simulates a same-second
+            # replacement that a coarse mtime key can't distinguish.
+            os.utime(doc_path, ns=(st.st_atime_ns, st.st_mtime_ns))
+            out = k.retrieve(d, "general", "widgets")
+            self.assertIn("fresh widget content", out.lower())
+
 
 class TestShouldInject(unittest.TestCase):
     def test_returns_bool(self):

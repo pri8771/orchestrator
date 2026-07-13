@@ -152,6 +152,26 @@ class TestRosterGating(unittest.TestCase):
                          ["codex", "claude", "gemini", "local:gemma3:4b"])
         self.assertTrue(c.get("_noted_ollama_uninstalled_skip"))
 
+    def test_installed_models_memoized_on_cfg_when_key_absent(self):
+        # Without an injected key, enabled_agents resolves the installed set
+        # via the TTL-cached helper ONCE and memoizes it on the cfg — the key
+        # is real now, not a dead read.
+        c = self.cfg()
+        c["models"]["ollama_roster"] = "qwen2.5-coder:7b,glm4:9b"
+        c["runtime"]["skip_uninstalled_local_models"] = True
+        calls = []
+        orig = orch.lmlib.installed_models_cached
+        orch.lmlib.installed_models_cached = \
+            lambda ttl=60, run=None: calls.append(1) or ["glm4:9b"]
+        try:
+            self.assertEqual(orch.enabled_agents(c),
+                             ["codex", "claude", "gemini", "local:glm4:9b"])
+            self.assertEqual(c["_installed_ollama_models"], ["glm4:9b"])
+            orch.enabled_agents(c)   # second build reuses the cfg memo
+            self.assertEqual(len(calls), 1)
+        finally:
+            orch.lmlib.installed_models_cached = orig
+
     def test_uses_resolved_roster_when_present(self):
         c = self.cfg()
         c["_resolved"] = {"ollama_roster": ["glm4:9b", "qwq:32b"]}
@@ -319,10 +339,14 @@ class TestDoctorLocalModels(unittest.TestCase):
         lm.server_running = lambda timeout=3: True
         lm.installed_models = lambda run=None: ["qwen2.5-coder:7b"]
         orch.which = lambda name: None   # no real version probes in tests
+        # report() reads through the TTL cache — reset it so this test neither
+        # sees another test's priming nor leaks its stub values onward.
+        lm._INSTALLED_CACHE.update(ts=0.0, models=[])
 
     def tearDown(self):
         lm.server_running, lm.installed_models = self._server, self._installed
         orch.which = self._which
+        lm._INSTALLED_CACHE.update(ts=0.0, models=[])
 
     def test_report_shape(self):
         rep = lm.report(HERE, "qwen2.5-coder:7b")
@@ -347,6 +371,21 @@ class TestDoctorLocalModels(unittest.TestCase):
         rep = lm.report(HERE, "")
         self.assertEqual(rep["selected"], "")
         self.assertFalse(rep["selected_installed"])
+
+    def test_report_uses_installed_models_cache(self):
+        # Repeated --doctor/GUI polls must not re-pay the `ollama list`
+        # subprocess every time — report() reads through the TTL cache.
+        calls = []
+
+        def counting(run=None):
+            calls.append(1)
+            return ["qwen2.5-coder:7b"]
+
+        lm.installed_models = counting
+        lm.report(HERE, "qwen2.5-coder:7b")
+        rep = lm.report(HERE, "qwen2.5-coder:7b")
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(rep["selected_installed"])
 
     def test_preflight_report_includes_local_models(self):
         cfg = {"root": tempfile.gettempdir(),

@@ -31,21 +31,37 @@ WORKFLOWS_DIR = os.path.join(HERE, "workflows")
 DEFAULT_WORKFLOW = "app_build"
 
 
-def _as_bool(value):
+def _as_bool(value, default):
     """bool() coercion that doesn't treat the string "false" as truthy — agents
-    (and hand-edited workflow JSON) sometimes emit booleans as strings."""
-    if isinstance(value, str) and value.strip().lower() in ("false", "no", "0", ""):
-        return False
+    (and hand-edited workflow JSON) sometimes emit booleans as strings. An
+    unrecognized string spelling ("off", "0.0") returns the caller-supplied
+    schema default rather than bool()'s raw truthiness (mirrors
+    modelrouting._as_bool)."""
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("false", "no", "0", ""):
+            return False
+        if v in ("true", "yes", "1"):
+            return True
+        return default
     return bool(value)
 
 
 def _as_str_list(value):
-    """list() coercion that doesn't shatter a bare string into single-character
-    entries — a string is iterable, so list("product") == ['p','r',...], not
-    the single-item list a malformed edit almost certainly meant."""
-    if not value or isinstance(value, str):
+    """list() coercion that only accepts a real sequence: a bare string would
+    shatter into single characters, and a dict would silently yield its keys —
+    neither is what a malformed edit meant, so both fall back to []."""
+    if not isinstance(value, (list, tuple)):
         return []
     return list(value)
+
+
+def _as_dict(value):
+    """Structured-field guard: verify (and any future dict-shaped field) must
+    be a dict — a bare string like "verify": "xcodebuild" would crash the
+    engine's spec.get(...) consumer mid-phase instead of degrading to
+    'unverified'. Same safe-default philosophy as _as_bool/_as_str_list."""
+    return value if isinstance(value, dict) and value else None
 
 
 def phase_key(phase):
@@ -88,18 +104,18 @@ class Phase:
         self.title = title or key.replace("_", " ").title()
         self.rounds = int(rounds)
         self.roles = _as_str_list(roles)
-        self.writes = _as_bool(writes)
+        self.writes = _as_bool(writes, False)
         # When true, this phase reads a pre-existing TARGET codebase (audit mode) —
         # read-only, never written to. Mutually exclusive with writes in practice.
-        self.reads_target = _as_bool(reads_target)
-        self.verify = verify or None
+        self.reads_target = _as_bool(reads_target, False)
+        self.verify = _as_dict(verify)
         # V2 fields (§8): checkpoint = pause in Semi-Autonomous; structurally_required
         # = turns floor of 1 when included; requires_verification = gate final output
         # on a structured verification label; doc_sections = named blueprint subsection
         # keys this phase emits; test_deliverable = per-stack test descriptor.
-        self.checkpoint = _as_bool(checkpoint)
-        self.structurally_required = _as_bool(structurally_required)
-        self.requires_verification = _as_bool(requires_verification)
+        self.checkpoint = _as_bool(checkpoint, False)
+        self.structurally_required = _as_bool(structurally_required, False)
+        self.requires_verification = _as_bool(requires_verification, False)
         self.doc_sections = _as_str_list(doc_sections)
         self.test_deliverable = test_deliverable or None
 

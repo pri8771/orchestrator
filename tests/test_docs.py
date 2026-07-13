@@ -24,6 +24,24 @@ class TestJiraLabelSanitization(unittest.TestCase):
             self.assertNotIn(" ", label)
 
 
+class TestBackfillPayloadNoneVerifySummary(unittest.TestCase):
+    def test_none_verify_summary_does_not_crash(self):
+        # verify_summary=None used to crash on .upper() (missing the `or ""`
+        # guard every sibling in this file uses).
+        payload = docs.render_project_management_backfill(
+            "demo", "prompt", [("final_review", "Final Review")], {},
+            tasks=[], interfaces=[], verify_summary=None)
+        self.assertEqual(payload["notion"]["project_properties"]["Status"],
+                         "Needs review")
+
+    def test_verified_summary_still_maps_to_done(self):
+        payload = docs.render_project_management_backfill(
+            "demo", "prompt", [("final_review", "Final Review")], {},
+            tasks=[], interfaces=[], verify_summary="VERIFIED — build passed")
+        self.assertEqual(payload["notion"]["project_properties"]["Status"],
+                         "Done")
+
+
 class TestDocsRenderer(unittest.TestCase):
     def setUp(self):
         self.app_dir = tempfile.mkdtemp()

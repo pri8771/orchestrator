@@ -29,12 +29,16 @@ class _NoExternalTools(unittest.TestCase):
         lm.server_running = lambda timeout=3: False
         lm.installed_models = lambda run=None: []
         orch._QUIET = True                       # silence emit() during the test
+        # The doctor paths read installed models through the TTL cache — reset
+        # it so no other test's priming (or this stub's values) leaks across.
+        lm._INSTALLED_CACHE.update(ts=0.0, models=[])
 
     def tearDown(self):
         orch.which = self._which
         lm.server_running = self._server
         lm.installed_models = self._installed
         orch._QUIET = self._quiet
+        lm._INSTALLED_CACHE.update(ts=0.0, models=[])
 
     def _cfg(self):
         return {"root": tempfile.gettempdir(), "models": {"ollama": ""},

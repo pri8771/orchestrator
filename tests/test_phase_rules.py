@@ -56,6 +56,27 @@ class TestPhaseRules(unittest.TestCase):
                 pr.load_rules(d)
             self.assertEqual(len(calls), 1)
 
+    def test_same_mtime_different_size_replacement_busts_cache(self):
+        # A same-second file replacement used to serve stale content because
+        # the cache key was mtime alone; keying on (mtime_ns, size) catches a
+        # replacement whose length differs even with an identical mtime.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, pr.RULES_FILENAME)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "global_app_rules": ["old rule"],
+                           "phases": {}}, fh)
+            st = os.stat(path)
+            self.assertEqual(pr.load_rules(d)["global_app_rules"], ["old rule"])  # prime
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1,
+                           "global_app_rules": ["a longer replacement rule"],
+                           "phases": {}}, fh)
+            # Pin the mtime back to the original — simulates a same-second
+            # replacement that a coarse mtime key can't distinguish.
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+            self.assertEqual(pr.load_rules(d)["global_app_rules"],
+                             ["a longer replacement rule"])
+
     def test_render_app_phase_playbook(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, pr.RULES_FILENAME), "w", encoding="utf-8") as fh:

@@ -548,7 +548,10 @@ def persist_verify_result(app_dir, phase_key, result, attempt=0,
     result = result or {}
     record = {
         "schema_version": 1,
-        "timestamp": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # tz-aware (local + offset), matching events.py, so ordering against
+        # events.jsonl stays unambiguous across DST transitions. Consumers
+        # (GUI VerificationCard, shepherd.sh) treat this as an opaque string.
+        "timestamp": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "phase": phase_key,
         "workflow": workflow,
         "prompt_hash": prompt_hash,

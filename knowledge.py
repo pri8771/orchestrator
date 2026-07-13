@@ -26,12 +26,15 @@ import typing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Per-file (kws, body_terms, body) cache keyed by (path, mtime). The query
-# changes every call so scoring itself can't be cached, but the read+parse of
-# each cheatsheet (unchanged between phases within a run) can be — this file
-# set is small and rarely edited, so an mtime check is cheap insurance against
-# ever serving a stale parse after an on-disk edit.
-_DOC_CACHE: typing.Dict[str, typing.Tuple[float, typing.Tuple[
+# Per-file (kws, body_terms, body) cache keyed by (st_mtime_ns, st_size). The
+# query changes every call so scoring itself can't be cached, but the
+# read+parse of each cheatsheet (unchanged between phases within a run) can
+# be — this file set is small and rarely edited, so a stat check is cheap
+# insurance against ever serving a stale parse after an on-disk edit,
+# including a same-second replacement (which an mtime-alone key served stale).
+# A same-second, same-length rewrite is still theoretically stale; mtime_ns +
+# size is the accepted stdlib-only tradeoff (no content hashing).
+_DOC_CACHE: typing.Dict[str, typing.Tuple[typing.Tuple[int, int], typing.Tuple[
     typing.Set[str], typing.Set[str], str]]] = {}
 
 _KW_RE = re.compile(r"<!--\s*keywords:\s*(.*?)\s*-->", re.IGNORECASE | re.DOTALL)
@@ -129,16 +132,17 @@ def should_inject(phase_key):
 
 
 def _load_doc(path):
-    """(kws, body_terms, body) for one cheatsheet, cached by (path, mtime) so
-    repeated retrieve() calls within a run don't re-read/re-parse every file
-    from disk every time. Returns None on any read error."""
+    """(kws, body_terms, body) for one cheatsheet, cached by (mtime_ns, size)
+    so repeated retrieve() calls within a run don't re-read/re-parse every
+    file from disk every time. Returns None on any read error."""
     try:
-        mtime = os.path.getmtime(path)
+        st = os.stat(path)
     except OSError:
         _DOC_CACHE.pop(path, None)
         return None
+    key = (st.st_mtime_ns, st.st_size)
     cached = _DOC_CACHE.get(path)
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == key:
         return cached[1]
     try:
         with open(path, encoding="utf-8") as fh:
@@ -146,7 +150,7 @@ def _load_doc(path):
     except OSError:
         return None
     parsed = (_doc_keywords(body), _terms(body), body)
-    _DOC_CACHE[path] = (mtime, parsed)
+    _DOC_CACHE[path] = (key, parsed)
     return parsed
 
 

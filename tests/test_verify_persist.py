@@ -71,6 +71,16 @@ class TestVerifyPersistence(unittest.TestCase):
     def test_missing_file_returns_empty(self):
         self.assertEqual(verify.load_verify_results(tempfile.mkdtemp()), [])
 
+    def test_timestamp_is_timezone_aware_isoformat(self):
+        # Matches events.py's pattern so record ordering against events.jsonl
+        # stays unambiguous across DST transitions (naive datetime.now() was
+        # ambiguous for one hour a year).
+        import datetime
+        rec = verify.persist_verify_result(self.d, "p",
+                                           {"ran": True, "ok": True, "tool": "t"})
+        parsed = datetime.datetime.fromisoformat(rec["timestamp"])
+        self.assertIsNotNone(parsed.tzinfo)
+
 
 if __name__ == "__main__":
     unittest.main()

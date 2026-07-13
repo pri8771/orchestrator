@@ -219,7 +219,9 @@ def report(here, selected):
     server reachability, the configured model (models.ollama) and whether it's
     actually pulled, plus the curated registry with per-model installed flags."""
     selected = str(selected or "").strip()
-    installed = set(installed_models())
+    # Cached (like search_remote): --doctor/GUI polls hit this repeatedly and
+    # must not re-pay the full `ollama list` subprocess on every call.
+    installed = set(installed_models_cached())
     registry = []
     for m in load_registry(here).get("models", []):
         entry = {k: m.get(k) for k in REGISTRY_PUBLIC_FIELDS if k in m}

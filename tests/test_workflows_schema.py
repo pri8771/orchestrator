@@ -165,6 +165,42 @@ class TestPhaseFieldCoercion(unittest.TestCase):
         d = dict(self._BASE, roles=["product", "eng"])
         self.assertEqual(wf.Phase.from_json(d).roles, ["product", "eng"])
 
+    def test_unrecognized_bool_string_falls_back_to_schema_default(self):
+        # "off"/"0.0" are neither canonical-true nor canonical-false: the
+        # field's schema default (False for every bool field) wins, instead of
+        # bool()'s any-non-empty-string-is-True fallthrough.
+        for field in ("writes", "reads_target", "checkpoint",
+                      "structurally_required", "requires_verification"):
+            for val in ("off", "0.0", "maybe"):
+                d = dict(self._BASE, **{field: val})
+                self.assertIs(getattr(wf.Phase.from_json(d), field), False,
+                              "%s=%r should fall back to the default" % (field, val))
+
+    def test_dict_roles_not_misread_as_key_list(self):
+        # A dict is iterable (its keys), but {"product": True} is a malformed
+        # edit, not a one-role list — reject it like a bare string.
+        d = dict(self._BASE, roles={"product": True})
+        self.assertEqual(wf.Phase.from_json(d).roles, [])
+        d = dict(self._BASE, doc_sections={"architecture": 1})
+        self.assertEqual(wf.Phase.from_json(d).doc_sections, [])
+
+    def test_bare_string_verify_coerced_to_none(self):
+        # "verify": "xcodebuild" (string instead of dict) used to load fine and
+        # then crash the engine's spec.get("repair_iterations", ...) mid-phase.
+        d = dict(self._BASE, verify="xcodebuild")
+        self.assertIsNone(wf.Phase.from_json(d).verify)
+
+    def test_dict_verify_passes_through_unchanged(self):
+        spec = {"type": "xcodebuild", "repair_iterations": 3}
+        self.assertEqual(wf.Phase.from_json(dict(self._BASE, verify=spec)).verify,
+                         spec)
+
+    def test_non_dict_verify_shapes_all_coerced_to_none(self):
+        for bad in ("http", ["xcodebuild"], 1, True, {}):
+            d = dict(self._BASE, verify=bad)
+            self.assertIsNone(wf.Phase.from_json(d).verify,
+                              "verify=%r should coerce to None" % (bad,))
+
 
 if __name__ == "__main__":
     unittest.main()

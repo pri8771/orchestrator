@@ -82,6 +82,38 @@ class TestRedaction(unittest.TestCase):
         self.assertNotIn(secret, red)
         self.assertIn("[REDACTED:aws_key]", red)
 
+    def test_labeled_fallback_json_fence_protected(self):
+        # The "labeled fallback" shape extract_structured_blocks itself
+        # accepts — a **task-json:** label line above a plain ```json (or
+        # bare ```) fence — must be protected from the entropy fallback too:
+        # its info string carries no -json marker, but its body is parsed
+        # downstream all the same.
+        long_id = "a1b2c3d4e5f6789012345678deadBEEF00"
+        for fence in ("```json", "```"):
+            block = ('**task-json:**\n%s\n{"title": "t", "fix": "see %s"}\n```'
+                     % (fence, long_id))
+            self.assertIn(long_id, schemas.redact_secrets(block),
+                          "entropy fallback corrupted a %s labeled block" % fence)
+
+    def test_indented_json_fence_protected(self):
+        # Fences indented 1-3 spaces are markdown-legal (models emit this when
+        # nesting a block inside a list item) and must be protected too.
+        long_id = "a1b2c3d4e5f6789012345678deadBEEF00"
+        block = ('- the finding:\n'
+                 '  ```finding-json\n'
+                 '  {"title": "t", "fix": "see %s"}\n'
+                 '  ```' % long_id)
+        self.assertIn(long_id, schemas.redact_secrets(block))
+
+    def test_all_code_fences_skip_entropy_fallback(self):
+        # Deliberate design: the entropy heuristic is skipped inside EVERY
+        # fenced code block (not just ```*-json ones) — code samples are where
+        # long legitimate identifiers are densest, and the strict labeled
+        # patterns already ran over the whole text first.
+        long_id = "a1b2c3d4e5f6789012345678deadBEEF00"
+        block = '```python\nasset = load("%s")\n```' % long_id
+        self.assertIn(long_id, schemas.redact_secrets(block))
+
     def test_json_fence_skip_never_raises_on_unclosed_fence(self):
         schemas.redact_secrets("```finding-json\n{\"a\": \"unclosed")
 

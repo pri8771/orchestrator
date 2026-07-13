@@ -20,6 +20,7 @@ claim, so a crashed process never leaks slots.
 import os
 import sqlite3
 import time
+import uuid
 
 DEFAULT_DB = os.path.expanduser("~/.orchestrator_global/workers.db")
 
@@ -43,7 +44,16 @@ def _conn(db_path):
     conn = sqlite3.connect(db_path, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE IF NOT EXISTS worker_slots "
-                 "(pid INTEGER, project_id TEXT, resource_class TEXT, claimed_at REAL)")
+                 "(pid INTEGER, project_id TEXT, resource_class TEXT, claimed_at REAL, "
+                 "claim_uuid TEXT)")
+    # Migrate a pre-existing old-schema DB (the CREATE above is IF NOT EXISTS,
+    # so it never adds the column to an old table). Slot rows live at most 6
+    # hours, so the migration burden is one ALTER; "duplicate column name" on
+    # every later connect is the expected no-op.
+    try:
+        conn.execute("ALTER TABLE worker_slots ADD COLUMN claim_uuid TEXT")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -69,29 +79,41 @@ def _reap(conn):
 
 
 def _claim_once(conn, project_id, resource_class, cap, pid):
-    """One claim transaction. Returns the new row's rowid (truthy claim token)
-    or False if the cap is full; may raise on lock contention."""
+    """One claim attempt. Returns a (rowid, claim_uuid) token or False if the
+    cap is full; may raise on lock contention.
+
+    The reap runs in its OWN committed transaction first: it used to share the
+    claim's transaction, so a cap-full rollback undid the reap's deletes — under
+    sustained contention garbage rows were never purged."""
     conn.execute("BEGIN IMMEDIATE")
     _reap(conn)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
     n = conn.execute("SELECT COUNT(*) FROM worker_slots WHERE resource_class=?",
                      (resource_class,)).fetchone()[0]
     if n >= cap:
         conn.rollback()
         return False
-    cur = conn.execute("INSERT INTO worker_slots VALUES (?,?,?,?)",
-                       (pid, project_id, resource_class, time.time()))
+    # The uuid makes the token structurally unique: SQLite reuses max-rowid, so
+    # a rowid alone could name a DIFFERENT, newly-inserted claim by the time a
+    # stale double release() runs.
+    uid = uuid.uuid4().hex
+    cur = conn.execute("INSERT INTO worker_slots VALUES (?,?,?,?,?)",
+                       (pid, project_id, resource_class, time.time(), uid))
     conn.commit()
-    return cur.lastrowid
+    return (cur.lastrowid, uid)
 
 
 def try_claim(project_id, resource_class, cap, pid=None, db_path=DEFAULT_DB):
-    """Try to take one slot. Returns a claim token (the inserted row's rowid,
-    an int) if taken, False if the cap is full. The token must be passed back
+    """Try to take one slot. Returns a claim token — a (rowid, claim_uuid)
+    tuple — if taken, False if the cap is full. The token must be passed back
     to `release()` so it deletes exactly this claim's row — a pid can hold
     several concurrent claims of the same resource_class (e.g. call_agent
     running in multiple threads of one process), so release() can no longer
     key off (pid, resource_class) alone without risking freeing a DIFFERENT
-    call's still-active slot.
+    call's still-active slot; and rowid alone isn't enough either, since
+    SQLite reuses a released max-rowid for the next insert (the per-claim
+    uuid makes a stale double-release structurally harmless).
 
     Fails OPEN (returns True, not a real token — nothing was inserted) only
     when the broker is genuinely unavailable (can't open the DB, unexpected
@@ -149,22 +171,26 @@ def try_claim(project_id, resource_class, cap, pid=None, db_path=DEFAULT_DB):
 
 
 def release(resource_class, token, pid=None, db_path=DEFAULT_DB):
-    """Release exactly the slot identified by `token` (the rowid try_claim
-    returned). Best-effort; never raises.
+    """Release exactly the slot identified by `token` (the (rowid, claim_uuid)
+    tuple try_claim returned). Best-effort; never raises.
 
-    `token` being a bool (True, from a fail-open claim with no real row, or a
-    stale/default False) is a deliberate no-op: there is nothing to delete, and
-    deleting by (pid, resource_class) alone — the old behavior — could free a
-    DIFFERENT concurrent claim's row for the same pid+class."""
-    if not isinstance(token, int) or isinstance(token, bool):
+    `token` not being a real (rowid, uuid) tuple (True from a fail-open claim
+    with no real row, a stale/default False) is a deliberate no-op: there is
+    nothing to delete. Matching on rowid AND uuid AND pid AND resource_class
+    means a stale double release can never delete a different, newly-inserted
+    claim that happened to get the recycled rowid."""
+    if not (isinstance(token, tuple) and len(token) == 2
+            and isinstance(token[0], int) and not isinstance(token[0], bool)
+            and isinstance(token[1], str)):
         return
     pid = pid or os.getpid()
     try:
         conn = _conn(db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM worker_slots WHERE rowid=? AND pid=? AND resource_class=?",
-                         (token, pid, resource_class))
+            conn.execute("DELETE FROM worker_slots WHERE rowid=? AND claim_uuid=? "
+                         "AND pid=? AND resource_class=?",
+                         (token[0], token[1], pid, resource_class))
             conn.commit()
         finally:
             conn.close()

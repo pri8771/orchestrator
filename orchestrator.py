@@ -1289,27 +1289,32 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
         _claimed = _claim_token is not False
         if not _claimed:
             emit("Global cap for %s busy — proceeding uncapped for %s." % (_rclass, DISPLAY[agent]))
-    emit("Starting %s for %s / %s round %s" % (DISPLAY[agent], app, phase, rnd))
-    # Structured event sink (§6): one turn_started + exactly one turn_completed
-    # per call, success or not, so a UI never has to parse transcript prose.
-    _ev_dir = _event_app_dir(cfg, app)
-    _model_req = _primary_model_label(cfg, agent)
-    evlib.emit_event(_ev_dir, "turn_started", project=app, phase=phase,
-                     round=rnd, agent=str(agent), model_requested=_model_req)
-    t0 = time.time()
-    # Slow-turn heartbeat: long build/integrate turns (10+ min) are legitimate,
-    # but silence is indistinguishable from a hang without this — humans kill
-    # healthy runs. Emits progress every 5 min until the turn returns.
+    # Everything after a successful claim runs inside the try whose finally
+    # releases the slot: Thread.start() below can genuinely raise (RuntimeError
+    # under thread exhaustion — realistic exactly when many parallel workers
+    # run), and a raise between claim and the guarded region used to leak the
+    # slot until the 6-hour age reap.
     _hb_stop = threading.Event()
-
-    def _heartbeat():
-        while not _hb_stop.wait(300):
-            emit("%s still working on %s/%s round %s — %ds elapsed (timeout %s)."
-                 % (DISPLAY[agent], app, phase, rnd,
-                    int(time.time() - t0), timeout or "none"))
-
-    threading.Thread(target=_heartbeat, daemon=True).start()
     try:
+        emit("Starting %s for %s / %s round %s" % (DISPLAY[agent], app, phase, rnd))
+        # Structured event sink (§6): one turn_started + exactly one turn_completed
+        # per call, success or not, so a UI never has to parse transcript prose.
+        _ev_dir = _event_app_dir(cfg, app)
+        _model_req = _primary_model_label(cfg, agent)
+        evlib.emit_event(_ev_dir, "turn_started", project=app, phase=phase,
+                         round=rnd, agent=str(agent), model_requested=_model_req)
+        t0 = time.time()
+
+        # Slow-turn heartbeat: long build/integrate turns (10+ min) are legitimate,
+        # but silence is indistinguishable from a hang without this — humans kill
+        # healthy runs. Emits progress every 5 min until the turn returns.
+        def _heartbeat():
+            while not _hb_stop.wait(300):
+                emit("%s still working on %s/%s round %s — %ds elapsed (timeout %s)."
+                     % (DISPLAY[agent], app, phase, rnd,
+                        int(time.time() - t0), timeout or "none"))
+
+        threading.Thread(target=_heartbeat, daemon=True).start()
         try:
             out, err, code, command = resolve_runner(agent)(cfg, prompt, timeout)
         except FileNotFoundError as exc:
@@ -2626,6 +2631,17 @@ def render_audit_report(findings, app, target_path, agents="", summary=""):
     return "\n".join(lines)
 
 
+def _installed_local_models(cfg):
+    """Installed Ollama model tags as a set, memoized per run on
+    cfg["_installed_ollama_models"] (tests inject the key directly) and backed
+    by the module TTL cache, so repeated roster builds never re-pay the
+    `ollama list` subprocess. Previously the key was read here but never set
+    anywhere — a dead read that always fell through to the uncached call."""
+    if cfg.get("_installed_ollama_models") is None:
+        cfg["_installed_ollama_models"] = list(lmlib.installed_models_cached())
+    return set(cfg["_installed_ollama_models"])
+
+
 def enabled_agents(cfg):
     """The active roster.
 
@@ -2665,7 +2681,7 @@ def enabled_agents(cfg):
 
     if local_enabled and local_roster and not skip_local and \
             bool(cget(cfg, "runtime.skip_uninstalled_local_models", False)):
-        installed = set(cfg.get("_installed_ollama_models") or lmlib.installed_models())
+        installed = _installed_local_models(cfg)
         kept = [model for model in local_roster if model in installed]
         skipped = [model for model in local_roster if model not in installed]
         if skipped and not cfg.get("_noted_ollama_uninstalled_skip"):
@@ -2684,8 +2700,7 @@ def enabled_agents(cfg):
         except (TypeError, ValueError):
             limit = 0
         if limit > 0 and len(local_roster) > limit:
-            installed = set(cfg.get("_installed_ollama_models")
-                            or lmlib.installed_models())
+            installed = _installed_local_models(cfg)
             ordered = ([m for m in local_roster if m in installed]
                        + [m for m in local_roster if m not in installed])
             dropped = ordered[limit:]
