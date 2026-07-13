@@ -176,6 +176,19 @@ runtime:
   verify_build_enabled: true
   verify_timeout_seconds: 1200
   verify_repair_iterations: 3
+  # Per-iteration verification: after each parallel-build iteration is
+  # committed, actually compile the build (using the workflow's verify spec if
+  # any phase carries one, else auto-detect) and feed the compile errors into
+  # the next iteration's context. Consensus becomes evidence-backed: an
+  # integrator's `CONSENSUS: YES` is NOT accepted while the latest in-phase
+  # verification ran and FAILED. Fail-open by design: an UNVERIFIED build
+  # (toolchain absent / knob off) never blocks consensus — only a verifier
+  # that ran and said no. A ran=false result disables further per-iteration
+  # checks for the phase (no re-paying a doomed subprocess each iteration).
+  verify_between_iterations: true
+  # Modest per-iteration compile timeout (also capped by verify_timeout_seconds
+  # and the sprint deadline). The full verify/repair phase keeps its own budget.
+  iteration_verify_timeout_seconds: 600
   # When true, the build_coordination phase lets agents actually create/edit
   # files inside <app>/app_build (codex runs workspace-write there). Discussion
   # phases stay read-only in a throwaway dir regardless.

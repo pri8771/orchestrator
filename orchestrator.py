@@ -3334,6 +3334,57 @@ def cleanup_lane_worktrees(build_dir, worktrees):
     _git(build_dir, "worktree", "prune")
 
 
+def _run_iteration_verify(cfg, app, app_dir, phasedef, state, md_path, rnd):
+    """Per-iteration compile check for the parallel build (the evidence behind
+    the consensus gate, runtime.verify_between_iterations).
+
+    Returns the raw run_verification result dict, or None when the check was
+    skipped (knob off, no build dir, or the toolchain is already known absent
+    this phase). A ran=False result is persisted once and then cached via
+    cfg["_iter_verify_toolchain_absent"] so a doomed subprocess isn't re-paid
+    every iteration. Best-effort and non-fatal, like every verify path."""
+    if not bool(cget(cfg, "runtime.verify_between_iterations", True)):
+        return None
+    build_dir = cfg.get("_build_dir")
+    if not build_dir or cfg.get("_iter_verify_toolchain_absent"):
+        return None
+    key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
+    # This build phase rarely carries its own verify spec — reuse the
+    # workflow's (usually build_verification's), so both gates compile the
+    # same way; else fall back to auto-detection.
+    spec = (phasedef.get("verify") if hasattr(phasedef, "get") else None) \
+        or cfg.get("_workflow_verify_spec") or {"type": "auto"}
+    timeout = int(cget(cfg, "runtime.iteration_verify_timeout_seconds", 600) or 600)
+    hard = int(cget(cfg, "runtime.verify_timeout_seconds", 1200) or 0)
+    if hard:
+        timeout = min(timeout, hard)
+    if cfg.get("_deadline"):
+        timeout = max(10, min(timeout, int(cfg["_deadline"] - time.time())))
+    res = verifylib.run_verification(build_dir, spec, timeout)
+    verifylib.persist_verify_result(app_dir, key, res, attempt=0,
+                                    prompt_hash=state.get("prompt_hash"),
+                                    workflow=cfg.get("_workflow_name"))
+    status = verifylib.verification_status(res)
+    emit("ITER-VERIFY %d: %s — %s (%s)" % (rnd, status, res.get("summary", ""),
+                                           res.get("tool", "")))
+    live_log(app_dir, key, "orchestrator", "verify_result",
+             "iteration %d: %s (%s)" % (rnd, status, res.get("summary", "")))
+    evlib.emit_event(app_dir, "verify_result", project=app, phase=key,
+                     status=status,
+                     detail="iteration %d: %s" % (rnd, res.get("summary", "")))
+    if not res.get("ran"):
+        cfg["_iter_verify_toolchain_absent"] = True
+        append_md(md_path, "\n_Iteration %d verification skipped: %s — further "
+                  "per-iteration checks disabled for this phase._\n"
+                  % (rnd, res.get("summary", "no toolchain")))
+    elif not res.get("ok"):
+        mistklib.append_mistake(app_dir, {
+            "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+            "cls": "verify_failure",
+            "summary": "iteration %d: %s" % (rnd, res.get("summary", ""))})
+    return res
+
+
 def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                         state, md_path, max_rounds, transcript, extra, personas=None):
     """Run the build phase with agents working CONCURRENTLY.
@@ -3646,11 +3697,43 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                 "health or enable a different coordinator before resuming."
                 % integrationless_iterations)
 
+        # Per-iteration verification (runtime.verify_between_iterations): compile
+        # the just-committed state; a failure feeds a compact errors tail into
+        # the next iteration's context (mirroring _verify_and_repair's loop).
+        iter_verify = _run_iteration_verify(cfg, app, app_dir, phasedef, state,
+                                            md_path, rnd)
+        if iter_verify is not None and iter_verify.get("ran") \
+                and not iter_verify.get("ok"):
+            vblock = ("**Build verification — iteration %d FAILED (%s)**\n\n"
+                      "```\n%s\n```\n_Fix these compile errors next iteration._\n"
+                      % (rnd, iter_verify.get("summary", ""),
+                         (iter_verify.get("errors", "") or "")[:4000]))
+            append_md(md_path, "\n" + vblock)
+            transcript += "\n" + vblock
+
         final_output = cresp
         if CONSENSUS_RE.search(cresp):
-            consensus = True
-            emit("BUILD consensus reached at iteration %d." % rnd)
-            break
+            # Evidence-backed consensus: a verifier that RAN and said NO
+            # overrides the integrator's claim. CRITICAL fail-open rule: an
+            # unverified build (ran=false / no record / knob off) must NEVER
+            # block consensus — only real failing evidence does.
+            if iter_verify is not None and iter_verify.get("ran") \
+                    and not iter_verify.get("ok"):
+                note = ("Observer: integrator declared consensus but the build "
+                        "fails to compile — continuing.")
+                emit(note)
+                append_md(md_path, "\n_%s_\n" % note)
+                transcript += "\n_%s_\n" % note
+                mistklib.append_mistake(app_dir, {
+                    "app": app, "workflow": cfg.get("_workflow_name"),
+                    "phase": key, "agent": integrator,
+                    "cls": "consensus_unverified",
+                    "summary": "consensus rejected at iteration %d: %s"
+                               % (rnd, iter_verify.get("summary", ""))})
+            else:
+                consensus = True
+                emit("BUILD consensus reached at iteration %d." % rnd)
+                break
 
     return consensus, final_output, transcript
 
@@ -4333,41 +4416,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # the transcript + final output (last emission of an id/name wins, so the
     # coordinator's final revision beats any draft). Cycles are an error recorded
     # in tasks.json — never a crash.
-    if key == "task_assignments":
-        blob = transcript + "\n" + (final_output or "")
-        tasks, terrs = parse_tasks_blocks(blob)
-        for c in find_task_cycles(tasks):
-            terrs.append("dependency cycle: %s" % c)
-        for e in terrs:
-            emit("TASKS: ERROR %s" % e)
-        if terrs:
-            mistklib.append_mistake(app_dir, {
-                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
-                "cls": "contract_error",
-                "summary": "%d tasks.json contract error(s)" % len(terrs),
-                "detail": {"errors": terrs[:10]}})
-        persist_tasks(app_dir, tasks, terrs)
-        emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
-        live_log(app_dir, key, "orchestrator", "tasks_recorded",
-                 "%d task(s) persisted to tasks.json; %d error(s)"
-                 % (len(tasks), len(terrs)))
-    if key == "tech_specs":
-        blob = transcript + "\n" + (final_output or "")
-        ifaces, ierrs = parse_interface_blocks(blob)
-        for e in ierrs:
-            emit("INTERFACES: ERROR %s" % e)
-        if ierrs:
-            mistklib.append_mistake(app_dir, {
-                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
-                "cls": "contract_error",
-                "summary": "%d interfaces.json contract error(s)" % len(ierrs),
-                "detail": {"errors": ierrs[:10]}})
-        persist_interfaces(app_dir, ifaces, ierrs)
-        emit("INTERFACES: %d interface(s) -> interfaces.json (%d error(s))."
-             % (len(ifaces), len(ierrs)))
-        live_log(app_dir, key, "orchestrator", "interfaces_recorded",
-                 "%d interface(s) persisted to interfaces.json; %d error(s)"
-                 % (len(ifaces), len(ierrs)))
+    _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output)
 
     # Audit report phase: synthesize ALL findings (from every audit phase, using the
     # FULL untruncated phase_outputs — not the char-budgeted context) into a ranked
@@ -4447,6 +4496,55 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                      detail=marker)
     emit("Phase '%s' complete for %s (%s)." % (key, app, marker))
     return final_output.strip()
+
+
+def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output):
+    """Post-phase §19/§20 contract recording (tasks.json / interfaces.json).
+
+    Bounded, non-fatal by design: parse/cycle errors are persisted in the
+    contract file, WARNed prominently, and ledgered (contract_error) — never a
+    hard block, because a wrongly-strict gate here would brick runs."""
+    if key == "task_assignments":
+        blob = transcript + "\n" + (final_output or "")
+        tasks, terrs = parse_tasks_blocks(blob)
+        for c in find_task_cycles(tasks):
+            terrs.append("dependency cycle: %s" % c)
+        for e in terrs:
+            emit("TASKS: ERROR %s" % e)
+        if terrs:
+            emit("WARN CONTRACT: %d error(s) in tasks.json (malformed blocks / "
+                 "unknown lanes / dependency cycles) — the build proceeds, but "
+                 "review tasks.json 'errors' and the mistakes ledger." % len(terrs))
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "contract_error",
+                "summary": "%d tasks.json contract error(s)" % len(terrs),
+                "detail": {"errors": terrs[:10]}})
+        persist_tasks(app_dir, tasks, terrs)
+        emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
+        live_log(app_dir, key, "orchestrator", "tasks_recorded",
+                 "%d task(s) persisted to tasks.json; %d error(s)"
+                 % (len(tasks), len(terrs)))
+    if key == "tech_specs":
+        blob = transcript + "\n" + (final_output or "")
+        ifaces, ierrs = parse_interface_blocks(blob)
+        for e in ierrs:
+            emit("INTERFACES: ERROR %s" % e)
+        if ierrs:
+            emit("WARN CONTRACT: %d error(s) in interfaces.json — the build "
+                 "proceeds, but review interfaces.json 'errors' and the "
+                 "mistakes ledger." % len(ierrs))
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "contract_error",
+                "summary": "%d interfaces.json contract error(s)" % len(ierrs),
+                "detail": {"errors": ierrs[:10]}})
+        persist_interfaces(app_dir, ifaces, ierrs)
+        emit("INTERFACES: %d interface(s) -> interfaces.json (%d error(s))."
+             % (len(ifaces), len(ierrs)))
+        live_log(app_dir, key, "orchestrator", "interfaces_recorded",
+                 "%d interface(s) persisted to interfaces.json; %d error(s)"
+                 % (len(ifaces), len(ierrs)))
 
 
 # ---------------------------------------------------------------------------
@@ -5019,6 +5117,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         cfg["_autonomy"] = _rc["autonomy"]
     cfg["_workflow_name"] = workflow.name
     cfg["_workflow_target"] = workflow.target
+    # First verify spec any phase carries (usually build_verification's): the
+    # per-iteration build verifier reuses it so both gates compile the same way.
+    cfg["_workflow_verify_spec"] = next(
+        (p.get("verify") for p in phases if hasattr(p, "get") and p.get("verify")),
+        None)
     cfg["_personalities"], cfg["_roles"] = roleslib.load_roles(HERE)
     cfg["_agent_role_overrides"] = roleslib.load_agent_role_overrides(HERE)
     # Precomputed once per run (not rebuilt on every process_phase call) — see
