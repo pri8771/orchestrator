@@ -3644,6 +3644,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
             # each per-slug entry is only ever touched by its own thread).
             wcfg = dict(cfg)
             wcfg["_health_key"] = w["slug"]
+            # Per-role routing: cheap workers / expensive integrator (§4b).
+            _apply_role_routing(wcfg, "worker")
             if worktrees.get(w["slug"]):
                 wcfg["_build_dir"] = worktrees[w["slug"]]
             # Resumed lane session: the contract + full context live in the
@@ -3810,6 +3812,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                                         is_build=True,
                                         final_round=(not unlimited_rounds and rnd == max_rounds))
             icfg = dict(cfg)
+            # Per-role routing for the integrator's turn only (§4b).
+            _apply_role_routing(icfg, "integrator")
             idelta = None
             if candidate == "claude":
                 # Optional stronger model for the integration turn only — the
@@ -4043,6 +4047,22 @@ def _apply_phase_routing(cfg, key):
         # Same one-knob rule for claude's --effort (see run_claude).
         models["claude_reasoning"] = ov["claude_reasoning"]
         models["claude_build_reasoning"] = ov["claude_reasoning"]
+    # gemini/ollama effort parity is accepted-but-noop (evidence-based): the
+    # gemini CLI is invoked as `gemini -p ...` and ollama as `ollama run` /
+    # /api/generate — neither invocation exposes an effort/thinking control,
+    # so the field is honored in the schema but ignored here, loudly (once).
+    _roles_ov = ov.get("roles") if isinstance(ov.get("roles"), dict) else {}
+    for _noop_field in ("gemini_reasoning", "ollama_reasoning"):
+        _vals = [ov.get(_noop_field)] + [r.get(_noop_field)
+                                         for r in _roles_ov.values()]
+        if any(_vals):
+            _memo = "_noted_%s_noop_%s" % (_noop_field, key)
+            if not cfg.get(_memo):
+                cfg[_memo] = True
+                emit("Phase '%s': routing sets %s, but the %s CLI exposes no "
+                     "effort control in how this engine invokes it — field "
+                     "accepted but ignored."
+                     % (key, _noop_field, _noop_field.split("_")[0]))
     if ov.get("gemini"):
         models["gemini_fallback"] = ov["gemini"]
         if valid_gemini_model(ov["gemini"]):
@@ -4077,9 +4097,46 @@ def _apply_phase_routing(cfg, key):
                  % (key, routed_timeout, hard_timeout))
         c["_routed_turn_timeout"] = routed_timeout
     c["models"], c["_resolved"] = models, resolved
+    # Per-role overrides (roles.worker / roles.integrator) are applied later,
+    # per lane/turn, by _apply_role_routing — stash the validated sub-dict.
+    if _roles_ov:
+        c["_role_routing"] = _roles_ov
     emit("Phase '%s': model routing active (%s)."
          % (key, ", ".join("%s=%s" % (k, v) for k, v in sorted(ov.items()))))
     return c
+
+
+def _apply_role_routing(rcfg, role):
+    """Patch one per-call cfg copy with the phase's per-ROLE routing overrides
+    (model_routing.json phases.<key>.roles.<role>): "worker" for each parallel
+    build lane, "integrator" for the integrator's turn only — the cheap-
+    workers/expensive-integrator split. ``rcfg`` MUST already be a per-call
+    copy (dict(cfg)); models/_resolved are re-copied here so the phase-shared
+    dicts are never mutated. Returns rcfg for chaining."""
+    rov = (rcfg.get("_role_routing") or {}).get(role) or {}
+    if not rov:
+        return rcfg
+    models = dict(rcfg.get("models") or {})
+    resolved = dict(rcfg.get("_resolved") or {})
+    if rov.get("claude"):
+        models["claude"] = resolved["claude_model"] = rov["claude"]
+    if rov.get("codex"):
+        models["codex"] = resolved["codex_model"] = rov["codex"]
+    if rov.get("codex_reasoning"):
+        models["codex_reasoning"] = rov["codex_reasoning"]
+        models["codex_build_reasoning"] = rov["codex_reasoning"]
+    if rov.get("claude_reasoning"):
+        models["claude_reasoning"] = rov["claude_reasoning"]
+        models["claude_build_reasoning"] = rov["claude_reasoning"]
+    if rov.get("gemini") and valid_gemini_model(rov["gemini"]):
+        models["gemini_fallback"] = rov["gemini"]
+        resolved["gemini_model"] = rov["gemini"]
+    if rov.get("ollama"):
+        models["ollama"] = resolved["ollama_model"] = rov["ollama"]
+    # gemini_reasoning/ollama_reasoning: accepted-but-noop (warned once at
+    # phase-routing time; those CLIs expose no effort control as invoked here).
+    rcfg["models"], rcfg["_resolved"] = models, resolved
+    return rcfg
 
 
 def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,

@@ -19,9 +19,16 @@ Shape (schema_version 1):
     "initial_discussion": {
       "claude": "claude-haiku-4-5",        # claude -p --model override
       "codex": "gpt-5.3-codex-spark",      # codex exec --model override
-      "codex_reasoning": "low",            # reasoning effort for this phase
+      "codex_reasoning": "low",            # codex -c model_reasoning_effort=...
+      "claude_reasoning": "high",          # claude -p --effort ...
+      "gemini_reasoning": "low",           # ACCEPTED BUT IGNORED (see below)
+      "ollama_reasoning": "low",           # ACCEPTED BUT IGNORED (see below)
       "ollama": "qwen2.5-coder:7b",        # local model override
-      "agents": "cloud"                    # participant filter, see below
+      "agents": "cloud",                   # participant filter, see below
+      "roles": {                           # per-ROLE effort within one phase
+        "worker": {"codex_reasoning": "low"},
+        "integrator": {"claude_reasoning": "high"}
+      }
     }
   }
 }
@@ -29,6 +36,21 @@ Shape (schema_version 1):
 "agents" restricts who speaks in a phase: a comma list of agent ids
 ("claude,codex"), local model tags, or the groups "cloud" / "local".
 A filter that would empty the roster is ignored (fail-open).
+
+"roles" applies extra overrides per build role within the phase: "worker"
+patches every parallel build lane's per-lane cfg, "integrator" patches only
+the integrator's turn — the cheap-workers/expensive-integrator split. Inner
+keys are validated against PHASE_FIELDS; unknown role names are ignored with
+a warning.
+
+Reasoning-effort parity note (evidence-based): only the codex CLI
+(`-c model_reasoning_effort=...`) and claude CLI (`--effort ...`) expose an
+effort control in how this engine invokes them. The gemini CLI is invoked as
+`gemini -p ...` and ollama as `ollama run <model>` / the /api/generate HTTP
+API — neither invocation carries an effort/thinking flag, so
+"gemini_reasoning" / "ollama_reasoning" are ACCEPTED (valid schema, GUI can
+round-trip them) but IGNORED at runtime with a logged warning rather than
+inventing a flag the CLI may reject.
 
 Every reader is best-effort: a missing/corrupt file or unknown phase key
 degrades to "no overrides" and can never take down a run.
@@ -42,8 +64,14 @@ import re
 ROUTING_FILENAME = "model_routing.json"
 
 # Per-phase override fields the engine honors (anything else is dropped).
+# gemini_reasoning/ollama_reasoning are accepted-but-noop: those CLIs expose no
+# effort control in how this engine invokes them (see module docstring).
 PHASE_FIELDS = ("claude", "claude_reasoning", "codex", "codex_reasoning",
-                "gemini", "ollama", "agents")
+                "gemini", "gemini_reasoning", "ollama", "ollama_reasoning",
+                "agents")
+
+# Role names honored inside a phase's "roles" sub-dict.
+ROLE_NAMES = ("worker", "integrator")
 
 # Model ids / filters reach subprocess argv lists directly (never a shell),
 # but keep the charset tidy anyway so a corrupt file can't smuggle newlines
@@ -82,10 +110,12 @@ def default_routing():
     return json.loads(json.dumps(_DEFAULT))   # deep copy
 
 
-def load_routing(here):
+def load_routing(here, on_warn=None):
     """model_routing.json as a validated dict. A missing, unreadable, or
     malformed file NEVER raises — it yields the default (routing on, fallback
-    on, no per-phase overrides) so callers need no special-casing."""
+    on, no per-phase overrides) so callers need no special-casing.
+    ``on_warn(msg)`` (optional) surfaces dropped-but-intentional-looking
+    content, e.g. an unknown role name in a phase's "roles" sub-dict."""
     out = default_routing()
     path = os.path.join(here, ROUTING_FILENAME)
     try:
@@ -133,6 +163,30 @@ def load_routing(here):
                 t = 0
             if 0 < t <= 7200:
                 clean["timeout"] = t
+            # Per-role overrides within the phase (worker lanes vs integrator).
+            roles = ov.get("roles")
+            if isinstance(roles, dict):
+                clean_roles = {}
+                for role, rov in roles.items():
+                    if role not in ROLE_NAMES:
+                        if on_warn:
+                            on_warn("model_routing phase %r: unknown role %r in "
+                                    "\"roles\" ignored (expected one of: %s)"
+                                    % (key, role, ", ".join(ROLE_NAMES)))
+                        continue
+                    if not isinstance(rov, dict):
+                        continue
+                    rclean = {}
+                    for field in PHASE_FIELDS:
+                        val = rov.get(field, "")
+                        if isinstance(val, str):
+                            val = val.strip()
+                            if val and _SAFE_VALUE.match(val):
+                                rclean[field] = val
+                    if rclean:
+                        clean_roles[role] = rclean
+                if clean_roles:
+                    clean["roles"] = clean_roles
             if clean:
                 out["phases"][key.strip()] = clean
     return out
@@ -155,12 +209,12 @@ def load_routing_for_app(here, app_dir, on_warn=None):
     per-phase overrides but DOES carry a non-default enabled/fallback value —
     those are silently ignored by design (see above), which used to be
     indistinguishable from "the file is a no-op"; surfaced instead of hidden."""
-    fleet = load_routing(here)
+    fleet = load_routing(here, on_warn=on_warn)
     if not app_dir or os.path.abspath(app_dir) == os.path.abspath(here):
         return fleet
     if not os.path.exists(os.path.join(app_dir, ROUTING_FILENAME)):
         return fleet
-    project = load_routing(app_dir)
+    project = load_routing(app_dir, on_warn=on_warn)
     if not project["phases"]:
         if on_warn and (not project.get("enabled", True)
                         or project.get("fallback") != _DEFAULT["fallback"]):
