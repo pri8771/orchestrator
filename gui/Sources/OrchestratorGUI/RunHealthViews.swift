@@ -435,21 +435,14 @@ struct StallBanner: View {
     var body: some View {
         let mins = Int(Date().timeIntervalSince(lastEvent) / 60)
         if !dismissed {
-            HStack(spacing: DS.space.xs) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(DS.status.warning.color)
-                Text("\(project.titleFor(project.currentPhase ?? "")) hasn't reported for \(mins) min — the engine often recovers on its own.")
-                    .font(DS.font.caption)
-                Spacer()
-                Button("Wait") { dismissed = true }
-                    .font(DS.font.caption)
-                Button("Kill run", role: .destructive) { store.stopRun(project.name) }
-                    .font(DS.font.caption)
+            InlineBanner(kind: .warning,
+                         title: "\(project.titleFor(project.currentPhase ?? "")) hasn't reported for \(mins) min",
+                         message: "The engine often recovers on its own.") {
+                HStack(spacing: DS.space.xs) {
+                    Button("Wait") { dismissed = true }
+                    Button("Kill run", role: .destructive) { store.stopRun(project.name) }
+                }
             }
-            .padding(DS.space.xs)
-            .background(DS.status.warning.fill)
-            .overlay(alignment: .bottom) { Divider() }
-            .accessibilityElement(children: .combine)
         }
     }
 }
@@ -657,17 +650,9 @@ struct ProjectHistoryView: View {
     var body: some View {
         let list = runs
         if list.isEmpty {
-            VStack(spacing: DS.space.s) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-                Text("No recorded runs yet")
-                    .font(DS.font.body).foregroundStyle(.secondary)
-                Text("Run history builds from events.jsonl — runs started before the event stream landed aren't shown.")
-                    .font(DS.font.caption).foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 380)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyStateView(symbol: "clock.arrow.circlepath",
+                           title: "No recorded runs yet",
+                           message: "Run history builds from events.jsonl — runs started before the event stream landed aren't shown.")
         } else {
             HStack(spacing: 0) {
                 runList(list)

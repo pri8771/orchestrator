@@ -198,11 +198,12 @@ struct OpenModelSearchSection: View {
                 SearchHitRow(hit: hit)
             }
             if !store.modelSearchNote.isEmpty {
-                Text(store.modelSearchNote).font(.caption2).foregroundStyle(.orange)
+                Text(store.modelSearchNote).font(.caption2)
+                    .foregroundStyle(DS.status.warning.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text("Every result runs fully on this Mac via Ollama. Hugging Face results are GGUF repos pulled as hf.co/<org>/<repo>; confirm each model card's license before shipping it commercially.")
-                .font(.system(size: 9)).foregroundStyle(.tertiary)
+                .font(DS.font.caption).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -215,18 +216,21 @@ struct SearchHitRow: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(hit.id).font(.system(size: 12, design: .monospaced))
+                Text(hit.id).font(DS.font.monoInline)
                     .lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 8) {
+                    // Source badges are identity, not state: accent for the
+                    // curated registry, neutral gray for Hugging Face.
                     Text(hit.source == "curated" ? "curated" : "Hugging Face")
                         .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background((hit.source == "curated" ? Color.green : Color.blue).opacity(0.15),
+                        .background(hit.source == "curated" ? DS.accent.fill
+                                                            : DS.status.idlePill.fill,
                                     in: Capsule())
                     if !hit.license.isEmpty { Text(hit.license) }
                     if let d = hit.downloads { Text("\(compactCount(d)) pulls") }
                     if let s = hit.sizeGB { Text(String(format: "%.1fGB", s)) }
                 }
-                .font(.system(size: 9)).foregroundStyle(.secondary)
+                .font(DS.font.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             if let p = store.pullProgress[hit.id] {
@@ -234,12 +238,13 @@ struct SearchHitRow: View {
                     ProgressView().controlSize(.small)
                 } else {
                     ProgressView(value: p).frame(width: 90)
-                    Text("\(Int(p * 100))%").font(.system(size: 9)).monospacedDigit()
+                    Text("\(Int(p * 100))%").font(DS.font.caption2).monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
             } else if hit.installed {
                 Label("installed", systemImage: "checkmark.seal.fill")
-                    .font(.system(size: 10)).foregroundStyle(.green)
+                    .font(DS.font.caption2)
+                    .foregroundStyle(DS.status.success.color)
             } else {
                 Button {
                     if hit.source == "curated" {
@@ -362,15 +367,15 @@ struct FallbackChainEditor: View {
                     HStack(spacing: 6) {
                         ForEach(Array(chain.enumerated()), id: \.offset) { i, step in
                             HStack(spacing: 4) {
-                                Text("\(i + 1)").font(.system(size: 9, weight: .bold))
+                                Text("\(i + 1)").font(DS.font.caption2)
                                     .foregroundStyle(.secondary)
-                                Text(step).font(.system(size: 10, design: .monospaced))
+                                Text(step).font(DS.font.monoCaption)
                                     .lineLimit(1)
                                 Button {
                                     chain.remove(at: i)
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 9))
+                                        .font(DS.font.caption2)
                                 }
                                 .buttonStyle(.plain).foregroundStyle(.secondary)
                                 .accessibilityLabel("Remove \(step)")
@@ -402,11 +407,12 @@ struct PhaseRouteRow: View {
             HStack(spacing: 6) {
                 Text(phase.title).font(.callout).fontWeight(.medium)
                 if phase.writes || isHeavy {
+                    // Accent, not purple — purple means fallback, exclusively.
                     Text(phase.writes ? "BUILD" : "CRITICAL")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(DS.font.caption2)
                         .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(Color.purple.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.purple)
+                        .background(DS.accent.fill, in: Capsule())
+                        .foregroundStyle(DS.accent.color)
                 }
                 Spacer()
                 if !route.isEmpty {

@@ -22,30 +22,22 @@ struct ApprovalBanner: View {
     @State private var showChanges = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Paused for your approval").font(.body).fontWeight(.medium)
-                Text("Finished \(project.titleFor(phase)). Approve to continue, edit the output first, or send it back with feedback.")
-                    .font(.subheadline).foregroundStyle(.secondary)
+        InlineBanner(kind: .warning, symbol: "pause.circle.fill",
+                     title: "Paused for your approval",
+                     message: "Finished \(project.titleFor(phase)). Approve to continue, edit the output first, or send it back with feedback.") {
+            HStack(spacing: DS.space.xs) {
+                Button("Request Changes…") { showChanges = true }
+                    .accessibilityLabel("Request changes")
+                    .accessibilityHint("Send feedback; the engine re-runs \(project.titleFor(phase))")
+                Button("Edit & Approve…") { showEdit = true }
+                    .accessibilityLabel("Edit and approve")
+                    .accessibilityHint("Edit the phase output before continuing")
+                Button("Approve") { store.approve(project, phase: phase) }
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityLabel("Approve")
+                    .accessibilityHint("Continue to the next phase as-is")
             }
-            .accessibilityElement(children: .combine)
-            Spacer()
-            Button("Request Changes…") { showChanges = true }
-                .accessibilityLabel("Request changes")
-                .accessibilityHint("Send feedback; the engine re-runs \(project.titleFor(phase))")
-            Button("Edit & Approve…") { showEdit = true }
-                .accessibilityLabel("Edit and approve")
-                .accessibilityHint("Edit the phase output before continuing")
-            Button("Approve") { store.approve(project, phase: phase) }
-                .keyboardShortcut(.defaultAction)
-                .accessibilityLabel("Approve")
-                .accessibilityHint("Continue to the next phase as-is")
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(Color.orange.opacity(0.12))
-        .overlay(Divider(), alignment: .bottom)
         .sheet(isPresented: $showEdit) {
             ApprovalEditSheet(project: project, phase: phase).environmentObject(store)
         }
@@ -138,21 +130,7 @@ struct ErrorBanner: View {
     let message: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(.red)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Run aborted").font(.body).fontWeight(.medium)
-                Text(message)
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(4)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Run aborted")
-            .accessibilityValue(message)
-            Spacer()
+        InlineBanner(kind: .error, title: "Run aborted", message: message) {
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(message, forType: .string)
@@ -162,9 +140,6 @@ struct ErrorBanner: View {
             .accessibilityLabel("Copy error")
             .accessibilityHint("Copies the full error message to the clipboard")
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(Color.red.opacity(0.12))
-        .overlay(Divider(), alignment: .bottom)
     }
 }
 
@@ -174,28 +149,13 @@ struct ConflictBanner: View {
     let conflict: BlockedConflict
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "arrow.triangle.branch").foregroundStyle(.purple)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Build blocked: merge conflict on \(conflict.filesDisplay) (lane \(conflict.lane)) — resolve, then Resume.")
-                    .font(.body).fontWeight(.medium)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !conflict.detail.isEmpty {
-                    Text(conflict.detail)
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .accessibilityElement(children: .combine)
+        // Amber, not purple: purple means fallback, exclusively (§2.2 / §6).
+        InlineBanner(kind: .warning, symbol: "arrow.triangle.branch",
+                     title: "Build blocked: merge conflict on \(conflict.filesDisplay) (lane \(conflict.lane)) — resolve, then Resume.",
+                     message: conflict.detail.isEmpty ? nil : conflict.detail,
+                     messageLineLimit: nil)
             .accessibilityLabel("Build blocked by a merge conflict")
             .accessibilityValue("Files \(conflict.filesDisplay), lane \(conflict.lane). \(conflict.detail)")
-            Spacer()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(Color.purple.opacity(0.12))
-        .overlay(Divider(), alignment: .bottom)
     }
 }
 
@@ -281,21 +241,11 @@ struct EngineMissingBanner: View {
     let message: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                .accessibilityHidden(true)
-            Text(message)
-                .font(.subheadline)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(Color.red.opacity(0.12))
-        .overlay(Divider(), alignment: .bottom)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Engine missing")
-        .accessibilityValue(message)
+        InlineBanner(kind: .error, symbol: "exclamationmark.triangle.fill",
+                     title: "Engine not found", message: message,
+                     messageLineLimit: nil)
+            .accessibilityLabel("Engine missing")
+            .accessibilityValue(message)
     }
 }
 
@@ -306,14 +256,8 @@ struct ActionErrorBanner: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                .accessibilityHidden(true)
-            Text(message)
-                .font(.subheadline)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
+        InlineBanner(kind: .warning, title: "Action failed", message: message,
+                     messageLineLimit: nil) {
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
             }
@@ -321,10 +265,6 @@ struct ActionErrorBanner: View {
             .help("Dismiss")
             .accessibilityLabel("Dismiss error")
         }
-        .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(Color.orange.opacity(0.12))
-        .overlay(Divider(), alignment: .bottom)
-        .accessibilityElement(children: .combine)
         .accessibilityLabel("Action failed")
         .accessibilityValue(message)
     }

@@ -99,8 +99,8 @@ struct RunLogPanel: View {
                 )
             Divider()
             HStack(spacing: 8) {
-                Image(systemName: "terminal").font(.system(size: 11)).foregroundStyle(.secondary)
-                Text("Run log").font(.system(size: 12, weight: .medium))
+                Image(systemName: "terminal").font(DS.font.caption).foregroundStyle(.secondary)
+                Text("Run log").font(DS.font.callout)
                 if store.orchestratorRunning {
                     PulseDot(color: DS.accent.color)
                     Text("running").font(.caption).foregroundStyle(.secondary)

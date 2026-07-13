@@ -30,13 +30,12 @@ fi
 # Frozen baselines for legacy files (pre-M0). Ratchet: counts may only shrink.
 # M5 executed the §9 deletions (FactoryDashboard, the classic browser body,
 # ModelsSheet/NewChatSheet/AgentSettings) — their allowances are gone and the
-# survivors were re-frozen at their post-deletion counts.
+# survivors were re-frozen at their post-deletion counts. The design refresh
+# (DESIGN-REFRESH.md tranche 1) cleared Components/ModelLibrary/TranscriptView
+# to zero; Configuration.swift is the last holdout (tranche 2).
 baseline() {
     case "$1" in
-        Components.swift) echo 2 ;;        # legacy ThemeTokens.mono + RunLogPanel header
         Configuration.swift) echo 27 ;;    # remaining settings/editor sheets
-        ModelLibrary.swift) echo 9 ;;      # reworked in M3 (Models & Agents)
-        TranscriptView.swift) echo 2 ;;    # restyled in M4
         *) echo 0 ;;
     esac
 }

@@ -394,11 +394,7 @@ struct AppShellView: View {
     }
 
     private func shellPlaceholder(_ title: String, _ symbol: String) -> some View {
-        VStack(spacing: DS.space.s) {
-            Image(systemName: symbol).font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-            Text(title).font(DS.font.body).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(symbol: symbol, title: title)
     }
 }
 
@@ -426,16 +422,9 @@ struct ShellInspectorPane: View {
         if let project {
             ProjectInspectorView(project: project)
         } else {
-            VStack(spacing: DS.space.s) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-                Text("These are global defaults — select a project to override.")
-                    .font(DS.font.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, DS.space.m)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyStateView(symbol: "slider.horizontal.3",
+                           title: "Fleet defaults",
+                           message: "These are global defaults — select a project to override them.")
         }
     }
 }
@@ -753,19 +742,12 @@ private struct FactoryOverviewView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: DS.space.s) {
-            Image(systemName: "sparkles")
-                .font(DS.font.emptyStateIcon)
-                .foregroundStyle(.tertiary)
-            Text("No apps building")
-                .font(DS.font.largeTitle)
-            Text("Press ⌘N to queue your first idea.")
-                .font(DS.font.body).foregroundStyle(.secondary)
-            Button("New App") { onNewApp() }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, DS.space.xs)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(symbol: "sparkles",
+                       title: "No apps building",
+                       message: "Press ⌘N to queue your first idea.",
+                       actionLabel: "New App",
+                       action: onNewApp,
+                       prominent: true)
     }
 }
 
@@ -1049,12 +1031,9 @@ private struct ProjectRunContent: View {
                 if let key = selectedPhaseKey {
                     TranscriptView(project: proj, phaseKey: key)
                 } else {
-                    VStack(spacing: DS.space.s) {
-                        Image(systemName: "bubble.left.and.bubble.right")
-                            .font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-                        Text("Select a phase").foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    EmptyStateView(symbol: "bubble.left.and.bubble.right",
+                                   title: "Select a phase",
+                                   message: "Pick a phase on the left to read its conversation.")
                 }
             }
         }

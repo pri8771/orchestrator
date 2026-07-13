@@ -168,16 +168,11 @@ struct TranscriptView: View {
     }
 
     private var emptyPhase: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "hourglass").font(.system(size: 30)).foregroundStyle(.tertiary)
-            Text("This phase hasn't started yet")
-                .font(.body).foregroundStyle(.secondary)
-            if project.status == .new {
-                Text("Run the project to begin the discussion.")
-                    .font(.caption).foregroundStyle(.tertiary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(symbol: "hourglass",
+                       title: "This phase hasn't started yet",
+                       message: project.status == .new
+                           ? "Run the project to begin the discussion."
+                           : "The agents' conversation appears here when the run reaches this phase.")
     }
 }
 
@@ -288,7 +283,7 @@ struct Avatar: View {
     let speaker: Speaker
     var body: some View {
         Text(speaker.initials)
-            .font(.system(size: 11, weight: .medium))
+            .font(DS.font.caption.weight(.medium))
             .foregroundStyle(speaker.ink)
             .frame(width: 28, height: 28)
             .background(Circle().fill(speaker.fill))
@@ -321,7 +316,9 @@ struct ParallelBuildBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "bolt.fill").font(.subheadline).foregroundStyle(.orange)
+                // Accent, not amber: parallelism is activity, not a warning.
+                Image(systemName: "bolt.fill").font(.subheadline)
+                    .foregroundStyle(DS.accent.color)
                 Text("\(workers.count) agents building in parallel")
                     .font(.callout.weight(.medium)).foregroundStyle(.secondary)
             }
@@ -333,7 +330,8 @@ struct ParallelBuildBanner: View {
                             Text(w.label).font(.subheadline.weight(.medium))
                             if w.done {
                                 Label("done", systemImage: "checkmark")
-                                    .font(.caption2).foregroundStyle(.green)
+                                    .font(.caption2)
+                                    .foregroundStyle(DS.status.success.color)
                             } else {
                                 HStack(spacing: 4) {
                                     PulseDot(color: w.speaker.ink)

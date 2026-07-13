@@ -103,6 +103,9 @@ enum DS {
         static let callout = Font.system(size: 12, weight: .medium)
         /// 11 regular — metadata, footnotes, timestamps.
         static let caption = Font.system(size: 11)
+        /// 10 medium — micro-badges and rank numerals in dense rows. The
+        /// sanctioned floor: nothing in the app renders below 10pt.
+        static let caption2 = Font.system(size: 10, weight: .medium)
         /// 28 SF Pro Rounded semibold — Overview stat tiles. Pair with
         /// `.monospacedDigit()` on every live numeral.
         static let stat = Font.system(size: 28, weight: .semibold, design: .rounded)
@@ -112,6 +115,8 @@ enum DS {
         static let monoWellLineSpacing: CGFloat = 11.5 * 0.45
         /// 12 SF Mono medium — model IDs, paths, timers (tabular digits).
         static let monoInline = Font.system(size: 12, weight: .medium, design: .monospaced)
+        /// 10.5 SF Mono — model IDs inside dense chips (fallback-ladder rungs).
+        static let monoCaption = Font.system(size: 10.5, design: .monospaced)
         /// 48pt symbol for centered empty states (§4.1).
         static let emptyStateIcon = Font.system(size: 48)
     }

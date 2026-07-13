@@ -360,6 +360,110 @@ struct Chip: View {
     }
 }
 
+// MARK: - InlineBanner
+//
+// The one banner (DESIGN-REFRESH.md §6): status-tint fill (8/12% formula),
+// 3pt leading accent bar — the same vocabulary as fallback/error event rows —
+// body-medium title, caption message, and a trailing action slot. Stacked
+// banners separate with the built-in bottom hairline and read as one system.
+
+struct InlineBanner<Trailing: View>: View {
+    let kind: StatusKind
+    /// Optional custom symbol (defaults to the kind's).
+    var symbol: String? = nil
+    let title: String
+    var message: String? = nil
+    /// Extra lines allowed for the message (errors can be long).
+    var messageLineLimit: Int? = 4
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(alignment: .top, spacing: DS.space.xs) {
+            Image(systemName: symbol ?? kind.symbol)
+                .font(DS.font.body)
+                .foregroundStyle(kind.tint.color)
+                .accessibilityHidden(true)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(DS.font.body.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let message, !message.isEmpty {
+                    Text(message)
+                        .font(DS.font.caption)
+                        .foregroundStyle(DS.textSecondary)
+                        .textSelection(.enabled)
+                        .lineLimit(messageLineLimit)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: DS.space.xs)
+            trailing
+        }
+        .padding(.horizontal, DS.space.m)
+        .padding(.vertical, 10)
+        .background(kind.tint.fill)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(kind.tint.color).frame(width: 3)
+                .accessibilityHidden(true)
+        }
+        .overlay(Divider(), alignment: .bottom)
+    }
+}
+
+extension InlineBanner where Trailing == EmptyView {
+    init(kind: StatusKind, symbol: String? = nil, title: String,
+         message: String? = nil, messageLineLimit: Int? = 4) {
+        self.init(kind: kind, symbol: symbol, title: title, message: message,
+                  messageLineLimit: messageLineLimit) { EmptyView() }
+    }
+}
+
+// MARK: - EmptyStateView
+//
+// Every full-pane empty state is an instance (DESIGN-REFRESH.md §6): the
+// symbol, a title, what will appear here and why it's empty, and at most one
+// action. `prominent` is the app-level landing state (largeTitle, §4.1).
+
+struct EmptyStateView: View {
+    let symbol: String
+    let title: String
+    var message: String? = nil
+    var actionLabel: String? = nil
+    var action: (() -> Void)? = nil
+    var prominent: Bool = false
+
+    var body: some View {
+        VStack(spacing: DS.space.s) {
+            Image(systemName: symbol)
+                .font(DS.font.emptyStateIcon)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(prominent ? DS.font.largeTitle : DS.font.headline)
+            if let message {
+                Text(message)
+                    .font(prominent ? DS.font.body : DS.font.caption)
+                    .foregroundStyle(DS.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 380)
+            }
+            if let actionLabel, let action {
+                Button(actionLabel, action: action)
+                    .buttonStyle(.borderedProminent)
+                    .padding(.top, DS.space.xxs)
+            }
+        }
+        .padding(DS.space.margin)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // No .combine here: the optional action button must stay individually
+        // focusable for VoiceOver; the texts already read in order.
+    }
+}
+
 // MARK: - Previews (both schemes)
 
 private struct ComponentKitGallery: View {
@@ -400,6 +504,13 @@ private struct ComponentKitGallery: View {
                 Chip(label: "Fallbacks", systemImage: "arrow.uturn.down",
                      selected: true, tint: DS.status.fallback)
             }
+            InlineBanner(kind: .warning, symbol: "pause.circle.fill",
+                         title: "Paused for your approval",
+                         message: "Finished Tech Specs. Approve to continue.") {
+                Button("Approve") {}
+            }
+            InlineBanner(kind: .error, title: "Run aborted",
+                         message: "codex exited 1 — see the run log.")
         }
         .padding(DS.space.margin)
         .background(DS.windowBg)
