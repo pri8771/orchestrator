@@ -1,5 +1,7 @@
 # Top 100 Tasks
 
+> Historical record (audit round 1, fully closed). See `AUDIT_HISTORY.md` for the consolidated index of all audit rounds.
+
 Prioritized backlog produced from a full audit of the engine (`*.py`), the SwiftUI GUI
 (`gui/`), the shell scripts, the workflow/config JSON, the docs, and the test suite.
 Priorities: **P1** = correctness/security bug, **P2** = robustness/portability,

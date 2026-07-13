@@ -53,7 +53,9 @@ bash run.sh --app myapp
 
 Full CLI surface (see `python3 orchestrator.py --help`): `--once` (default),
 `--watch SECONDS`, `--app NAME`, `--project SLUG` (alias of `--app`),
-`--root PATH`, `--resume SLUG`, `--doctor` (+ `--json`), `--seed`.
+`--root PATH`, `--resume SLUG`, `--doctor` (+ `--json`), `--mistakes`
+(+ `--app`/`--json`), `--postmortem` (requires `--app`, + `--json`),
+`--search-models QUERY`, `--seed`.
 
 **`--resume <slug>`** restarts an *existing* project from its saved
 `agent_state.json`. Unlike `--app`, it refuses to run when the project or its
@@ -346,7 +348,10 @@ orchestrator/             # repo root (engine at top level)
 ├── run.sh                 # unset API keys → run with --root $ORCH_ROOT (default ~/Documents/iOS-App-Factory) → git steps
 ├── install_launch_agent.sh
 ├── seed_demo.py / simulate_stream.py    # demo data / fake live transcript
-├── tests/                 # unittest suite (400+ tests)
+├── events.py / mistakes.py / postmortem.py  # events.jsonl + mistakes.jsonl writers, --postmortem report
+├── AUDIT_HISTORY.md       # consolidated index of the four audit rounds (TASKS*.md)
+├── MISTAKES.md            # live failure-mode taxonomy + mistakes-ledger docs
+├── tests/                 # unittest suite (600+ tests)
 ├── gui/                   # native SwiftUI front-end (SwiftPM, zero deps) — see gui/README.md
 └── logs/                  # event log + per-call JSON records (gitignored)
 ```

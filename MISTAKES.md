@@ -41,3 +41,17 @@ per class, per phase, and per agent, plus a per-app **verification rollup**
 verification record — so a run where every build went unverified (no
 toolchain) is no longer indistinguishable from a genuinely verified one.
 `--json` prints a machine-readable report (stdout is pure JSON).
+
+## The report: `--postmortem`
+
+```
+python3 orchestrator.py --postmortem --app NAME [--json]
+```
+
+One correlated failure report for a single project (postmortem.py): run
+status + verification rollup, workflow and the last phase/round reached,
+phase-by-phase completion with consensus status, the failure chain from
+`events.jsonl`, every persisted verification attempt, this app's
+mistakes-ledger aggregation, and measured per-phase/per-agent turn telemetry
+(turn counts, durations, output chars, fallback counts). Text mode is a
+timeline; `--json` prints one structured object (stdout is pure JSON).

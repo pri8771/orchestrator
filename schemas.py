@@ -60,7 +60,7 @@ def validate_required_fields(obj, required_fields):
     return (len(missing) == 0), missing
 
 
-_FENCE_CACHE = {}
+_FENCE_CACHE: "dict[str, re.Pattern[str]]" = {}
 
 
 def _fence_re(fence_name):
@@ -78,7 +78,7 @@ def _fence_re(fence_name):
     return _FENCE_CACHE[fence_name]
 
 
-_LABELED_JSON_CACHE = {}
+_LABELED_JSON_CACHE: "dict[str, re.Pattern[str]]" = {}
 
 
 def _labeled_json_re(fence_name):

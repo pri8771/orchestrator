@@ -1,5 +1,7 @@
 # Round 4 Backlog
 
+> Historical record (audit round 4, fully closed). See `AUDIT_HISTORY.md` for the consolidated index of all audit rounds.
+
 Fresh audit after the Round 3 fix pass (see `TASKS_ROUND3.md`, all 15 items
 landed across commits `42159ad`/`392aace`). Same four-lane split, each agent
 told to skip anything already fixed and to specifically stress-test Round

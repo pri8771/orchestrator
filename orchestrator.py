@@ -57,6 +57,7 @@ import knowledge as knowlib
 import mistakes as mistklib
 import phase_rules as phaseruleslib
 import portfolio as portfoliolib
+import postmortem as pmlib
 import urlfetch as urlfetchlib
 import verify as verifylib
 import procutil
@@ -68,7 +69,7 @@ LOG_DIR = os.path.join(HERE, "logs")
 # repo checkout and the GUI's Application Support install) must contend for the
 # SAME lock when they target the same workspace, or one app can run twice.
 LOCKS_DIR = os.path.join(HERE, "locks")
-_HELD_LOCKS = set()
+_HELD_LOCKS: "set[str]" = set()
 
 # Phases are now driven by pluggable workflows (see workflows.py). Each app can
 # run a different workflow (build an app, answer a question, research a topic,
@@ -6032,9 +6033,14 @@ def main():
                     help="print the cross-run mistakes-ledger report (per-class/"
                          "per-phase/per-agent counts + verification rollup per "
                          "app) and exit; combine with --app and/or --json")
+    ap.add_argument("--postmortem", action="store_true",
+                    help="print one correlated failure report for a project "
+                         "(run status, phases, event failure chain, verify "
+                         "attempts, mistakes ledger, turn telemetry) and exit; "
+                         "requires --app/--project, supports --json")
     ap.add_argument("--json", action="store_true",
-                    help="with --doctor/--mistakes: emit a machine-readable JSON "
-                         "report (V2 spec §27)")
+                    help="with --doctor/--mistakes/--postmortem: emit a "
+                         "machine-readable JSON report (V2 spec §27)")
     ap.add_argument("--seed", action="store_true",
                     help="seed built-in workflow JSON files and exit (used by the GUI)")
     ap.add_argument("--search-models", metavar="QUERY",
@@ -6109,6 +6115,19 @@ def main():
         rc, target_app = prepare_resume(cfg["root"], args.resume)
         if target_app is None:
             return rc
+
+    if args.postmortem:
+        if not target_app:
+            ap.error("--postmortem requires --app/--project <name>")
+        rep = pmlib.build_postmortem(os.path.join(cfg["root"], target_app),
+                                     app=target_app)
+        if args.json:
+            # Same contract as --doctor --json: stdout is ONLY the JSON blob
+            # (_QUIET was set above so no emit() line can precede it).
+            print(json.dumps(rep, indent=2))
+        else:
+            print(pmlib.render_postmortem(rep))
+        return 0
 
     if args.mistakes:
         rep = mistakes_report(cfg["root"], app=target_app)

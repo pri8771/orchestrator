@@ -51,7 +51,7 @@ class NoOutputTimeout(subprocess.TimeoutExpired):
 # SIGTERM/SIGINT handler drains this via kill_live_groups() so stopping a run
 # also stops its in-flight agent CLIs — they run in their own sessions and
 # would otherwise survive as orphans, still writing to the workspace.
-_LIVE_PGIDS = set()
+_LIVE_PGIDS: "set[int]" = set()
 # RLock, not Lock: kill_live_groups runs inside the SIGTERM/SIGINT handler,
 # which can interrupt this module's own _track/_untrack on the main thread —
 # a non-reentrant lock would deadlock the handler against its own thread.

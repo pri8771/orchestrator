@@ -1,5 +1,7 @@
 # Round 2 Backlog
 
+> Historical record (audit round 2, fully closed). See `AUDIT_HISTORY.md` for the consolidated index of all audit rounds.
+
 Fresh audit after the Round 1 fix pass (see `TASKS.md`). Same four-lane split
 (core engine / supporting modules / GUI / tests-docs-infra), each agent told
 to skip anything already fixed in Round 1 and to specifically scrutinize the

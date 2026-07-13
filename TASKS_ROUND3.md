@@ -1,5 +1,7 @@
 # Round 3 Backlog
 
+> Historical record (audit round 3, fully closed). See `AUDIT_HISTORY.md` for the consolidated index of all audit rounds.
+
 Fresh audit after the Round 2 fix pass (see `TASKS_ROUND2.md`, all 73 items
 landed across commits `b958a46`..`d46e960`). Same four-lane split (core
 engine / supporting modules / GUI / tests-docs-infra), each agent told to

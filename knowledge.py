@@ -111,7 +111,17 @@ def _doc_keywords(body):
         for k in m.group(1).replace("\n", ",").split(","):
             k = k.strip().lower()
             if k:
-                kws.add(k)
+                # Tokenize each entry with the same word regex the query text
+                # is tokenized with (_terms). A single-word keyword yields
+                # itself unchanged, so existing single-word behavior is
+                # preserved exactly; a multi-word phrase ("app router",
+                # "refresh token rotation") yields its constituent words.
+                # Previously the verbatim phrase was stored and could never
+                # intersect the single-token query terms — every multi-word
+                # annotation in knowledge/*.md was dead weight. (This also
+                # revives entries whose separators _WORD_RE splits on, e.g.
+                # "offline-first" -> {"offline", "first"}.)
+                kws |= _terms(k)
     # Also weight the headings (## ...) as soft keywords.
     for h in re.findall(r"^#{1,3}\s+(.+)$", body, re.MULTILINE):
         kws |= _terms(h)

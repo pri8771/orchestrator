@@ -104,6 +104,50 @@ class TestRetrieve(unittest.TestCase):
             self.assertIn("fresh widget content", out.lower())
 
 
+class TestMultiWordKeywords(unittest.TestCase):
+    """Multi-word `<!-- keywords: ... -->` phrases used to be stored verbatim
+    and could never intersect the single-token query terms — dead weight in
+    every real knowledge doc. They are now tokenized into words."""
+
+    def test_multi_word_phrase_now_retrieves(self):
+        with tempfile.TemporaryDirectory() as d:
+            domain_dir = os.path.join(d, "knowledge", "general")
+            os.makedirs(domain_dir)
+            with open(os.path.join(domain_dir, "ds.md"), "w", encoding="utf-8") as fh:
+                fh.write("<!-- keywords: design system -->\nToken palette guidance.\n")
+            out = k.retrieve(d, "general", "build a design system for the app")
+            self.assertIn("token palette guidance", out.lower())
+
+    def test_phrase_words_score_as_strong_keywords(self):
+        # Both words of the phrase count as keyword (x3) hits, so a doc whose
+        # only match is body text loses to the keyword-annotated doc.
+        kws = k._doc_keywords("<!-- keywords: refresh token rotation -->\nbody\n")
+        self.assertIn("refresh", kws)
+        self.assertIn("token", kws)
+        self.assertIn("rotation", kws)
+        self.assertNotIn("refresh token rotation", kws)
+
+    def test_single_word_keywords_unchanged(self):
+        # Single-word entries (incl. _WORD_RE-friendly dotted ones) still
+        # yield exactly themselves.
+        kws = k._doc_keywords("<!-- keywords: fastapi, next.js, @observable -->\n# T\n")
+        self.assertLessEqual({"fastapi", "next.js", "@observable"}, kws)
+
+    def test_real_knowledge_doc_multi_word_annotation_matches(self):
+        # A real curated doc: knowledge/web/react-nextjs-architecture.md is
+        # annotated with multi-word phrases like "partial prerendering" and
+        # "intercepting routes". Those phrases were dead weight before the
+        # tokenization fix; their words must now be strong keywords, and a
+        # query built from them must retrieve the doc.
+        doc = os.path.join(HERE, "knowledge", "web", "react-nextjs-architecture.md")
+        kws, _terms, _body = k._load_doc(doc)
+        self.assertLessEqual({"partial", "prerendering", "intercepting", "routes"}, kws)
+        out = k.retrieve(HERE, "web",
+                         "routing with route groups, intercepting routes and "
+                         "partial prerendering in the app router")
+        self.assertIn("react nextjs architecture", out.lower())
+
+
 class TestShouldInject(unittest.TestCase):
     def test_returns_bool(self):
         self.assertIsInstance(k.should_inject("tech_specs"), bool)
