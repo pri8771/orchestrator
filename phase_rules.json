@@ -5,6 +5,10 @@
     "Every generated app must have real user-visible behavior, not only placeholder screens.",
     "For iOS apps, default to SwiftUI, deterministic local state first, Apple system frameworks, and no third-party package unless it materially reduces risk.",
     "Every screen needs empty, loading, success, and error states when the workflow can reach those states.",
+    "Implement the design spec's tokens as one SwiftUI theme file (e.g. Theme.swift with type, spacing, and color definitions) and reference it everywhere; never scatter font/size/color literals through views.",
+    "Every generated app must fully support dark mode: semantic color roles with explicit light and dark values, verified in both appearances.",
+    "Empty states are designed content (icon + one-line explanation + the action that fills the screen), never a blank view or bare 'No data' text.",
+    "No default unstyled List, Form, or navigation chrome where the design spec calls for custom rows, cards, or backgrounds; the built UI must match the spec.",
     "Treat accessibility, privacy, persistence, and testing as product requirements, not polish.",
     "Do not declare the app done until build verification and the final review agree on what works and what remains limited."
   ],
@@ -158,38 +162,54 @@
     },
     "design_discussion": {
       "rules": [
+        "Name a design language for THIS app (e.g. 'warm paper journal', 'precision instrument dark') with a one-line rationale; 'clean and modern' is a rejection-worthy non-answer.",
+        "State the emotional target: how the user should feel on the main screen, in one sentence.",
+        "Pick one signature interaction (a hero moment of motion, layout, or feedback) that expresses the design language.",
+        "Describe the default-looking version of this app (plain List, stock chrome, system accent) and explicitly reject it, naming at least three concrete differences.",
         "Design real screens and states, not vague UX language.",
         "Make navigation, empty states, errors, onboarding, and persistence visible.",
         "Use iOS-native patterns unless the prompt clearly demands otherwise."
       ],
       "required_output": [
+        "Named design language with rationale.",
+        "Emotional target.",
+        "Signature interaction.",
+        "Rejected default option and the concrete differences from it.",
         "Screen inventory.",
         "Primary user flow.",
         "State model per screen.",
-        "Visual direction.",
         "Accessibility notes."
       ],
       "acceptance_checks": [
+        "The design language is specific to this app; swapping in a different app's name would make it wrong.",
+        "The default-looking option is explicitly rejected with named differences, not just adjectives.",
         "A SwiftUI developer can create the view hierarchy from this output.",
         "Every required user workflow has a screen/state path."
       ]
     },
     "design_handoff": {
       "rules": [
-        "Produce a builder-ready design handoff, not visual adjectives.",
-        "If external Claude Design is desired, provide a clean prompt/upload plan the user can use directly.",
-        "Every primary screen must include layout intent, key components, state variants, accessibility, and motion guidance."
+        "Emit a structured DESIGN SPEC under fixed headings (Type Scale, Spacing, Colors, Components, Navigation, Screen States, Motion & Haptics, Accessibility) that the build phase consumes verbatim.",
+        "Give explicit values everywhere: point sizes and weights, spacing steps, and light AND dark color values; no adjective may stand in for a number.",
+        "Carry design_discussion's named design language and signature interaction into concrete named components.",
+        "Every primary screen must include layout intent, key components, state variants, accessibility, and motion guidance.",
+        "If external Claude Design is desired, provide a clean prompt/upload plan the user can use directly."
       ],
       "required_output": [
-        "Screen-by-screen design specification.",
-        "Design tokens or visual system.",
-        "Component inventory.",
-        "State and interaction notes.",
-        "Accessibility requirements.",
+        "DESIGN SPEC - Type scale: every text role with explicit size/weight (e.g. Title 28 semibold) mapped to a Dynamic Type style.",
+        "DESIGN SPEC - Spacing grid: base unit (4 or 8pt) and the named steps used for padding and gaps.",
+        "DESIGN SPEC - Semantic color palette: named roles (background, surface, text primary/secondary, accent, success/warning/error) each with a light and a dark value.",
+        "DESIGN SPEC - Component inventory: every screen's components named (e.g. StatCard, StreakRing, EntryRow).",
+        "DESIGN SPEC - Navigation pattern: the tab/stack/sheet map for the whole app.",
+        "DESIGN SPEC - Per-screen empty, loading, and error states with copy, icon, and recovery action.",
+        "DESIGN SPEC - Motion and haptics notes: which transitions animate, with what curve, and which events fire feedback.",
+        "DESIGN SPEC - Accessibility: Dynamic Type behavior, contrast expectations, VoiceOver labels for icon-only controls.",
         "Claude Design prompt or explicit no-external-design decision."
       ],
       "acceptance_checks": [
-        "A SwiftUI builder can implement the interface from the handoff.",
+        "A SwiftUI builder can write Theme.swift (fonts, spacing, colors) directly from the spec with zero invented values.",
+        "Every screen has named components and defined empty/loading/error states.",
+        "Every color role has both a light and a dark value.",
         "The handoff does not depend on hidden design decisions.",
         "The design direction is premium and category-specific."
       ]
@@ -292,6 +312,8 @@
     "build_coordination": {
       "rules": [
         "Build real files in app_build; do not only describe the solution.",
+        "Create the design spec's tokens as a single theme file (Theme.swift or equivalent) before building screens, and style every view through it; scattered font/spacing/color literals are defects.",
+        "Implement the handoff's named components, per-screen empty states, and dark-mode palette as specified; a default unstyled List where the spec says otherwise is a defect.",
         "Keep changes scoped to the assigned lane and leave integration files to the integrator.",
         "Every iteration should reduce compile, runtime, or product-completeness risk.",
         "When generating iOS, include unit/UI test targets where feasible."
@@ -305,6 +327,7 @@
       "acceptance_checks": [
         "The app has a runnable entry point.",
         "The main user workflow is implemented.",
+        "A single theme/token file exists, views use it, dark mode works, and specified empty states are real.",
         "The integrator has wired lane outputs together."
       ]
     },
