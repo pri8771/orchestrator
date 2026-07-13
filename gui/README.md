@@ -120,7 +120,7 @@ and per-project reset/fork/build-history.
 
 ## Tests
 
-`Tests/OrchestratorGUITests/EngineLogicTests.swift` — 37 XCTest cases over the
+`Tests/OrchestratorGUITests/EngineLogicTests.swift` — XCTest coverage of the
 pure GUI↔engine bridge logic in `EngineLogic.swift`: `verify_results.json`
 parsing, the approval decision-file contract, `blocked_conflict` parsing, the
 doctor `local_models` block, shipped workflow coverage, and the engine-dir

@@ -376,6 +376,19 @@ struct CommandPaletteView: View {
         store.uiCommand = c.action
     }
 
+    // The search field keeps focus while the palette is open, so arrow keys
+    // never reach the List; handle them here instead. Clamped at both ends.
+    private func moveSelection(by delta: Int) -> KeyPress.Result {
+        let list = filtered
+        guard !list.isEmpty else { return .ignored }
+        if let idx = list.firstIndex(where: { $0.id == selection }) {
+            selection = list[min(max(idx + delta, 0), list.count - 1)].id
+        } else {
+            selection = (delta > 0 ? list.first : list.last)?.id
+        }
+        return .handled
+    }
+
     private func runSelectedOrFirst() {
         let list = filtered
         if let sel = selection, let c = list.first(where: { $0.id == sel }) {
@@ -407,6 +420,8 @@ struct CommandPaletteView: View {
                     }
                 }
                 .onSubmit { runSelectedOrFirst() }
+                .onKeyPress(.upArrow) { moveSelection(by: -1) }
+                .onKeyPress(.downArrow) { moveSelection(by: 1) }
             Divider()
             if filtered.isEmpty {
                 VStack(spacing: 4) {

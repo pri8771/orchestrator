@@ -39,6 +39,19 @@ jobs:
       - run: pip install ruff
       - run: ruff check .
 
+  # Typecheck is enforcing (no continue-on-error): Round 3's mypy regression
+  # slipped through precisely because nothing gated it. One Python version is
+  # enough — [tool.mypy] in pyproject.toml pins the target.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ".[dev]"
+      - run: mypy . --config-file pyproject.toml
+
   # Compile the SwiftUI GUI on macOS. The Python engine has no bearing on this;
   # it catches GUI regressions the Linux jobs can't.
   gui-build:

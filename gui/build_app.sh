@@ -33,7 +33,7 @@ cp "$BIN" "$APP/Contents/MacOS/Orchestrator"
 # Bundle the Python engine INSIDE the app so it's self-contained (double-click /
 # DMG). The app copies this to Application Support on first launch (it needs to be
 # writable for logs/config), keyed by the VERSION written here.
-ENGINE_SRC="$(cd "$GUI_DIR/.." && pwd)"      # orchestrator-v2-source
+ENGINE_SRC="$(cd "$GUI_DIR/.." && pwd)"      # repo root — the engine source lives there
 ENGINE_DEST="$APP/Contents/Resources/engine"
 echo "[build_app] bundling engine from ${ENGINE_SRC}..."
 mkdir -p "$ENGINE_DEST"
