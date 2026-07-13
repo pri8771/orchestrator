@@ -54,6 +54,7 @@ import docs as docslib
 import completeness as complib
 import global_resource as grlib
 import knowledge as knowlib
+import mistakes as mistklib
 import phase_rules as phaseruleslib
 import portfolio as portfoliolib
 import urlfetch as urlfetchlib
@@ -1151,6 +1152,15 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                              round=rnd, agent=str(agent), from_model=primary,
                              to_model=to_model, status=status,
                              reason=str(reason)[:200])
+            # Mistakes ledger (never raises): record fallback OUTCOMES, not the
+            # per-step "attempt" transitions the event stream already carries.
+            if status != "attempt":
+                mistklib.append_mistake(_ev_dir, {
+                    "app": app, "workflow": cfg.get("_workflow_name"),
+                    "phase": phase, "agent": str(agent), "cls": "agent_fallback",
+                    "summary": "%s -> %s (%s): %s"
+                               % (primary, to_model or "(none)", status,
+                                  str(reason)[:160])})
 
         installed = lmlib.installed_models_cached()
         for step in steps:
@@ -2173,6 +2183,25 @@ def derive_run_status(state):
     return "running"
 
 
+def derive_verification(app_dir, state):
+    """verified | failed | unverified — the §15 rollup of the LATEST persisted
+    verification record for this run (prompt_hash-scoped, verify_results.json).
+
+    "verified": the latest verify ran and passed; "failed": ran and did not;
+    "unverified": no record, or the toolchain was absent (ran=false). This
+    makes an all-UNVERIFIED run distinguishable from a genuinely verified one
+    in agent_state.json. Observability ONLY — nothing gates on it. Never
+    raises; any read problem degrades to "unverified"."""
+    try:
+        latest = verifylib.latest_verify_result(
+            app_dir, prompt_hash=(state or {}).get("prompt_hash"))
+        if not latest or not latest.get("ran"):
+            return "unverified"
+        return "verified" if latest.get("ok") else "failed"
+    except Exception:  # noqa: BLE001 - a rollup must never take a save down
+        return "unverified"
+
+
 # Guards every save_state mutation+write. During build_coordination the main
 # thread and several parallel build-worker threads share one `state` dict and
 # one agent_state.json (workers reach save_state via _bump_fallback_count), so
@@ -2187,6 +2216,7 @@ def save_state(app_dir, state):
         state["runner_pid"] = os.getpid()
         state["last_processed"] = now_str()
         state["status"] = derive_run_status(state)
+        state["verification"] = derive_verification(app_dir, state)
         # Per-writer temp name so concurrent savers never clobber one shared
         # ".tmp" mid-write; the os.replace onto the real path stays atomic.
         tmp = "%s.%d.%x.tmp" % (state_path(app_dir), os.getpid(),
@@ -3668,6 +3698,11 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
         evlib.emit_event(app_dir, "verify_result", project=app, phase=key,
                          status=verifylib.verification_status(r),
                          detail="%s: %s" % (attempt_label, r.get("summary", "")))
+        if r.get("ran") and not r.get("ok"):
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "agent": coord, "cls": "verify_failure",
+                "summary": "%s: %s" % (attempt_label, r.get("summary", ""))})
 
     verifylib.persist_verify_result(app_dir, key, res, attempt=0,
                                     prompt_hash=state.get("prompt_hash"),
@@ -4173,6 +4208,11 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                 )
                 emit("Quality gate warning recorded for phase '%s'; closing under current limits."
                      % key)
+                mistklib.append_mistake(app_dir, {
+                    "app": app, "workflow": cfg.get("_workflow_name"),
+                    "phase": key, "agent": coord, "cls": "quality_gate_fail",
+                    "summary": "phase closed with a failing quality gate after "
+                               "%d repair failure(s)" % quality_failures})
                 break
             emit("CONSENSUS reached in phase '%s' at %s %d." % (key, unit, rnd))
             break
@@ -4300,6 +4340,12 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             terrs.append("dependency cycle: %s" % c)
         for e in terrs:
             emit("TASKS: ERROR %s" % e)
+        if terrs:
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "contract_error",
+                "summary": "%d tasks.json contract error(s)" % len(terrs),
+                "detail": {"errors": terrs[:10]}})
         persist_tasks(app_dir, tasks, terrs)
         emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
         live_log(app_dir, key, "orchestrator", "tasks_recorded",
@@ -4310,6 +4356,12 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         ifaces, ierrs = parse_interface_blocks(blob)
         for e in ierrs:
             emit("INTERFACES: ERROR %s" % e)
+        if ierrs:
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "contract_error",
+                "summary": "%d interfaces.json contract error(s)" % len(ierrs),
+                "detail": {"errors": ierrs[:10]}})
         persist_interfaces(app_dir, ifaces, ierrs)
         emit("INTERFACES: %d interface(s) -> interfaces.json (%d error(s))."
              % (len(ifaces), len(ierrs)))
@@ -4699,6 +4751,12 @@ def _queue_release_gate_repair(app, app_dir, state, reason, phases=None,
     n = int(state.get("release_gate_repairs") or 0)
     state["done"] = False
     state["error"] = "release gate: %s" % reason
+    mistklib.append_mistake(app_dir, {
+        "app": app, "phase": build_phase_key, "cls": "repair_queued",
+        "summary": ("release gate failed: %s (repair %d/%d)"
+                    % (reason, min(n + 1, max_repairs), max_repairs))
+                   if n < max_repairs else
+                   "release gate failed: %s (repair budget exhausted)" % reason})
     if n < max_repairs:
         state["release_gate_repairs"] = n + 1
         # The queued repair only does anything if build_coordination (and
@@ -5255,7 +5313,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             _queue_release_gate_repair(app, app_dir, state, gate_reason,
                                        phases=phases, build_phase_key=workflow.build_phase)
             evlib.emit_event(app_dir, "run_finished", project=app,
-                             status="release_gate_repair", detail=gate_reason)
+                             status="release_gate_repair", detail=gate_reason,
+                             verification=state.get("verification"))
             return
         state["done"] = True
         state["error"] = None
@@ -5286,20 +5345,23 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         except Exception as exc:  # noqa: BLE001 - docs are best-effort, never fatal
             emit("WARN docs render failed: %s" % exc)
         emit("App '%s': ALL phases complete. Marked done." % app)
-        evlib.emit_event(app_dir, "run_finished", project=app, status="done")
+        evlib.emit_event(app_dir, "run_finished", project=app, status="done",
+                         verification=state.get("verification"))
     except AgentError as exc:
         state["error"] = str(exc)
         state["done"] = False
         save_state(app_dir, state)
         emit("App '%s': ABORTED — %s" % (app, exc))
         evlib.emit_event(app_dir, "run_finished", project=app,
-                         status="aborted", detail=str(exc))
+                         status="aborted", detail=str(exc),
+                         verification=state.get("verification"))
     except AppError as exc:
         state["error"] = str(exc)
         save_state(app_dir, state)
         emit("App '%s': skipped — %s" % (app, exc))
         evlib.emit_event(app_dir, "run_finished", project=app,
-                         status="skipped", detail=str(exc))
+                         status="skipped", detail=str(exc),
+                         verification=state.get("verification"))
 
 
 # ---------------------------------------------------------------------------
@@ -5396,6 +5458,56 @@ def preflight_report(cfg):
         # Per-phase routing + cloud->local fallback (model_routing.json).
         "model_routing": mrlib.summary(mrlib.load_routing(HERE)),
     }
+
+
+def mistakes_report(root, app=None):
+    """Structured `--mistakes` report: the cross-run mistakes-ledger aggregation
+    (per-class / per-phase / per-agent counts) plus the verification rollup per
+    app. Pure disk reads — never invokes an agent turn. ``app`` filters to one
+    project; JSON-serializable for `--mistakes --json`."""
+    agg = mistklib.aggregate_mistakes(root)
+    if app:
+        names = [app]
+    else:
+        try:
+            discovered = find_apps(root) if root and os.path.isdir(root) else []
+        except OSError:
+            discovered = []
+        names = sorted(set(list(agg["apps"]) + discovered))
+    apps = {}
+    for name in names:
+        per = dict(agg["apps"].get(name) or {"total": 0, "by_class": {},
+                                             "by_phase": {}, "by_agent": {}})
+        app_dir = os.path.join(root, name)
+        st = load_state(app_dir)
+        per["verification"] = st.get("verification") or derive_verification(app_dir, st)
+        apps[name] = per
+    if app:
+        per = apps[app]
+        totals = {k: per[k] for k in ("total", "by_class", "by_phase", "by_agent")}
+    else:
+        totals = {k: agg[k] for k in ("total", "by_class", "by_phase", "by_agent")}
+    report = {"schema_version": 1, "root": root, "apps": apps}
+    report.update(totals)
+    return report
+
+
+def print_mistakes_report(rep):
+    """Human rendering of mistakes_report (the --mistakes default output)."""
+    print("=== MISTAKES: cross-run ledger report ===")
+    print("Root: %s" % rep["root"])
+    print("Total recorded mistakes: %d" % rep["total"])
+    for label, key in (("By class", "by_class"), ("By phase", "by_phase"),
+                       ("By agent", "by_agent")):
+        counts = rep.get(key) or {}
+        if counts:
+            print("%s:" % label)
+            for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+                print("  %-28s %d" % (k, n))
+    for name, per in sorted((rep.get("apps") or {}).items()):
+        print("App %-24s: %d mistake(s); verification=%s"
+              % (name, per.get("total", 0), per.get("verification", "unverified")))
+    print("=== MISTAKES report complete ===")
 
 
 def doctor(cfg):
@@ -5570,8 +5682,13 @@ def main():
                     help="resume an existing project from its saved state, clearing "
                          "any recorded abort error first (V2 spec §27)")
     ap.add_argument("--doctor", action="store_true", help="print environment report and exit")
+    ap.add_argument("--mistakes", action="store_true",
+                    help="print the cross-run mistakes-ledger report (per-class/"
+                         "per-phase/per-agent counts + verification rollup per "
+                         "app) and exit; combine with --app and/or --json")
     ap.add_argument("--json", action="store_true",
-                    help="with --doctor: emit a machine-readable JSON preflight report (V2 spec §27)")
+                    help="with --doctor/--mistakes: emit a machine-readable JSON "
+                         "report (V2 spec §27)")
     ap.add_argument("--seed", action="store_true",
                     help="seed built-in workflow JSON files and exit (used by the GUI)")
     ap.add_argument("--search-models", metavar="QUERY",
@@ -5646,6 +5763,16 @@ def main():
         rc, target_app = prepare_resume(cfg["root"], args.resume)
         if target_app is None:
             return rc
+
+    if args.mistakes:
+        rep = mistakes_report(cfg["root"], app=target_app)
+        if args.json:
+            # Same contract as --doctor --json: stdout is ONLY the JSON blob
+            # (_QUIET was set above so no emit() line can precede it).
+            print(json.dumps(rep, indent=2))
+        else:
+            print_mistakes_report(rep)
+        return 0
 
     if args.doctor:
         if args.json:

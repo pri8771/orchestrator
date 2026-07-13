@@ -29,7 +29,7 @@ dev = ["ruff", "mypy"]
 py-modules = [
     "orchestrator", "workflows", "phase_rules", "schemas", "verify", "docs",
     "backfill", "completeness", "events", "global_resource", "knowledge",
-    "localmodels", "miniyaml", "modelrouting", "portfolio", "procutil",
+    "localmodels", "miniyaml", "mistakes", "modelrouting", "portfolio", "procutil",
     "resilience", "roles", "urlfetch", "seed_demo", "simulate_stream",
 ]
 
