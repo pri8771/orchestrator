@@ -15,7 +15,7 @@ class TestRosterLaneCoverage(unittest.TestCase):
     def _roster(self, available):
         cfg = {"runtime": {"build_parallel_workers": 3}}
         with unittest.mock.patch.object(
-                orch, "_agent_available", side_effect=lambda a: a in available):
+                orch, "_agent_available", side_effect=lambda a, cfg=None: a in available):
             return orch.build_worker_roster(cfg, list(available) or ["codex"])
 
     def _lanes(self, roster):

@@ -222,7 +222,19 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{24,}")
 # paths, finding file:line, etc). The precise/labeled patterns above still run
 # everywhere, including inside these blocks — a real secret shape is still
 # worth catching there. Only the entropy guess is skipped inside them.
-_JSON_FENCE_SPAN_RE = re.compile(r"```[A-Za-z][\w-]*-json\b.*?```", re.DOTALL)
+#
+# The close fence must be a LINE that is *only* ``` (the markdown convention
+# every fence in this codebase follows — see extract_structured_blocks'
+# opener/closer pairing and the ```lang fences agents emit for code samples).
+# A naive non-greedy ``` ... ``` DOTALL match instead stops at the FIRST ```
+# substring anywhere, including one embedded inside a JSON string value (e.g.
+# a "snippet" field quoting a fenced ```python block) — that ends the
+# recognized span early and runs the rest of the real JSON through the entropy
+# fallback, corrupting it. Anchoring both ends to full lines side-steps that:
+# an embedded fence line inside a validly-escaped JSON string (newlines
+# escaped as \n, not literal) never stands alone on its own line.
+_JSON_FENCE_SPAN_RE = re.compile(
+    r"^```[A-Za-z][\w-]*-json\b[^\n]*\n.*?^```[ \t]*$", re.DOTALL | re.MULTILINE)
 
 
 def _shannon_entropy(s):

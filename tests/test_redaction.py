@@ -85,6 +85,21 @@ class TestRedaction(unittest.TestCase):
     def test_json_fence_skip_never_raises_on_unclosed_fence(self):
         schemas.redact_secrets("```finding-json\n{\"a\": \"unclosed")
 
+    def test_embedded_triple_backtick_in_json_value_does_not_truncate_span(self):
+        # A finding whose "snippet" field itself quotes a fenced ```python```
+        # block (escaped newlines, valid JSON) must not fool the fence-span
+        # detector into treating that embedded ``` as the outer block's close
+        # — the real content AFTER the embedded block, inside the same JSON
+        # object, must survive un-redacted.
+        long_id = "a1b2c3d4e5f6789012345678deadBEEF00"
+        block = (
+            '```finding-json\n'
+            '{"title": "t", "snippet": "```python\\ndef f():\\n    pass\\n```", '
+            '"fix": "see %s"}\n'
+            '```' % long_id)
+        red = schemas.redact_secrets(block)
+        self.assertIn(long_id, red)
+
 
 if __name__ == "__main__":
     unittest.main()

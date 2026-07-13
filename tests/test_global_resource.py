@@ -18,11 +18,31 @@ class TestWorkerBroker(unittest.TestCase):
 
     def test_cap_enforced_with_live_pid(self):
         pid = os.getpid()
-        self.assertTrue(gr.try_claim("p", "local_model", cap=1, pid=pid, db_path=self.db))
+        token = gr.try_claim("p", "local_model", cap=1, pid=pid, db_path=self.db)
+        self.assertTrue(token)
         # second claim on a full class (live pid holding it) -> False
         self.assertFalse(gr.try_claim("p", "local_model", cap=1, pid=pid, db_path=self.db))
-        gr.release("local_model", pid=pid, db_path=self.db)
+        gr.release("local_model", token, pid=pid, db_path=self.db)
         self.assertTrue(gr.try_claim("p", "local_model", cap=1, pid=pid, db_path=self.db))
+
+    def test_release_by_token_leaves_other_claim_intact(self):
+        # A single pid holding TWO concurrent claims of the same resource_class
+        # (e.g. call_agent running in multiple threads) must be able to release
+        # exactly one of them without freeing the other's still-active slot.
+        pid = os.getpid()
+        token1 = gr.try_claim("p", "cli_remote", cap=5, pid=pid, db_path=self.db)
+        token2 = gr.try_claim("p", "cli_remote", cap=5, pid=pid, db_path=self.db)
+        self.assertTrue(token1)
+        self.assertTrue(token2)
+        self.assertNotEqual(token1, token2)
+        self.assertEqual(gr.active_count("cli_remote", db_path=self.db), 2)
+        gr.release("cli_remote", token1, pid=pid, db_path=self.db)
+        self.assertEqual(gr.active_count("cli_remote", db_path=self.db), 1)
+        conn = gr._conn(self.db)
+        remaining = conn.execute("SELECT rowid FROM worker_slots WHERE resource_class=?",
+                                 ("cli_remote",)).fetchall()
+        conn.close()
+        self.assertEqual([row[0] for row in remaining], [token2])
 
     def test_dead_pid_reaped(self):
         # a very unlikely-to-exist pid is reaped so its slot frees
@@ -32,7 +52,14 @@ class TestWorkerBroker(unittest.TestCase):
         self.assertTrue(gr.try_claim("p", "cli_remote", cap=1, pid=os.getpid(), db_path=self.db))
 
     def test_release_never_raises_on_missing(self):
-        gr.release("cli_remote", pid=os.getpid(), db_path=self.db)  # nothing to release
+        gr.release("cli_remote", 99999, pid=os.getpid(), db_path=self.db)  # nothing to release
+
+    def test_release_noop_on_non_int_token(self):
+        # A fail-open claim (cap<=0, broker unavailable) returns True, not a
+        # real rowid — release() must treat that as a no-op, not attempt to
+        # delete some arbitrary row.
+        gr.release("cli_remote", True, pid=os.getpid(), db_path=self.db)
+        gr.release("cli_remote", False, pid=os.getpid(), db_path=self.db)
 
     def test_stale_slot_reaped_by_age_even_if_pid_alive(self):
         # A live PID (our own) that has held a slot longer than the max age is a

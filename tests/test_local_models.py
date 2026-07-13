@@ -200,7 +200,7 @@ class TestCoordinatorNeverLocal(unittest.TestCase):
         orch._agent_available = self._avail
 
     def test_cloud_agent_wins_when_available(self):
-        orch._agent_available = lambda a: True
+        orch._agent_available = lambda a, cfg=None: True
         self.assertEqual(orch._pick_coordinator({}, ["codex", "claude", "gemini", "local:qwen2.5-coder:7b"]),
                          "claude")
         self.assertEqual(orch._pick_coordinator({}, ["gemini", "local:qwen2.5-coder:7b"]), "gemini")
@@ -208,18 +208,60 @@ class TestCoordinatorNeverLocal(unittest.TestCase):
     def test_enabled_cloud_agent_wins_even_if_uninstalled(self):
         # Only the local runtime is actually invokable, but a cloud agent is
         # still enabled: it must still out-rank the local model as coordinator.
-        orch._agent_available = lambda a: a == "local:qwen2.5-coder:7b"
+        orch._agent_available = lambda a, cfg=None: a == "local:qwen2.5-coder:7b"
         self.assertEqual(orch._pick_coordinator({}, ["claude", "local:qwen2.5-coder:7b"]), "claude")
 
     def test_local_only_roster_may_coordinate(self):
         # No cloud agent enabled at all — the local model is the only choice.
-        orch._agent_available = lambda a: a == "local:qwen2.5-coder:7b"
+        orch._agent_available = lambda a, cfg=None: a == "local:qwen2.5-coder:7b"
         self.assertEqual(orch._pick_coordinator({}, ["local:qwen2.5-coder:7b"]),
                          "local:qwen2.5-coder:7b")
 
     def test_ollama_not_in_coordinator_preference(self):
         self.assertNotIn("ollama", orch.COORDINATOR_PREFERENCE)
         self.assertEqual(orch.AGENT_ORDER[-1], "ollama")
+
+
+class TestAgentAvailableChecksPulledModel(unittest.TestCase):
+    """_agent_available for a local identity must require the SPECIFIC roster
+    model to be pulled, not just the Ollama server being up — a live server
+    missing the configured model fails every turn just as hard as no server."""
+
+    def setUp(self):
+        self._orig_which = orch.which
+        self._orig_up = orch._ollama_up
+        self._orig_installed = orch.lmlib.installed_models_cached
+        orch.which = lambda name: "/usr/bin/%s" % name
+        orch._ollama_up = lambda: True
+
+    def tearDown(self):
+        orch.which = self._orig_which
+        orch._ollama_up = self._orig_up
+        orch.lmlib.installed_models_cached = self._orig_installed
+
+    def test_local_tag_not_pulled_is_unavailable(self):
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertFalse(orch._agent_available("local:llama3:8b"))
+
+    def test_local_tag_pulled_is_available(self):
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertTrue(orch._agent_available("local:qwen2.5-coder:7b"))
+
+    def test_server_down_is_unavailable_regardless_of_pulled_models(self):
+        orch._ollama_up = lambda: False
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertFalse(orch._agent_available("local:qwen2.5-coder:7b"))
+
+    def test_bare_ollama_checks_cfg_models_ollama_when_cfg_given(self):
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertFalse(orch._agent_available(
+            "ollama", {"models": {"ollama": "llama3:8b"}}))
+        self.assertTrue(orch._agent_available(
+            "ollama", {"models": {"ollama": "qwen2.5-coder:7b"}}))
+
+    def test_bare_ollama_without_cfg_degrades_to_server_only_check(self):
+        orch.lmlib.installed_models_cached = lambda: []
+        self.assertTrue(orch._agent_available("ollama"))
 
 
 class TestRunnerDispatch(unittest.TestCase):

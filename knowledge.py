@@ -22,6 +22,7 @@ Everything here is best-effort: a missing knowledge dir just yields "".
 
 import os
 import re
+import typing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -30,7 +31,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # each cheatsheet (unchanged between phases within a run) can be — this file
 # set is small and rarely edited, so an mtime check is cheap insurance against
 # ever serving a stale parse after an on-disk edit.
-_DOC_CACHE = {}
+_DOC_CACHE: typing.Dict[str, typing.Tuple[float, typing.Tuple[
+    typing.Set[str], typing.Set[str], str]]] = {}
 
 _KW_RE = re.compile(r"<!--\s*keywords:\s*(.*?)\s*-->", re.IGNORECASE | re.DOTALL)
 _WORD_RE = re.compile(r"[a-z0-9@._+]+")

@@ -69,7 +69,8 @@ def _reap(conn):
 
 
 def _claim_once(conn, project_id, resource_class, cap, pid):
-    """One claim transaction. Returns True/False; may raise on lock contention."""
+    """One claim transaction. Returns the new row's rowid (truthy claim token)
+    or False if the cap is full; may raise on lock contention."""
     conn.execute("BEGIN IMMEDIATE")
     _reap(conn)
     n = conn.execute("SELECT COUNT(*) FROM worker_slots WHERE resource_class=?",
@@ -77,20 +78,29 @@ def _claim_once(conn, project_id, resource_class, cap, pid):
     if n >= cap:
         conn.rollback()
         return False
-    conn.execute("INSERT INTO worker_slots VALUES (?,?,?,?)",
-                 (pid, project_id, resource_class, time.time()))
+    cur = conn.execute("INSERT INTO worker_slots VALUES (?,?,?,?)",
+                       (pid, project_id, resource_class, time.time()))
     conn.commit()
-    return True
+    return cur.lastrowid
 
 
 def try_claim(project_id, resource_class, cap, pid=None, db_path=DEFAULT_DB):
-    """Try to take one slot. Returns True if taken, False if the cap is full.
+    """Try to take one slot. Returns a claim token (the inserted row's rowid,
+    an int) if taken, False if the cap is full. The token must be passed back
+    to `release()` so it deletes exactly this claim's row — a pid can hold
+    several concurrent claims of the same resource_class (e.g. call_agent
+    running in multiple threads of one process), so release() can no longer
+    key off (pid, resource_class) alone without risking freeing a DIFFERENT
+    call's still-active slot.
 
-    Fails OPEN (True) only when the broker is genuinely unavailable (can't open
-    the DB, unexpected error). Lock contention is NOT treated as unavailability:
-    the whole point of the cap is to hold under concurrency, so a busy DB is
-    retried and, if still contended, the claim fails CLOSED (False) — the caller
-    (claim_slot) then polls, rather than the cap being silently exceeded.
+    Fails OPEN (returns True, not a real token — nothing was inserted) only
+    when the broker is genuinely unavailable (can't open the DB, unexpected
+    error) or misconfigured (see below). `release()` treats a `True` token as
+    a no-op, since there is no row to delete. Lock contention is NOT treated
+    as unavailability: the whole point of the cap is to hold under
+    concurrency, so a busy DB is retried and, if still contended, the claim
+    fails CLOSED (False) — the caller (claim_slot) then polls, rather than the
+    cap being silently exceeded.
 
     A non-positive `cap` (0, negative — a bad config value, since nothing here
     validates runtime.global_worker_cap.* before it reaches this call) is
@@ -138,17 +148,23 @@ def try_claim(project_id, resource_class, cap, pid=None, db_path=DEFAULT_DB):
             pass
 
 
-def release(resource_class, pid=None, db_path=DEFAULT_DB):
-    """Release one slot held by this pid in this class. Best-effort; never raises."""
+def release(resource_class, token, pid=None, db_path=DEFAULT_DB):
+    """Release exactly the slot identified by `token` (the rowid try_claim
+    returned). Best-effort; never raises.
+
+    `token` being a bool (True, from a fail-open claim with no real row, or a
+    stale/default False) is a deliberate no-op: there is nothing to delete, and
+    deleting by (pid, resource_class) alone — the old behavior — could free a
+    DIFFERENT concurrent claim's row for the same pid+class."""
+    if not isinstance(token, int) or isinstance(token, bool):
+        return
     pid = pid or os.getpid()
     try:
         conn = _conn(db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT rowid FROM worker_slots WHERE pid=? AND resource_class=? "
-                               "LIMIT 1", (pid, resource_class)).fetchone()
-            if row:
-                conn.execute("DELETE FROM worker_slots WHERE rowid=?", (row[0],))
+            conn.execute("DELETE FROM worker_slots WHERE rowid=? AND pid=? AND resource_class=?",
+                         (token, pid, resource_class))
             conn.commit()
         finally:
             conn.close()
@@ -158,12 +174,14 @@ def release(resource_class, pid=None, db_path=DEFAULT_DB):
 
 def claim_slot(project_id, resource_class, cap, max_wait=300, poll=3.0, db_path=DEFAULT_DB):
     """Claim a slot, waiting up to ``max_wait`` seconds for one to free. Returns
-    True if a slot was taken, False if it gave up after the timeout — in which case
-    the caller proceeds anyway (better mild oversubscription than a hung run)."""
+    the claim token (see try_claim) if a slot was taken, False if it gave up
+    after the timeout — in which case the caller proceeds anyway (better mild
+    oversubscription than a hung run). The token must be passed to release()."""
     deadline = time.time() + max_wait
     while True:
-        if try_claim(project_id, resource_class, cap, db_path=db_path):
-            return True
+        token = try_claim(project_id, resource_class, cap, db_path=db_path)
+        if token is not False:
+            return token
         if time.time() >= deadline:
             return False
         time.sleep(poll)

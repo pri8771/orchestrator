@@ -30,6 +30,18 @@ class TestLoadRouting(unittest.TestCase):
         self.assertTrue(r["fallback"]["cloud_to_local"])
         self.assertEqual(r["phases"], {})
 
+    def test_string_false_round_trips_as_falsy_not_bool_coerced(self):
+        # bool("false") is True — a hand-edited/agent-emitted JSON-as-string
+        # "false" must not flip enabled/cloud_to_local back on.
+        with tempfile.TemporaryDirectory() as d:
+            write_routing(d, {
+                "enabled": "false",
+                "fallback": {"cloud_to_local": "false"},
+            })
+            r = mr.load_routing(d)
+        self.assertIs(r["enabled"], False)
+        self.assertIs(r["fallback"]["cloud_to_local"], False)
+
     def test_malformed_never_raises(self):
         with tempfile.TemporaryDirectory() as d:
             write_routing(d, "{not json")

@@ -1162,7 +1162,19 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                 continue
             fcfg = dict(cfg)
             fcfg["_session"] = None       # retries are stateless
-            fcfg["_health_key"] = "fallback:%s:%s" % (agent, step)
+            # Include the caller's lane/slug (if any) in the fallback health
+            # key too — parallel-build lanes set cfg["_health_key"] to their
+            # worker slug (distinct from the bare agent id) before calling
+            # call_agent, and a fallback key of just "fallback:<agent>:<step>"
+            # would collide across concurrent lanes retrying the same
+            # agent+step, corrupting one lane's circuit-breaker state with
+            # another's. The bare-agent-id case (discussion-round turns,
+            # single-agent phases, or no _health_key at all) keeps the
+            # original key format unchanged.
+            _lane = cfg.get("_health_key")
+            fcfg["_health_key"] = ("fallback:%s:%s:%s" % (agent, step, _lane)
+                                   if _lane and _lane != agent
+                                   else "fallback:%s:%s" % (agent, step))
             to_model = "local:%s" % local_tag if local_tag else step
             try:
                 if local_tag:
@@ -1267,12 +1279,14 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
     # than hangs). Off by default; enable runtime.global_worker_cap_enabled.
     _rclass = None
     _claimed = False
+    _claim_token = False
     if bool(cget(cfg, "runtime.global_worker_cap_enabled", False)):
         _is_local = isinstance(agent, str) and (agent == "ollama" or agent.startswith("local:"))
         _rclass = "local_model" if _is_local else "cli_remote"
         _cap = int(cget(cfg, "runtime.global_worker_cap.%s" % _rclass,
                         1 if _rclass == "local_model" else 12))
-        _claimed = grlib.claim_slot(app, _rclass, _cap, max_wait=min(int(timeout or 300), 300))
+        _claim_token = grlib.claim_slot(app, _rclass, _cap, max_wait=min(int(timeout or 300), 300))
+        _claimed = _claim_token is not False
         if not _claimed:
             emit("Global cap for %s busy — proceeding uncapped for %s." % (_rclass, DISPLAY[agent]))
     emit("Starting %s for %s / %s round %s" % (DISPLAY[agent], app, phase, rnd))
@@ -1370,11 +1384,12 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
                          output_len=len(text), dur=round(dur, 1))
     finally:
         _hb_stop.set()
-        # Release ONLY a slot this call actually claimed — releasing after a
-        # failed claim would decrement some OTHER worker's slot and corrupt
-        # the machine-wide counter.
+        # Release ONLY the slot this call actually claimed, by its exact token
+        # — releasing after a failed claim, or by (pid, resource_class) alone,
+        # could free a DIFFERENT concurrent claim's row and corrupt the
+        # machine-wide counter.
         if _rclass is not None and _claimed:
-            grlib.release(_rclass)
+            grlib.release(_rclass, _claim_token)
     reslib.record_success(health)
     text = ensure_signature(text, agent)
     return text
@@ -2759,10 +2774,31 @@ INTEGRATION_FILES = (
 )
 
 
-def _agent_available(agent):
-    """True if the CLI (or local runtime) backing this agent is invokable."""
+def _agent_available(agent, cfg=None):
+    """True if the CLI (or local runtime) backing this agent is invokable.
+
+    For local identities this also requires the SPECIFIC roster model to
+    already be pulled, not just the Ollama server being reachable — a live
+    server with the configured model missing fails every turn exactly like no
+    server at all, so treating "server up" alone as "available" was a false
+    positive. ``local:<tag>`` carries its tag directly; the legacy bare
+    "ollama" identity needs ``cfg`` (models.ollama) to know which tag to check
+    — with no cfg there's nothing to check against, so it degrades to the old
+    server-only behavior."""
     if agent == "ollama" or (isinstance(agent, str) and agent.startswith("local:")):
-        return bool(which("ollama")) and _ollama_up()
+        if not (which("ollama") and _ollama_up()):
+            return False
+        if agent.startswith("local:"):
+            tag = agent[len("local:"):]
+        elif cfg is not None:
+            tag = str(cget(cfg, "models.ollama", "") or "").strip()
+        else:
+            tag = ""
+        if not tag:
+            return True
+        installed = (cfg.get("_installed_ollama_models") if cfg else None) \
+            or lmlib.installed_models_cached()
+        return tag in installed
     if agent == "gemini":
         return bool(which("agy") or which("gemini"))
     return bool(which(agent))
@@ -2784,7 +2820,7 @@ def build_worker_roster(cfg, active):
     distinct CLIs round-robin the available CLIs."""
     target = int(cget(cfg, "runtime.build_parallel_workers", 3) or 3)
     n_lanes = len(BUILD_LANE_IDS)
-    avail = [a for a in ordered_agents(active) if _agent_available(a)]
+    avail = [a for a in ordered_agents(active) if _agent_available(a, cfg)]
     if len(avail) >= 2:
         n = max(len(avail), n_lanes)
         agents = [avail[i % len(avail)] for i in range(n)]
@@ -2845,7 +2881,7 @@ def _worker_contract_block(worker, backlog, interfaces):
 def _pick_coordinator(cfg, active):
     """Integrator preference: a reliable, installed agent first (so the decision
     turn actually runs), otherwise deterministic fallback."""
-    avail = [a for a in COORDINATOR_PREFERENCE if a in active and _agent_available(a)]
+    avail = [a for a in COORDINATOR_PREFERENCE if a in active and _agent_available(a, cfg)]
     if avail:
         return avail[0]
     return coordinator_agent(active) or (active[0] if active else None)
@@ -4133,7 +4169,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                          "the agent CLIs installed and logged in? See logs/." % key)
 
     vote = {}
-    available_active = [a for a in active if _agent_available(a)]
+    available_active = [a for a in active if _agent_available(a, cfg)]
     if not consensus and not unlimited_rounds and not is_build and len(available_active) >= 2:
         emit("No consensus by max %s in phase '%s' — forcing a weighted vote." % (unit, key))
         append_md(md_path, "\n### Forced Vote (max %ss reached)\n\n" % unit)
@@ -4496,7 +4532,7 @@ def process_app(cfg, root, app):
     # run (not per app) and give a single clear pointer to --doctor.
     if not cfg.get("_checked_any_agent_runnable"):
         cfg["_checked_any_agent_runnable"] = True
-        if not any(_agent_available(a) for a in enabled_agents(cfg)):
+        if not any(_agent_available(a, cfg) for a in enabled_agents(cfg)):
             emit("WARN no agent is runnable: every enabled agent's CLI is "
                  "missing/logged-out, and no local Ollama model is enabled+pulled. "
                  "Every phase will fail immediately. Run `--doctor` to see what's "

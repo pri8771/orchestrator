@@ -24,7 +24,7 @@ class TestWorktreeBuildEndToEnd(unittest.TestCase):
         os.makedirs(self.build_dir)
         self._orig = orch.call_agent
         self._orig_available = orch._agent_available
-        orch._agent_available = lambda agent: agent in ("codex", "claude")
+        orch._agent_available = lambda agent, cfg=None: agent in ("codex", "claude")
 
         # Fake agent: each worker writes a DISTINCT file into its own build dir
         # (its worktree in isolation mode); the integrator writes a shared file.

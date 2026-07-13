@@ -31,6 +31,23 @@ WORKFLOWS_DIR = os.path.join(HERE, "workflows")
 DEFAULT_WORKFLOW = "app_build"
 
 
+def _as_bool(value):
+    """bool() coercion that doesn't treat the string "false" as truthy — agents
+    (and hand-edited workflow JSON) sometimes emit booleans as strings."""
+    if isinstance(value, str) and value.strip().lower() in ("false", "no", "0", ""):
+        return False
+    return bool(value)
+
+
+def _as_str_list(value):
+    """list() coercion that doesn't shatter a bare string into single-character
+    entries — a string is iterable, so list("product") == ['p','r',...], not
+    the single-item list a malformed edit almost certainly meant."""
+    if not value or isinstance(value, str):
+        return []
+    return list(value)
+
+
 def phase_key(phase):
     """The canonical way to read a phase's key from any of its shapes: a Phase
     object (``.key``), a dict (``["key"]``), or a legacy ``(key, ...)`` tuple.
@@ -70,20 +87,20 @@ class Phase:
         self.purpose = purpose
         self.title = title or key.replace("_", " ").title()
         self.rounds = int(rounds)
-        self.roles = list(roles) if roles else []
-        self.writes = bool(writes)
+        self.roles = _as_str_list(roles)
+        self.writes = _as_bool(writes)
         # When true, this phase reads a pre-existing TARGET codebase (audit mode) —
         # read-only, never written to. Mutually exclusive with writes in practice.
-        self.reads_target = bool(reads_target)
+        self.reads_target = _as_bool(reads_target)
         self.verify = verify or None
         # V2 fields (§8): checkpoint = pause in Semi-Autonomous; structurally_required
         # = turns floor of 1 when included; requires_verification = gate final output
         # on a structured verification label; doc_sections = named blueprint subsection
         # keys this phase emits; test_deliverable = per-stack test descriptor.
-        self.checkpoint = bool(checkpoint)
-        self.structurally_required = bool(structurally_required)
-        self.requires_verification = bool(requires_verification)
-        self.doc_sections = list(doc_sections) if doc_sections else []
+        self.checkpoint = _as_bool(checkpoint)
+        self.structurally_required = _as_bool(structurally_required)
+        self.requires_verification = _as_bool(requires_verification)
+        self.doc_sections = _as_str_list(doc_sections)
         self.test_deliverable = test_deliverable or None
 
     # --- legacy 4-tuple compatibility: key, folder, file, purpose ---

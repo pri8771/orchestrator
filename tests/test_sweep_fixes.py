@@ -177,6 +177,37 @@ class TestPerWorkerHealthKey(unittest.TestCase):
         orch.call_agent(cfg, "app", "phase", 1, "codex", "hi")
         self.assertIn("codex", cfg["_agent_health"])
 
+    def test_fallback_health_key_incorporates_lane_not_just_agent_and_step(self):
+        # Two parallel-build lanes retrying the same agent+step on the fallback
+        # ladder must land in DIFFERENT circuit-breaker health entries — a key
+        # of just "fallback:<agent>:<step>" would let one lane's failures trip
+        # the OTHER lane's breaker.
+        orch.RUNNERS["codex"] = (
+            lambda cfg, prompt, timeout: (_ for _ in ()).throw(orch.AgentError("boom")))
+        self._old_fallback_steps = orch._fallback_steps
+        orch._fallback_steps = lambda cfg, agent: ["gpt-5-mini"]
+        self.addCleanup(setattr, orch, "_fallback_steps", self._old_fallback_steps)
+        for lane in ("codex-a", "codex-b"):
+            cfg = {"_agent_health": {}, "_health_key": lane,
+                  "runtime": {"timeout_seconds_per_agent": 30}}
+            with self.assertRaises(orch.AgentError):
+                orch.call_agent(cfg, "app", "phase", 1, "codex", "hi")
+            keys = [k for k in cfg["_agent_health"] if k.startswith("fallback:")]
+            self.assertEqual(len(keys), 1, keys)
+            self.assertIn(lane, keys[0])
+        # Sanity: the two lanes produced genuinely distinct fallback keys.
+        cfg_a = {"_agent_health": {}, "_health_key": "codex-a",
+                "runtime": {"timeout_seconds_per_agent": 30}}
+        cfg_b = {"_agent_health": {}, "_health_key": "codex-b",
+                "runtime": {"timeout_seconds_per_agent": 30}}
+        with self.assertRaises(orch.AgentError):
+            orch.call_agent(cfg_a, "app", "phase", 1, "codex", "hi")
+        with self.assertRaises(orch.AgentError):
+            orch.call_agent(cfg_b, "app", "phase", 1, "codex", "hi")
+        key_a = [k for k in cfg_a["_agent_health"] if k.startswith("fallback:")][0]
+        key_b = [k for k in cfg_b["_agent_health"] if k.startswith("fallback:")][0]
+        self.assertNotEqual(key_a, key_b)
+
 
 class TestPruneLogs(unittest.TestCase):
     def setUp(self):

@@ -13,6 +13,7 @@ breaking a run.
 import copy
 import json
 import os
+import typing
 
 RULES_FILENAME = "phase_rules.json"
 
@@ -24,7 +25,7 @@ _PHASE_LIST_FIELDS = ("rules", "required_output", "acceptance_checks")
 # mtime-keyed so a run only re-parses phase_rules.json once per phase pair of
 # calls (render_phase_playbook + render_phase_quality_rubric) instead of
 # hitting disk every time, while an on-disk edit (mtime change) still busts it.
-_CACHE = {}
+_CACHE: typing.Dict[str, typing.Tuple[float, typing.Dict[str, typing.Any]]] = {}
 
 
 def _clean_phase(phase):

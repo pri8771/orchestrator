@@ -126,5 +126,45 @@ class TestWorkflowsSchema(unittest.TestCase):
                          "phases with no phase_rules entry: %s" % sorted(used - covered))
 
 
+class TestPhaseFieldCoercion(unittest.TestCase):
+    """bool()/list() applied directly to a raw JSON value misparses the
+    stringly-typed values agents (and hand-edited JSON) sometimes emit."""
+
+    _BASE = {"key": "k", "folder": "k", "file": "k.md", "purpose": "p"}
+
+    def test_string_false_is_falsy(self):
+        d = dict(self._BASE, writes="false")
+        self.assertIs(wf.Phase.from_json(d).writes, False)
+
+    def test_string_false_variants_are_falsy_for_every_bool_field(self):
+        for field in ("writes", "reads_target", "checkpoint",
+                     "structurally_required", "requires_verification"):
+            for val in ("false", "False", "no", "0", ""):
+                d = dict(self._BASE, **{field: val})
+                self.assertIs(getattr(wf.Phase.from_json(d), field), False,
+                             "%s=%r should be falsy" % (field, val))
+
+    def test_string_true_is_still_truthy(self):
+        d = dict(self._BASE, writes="true")
+        self.assertIs(wf.Phase.from_json(d).writes, True)
+
+    def test_actual_bool_still_works(self):
+        d = dict(self._BASE, writes=True, checkpoint=False)
+        self.assertIs(wf.Phase.from_json(d).writes, True)
+        self.assertIs(wf.Phase.from_json(d).checkpoint, False)
+
+    def test_bare_string_roles_not_shattered_into_characters(self):
+        d = dict(self._BASE, roles="product")
+        self.assertEqual(wf.Phase.from_json(d).roles, [])
+
+    def test_bare_string_doc_sections_not_shattered_into_characters(self):
+        d = dict(self._BASE, doc_sections="architecture")
+        self.assertEqual(wf.Phase.from_json(d).doc_sections, [])
+
+    def test_roles_list_still_works(self):
+        d = dict(self._BASE, roles=["product", "eng"])
+        self.assertEqual(wf.Phase.from_json(d).roles, ["product", "eng"])
+
+
 if __name__ == "__main__":
     unittest.main()

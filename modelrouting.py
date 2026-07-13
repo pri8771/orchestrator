@@ -65,6 +65,19 @@ _CHAIN_AGENTS = ("codex", "claude", "gemini")
 _MAX_CHAIN_STEPS = 5
 
 
+def _as_bool(value, default):
+    """bool() coercion that doesn't treat the string "false" as truthy — hand-
+    edited model_routing.json commonly has JSON-string booleans."""
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("false", "no", "0", ""):
+            return False
+        if v in ("true", "yes", "1"):
+            return True
+        return default
+    return bool(value)
+
+
 def default_routing():
     return json.loads(json.dumps(_DEFAULT))   # deep copy
 
@@ -82,10 +95,10 @@ def load_routing(here):
         return out
     if not isinstance(data, dict):
         return out
-    out["enabled"] = bool(data.get("enabled", True))
+    out["enabled"] = _as_bool(data.get("enabled", True), True)
     fb = data.get("fallback")
     if isinstance(fb, dict):
-        out["fallback"]["cloud_to_local"] = bool(fb.get("cloud_to_local", True))
+        out["fallback"]["cloud_to_local"] = _as_bool(fb.get("cloud_to_local", True), True)
         model = fb.get("local_model", "")
         if isinstance(model, str) and _SAFE_VALUE.match(model.strip() or "x"):
             out["fallback"]["local_model"] = model.strip()
