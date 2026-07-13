@@ -1520,11 +1520,14 @@ How to talk in this room:
 
 
 def _budget(text, limit):
+    """Tail-keep budgeting. When truncation actually happens, the result is
+    prefixed with an explicit marker line — agents must KNOW their context is
+    incomplete instead of silently losing the oldest (most foundational) part."""
     if text is None:
         return ""
     if len(text) <= limit:
         return text
-    return text[-limit:]
+    return "[...earlier context truncated...]\n" + text[-limit:]
 
 
 def _phase_file_path(app_dir, phase):
@@ -1584,8 +1587,16 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
         parts.append("\n===== DECISIONS FROM EARLIER PHASES =====")
         for pk, pout in prior_outputs:
             parts.append("\n--- %s (final decision) ---\n%s" % (pk, _budget(pout, pri_lim)))
+    # Structured, authoritative decisions log (decisions.json) — injected BEFORE
+    # the raw prior discussions and never tail-truncated away (compact by
+    # construction; the huge cap is purely defensive).
+    dec_log = render_decisions_log(load_decisions(cfg.get("_app_dir") or "")) \
+        if cfg.get("_app_dir") else ""
+    if dec_log:
+        parts.append("\n===== DECISIONS LOG (structured, authoritative) =====\n%s"
+                     % _budget(dec_log, 60000))
     prior_discussions = (cfg.get("_prior_discussions") or "").strip()
-    if prior_discussions:
+    if prior_discussions and not cfg.get("_drop_prior_discussions"):
         parts.append("\n===== PRIOR PHASE DISCUSSIONS (build from these; not just the summaries) =====\n%s"
                      % _budget(prior_discussions, prior_disc_lim))
     if transcript.strip():
@@ -1739,7 +1750,7 @@ def prompt_coordinate(cfg, agent, ctx, phasedef, rnd, is_build=False, final_roun
             "phase in plain English. If not, write `CONSENSUS: NO` and say what they "
             "still need to hash out next round."
         )
-    contract = _phase_contract(key)
+    contract = _phase_contract(cfg, phasedef)
     return (
         ctx
         + "\n\n===== %s is wrapping up round %d =====\n" % (DISPLAY[agent], rnd)
@@ -1755,7 +1766,7 @@ def prompt_quality_check(cfg, agent, ctx, phasedef, rnd, coordinator_output):
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
     rubric = phaseruleslib.render_phase_quality_rubric(
         HERE, cfg.get("_workflow_target", "app"), key)
-    contract = _phase_contract(key)
+    contract = _phase_contract(cfg, phasedef)
     rubric_block = rubric or (
         "No editable phase rubric was found. Still require a concrete, useful "
         "phase artifact that the next phase can act on without restarting debate.")
@@ -1913,13 +1924,47 @@ _INTERFACES_JSON_INSTRUCTION = (
 )
 
 
-def _phase_contract(key):
-    """The structured-block instruction (if any) for this phase key."""
+_DECISIONS_JSON_INSTRUCTION = (
+    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
+    "fenced ```decisions-json``` block containing a single JSON object of the "
+    'form {"decisions": [{"id": "DEC-<phase>-001", "decision": ..., '
+    '"rationale": ..., "rejected_alternatives": [...], "constraints": [...], '
+    '"supersedes": null}]}. Record every decision this phase actually made, '
+    "one entry each: the decision in one sentence, why it won, what was "
+    "rejected, and any hard constraints later phases must respect. Set "
+    '"supersedes" to an earlier decision id ONLY when this decision replaces '
+    "it. These entries become the authoritative cross-phase DECISIONS LOG "
+    "injected into every later phase, so completeness beats prose.\n"
+)
+
+
+def _decisions_contract_requested(cfg, phasedef):
+    """True when this phase's coordinator wrap-up must emit decisions-json:
+    every non-build discussion phase of an app/app_spec workflow (product/
+    spec/architecture/plan-type phases). Build, verify/repair, and
+    target-reading audit phases are excluded — their outputs are code or
+    findings, not planning decisions."""
+    if (cfg or {}).get("_workflow_target", "app") not in ("app", "app_spec"):
+        return False
+    if not hasattr(phasedef, "get"):
+        return False
+    if phasedef.get("writes") or phasedef.get("verify") \
+            or phasedef.get("reads_target"):
+        return False
+    return True
+
+
+def _phase_contract(cfg, phasedef):
+    """The structured-block instruction(s), if any, for this phase's wrap-up."""
+    key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
+    parts = []
     if key == "task_assignments":
-        return _TASKS_JSON_INSTRUCTION
+        parts.append(_TASKS_JSON_INSTRUCTION)
     if key == "tech_specs":
-        return _INTERFACES_JSON_INSTRUCTION
-    return ""
+        parts.append(_INTERFACES_JSON_INSTRUCTION)
+    if _decisions_contract_requested(cfg, phasedef):
+        parts.append(_DECISIONS_JSON_INSTRUCTION)
+    return "\n".join(parts)
 
 
 # Phase-specific extra guidance.
@@ -2394,6 +2439,117 @@ def parse_interface_blocks(text):
                 continue
             byname[str(it["name"])] = it
     return list(byname.values()), errors
+
+
+def parse_decision_blocks(text):
+    """Extract every ```decisions-json``` block (one JSON object per block:
+    a {"decisions": [...]} wrapper or a single decision item). Returns
+    (decisions, errors) with items validated against
+    REQUIRED_FIELDS["decision_item"], de-duplicated by id (last emission wins,
+    so the coordinator's final revision beats a draft). Never raises."""
+    errors = []
+    blocks = schemalib.extract_structured_blocks(text or "", "decisions-json",
+                                                 on_error=errors.append)
+    byid = {}
+    order = []
+    for b in blocks:
+        items = b["decisions"] if isinstance(b.get("decisions"), list) else [b]
+        for d in items:
+            ok, missing = schemalib.validate_required_fields(
+                d, schemalib.REQUIRED_FIELDS["decision_item"])
+            if not ok:
+                errors.append("decision %r missing required field(s): %s"
+                              % (d.get("id") if isinstance(d, dict) else d,
+                                 ", ".join(missing)))
+                continue
+            d.setdefault("rationale", "")
+            for lk in ("rejected_alternatives", "constraints"):
+                v = d.get(lk)
+                d[lk] = [str(x) for x in v] if isinstance(v, list) else \
+                    ([str(v)] if v else [])
+            did = str(d["id"])
+            if did not in byid:
+                order.append(did)
+            byid[did] = d
+    return [byid[i] for i in order], errors
+
+
+def _decisions_path(app_dir):
+    return os.path.join(app_dir, "decisions.json")
+
+
+def load_decisions(app_dir):
+    try:
+        with open(_decisions_path(app_dir), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("decisions", []) if isinstance(data, dict) else []
+    except (OSError, ValueError):
+        return []
+
+
+def merge_decisions(app_dir, new_decisions):
+    """Merge freshly-parsed decisions into <app_dir>/decisions.json.
+
+    New ids are appended; a re-emitted id replaces its entry (last revision
+    wins). When an entry's "supersedes" names an existing id, that older entry
+    is MARKED superseded (superseded=true, superseded_by=<id>) rather than
+    deleted, preserving the audit trail. Atomic write; returns the merged
+    list. Best-effort — an unwritable file loses persistence, never the run."""
+    existing = load_decisions(app_dir)
+    byid = {str(d.get("id")): d for d in existing if isinstance(d, dict)}
+    order = [str(d.get("id")) for d in existing if isinstance(d, dict)]
+    for nd in new_decisions or []:
+        did = str(nd.get("id"))
+        sup = nd.get("supersedes")
+        if sup is not None and str(sup) in byid and str(sup) != did:
+            byid[str(sup)]["superseded"] = True
+            byid[str(sup)]["superseded_by"] = did
+        if did in byid:
+            # Re-emission of an id: replace, but never lose a superseded mark
+            # someone else already stamped on it.
+            if byid[did].get("superseded") and not nd.get("superseded"):
+                nd = dict(nd, superseded=True,
+                          superseded_by=byid[did].get("superseded_by"))
+            byid[did] = nd
+        else:
+            byid[did] = nd
+            order.append(did)
+    merged = [byid[i] for i in order]
+    try:
+        _write_json_atomic(_decisions_path(app_dir),
+                           {"schema_version": schemalib.SCHEMA_VERSION,
+                            "decisions": merged})
+    except OSError as exc:
+        emit("WARN could not write decisions.json: %s" % exc)
+    return merged
+
+
+def render_decisions_log(decisions):
+    """Compact human/agent rendering of the decisions log: superseded entries
+    are hidden, but each survivor shows what it replaced. '' when empty."""
+    lines = []
+    superseded = sum(1 for d in decisions or []
+                     if isinstance(d, dict) and d.get("superseded"))
+    for d in decisions or []:
+        if not isinstance(d, dict) or d.get("superseded"):
+            continue
+        lines.append("- [%s] %s" % (d.get("id"), str(d.get("decision", "")).strip()))
+        if d.get("rationale"):
+            lines.append("  rationale: %s" % str(d["rationale"]).strip())
+        if d.get("rejected_alternatives"):
+            lines.append("  rejected: %s"
+                         % "; ".join(str(x) for x in d["rejected_alternatives"]))
+        if d.get("constraints"):
+            lines.append("  constraints: %s"
+                         % "; ".join(str(x) for x in d["constraints"]))
+        if d.get("supersedes"):
+            lines.append("  (supersedes %s)" % d["supersedes"])
+    if not lines:
+        return ""
+    if superseded:
+        lines.append("(%d superseded decision(s) hidden — see decisions.json "
+                     "for history)" % superseded)
+    return "\n".join(lines)
 
 
 def persist_interfaces(app_dir, interfaces, errors):
@@ -3448,7 +3604,20 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd)
 
         tree = _build_file_tree(build_dir)
-        base_ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
+        # Worker-lane context policy (runtime.build_context_policy): under
+        # "contracts" (default) the raw prior-phase discussion transcripts are
+        # dropped from WORKER prompts — they keep the original prompt, prior
+        # final decisions, the DECISIONS LOG, playbook/knowledge, file tree and
+        # their tasks/interfaces contract, which is what they actually use.
+        # The integrator (ictx below) and discussion phases keep full context.
+        # "legacy" preserves the old behavior exactly.
+        wctx_cfg = cfg
+        if str(cget(cfg, "runtime.build_context_policy", "contracts")
+               or "contracts").strip().lower() != "legacy":
+            wctx_cfg = dict(cfg)
+            wctx_cfg["_drop_prior_discussions"] = True
+        base_ctx = build_context(wctx_cfg, app, phasedef, original_prompt,
+                                 prior_outputs, transcript)
 
         # V2 §5.2-5.5: optionally isolate each lane in its own git worktree so
         # concurrent workers can't clobber each other. Empty dict => transparent
@@ -4416,7 +4585,9 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # the transcript + final output (last emission of an id/name wins, so the
     # coordinator's final revision beats any draft). Cycles are an error recorded
     # in tasks.json — never a crash.
-    _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output)
+    _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
+                            record_decisions=_decisions_contract_requested(
+                                cfg, phasedef))
 
     # Audit report phase: synthesize ALL findings (from every audit phase, using the
     # FULL untruncated phase_outputs — not the char-budgeted context) into a ranked
@@ -4498,12 +4669,27 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     return final_output.strip()
 
 
-def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output):
-    """Post-phase §19/§20 contract recording (tasks.json / interfaces.json).
+def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
+                            record_decisions=False):
+    """Post-phase contract recording: tasks.json / interfaces.json (§19/§20)
+    and, when the phase requested it, the decisions-json log (decisions.json).
 
     Bounded, non-fatal by design: parse/cycle errors are persisted in the
     contract file, WARNed prominently, and ledgered (contract_error) — never a
     hard block, because a wrongly-strict gate here would brick runs."""
+    if record_decisions:
+        blob = transcript + "\n" + (final_output or "")
+        decisions, derrs = parse_decision_blocks(blob)
+        for e in derrs:
+            emit("DECISIONS: ERROR %s" % e)
+        if decisions:
+            merged = merge_decisions(app_dir, decisions)
+            emit("DECISIONS: %d new/updated decision(s) -> decisions.json "
+                 "(%d total, %d error(s))."
+                 % (len(decisions), len(merged), len(derrs)))
+            live_log(app_dir, key, "orchestrator", "decisions_recorded",
+                     "%d decision(s) merged into decisions.json; %d error(s)"
+                     % (len(decisions), len(derrs)))
     if key == "task_assignments":
         blob = transcript + "\n" + (final_output or "")
         tasks, terrs = parse_tasks_blocks(blob)

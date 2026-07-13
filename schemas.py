@@ -36,6 +36,8 @@ REQUIRED_FIELDS = {
     "live_log_entry": ["ts", "lane", "agent", "kind", "summary"],
     "finding": ["source", "category", "severity", "title"],
     "phase_structured_output": ["phase", "doc_sections"],
+    # decisions-json entries (the cross-phase DECISIONS LOG contract).
+    "decision_item": ["id", "decision"],
     "agent_identity": ["id", "provider", "kind"],
     "agent_health": ["status"],
 }

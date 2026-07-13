@@ -276,6 +276,14 @@ runtime:
   # (decisions + machine contracts stay full-size; only the raw debate text is
   # trimmed). Discussion phases keep max_prior_discussion_chars.
   build_max_prior_discussion_chars: 30000
+  # Build WORKER context policy. "contracts" (default): worker lanes drop the
+  # raw prior-phase discussion transcripts entirely and build from the
+  # structured context — original prompt, prior final decisions, the DECISIONS
+  # LOG (decisions.json), playbook/knowledge, file tree, and their full tasks/
+  # interfaces contract. The integrator and all discussion phases keep the
+  # current full-context behavior. "legacy" restores the old worker context
+  # (transcripts included, tail-truncated) exactly.
+  build_context_policy: "contracts"
   phase_independent_first_round_enabled: true
   phase_quality_gates_enabled: true
   phase_quality_repair_rounds: 2
