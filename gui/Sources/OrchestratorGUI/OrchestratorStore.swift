@@ -342,35 +342,10 @@ private enum BackgroundConfigLoader {
         return out
     }
 
-    // PATH plus the common install locations a Finder-launched app (which
-    // inherits a minimal PATH) would otherwise miss: Homebrew, /usr/local,
-    // user-local, and the per-tool bins these CLIs ship into (npm global, codex,
-    // bun, cargo). Shared by detectCLIs / ollamaOnPath so both look in one place.
-    static func cliSearchDirs() -> [String] {
-        let home = NSHomeDirectory()
-        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
-                     "\(home)/.local/bin", "\(home)/.codex/bin",
-                     "\(home)/.npm-global/bin", "\(home)/.bun/bin",
-                     "\(home)/.cargo/bin"]
-        let fromPath = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":", omittingEmptySubsequences: true).map(String.init)
-        // Drop empties (a leading/trailing/doubled ":" in PATH would otherwise
-        // resolve to the process's own cwd) and de-duplicate while preserving
-        // order, so detectCLIs()/ollamaOnPath() don't repeat the same stat
-        // calls for a directory listed in both PATH and the extras above.
-        var seen = Set<String>()
-        var out: [String] = []
-        for dir in fromPath + extra where !dir.isEmpty && !seen.contains(dir) {
-            seen.insert(dir)
-            out.append(dir)
-        }
-        return out
-    }
-
     // Which agent CLIs are actually invokable on PATH (codex/claude/gemini or agy).
     static func detectCLIs() -> [String: Bool] {
         let fm = FileManager.default
-        let dirs = cliSearchDirs()
+        let dirs = OrchestratorStore.cliSearchDirs()
         func has(_ names: [String]) -> Bool {
             for d in dirs { for n in names {
                 let p = (d as NSString).appendingPathComponent(n)
@@ -1456,6 +1431,33 @@ final class OrchestratorStore: ObservableObject {
             .split(separator: "\n").first.map(String.init) ?? ""
         let v = line.trimmingCharacters(in: .whitespacesAndNewlines)
         return v.isEmpty ? nil : String(v.prefix(60))
+    }
+
+    // PATH plus the common install locations a Finder-launched app (which
+    // inherits a minimal PATH) would otherwise miss: Homebrew, /usr/local,
+    // user-local, and the per-tool bins these CLIs ship into (npm global, codex,
+    // bun, cargo). Shared by detectCLIs / ollamaOnPath so both look in one place.
+    // nonisolated: called from the background refresh queue (detectCLIs) and
+    // from tests; it touches no store state.
+    nonisolated static func cliSearchDirs() -> [String] {
+        let home = NSHomeDirectory()
+        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+                     "\(home)/.local/bin", "\(home)/.codex/bin",
+                     "\(home)/.npm-global/bin", "\(home)/.bun/bin",
+                     "\(home)/.cargo/bin"]
+        let fromPath = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+        // Drop empties (a leading/trailing/doubled ":" in PATH would otherwise
+        // resolve to the process's own cwd) and de-duplicate while preserving
+        // order, so detectCLIs()/ollamaOnPath() don't repeat the same stat
+        // calls for a directory listed in both PATH and the extras above.
+        var seen = Set<String>()
+        var out: [String] = []
+        for dir in fromPath + extra where !dir.isEmpty && !seen.contains(dir) {
+            seen.insert(dir)
+            out.append(dir)
+        }
+        return out
     }
 
     func ollamaOnPath() -> Bool {

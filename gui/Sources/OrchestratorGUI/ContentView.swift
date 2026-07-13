@@ -270,20 +270,32 @@ struct ActionErrorBanner: View {
     }
 }
 
-// ⌘K command palette (design §3/§8): a searchable overlay that dispatches the
-// same actions as the menu bar through store.uiCommand.
+// ⌘K command palette (design §3/§8 + DESIGN-REFRESH.md §6): a translucent
+// floating panel over a dimmed scrim — not a default sheet. Commands dispatch
+// the same actions as the menu bar through store.uiCommand; project rows
+// fuzzy-match the store's project list and jump the sidebar selection via
+// onJumpToProject. Presented as an overlay by AppShellView.
 struct CommandPaletteView: View {
     @EnvironmentObject var store: OrchestratorStore
-    @Environment(\.dismiss) private var dismiss
+    /// Jumps the shell's sidebar selection to the chosen project.
+    var onJumpToProject: (String) -> Void = { _ in }
     @State private var query = ""
-    @State private var selection: Command.ID?
+    @State private var selection: RowID?
     @FocusState private var searchFocused: Bool
 
     private struct Command: Identifiable {
         var id: UICommand { action }
         let title: String
+        let symbol: String
         let shortcut: String
         let action: UICommand
+    }
+
+    // One selection identity across both sections, so arrow keys walk from
+    // the last command straight into the first project.
+    private enum RowID: Hashable {
+        case command(UICommand)
+        case project(String)
     }
 
     // Computed (not a stored constant) so the Pause/Resume entry's title
@@ -291,102 +303,266 @@ struct CommandPaletteView: View {
     // commands also on the menu bar come from MenuCommandSpec.all
     // (OrchestratorStore.swift), the shared source both surfaces read from.
     private var commands: [Command] {
-        func spec(_ action: UICommand) -> Command {
+        func spec(_ action: UICommand, symbol: String) -> Command {
             let s = MenuCommandSpec.spec(for: action)
-            return Command(title: s.title, shortcut: s.shortcutDisplay, action: s.action)
+            return Command(title: s.title, symbol: symbol,
+                           shortcut: s.shortcutDisplay, action: s.action)
         }
         return [
-            spec(.newChat),
-            spec(.runSelected),
+            spec(.newChat, symbol: "plus"),
+            spec(.runSelected, symbol: "play.fill"),
             Command(title: store.enginePaused ? "Resume Engine" : "Pause Engine",
-                   shortcut: "", action: .togglePause),
-            spec(.toggleLog),
-            spec(.toggleInspector),
-            spec(.focusSearch),
+                    symbol: store.enginePaused ? "play.circle" : "pause.circle",
+                    shortcut: "", action: .togglePause),
+            spec(.toggleLog, symbol: "terminal"),
+            spec(.toggleInspector, symbol: "sidebar.trailing"),
+            spec(.focusSearch, symbol: "magnifyingglass"),
         ]
     }
 
-    private var filtered: [Command] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return q.isEmpty ? commands : commands.filter { $0.title.lowercased().contains(q) }
+    private var filteredCommands: [Command] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty ? commands
+                         : commands.filter { Self.fuzzyScore(q, $0.title) != nil }
     }
 
-    private func run(_ c: Command) {
-        dismiss()
-        store.uiCommand = c.action
+    // Projects, best fuzzy match first (score desc, then name for stability).
+    private var filteredProjects: [Project] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty { return store.projects.sorted { $0.name < $1.name } }
+        return store.projects
+            .compactMap { p in Self.fuzzyScore(q, p.name).map { (p, $0) } }
+            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.name < $1.0.name }
+            .map(\.0)
+    }
+
+    private var allRowIDs: [RowID] {
+        filteredCommands.map { .command($0.id) }
+            + filteredProjects.map { .project($0.name) }
+    }
+
+    // Fuzzy subsequence match ("bri" → Brinekeeper): every query character
+    // appears in order, case-insensitively. Prefix beats substring beats
+    // scattered subsequence. nil = no match.
+    static func fuzzyScore(_ query: String, _ candidate: String) -> Int? {
+        let q = query.lowercased(), c = candidate.lowercased()
+        if q.isEmpty { return 0 }
+        if c.hasPrefix(q) { return 3 }
+        if c.contains(q) { return 2 }
+        var pos = c.startIndex
+        for ch in q {
+            guard let hit = c[pos...].firstIndex(of: ch) else { return nil }
+            pos = c.index(after: hit)
+        }
+        return 1
+    }
+
+    private func close() { store.showCommandPalette = false }
+
+    private func run(_ row: RowID) {
+        close()
+        switch row {
+        case .command(let action): store.uiCommand = action
+        case .project(let name): onJumpToProject(name)
+        }
     }
 
     // The search field keeps focus while the palette is open, so arrow keys
-    // never reach the List; handle them here instead. Clamped at both ends.
+    // never reach the rows; handle them here instead. Clamped at both ends.
     private func moveSelection(by delta: Int) -> KeyPress.Result {
-        let list = filtered
-        guard !list.isEmpty else { return .ignored }
-        if let idx = list.firstIndex(where: { $0.id == selection }) {
-            selection = list[min(max(idx + delta, 0), list.count - 1)].id
+        let ids = allRowIDs
+        guard !ids.isEmpty else { return .ignored }
+        if let idx = ids.firstIndex(where: { $0 == selection }) {
+            selection = ids[min(max(idx + delta, 0), ids.count - 1)]
         } else {
-            selection = (delta > 0 ? list.first : list.last)?.id
+            selection = delta > 0 ? ids.first : ids.last
         }
         return .handled
     }
 
     private func runSelectedOrFirst() {
-        let list = filtered
-        if let sel = selection, let c = list.first(where: { $0.id == sel }) {
-            run(c)
-        } else if let first = list.first {
+        if let sel = selection, allRowIDs.contains(sel) {
+            run(sel)
+        } else if let first = allRowIDs.first {
             run(first)
         }
     }
 
     var body: some View {
+        ZStack(alignment: .top) {
+            // Dimmed scrim: click anywhere outside the panel dismisses.
+            Color.black.opacity(0.2)
+                .ignoresSafeArea()
+                .onTapGesture { close() }
+                .accessibilityHidden(true)
+            panel
+                .padding(.top, 72)
+        }
+    }
+
+    private var panel: some View {
         VStack(spacing: 0) {
-            TextField("Type a command…", text: $query)
+            searchField
+            Divider()
+            results
+            Divider()
+            footer
+        }
+        .frame(width: 560)
+        .background(.regularMaterial,
+                    in: RoundedRectangle(cornerRadius: DS.radius.card, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius.card, style: .continuous)
+            .stroke(DS.hairline, lineWidth: 1))
+        .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Command palette")
+    }
+
+    private var searchField: some View {
+        HStack(spacing: DS.space.xs) {
+            Image(systemName: "command")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("Search commands and projects…", text: $query)
                 .textFieldStyle(.plain)
                 .font(.title3)
-                .padding(14)
                 .focused($searchFocused)
                 .accessibilityLabel("Command palette search")
                 .onAppear {
                     // Focus on the next runloop turn: SwiftUI can drop a focus
-                    // request issued in the same tick the sheet is presented.
+                    // request issued in the same tick the overlay is presented.
                     DispatchQueue.main.async { searchFocused = true }
-                    selection = filtered.first?.id
+                    selection = allRowIDs.first
                 }
-                .onChange(of: query) { _, _ in
+                .onChange(of: query) {
                     // Keep a selection alive as filtering narrows the list, so
                     // Return always has something to activate.
-                    if !filtered.contains(where: { $0.id == selection }) {
-                        selection = filtered.first?.id
+                    if !allRowIDs.contains(where: { $0 == selection }) {
+                        selection = allRowIDs.first
                     }
                 }
                 .onSubmit { runSelectedOrFirst() }
                 .onKeyPress(.upArrow) { moveSelection(by: -1) }
                 .onKeyPress(.downArrow) { moveSelection(by: 1) }
-            Divider()
-            if filtered.isEmpty {
-                VStack(spacing: 4) {
-                    Text("No matching commands")
-                    Text("Clear the search to see all \(commands.count) commands")
-                        .font(.caption)
-                }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 80)
-            } else {
-                List(filtered, selection: $selection) { c in
-                    Button { run(c) } label: {
-                        HStack {
-                            Text(c.title)
-                            Spacer()
-                            Text(c.shortcut.isEmpty ? "—" : c.shortcut).foregroundStyle(.secondary).font(.callout)
+                .onKeyPress(.escape) { close(); return .handled }
+        }
+        .padding(DS.space.s)
+    }
+
+    @ViewBuilder
+    private var results: some View {
+        let cmds = filteredCommands
+        let projs = filteredProjects
+        if cmds.isEmpty && projs.isEmpty {
+            VStack(spacing: DS.space.xxs) {
+                Text("No matches")
+                Text("Clear the search to see all commands and projects")
+                    .font(DS.font.caption)
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 80)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        if !cmds.isEmpty {
+                            sectionHeader("Commands")
+                            ForEach(cmds) { c in
+                                row(id: .command(c.id), symbol: c.symbol, title: c.title,
+                                    trailing: c.shortcut)
+                            }
                         }
-                        .contentShape(Rectangle())
+                        if !projs.isEmpty {
+                            sectionHeader("Projects")
+                            ForEach(projs) { p in
+                                row(id: .project(p.name), symbol: "folder", title: p.name,
+                                    trailing: "", detail: p.workflowTitle)
+                            }
+                        }
                     }
-                    .buttonStyle(.plain)
+                    .padding(DS.space.xs)
                 }
-                .listStyle(.plain)
+                .frame(maxHeight: 320)
+                .onChange(of: selection) {
+                    if let selection { proxy.scrollTo(selection) }
+                }
             }
         }
-        .frame(width: 460, height: 320)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(DS.font.caption)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, DS.space.xs)
+            .padding(.top, DS.space.xxs)
+    }
+
+    // 38pt row: symbol + title (+ caption detail) + right-aligned shortcut in
+    // monoInline; selected row = the accent 8/12% fill.
+    private func row(id: RowID, symbol: String, title: String,
+                     trailing: String, detail: String? = nil) -> some View {
+        let selected = selection == id
+        return Button { run(id) } label: {
+            HStack(spacing: DS.space.xs) {
+                Image(systemName: symbol)
+                    .font(DS.font.body)
+                    .foregroundStyle(selected ? DS.accent.color : DS.textSecondary)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(DS.font.body)
+                    .lineLimit(1)
+                if let detail {
+                    Text(detail)
+                        .font(DS.font.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if !trailing.isEmpty {
+                    Text(trailing)
+                        .font(DS.font.monoInline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, DS.space.xs)
+            .frame(height: 38)
+            .background(RoundedRectangle(cornerRadius: DS.radius.control, style: .continuous)
+                .fill(selected ? AnyShapeStyle(DS.accent.fill) : AnyShapeStyle(Color.clear)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .id(id)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var footer: some View {
+        HStack(spacing: DS.space.m) {
+            hint("↑↓", "Navigate")
+            hint("↩", "Run")
+            hint("esc", "Dismiss")
+            Spacer()
+        }
+        .padding(.horizontal, DS.space.s)
+        .padding(.vertical, DS.space.xs)
+        .accessibilityHidden(true)   // keyboard hints, redundant for VoiceOver
+    }
+
+    private func hint(_ key: String, _ label: String) -> some View {
+        HStack(spacing: DS.space.xxs) {
+            Text(key)
+                .font(DS.font.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: DS.radius.control - 2,
+                                             style: .continuous)
+                    .fill(.quaternary.opacity(0.5)))
+            Text(label)
+                .font(DS.font.caption)
+                .foregroundStyle(.tertiary)
+        }
     }
 }
 

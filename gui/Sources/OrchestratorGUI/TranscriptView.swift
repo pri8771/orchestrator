@@ -57,7 +57,7 @@ struct TranscriptView: View {
                             }
                             .padding(18)
                         }
-                        .onChange(of: t.messages.count) { c in
+                        .onChange(of: t.messages.count) { _, c in
                             if c > lastCount { withAnimation { proxy.scrollTo("BOTTOM", anchor: .bottom) } }
                             lastCount = c
                         }

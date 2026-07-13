@@ -301,7 +301,8 @@ struct RoutingGridView: View {
     }
 
     private func applyChanges() {
-        guard var m = matrix else { return }
+        // `let`: save(to:) is nonmutating; the compiler flags `var` here.
+        guard let m = matrix else { return }
         m.draft.save(to: routingURL)
         matrix = m
         savedDraft = m.draft

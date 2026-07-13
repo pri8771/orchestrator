@@ -307,7 +307,7 @@ struct ModelRoutingSections: View {
                 loaded = true
             }
         }
-        .onChange(of: routing) { newValue in
+        .onChange(of: routing) { _, newValue in
             if loaded {
                 // Preserve fields the grid owns: re-read, merge only the
                 // sections these controls edit, then write.

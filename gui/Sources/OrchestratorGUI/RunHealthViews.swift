@@ -13,6 +13,10 @@ import AppKit
 struct PhaseTimelineView: View {
     @EnvironmentObject var store: OrchestratorStore
     let project: Project
+    /// Compact mode (DESIGN-REFRESH.md tranche 2): the Overview's Active Runs
+    /// cards embed the same capsule chain at reduced height, without the
+    /// round sublabel. Same data, lower altitude.
+    var compact = false
 
     private var phases: [PhaseDef] { store.phases(for: project) }
 
@@ -34,8 +38,8 @@ struct PhaseTimelineView: View {
                             .id(phase.key)
                     }
                 }
-                .padding(.horizontal, DS.space.s)
-                .padding(.vertical, DS.space.xs)
+                .padding(.horizontal, compact ? 0 : DS.space.s)
+                .padding(.vertical, compact ? 2 : DS.space.xs)
             }
             .onAppear {
                 if let cur = project.currentPhase { proxy.scrollTo(cur, anchor: .center) }
@@ -44,7 +48,7 @@ struct PhaseTimelineView: View {
                 if let cur { withAnimation { proxy.scrollTo(cur, anchor: .center) } }
             }
         }
-        .frame(height: 64)
+        .frame(height: compact ? 28 : 64)
     }
 
     @ViewBuilder
@@ -66,7 +70,7 @@ struct PhaseTimelineView: View {
             .background(Capsule().fill(background(status, isCurrent: isCurrent)))
             .overlay(Capsule().stroke(
                 status == .pending ? DS.hairline : Color.clear, lineWidth: 1))
-            if isCurrent {
+            if isCurrent && !compact {
                 Text("round \(project.currentRound)\(phase.rounds > 0 ? " of \(phase.rounds)" : "")")
                     .font(DS.font.caption).monospacedDigit()
                     .foregroundStyle(.secondary)

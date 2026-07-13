@@ -140,9 +140,13 @@ struct AppShellView: View {
             NewAppIntakeSheet { slug in selection = .project(slug) }
                 .environmentObject(store)
         }
-        .sheet(isPresented: Binding(get: { store.showCommandPalette },
-                                    set: { store.showCommandPalette = $0 })) {
-            CommandPaletteView().environmentObject(store)
+        // ⌘K palette: a floating panel over a dimmed scrim (DESIGN-REFRESH.md
+        // §6), overlaid on the whole shell rather than presented as a sheet.
+        .overlay {
+            if store.showCommandPalette {
+                CommandPaletteView(onJumpToProject: { selection = .project($0) })
+                    .environmentObject(store)
+            }
         }
         .onChange(of: store.uiCommand) { _, cmd in
             guard let cmd else { return }
@@ -717,16 +721,22 @@ private struct FactoryOverviewView: View {
         }
         ForEach(running) { p in
             Button { onOpen(p.name) } label: {
-                HStack(spacing: DS.space.s) {
-                    VStack(alignment: .leading, spacing: DS.space.xxs) {
-                        Text(p.name).font(DS.font.headline)
-                        Text(p.progressText)
-                            .font(DS.font.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: DS.space.xs) {
+                    HStack(spacing: DS.space.s) {
+                        VStack(alignment: .leading, spacing: DS.space.xxs) {
+                            Text(p.name).font(DS.font.headline)
+                            Text(p.progressText)
+                                .font(DS.font.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        StatusPill(kind: .running,
+                                   label: p.currentPhase.map { p.titleFor($0) } ?? "Starting",
+                                   breathing: true)
                     }
-                    Spacer()
-                    StatusPill(kind: .running,
-                               label: p.currentPhase.map { p.titleFor($0) } ?? "Starting",
-                               breathing: true)
+                    // §4.1: the per-phase timeline capsule with agent avatars,
+                    // embedded at glance altitude — the card stays one click.
+                    PhaseTimelineView(project: p, compact: true)
+                        .allowsHitTesting(false)
                 }
                 .padding(DS.space.s)
                 .frame(maxWidth: .infinity, alignment: .leading)
