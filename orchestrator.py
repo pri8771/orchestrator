@@ -1550,7 +1550,16 @@ How to talk in this room:
 def _budget(text, limit):
     """Tail-keep budgeting. When truncation actually happens, the result is
     prefixed with an explicit marker line — agents must KNOW their context is
-    incomplete instead of silently losing the oldest (most foundational) part."""
+    incomplete instead of silently losing the oldest (most foundational) part.
+
+    Correct for the hybrid summary+raw PRIOR PHASE DISCUSSIONS shape too: the
+    blocks stay in workflow order (oldest phase first) regardless of whether a
+    given block is a full transcript or a compact summary, so a tail-cut still
+    keeps the most RECENT phases' content preferentially — which under the
+    hybrid policy is exactly the raw, most-detail-worth-preserving material.
+    Older phases are already compact summaries by construction, so they rarely
+    need trimming at all, which is precisely why the hybrid policy shrinks how
+    often this truncation marker fires in the first place."""
     if text is None:
         return ""
     if len(text) <= limit:
@@ -1595,6 +1604,96 @@ def prior_discussion_context(app_dir, phases, completed_keys):
     return "\n\n".join(blocks)
 
 
+def hybrid_prior_context(app_dir, phases, completed_keys, recency_window=2):
+    """Like prior_discussion_context, but a genuine size REDUCTION rather than
+    an additive block: only the most recent ``recency_window`` completed
+    phases get their full raw transcript injected; every OLDER completed
+    phase gets its compact phase_summaries.json entry instead (see
+    _PHASE_SUMMARY_JSON_INSTRUCTION / merge_phase_summary). Recency still
+    matters most for the phase(s) immediately upstream of the current one —
+    that's where continuity of an ongoing debate's specific wording/tradeoffs
+    is worth the size — while a phase from several steps back is already
+    captured in decisions.json (authoritative) and now also this readable
+    paragraph, so its multi-thousand-char transcript is pure bloat.
+
+    Never silently drops an older phase's context: if no summary was ever
+    persisted for it (e.g. it completed before this feature existed, or its
+    wrap-up dropped the phase-summary-json block under format drift), that
+    phase falls back to its raw transcript exactly like the legacy behavior.
+    """
+    done = set(completed_keys or [])
+    ordered = []
+    for phase in phases or []:
+        key, path = _phase_file_path(app_dir, phase)
+        if key in done:
+            ordered.append((key, path))
+    recent = set(k for k, _p in ordered[-recency_window:]) if recency_window > 0 else set()
+    summaries = {s.get("phase"): s for s in load_phase_summaries(app_dir)
+                if isinstance(s, dict)}
+
+    def _raw(key, path, note=""):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read().strip()
+        except OSError:
+            text = ""
+        if not text:
+            return None
+        return "--- %s (complete prior discussion transcript%s) ---\n%s" % (
+            key, note, text)
+
+    blocks = []
+    for key, path in ordered:
+        if key in recent:
+            b = _raw(key, path)
+            if b:
+                blocks.append(b)
+            continue
+        summ = summaries.get(key)
+        rendered = render_phase_summary(summ) if summ else ""
+        if rendered:
+            blocks.append("--- %s (phase summary; raw transcript omitted — see "
+                          "the DECISIONS LOG for authoritative decisions) ---\n%s"
+                          % (key, rendered))
+        else:
+            b = _raw(key, path, note="; no summary available")
+            if b:
+                blocks.append(b)
+    return "\n\n".join(blocks)
+
+
+def _select_prior_context(cfg, app_dir, phases, completed_keys, phasedef):
+    """Resolve cfg['_prior_discussions'] for the phase about to run, per
+    runtime.phase_summary_policy (sibling to runtime.build_context_policy,
+    which governs BUILD WORKER lane context specifically — this knob governs
+    the cross-phase history injected into every phase's own coordinator/
+    discussion turns). "hybrid" (default): only the most recent phase(s) get
+    their raw transcript; older completed phases get their compact
+    phase_summaries.json entry instead — a real size reduction, not an
+    additive block. "legacy" restores today's inject-every-completed-phase's-
+    full-transcript behavior exactly, for compatibility/debugging.
+
+    Split out of the main phase loop so the policy branch and the recency-
+    window choice are independently testable without driving the whole run
+    loop.
+    """
+    key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
+    is_build_phase = bool(phasedef.get("writes", False)) \
+        if hasattr(phasedef, "get") else (key == "build_coordination")
+    # Build-adjacent phases keep only the immediately preceding phase in full
+    # (workers already get a further-trimmed context anyway via
+    # build_context_policy; the integrator mainly needs continuity with what
+    # just happened). Discussion-heavy phases keep the last two so an ongoing
+    # multi-phase debate doesn't lose its immediate thread.
+    recency_window = 1 if is_build_phase else 2
+    policy = str(cget(cfg, "runtime.phase_summary_policy", "hybrid")
+                or "hybrid").strip().lower()
+    if policy == "legacy":
+        return prior_discussion_context(app_dir, phases, completed_keys)
+    return hybrid_prior_context(app_dir, phases, completed_keys,
+                                recency_window=recency_window)
+
+
 def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript):
     key, _folder, _fname, purpose = phasedef
     pri_lim = int(cget(cfg, "runtime.max_prior_output_chars", 4000))
@@ -1625,7 +1724,8 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
                      % _budget(dec_log, 60000))
     prior_discussions = (cfg.get("_prior_discussions") or "").strip()
     if prior_discussions and not cfg.get("_drop_prior_discussions"):
-        parts.append("\n===== PRIOR PHASE DISCUSSIONS (build from these; not just the summaries) =====\n%s"
+        parts.append("\n===== PRIOR PHASE DISCUSSIONS (build from these; recent phases in "
+                     "full, older phases may be summarized — see each block's label) =====\n%s"
                      % _budget(prior_discussions, prior_disc_lim))
     if transcript.strip():
         parts.append("\n===== THIS PHASE'S DISCUSSION SO FAR =====\n%s"
@@ -1966,6 +2066,18 @@ _DECISIONS_JSON_INSTRUCTION = (
 )
 
 
+_PHASE_SUMMARY_JSON_INSTRUCTION = (
+    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
+    "fenced ```phase-summary-json``` block containing a single JSON object of the "
+    'form {"phase": "<this phase\'s key>", "one_paragraph_summary": ..., '
+    '"key_decisions": [...decision ids from decisions.json this phase made, if '
+    'any...], "open_risks": [...]}. Once this phase is no longer one of the most '
+    "recently completed phases, THIS summary — not the raw transcript above — is "
+    "what later phases see, so make the paragraph self-contained: state what was "
+    "actually decided or produced, not just that a discussion happened.\n"
+)
+
+
 def _decisions_contract_requested(cfg, phasedef):
     """True when this phase's coordinator wrap-up must emit decisions-json:
     every non-build discussion phase of an app/app_spec workflow (product/
@@ -1992,6 +2104,12 @@ def _phase_contract(cfg, phasedef):
         parts.append(_INTERFACES_JSON_INSTRUCTION)
     if _decisions_contract_requested(cfg, phasedef):
         parts.append(_DECISIONS_JSON_INSTRUCTION)
+    # Every phase (not just decision-bearing ones) gets the phase-summary
+    # request piggybacked onto this same wrap-up turn: build phases and
+    # verify/repair phases produce prior context worth summarizing too, and
+    # this is the one coordinator call every non-parallel-build phase already
+    # makes, so no extra agent call is needed to get it.
+    parts.append(_PHASE_SUMMARY_JSON_INSTRUCTION)
     return "\n".join(parts)
 
 
@@ -2180,6 +2298,69 @@ def append_md(path, text):
 def write_md(path, text):
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
+
+
+# Round/iteration header the sequential discussion loop writes at the top of
+# every round ("### Round 3") — shared by process_phase's round-resume logic
+# below. Anchored to a whole line so it never matches inside a quoted/prose
+# mention of "### Round" in an agent's own message body.
+_ROUND_HDR_RE = re.compile(r"^### (?:Round|Iteration) (\d+)\s*$", re.MULTILINE)
+# The coordinator's decision block header — its presence right after a round's
+# header (and before the next round's) is what makes that round "complete":
+# every agent turn AND the coordinator turn for it are already on disk.
+_COORD_DECISION_RE = re.compile(r"^\*\*Coordinator \(", re.MULTILINE)
+
+
+def _resume_round_state(existing_md_text):
+    """Determine where a phase's round loop should restart after a crash, by
+    reading the persisted .md transcript itself rather than trusting the
+    persisted current_round counter alone.
+
+    Why the transcript, not the counter: state["current_round"] is written at
+    the TOP of each round's body (before that round's agent/coordinator turns
+    run), so a crash between that write and the round's completion leaves the
+    counter one round AHEAD of what actually made it to disk. Re-running that
+    round is safe (nothing of it was ever written). But an eager-counter
+    design (bump it after every turn instead) has the opposite failure mode:
+    a crash between the LAST turn of round N finishing and the counter update
+    for N+1 would leave the counter reading N even though round N's content
+    is already fully on disk — resuming "at N" would re-run a round whose
+    output is already there, duplicating every agent's post. Parsing the file
+    is immune to either lag because it asks the only question that matters:
+    which rounds' content actually made it to disk, complete?
+
+    A round counts as "complete" only if a "**Coordinator (" decision block
+    appears somewhere between its header and the next round's header (or EOF)
+    — i.e. every agent turn AND the coordinator turn for it are present, not
+    just some agent posts. Returns (resume_round, safe_transcript_prefix):
+    the round to restart the loop at, and the on-disk text truncated to drop
+    any trailing INCOMPLETE round (its partial agent posts are discarded and
+    that round is redone from scratch — resuming mid-round is not attempted,
+    since re-running a "discussion turn" for a round that already got some
+    but not all agents' posts would duplicate whichever agents did speak).
+    """
+    matches = list(_ROUND_HDR_RE.finditer(existing_md_text))
+    if not matches:
+        # No round ever started (crash before the first "### Round 1" line was
+        # appended) — nothing to resume; caller falls back to a fresh start.
+        return 1, existing_md_text, len(existing_md_text)
+    last_complete_round = 0
+    last_complete_end = 0
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(existing_md_text)
+        if _COORD_DECISION_RE.search(existing_md_text[start:end]):
+            rnd_num = int(m.group(1))
+            if rnd_num > last_complete_round:
+                last_complete_round = rnd_num
+                last_complete_end = end
+    if last_complete_round == 0:
+        # Rounds were started but NONE completed — drop them all, keep only
+        # the header text that precedes the first round marker.
+        header_end = matches[0].start()
+        return 1, existing_md_text[:header_end], header_end
+    header_end = matches[0].start()
+    return last_complete_round + 1, existing_md_text[:last_complete_end], header_end
 
 
 def drain_human_inbox(app_dir, md_path, transcript, section_label):
@@ -2577,6 +2758,76 @@ def render_decisions_log(decisions):
     if superseded:
         lines.append("(%d superseded decision(s) hidden — see decisions.json "
                      "for history)" % superseded)
+    return "\n".join(lines)
+
+
+def parse_phase_summary_blocks(text):
+    """Extract ```phase-summary-json``` block(s) from ``text``. Last emission
+    wins (matches the decisions/tasks/interfaces convention: the coordinator's
+    final revision beats a draft). Returns (summary_dict_or_None, errors)."""
+    errors = []
+    blocks = schemalib.extract_structured_blocks(
+        text or "", "phase-summary-json",
+        schemalib.REQUIRED_FIELDS["phase_summary"], on_error=errors.append)
+    return (blocks[-1] if blocks else None), errors
+
+
+def _phase_summaries_path(app_dir):
+    return os.path.join(app_dir, "phase_summaries.json")
+
+
+def load_phase_summaries(app_dir):
+    try:
+        with open(_phase_summaries_path(app_dir), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("summaries", []) if isinstance(data, dict) else []
+    except (OSError, ValueError):
+        return []
+
+
+def phase_summary_for(app_dir, key):
+    for s in load_phase_summaries(app_dir):
+        if isinstance(s, dict) and s.get("phase") == key:
+            return s
+    return None
+
+
+def merge_phase_summary(app_dir, key, summary):
+    """Persist/replace this phase's entry in <app_dir>/phase_summaries.json —
+    one entry per phase key, in first-seen (workflow) order; re-running a
+    phase (e.g. "Request Changes") replaces its entry in place rather than
+    duplicating it. Atomic write; best-effort — never blocks the run."""
+    existing = load_phase_summaries(app_dir)
+    byphase = {s.get("phase"): s for s in existing if isinstance(s, dict)}
+    order = [s.get("phase") for s in existing if isinstance(s, dict)]
+    if key not in byphase:
+        order.append(key)
+    byphase[key] = summary
+    merged = [byphase[k] for k in order]
+    try:
+        _write_json_atomic(_phase_summaries_path(app_dir),
+                           {"schema_version": schemalib.SCHEMA_VERSION,
+                            "summaries": merged})
+    except OSError as exc:
+        emit("WARN could not write phase_summaries.json: %s" % exc)
+    return merged
+
+
+def render_phase_summary(summary):
+    """Compact rendering of one phase_summaries.json entry for prompt
+    injection in place of that phase's raw transcript. '' when empty."""
+    if not isinstance(summary, dict):
+        return ""
+    para = str(summary.get("one_paragraph_summary", "")).strip()
+    if not para:
+        return ""
+    lines = [para]
+    if summary.get("key_decisions"):
+        lines.append("key decisions: %s"
+                     % ", ".join(str(x) for x in summary["key_decisions"]))
+    if summary.get("open_risks"):
+        lines.append("open risks: %s"
+                     % ", ".join(str(x) for x in summary["open_risks"]))
     return "\n".join(lines)
 
 
@@ -4333,8 +4584,53 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                      agents=",".join(active), coordinator=coord,
                      rounds=(0 if unlimited_rounds else max_rounds))
 
-    write_md(md_path, phase_header(app, phasedef, original_prompt))
-    transcript = ""
+    # Round-level crash resume: scoped to the SEQUENTIAL round loop (plain
+    # discussion/verify-repair phases, and a "build" phase with code changes
+    # disabled) — NOT the parallel build loop (is_build and allow_writes),
+    # whose iterations already land in a git-versioned app_build repo (see
+    # ensure_build_repo) with its own crash-recovery path via that history,
+    # and whose concurrent per-lane worker/worktree state makes a safe
+    # mid-iteration resume a materially harder problem than resuming a
+    # strictly-sequential round.
+    #
+    # The pipeline is strictly sequential (see the phase while-loop in run():
+    # a phase is only entered after every earlier one is in completed_phases,
+    # and process_phase is never called concurrently for two phases), so a
+    # single state["current_phase"] + state["current_round"] pair unambiguously
+    # describes at most one in-flight phase — no per-phase-keyed dict needed.
+    #
+    # "Resuming" requires ALL of: this phase is not in completed_phases
+    # (guaranteed by the caller — it never calls process_phase for a completed
+    # phase), the loaded state says THIS phase was the one in flight
+    # (current_phase == key: set at the start of an earlier, crashed attempt
+    # at this exact phase and never cleared because that attempt didn't
+    # finish — a genuinely fresh phase would see the PREVIOUS phase's key
+    # here instead), and current_round > 0 (at least one round was entered).
+    # The actual resume point is then derived from the .md file itself, not
+    # from current_round directly — see _resume_round_state's docstring for
+    # why the counter alone is not trustworthy.
+    resume_round, resuming = 1, False
+    if not (is_build and allow_writes) and state.get("current_phase") == key \
+            and int(state.get("current_round") or 0) > 0:
+        try:
+            with open(md_path, encoding="utf-8") as fh:
+                _existing = fh.read()
+        except OSError:
+            _existing = ""
+        if _existing.strip():
+            resume_round, _kept, _header_end = _resume_round_state(_existing)
+            resuming = resume_round > 1
+    if resuming:
+        # Preserve the on-disk transcript (write_md would TRUNCATE it) except
+        # for a trailing incomplete round, which is dropped and redone.
+        write_md(md_path, _kept)
+        transcript = _kept[_header_end:]
+        emit("Phase '%s': resuming a crashed run at round %d (%d completed "
+             "round(s), %d char(s) of transcript recovered)."
+             % (key, resume_round, resume_round - 1, len(transcript)))
+    else:
+        write_md(md_path, phase_header(app, phasedef, original_prompt))
+        transcript = ""
     extra = phase_extra(cfg, key)
 
     state["current_phase"] = key
@@ -4359,8 +4655,13 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             state, md_path, max_rounds, transcript, extra, personas=personas)
     rounds_iter = [] if (is_build and allow_writes) else (
-        itertools.count(1) if unlimited_rounds else range(1, max_rounds + 1))
-    any_agent_output = False
+        itertools.count(resume_round) if unlimited_rounds
+        else range(resume_round, max_rounds + 1))
+    # A resumed phase already has real agent output on disk (recovered into
+    # `transcript` above) even before this loop produces anything new — the
+    # "no enabled agent could produce output" guard below must not fire just
+    # because every agent happens to be unavailable on the FIRST resumed round.
+    any_agent_output = resuming
     empty_round_streak = 0   # consecutive rounds where NO agent spoke
     _seen_chars = {}   # per-agent transcript offset for session delta prompts
     for rnd in rounds_iter:
@@ -4775,6 +5076,34 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
     Bounded, non-fatal by design: parse/cycle errors are persisted in the
     contract file, WARNed prominently, and ledgered (contract_error) — never a
     hard block, because a wrongly-strict gate here would brick runs."""
+    # Phase-transition summarization (unconditional — every completed phase
+    # needs an entry in phase_summaries.json, not just decision-bearing ones,
+    # since build_context's hybrid policy replaces ANY older phase's raw
+    # transcript with this once it ages out of the recency window). Parsed
+    # from the same wrap-up turn's phase-summary-json block when the phase
+    # requested it via _phase_contract(). Phases whose coordinator turn never
+    # runs this contract (the parallel-build integrator prompt doesn't request
+    # it — see _phase_contract's docstring) or that dropped the block under
+    # format drift get a synthesized fallback from final_output instead of a
+    # missing entry — correctness (never silently lose a phase's substance)
+    # beats a perfectly-worded summary.
+    blob_all = transcript + "\n" + (final_output or "")
+    summary, serrs = parse_phase_summary_blocks(blob_all)
+    for e in serrs:
+        emit("PHASE_SUMMARY: ERROR %s" % e)
+    if summary:
+        summary = dict(summary)
+        summary["phase"] = key   # never trust the agent's self-reported key
+        summary.setdefault("key_decisions", [])
+        summary.setdefault("open_risks", [])
+    else:
+        summary = {
+            "phase": key,
+            "one_paragraph_summary": (final_output or "").strip()[:800],
+            "key_decisions": [],
+            "open_risks": [],
+        }
+    merge_phase_summary(app_dir, key, summary)
     if record_decisions:
         blob = transcript + "\n" + (final_output or "")
         decisions, derrs = parse_decision_blocks(blob)
@@ -5635,8 +5964,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                         "manifest. portfolio_selection must emit the selected-app "
                         "manifest before any per-app phase begins; refusing to "
                         "collapse multiple apps into one app_build folder." % key)
-            cfg["_prior_discussions"] = prior_discussion_context(
-                app_dir, phases, state.get("completed_phases", []))
+            cfg["_prior_discussions"] = _select_prior_context(
+                cfg, app_dir, phases, state.get("completed_phases", []), phasedef)
             if budget:
                 _now = time.time()
                 _is_build = (build_idx is not None and i == build_idx)

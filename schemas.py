@@ -38,6 +38,9 @@ REQUIRED_FIELDS = {
     "phase_structured_output": ["phase", "doc_sections"],
     # decisions-json entries (the cross-phase DECISIONS LOG contract).
     "decision_item": ["id", "decision"],
+    # phase-summary-json entry (the cross-phase PHASE SUMMARIES contract —
+    # replaces raw transcript injection for older completed phases).
+    "phase_summary": ["phase", "one_paragraph_summary"],
     "agent_identity": ["id", "provider", "kind"],
     "agent_health": ["status"],
 }

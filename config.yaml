@@ -312,6 +312,15 @@ runtime:
   # current full-context behavior. "legacy" restores the old worker context
   # (transcripts included, tail-truncated) exactly.
   build_context_policy: "contracts"
+  # Cross-phase history policy for every phase's OWN discussion/coordinator
+  # turns (sibling to build_context_policy above, which is scoped to BUILD
+  # WORKER lanes specifically). "hybrid" (default): only the most recent
+  # completed phase (build-adjacent) or two (discussion-heavy) phase(s) get
+  # their full raw transcript injected; every older completed phase gets its
+  # compact phase_summaries.json entry instead — a genuine reduction, not an
+  # additive block, in every downstream prompt. "legacy" restores today's
+  # inject-every-completed-phase's-full-transcript behavior exactly.
+  phase_summary_policy: "hybrid"
   phase_independent_first_round_enabled: true
   phase_quality_gates_enabled: true
   phase_quality_repair_rounds: 2
