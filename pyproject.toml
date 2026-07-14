@@ -28,10 +28,12 @@ dev = ["ruff", "mypy"]
 [tool.setuptools]
 py-modules = [
     "orchestrator", "workflows", "phase_rules", "schemas", "verify", "docs",
-    "backfill", "completeness", "events", "global_resource", "knowledge",
+    "backfill", "completeness", "designlint", "evalharness", "events",
+    "fleetlearn", "global_resource", "knowledge",
     "localmodels", "miniyaml", "mistakes", "modelrouting", "portfolio",
     "postmortem", "procutil",
-    "resilience", "roles", "urlfetch", "seed_demo", "simulate_stream",
+    "resilience", "roles", "uicrawl", "urlfetch", "visualqa", "seed_demo",
+    "simulate_stream",
 ]
 
 # ---------------------------------------------------------------------------

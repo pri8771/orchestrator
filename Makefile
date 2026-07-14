@@ -7,7 +7,7 @@
 
 PYTHON ?= python3
 
-.PHONY: help test test-strict doctor lint typecheck gui-build gui-test app dmg verify clean
+.PHONY: help test test-strict doctor lint typecheck gui-build gui-test app dmg verify seed clean
 
 help:
 	@echo "Engine (any platform):"
@@ -16,6 +16,7 @@ help:
 	@echo "  make doctor       environment preflight"
 	@echo "  make lint         ruff check (config: pyproject.toml)"
 	@echo "  make typecheck    mypy (config: pyproject.toml)"
+	@echo "  make seed         seed a demo project into ./workspace"
 	@echo "GUI (macOS only):"
 	@echo "  make gui-build    build the SwiftUI app"
 	@echo "  make gui-test     run the GUI unit tests"
@@ -37,6 +38,9 @@ lint:
 
 typecheck:
 	mypy . --config-file pyproject.toml
+
+seed:
+	$(PYTHON) seed_demo.py
 
 gui-build:
 	cd gui && swift build -c release

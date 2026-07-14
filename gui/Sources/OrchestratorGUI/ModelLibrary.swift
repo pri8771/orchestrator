@@ -140,10 +140,17 @@ struct PhaseRoute: Equatable {
     // phase carries none. Kept separate from isEmpty's field list below so a
     // phase with ONLY role overrides still round-trips (isEmpty covers it).
     var roles: RoleOverrides?
+    // Per-phase debate budget: nil = workflow default, 0 = unlimited (until
+    // natural consensus — the engine skips the forced vote), 1-99 = a cap.
+    var rounds: Int? = nil
+    // Operator instructions for THIS project's version of the phase — the
+    // engine splices them into every turn's context (binding guidance).
+    var instructions = ""
     var isEmpty: Bool {
         claude.isEmpty && codex.isEmpty && codexReasoning.isEmpty
             && claudeReasoning.isEmpty && gemini.isEmpty && ollama.isEmpty
             && agents.isEmpty && timeout == 0 && (roles?.isEmpty ?? true)
+            && rounds == nil && instructions.isEmpty
     }
 
     // Grid accessors: the per-phase model / effort override for one agent.
@@ -222,6 +229,8 @@ struct ModelRouting: Equatable {
                 if let i = rolesRaw["integrator"] as? [String: Any] { ro.integrator = RoleFields.parse(i) }
                 if !ro.isEmpty { p.roles = ro }
             }
+            p.rounds = ov["rounds"] as? Int
+            p.instructions = (ov["instructions"] as? String) ?? ""
             if !p.isEmpty { r.phases[key] = p }
         }
         return r
@@ -245,6 +254,8 @@ struct ModelRouting: Equatable {
                 if !ro.integrator.isEmpty { rolesObj["integrator"] = ro.integrator.jsonObject }
                 if !rolesObj.isEmpty { ov["roles"] = rolesObj }
             }
+            if let r = p.rounds { ov["rounds"] = r }
+            if !p.instructions.isEmpty { ov["instructions"] = p.instructions }
             phasesObj[key] = ov
         }
         var fb: [String: Any] = ["cloud_to_local": cloudToLocal,
@@ -263,6 +274,22 @@ struct ModelRouting: Equatable {
             try? data.write(to: url, options: .atomic)
         }
     }
+}
+
+// MARK: - Library types: reusable phase-prompt snippets + saved run profiles
+
+struct PromptSnippet: Identifiable, Equatable {
+    var name: String
+    var phase: String      // "" = usable in any phase
+    var text: String
+    var id: String { name }
+}
+
+struct RunProfile: Identifiable, Equatable {
+    var name: String
+    var workflow: String
+    var url: URL
+    var id: String { url.path }
 }
 
 // Compact count formatting for download numbers ("2.4M", "51k").

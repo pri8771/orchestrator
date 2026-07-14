@@ -114,13 +114,27 @@ class TestLoadRoutingForApp(unittest.TestCase):
         # untouched fleet-only phase passes through unchanged
         self.assertEqual(r["phases"]["tech_specs"], {"ollama": "qwen2.5-coder:7b"})
 
-    def test_app_enabled_and_fallback_never_shadow_fleet(self):
+    def test_app_enabled_and_cloud_to_local_never_shadow_fleet(self):
         # ModelRouting.save (GUI) always round-trips enabled=true and
         # cloud_to_local=true even though the Plan tab never edits them —
         # those must not clobber a deliberately different fleet setting.
+        # A NON-EMPTY project local_model/chain, however, is a deliberate
+        # per-project override (the Plan tab's fallback editor) and wins.
         write_routing(self.app, {
             "enabled": True,
             "fallback": {"cloud_to_local": True, "local_model": "different:1b"},
+            "phases": {"build_coordination": {"claude": "claude-opus-4-8"}},
+        })
+        r = mr.load_routing_for_app(self.fleet, self.app)
+        self.assertFalse(r["fallback"]["cloud_to_local"])
+        self.assertEqual(r["fallback"]["local_model"], "different:1b")
+
+    def test_app_empty_fallback_inherits_fleet(self):
+        # The untouched round-trip case: an EMPTY local_model / chains block
+        # never shadows the fleet's values.
+        write_routing(self.app, {
+            "enabled": True,
+            "fallback": {"cloud_to_local": True, "local_model": "", "chains": {}},
             "phases": {"build_coordination": {"claude": "claude-opus-4-8"}},
         })
         r = mr.load_routing_for_app(self.fleet, self.app)
@@ -284,7 +298,8 @@ class TestApplyPhaseRouting(unittest.TestCase):
 
     def test_enabled_agents_applies_phase_filter(self):
         cfg = {"agents": {"ollama_enabled": True},
-               "models": {"ollama": "qwen2.5-coder:7b"}, "runtime": {},
+               "models": {"ollama": "qwen2.5-coder:7b"},
+               "runtime": {"enforce_local_ram_gate": False},
                "_routing": {"enabled": True, "fallback": {},
                             "phases": {"design_discussion": {"agents": "cloud"}}},
                "_phase_key": "design_discussion"}

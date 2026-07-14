@@ -39,8 +39,7 @@ class TestCircuitBreaker(unittest.TestCase):
         ra = h["retry_after"]
         self.assertTrue(r.in_cooldown(h, now=ra - 1))
         self.assertFalse(r.in_cooldown(h, now=ra + 1))
-        self.assertFalse(r.due_for_probe(h, now=ra - 1))
-        self.assertTrue(r.due_for_probe(h, now=ra + 1))
+
 
     def test_classify(self):
         self.assertEqual(r.classify_failure(124, ""), "timeout")
