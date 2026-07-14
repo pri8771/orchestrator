@@ -3769,6 +3769,24 @@ def cleanup_lane_worktrees(build_dir, worktrees):
     _git(build_dir, "worktree", "prune")
 
 
+def _gated_verify_spec(cfg, spec):
+    """Global kill-switch for the xcodebuild verify-spec's optional
+    "run_tests": true (runtime.run_generated_tests, default True): a workflow
+    phase + its verify spec can ASK for a real `xcodebuild test` run, but it
+    only actually happens when this runtime knob also allows it. Real test
+    runs are slower and can be flakier than a plain compile (simulator boot,
+    timing-sensitive UI tests) — this is the one global lever to shut that off
+    without editing every workflow's verify block. Purely additive: with the
+    knob at its default True, behavior is unchanged from before this existed."""
+    if not isinstance(spec, dict) or not spec.get("run_tests"):
+        return spec
+    if bool(cget(cfg, "runtime.run_generated_tests", True)):
+        return spec
+    spec = dict(spec)
+    spec["run_tests"] = False
+    return spec
+
+
 def _run_iteration_verify(cfg, app, app_dir, phasedef, state, md_path, rnd):
     """Per-iteration compile check for the parallel build (the evidence behind
     the consensus gate, runtime.verify_between_iterations).
@@ -3789,6 +3807,14 @@ def _run_iteration_verify(cfg, app, app_dir, phasedef, state, md_path, rnd):
     # same way; else fall back to auto-detection.
     spec = (phasedef.get("verify") if hasattr(phasedef, "get") else None) \
         or cfg.get("_workflow_verify_spec") or {"type": "auto"}
+    if isinstance(spec, dict) and spec.get("run_tests"):
+        # Per-iteration checks stay build-only even when the reused spec (see
+        # comment above) asks for run_tests: a real test suite is slow, and
+        # paying for it on every single build iteration (vs. once, at
+        # build_verification) would dominate build wall-clock for no extra
+        # signal beyond "does it still compile" until the very end anyway.
+        spec = dict(spec)
+        spec["run_tests"] = False
     timeout = int(cget(cfg, "runtime.iteration_verify_timeout_seconds", 600) or 600)
     hard = int(cget(cfg, "runtime.verify_timeout_seconds", 1200) or 0)
     if hard:
@@ -4204,6 +4230,7 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
         return transcript, ""
     if not bool(cget(cfg, "runtime.verify_build_enabled", True)):
         return transcript, ""
+    spec = _gated_verify_spec(cfg, spec)
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
     timeout = int(cget(cfg, "runtime.verify_timeout_seconds", 1200))
     max_repairs = int(spec.get("repair_iterations", cget(cfg, "runtime.verify_repair_iterations", 3)))
@@ -4248,7 +4275,13 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
     if res.get("ok"):
         return transcript, "verified: %s" % res.get("summary", "compiles")
 
-    # Repair loop.
+    # Repair loop. Adaptive escalation (runtime.adaptive_escalation_enabled):
+    # once an attempt crosses runtime.escalate_repair_after_attempt, THAT and
+    # every later attempt in this loop run with a stronger reasoning effort
+    # (or an explicit runtime.escalation_model_override for claude) — see
+    # _maybe_escalate. `cfg` itself is never touched, so a later fresh verify
+    # cycle (or any other phase) is unaffected.
+    _escalation_logged = False
     for attempt in range(1, max_repairs + 1):
         # Sprint: stop repairing if the run deadline is essentially here.
         if cfg.get("_deadline") and time.time() >= cfg["_deadline"] - 10:
@@ -4269,8 +4302,10 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
             "compile without breaking features. When done, briefly say what you "
             "changed." % (tree, res.get("tool", ""), res.get("errors", "")[:8000])
         )
+        acfg, _escalation_logged = _maybe_escalate(
+            cfg, app, app_dir, key, coord, attempt, _escalation_logged)
         try:
-            rresp = call_agent(cfg, app, key, "repair.%d" % attempt, coord, repair_prompt)
+            rresp = call_agent(acfg, app, key, "repair.%d" % attempt, coord, repair_prompt)
         except AgentError as exc:
             emit("Repair agent (%s) unavailable on attempt %d: %s"
                  % (DISPLAY.get(coord, coord), attempt, exc))
@@ -4429,6 +4464,91 @@ def _apply_role_routing(rcfg, role):
     # the gemini CLI exposes no effort control as invoked here).
     rcfg["models"], rcfg["_resolved"] = models, resolved
     return rcfg
+
+
+def _escalated_effort(current):
+    """One-step bump for a reasoning-effort string: 'high' -> 'max', anything
+    else (including blank/unrecognized) -> 'high'. Deliberately not a full
+    ladder walk — the spec asks for exactly this two-rung bump."""
+    return "max" if str(current or "").strip().lower() == "high" else "high"
+
+
+def _apply_adaptive_escalation(cfg, coord):
+    """Failure-triggered escalation lever (runtime.adaptive_escalation_enabled,
+    default True): bump the acting coordinator's reasoning effort for exactly
+    ONE call. Returns a NEW cfg dict — ``cfg`` itself is never mutated — so
+    escalation can never leak into a later unrelated phase or the next fresh
+    verify cycle; the caller just stops passing the escalated copy once the
+    triggering attempt(s) are done.
+
+    Default lever: bump models.<agent>_reasoning / <agent>_build_reasoning to
+    "high" (or "max" if already "high") — cheap, always available, mirrors the
+    one-knob-sets-both convention in _apply_phase_routing/_apply_role_routing.
+    Full model swap only happens if the operator explicitly set
+    runtime.escalation_model_override (extends the models.claude_integrator
+    single-agent-override pattern to the claude coordinator only).
+
+    gemini/ollama have no reasoning-effort lever in this engine (see the
+    accepted-but-noop notes on run_claude/run_codex/_apply_phase_routing), so
+    for those agents this is a no-op cfg-wise; the caller still logs/ledgers
+    the escalation event for visibility even though there's no lever to pull.
+    """
+    ecfg = dict(cfg)
+    models = dict(ecfg.get("models") or {})
+    if coord == "codex":
+        new = _escalated_effort(models.get("codex_reasoning")
+                                or cget(cfg, "models.codex_reasoning", "low"))
+        models["codex_reasoning"] = new
+        models["codex_build_reasoning"] = new
+    elif coord == "claude":
+        new = _escalated_effort(models.get("claude_reasoning")
+                                or cget(cfg, "models.claude_reasoning", ""))
+        models["claude_reasoning"] = new
+        models["claude_build_reasoning"] = new
+        override = str(cget(cfg, "runtime.escalation_model_override", "") or "").strip()
+        if override:
+            ecfg["_claude_model_override"] = override
+    ecfg["models"] = models
+    return ecfg
+
+
+def _maybe_escalate(cfg, app, app_dir, key, coord, attempt_no, already_logged):
+    """Shared by _verify_and_repair's repair loop and process_phase's quality-
+    gate retry path: both are ONLY reachable via repeated failures on the same
+    phase, so escalating here can never affect a normal successful run.
+
+    ``attempt_no`` is 1-based (repair attempt number / quality-gate call
+    number). Escalates from runtime.escalate_repair_after_attempt (default 2)
+    onward. Returns (cfg_to_use, logged) — logged flips True the first time
+    escalation actually triggers for this phase invocation, so the caller
+    emits the log line + mistakes-ledger entry exactly once per escalation
+    event, not once per subsequent (already-escalated) attempt.
+
+    cls choice: a new mistakes.CLASSES value "escalation_triggered" rather
+    than reusing "repair_queued" — repair_queued means "the release gate
+    refused done and queued a whole repair phase", a different (and rarer)
+    event than "this in-phase repair/quality-gate attempt got a stronger
+    model". Keeping them distinct lets `--mistakes` answer "how often does
+    escalation actually fire" without conflating it with release-gate queues.
+    """
+    if not bool(cget(cfg, "runtime.adaptive_escalation_enabled", True)):
+        return cfg, already_logged
+    threshold = int(cget(cfg, "runtime.escalate_repair_after_attempt", 2) or 2)
+    if attempt_no < threshold:
+        return cfg, already_logged
+    ecfg = _apply_adaptive_escalation(cfg, coord)
+    if not already_logged:
+        emit("ADAPTIVE ESCALATION: phase '%s' attempt %d crossed "
+             "escalate_repair_after_attempt=%d — bumping %s's reasoning effort "
+             "for this and subsequent attempts in this loop only."
+             % (key, attempt_no, threshold, DISPLAY.get(coord, coord)))
+        mistklib.append_mistake(app_dir, {
+            "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+            "agent": coord, "cls": "escalation_triggered",
+            "summary": "adaptive escalation triggered at attempt %d "
+                       "(threshold %d)" % (attempt_no, threshold)})
+        already_logged = True
+    return ecfg, already_logged
 
 
 def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
@@ -4639,6 +4759,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     consensus = False
     final_output = ""
     quality_failures = 0
+    _quality_escalation_logged = False   # see _maybe_escalate; scoped to this phase call
     quality_repair_limit = max(0, int(cget(cfg, "runtime.phase_quality_repair_rounds", 1) or 0))
     independent_first = _independent_first_enabled(cfg, is_build or is_verify_repair)
     if independent_first:
@@ -4827,10 +4948,18 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             consensus = True
             if _phase_quality_gate_enabled(cfg, is_build or is_verify_repair):
                 try:
-                    qctx = build_context(cfg, app, phasedef, original_prompt,
+                    # Same failure-triggered escalation as the repair loop:
+                    # once this is the Nth-or-later quality-gate call for this
+                    # phase (N = runtime.escalate_repair_after_attempt), the
+                    # evaluator turn gets a stronger reasoning effort. `cfg`
+                    # itself is untouched, so this never leaks past the phase.
+                    qcfg, _quality_escalation_logged = _maybe_escalate(
+                        cfg, app, app_dir, key, coord,
+                        quality_failures + 1, _quality_escalation_logged)
+                    qctx = build_context(qcfg, app, phasedef, original_prompt,
                                          prior_outputs, transcript)
                     qpass, qresp, transcript = run_phase_quality_gate(
-                        cfg, app, app_dir, phasedef, rnd, coord, qctx,
+                        qcfg, app, app_dir, phasedef, rnd, coord, qctx,
                         cresp, md_path, transcript)
                 except AgentError as exc:
                     emit("Quality gate unavailable in phase '%s': %s — accepting coordinator decision."
@@ -5429,13 +5558,18 @@ _PORTFOLIO_DELEGATED_PHASES = {
 }
 
 
-def _release_gate_failure(app_dir, phases, state, prompt):
+def _release_gate_failure(app_dir, phases, state, prompt, cfg=None):
     """A build workflow may only be marked done when the thing it claims to
     have built exists and compiles (the nickel lesson: 10 failed verifies and
     a NO final_review still ended in 'Marked done'). Returns a human reason
     string when the gate fails, else None. Spec/research workflows (no
     verify-bearing phase) and portfolio parents whose build is delegated to
-    children are exempt."""
+    children are exempt.
+
+    Test failures are opt-in here: runtime.tests_gate_release (default False)
+    — a test run failing does NOT block release unless an operator explicitly
+    turns this on, since generated test suites are new/unproven and shouldn't
+    be able to strand an otherwise-compiling build."""
     has_verify = any((p.get("verify") if hasattr(p, "get") else None)
                      for p in phases)
     if not has_verify:
@@ -5451,6 +5585,9 @@ def _release_gate_failure(app_dir, phases, state, prompt):
         return None
     if not latest.get("ok"):
         return "last verification failed (%s)" % latest.get("summary", "")
+    if bool(cget(cfg or {}, "runtime.tests_gate_release", False)) \
+            and latest.get("tests_ran") and not latest.get("tests_ok"):
+        return "last test run failed (%s)" % latest.get("summary", "")
     return None
 
 
@@ -6024,7 +6161,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                     emit("Changes requested on '%s' — re-running the phase." % key)
                     continue
             i += 1
-        gate_reason = _release_gate_failure(app_dir, phases, state, prompt)
+        gate_reason = _release_gate_failure(app_dir, phases, state, prompt, cfg=cfg)
         if gate_reason:
             _queue_release_gate_repair(app, app_dir, state, gate_reason,
                                        phases=phases, build_phase_key=workflow.build_phase)

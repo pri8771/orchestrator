@@ -262,9 +262,14 @@ class TestStarterWorkflows(unittest.TestCase):
         keys = [p.key for p in w.phases]
         self.assertNotIn("human_qa_checklist", keys)
         self.assertNotIn("app_store_readiness", keys)
+        # prototype is speed-oriented, so unlike full_max it also omits
+        # write_tests/real xcodebuild-test execution (item 2: opt-in only for
+        # the deep pipelines, app_build/full_max).
+        self.assertNotIn("write_tests", keys)
         self.assertEqual(keys, [p.key for p in base.phases
                                 if p.key not in ("human_qa_checklist",
-                                                 "app_store_readiness")])
+                                                 "app_store_readiness",
+                                                 "write_tests")])
         self.assertEqual(w.build_phase, "build_coordination")
 
     def test_full_max_loads(self):

@@ -772,6 +772,25 @@
         "Existing behavior outside scope is protected.",
         "Done is defined before building."
       ]
+    },
+    "write_tests": {
+      "rules": [
+        "Write REAL XCTest unit tests against the app_build code just written \u2014 never placeholder/empty tests that only assert true.",
+        "Prioritize coverage of core logic and view-models (business rules, data transforms, state machines) over trivial UI snapshot tests.",
+        "Add a dedicated test target/scheme if the project doesn't already have one, so xcodebuild -list can discover it (build_verification's xcodebuild test run depends on this).",
+        "Keep tests deterministic \u2014 no network calls, no real timers/sleeps, no reliance on wall-clock or external state.",
+        "Do not modify production code to make a test pass; fix the test or file a note if production code looks wrong."
+      ],
+      "required_output": [
+        "Which test target/scheme was created or extended.",
+        "List of test files added and what each covers.",
+        "Any core logic left untested and why."
+      ],
+      "acceptance_checks": [
+        "At least one real XCTestCase file exists under a discoverable test target.",
+        "Tests exercise actual app_build types/functions, not stubs.",
+        "No test hard-fails immediately from a missing import/target wiring mistake."
+      ]
     }
   }
 }

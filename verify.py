@@ -100,16 +100,26 @@ def _errors_tail(text, limit=3000):
     return tail[-limit:]
 
 
-def _xcode_scheme(target_flag, target, cwd, timeout):
+def _xcode_list_output(target_flag, target, cwd, timeout):
+    """Raw `xcodebuild -list` text, or None if the command failed. Shared by
+    scheme picking and test-target discovery so both read the same listing."""
     code, out, _err = _run(["xcodebuild"] + target_flag + [target, "-list"],
                            cwd, min(timeout, 120))
-    if code != 0:
-        return None
-    m = re.search(r"Schemes:\s*\n(.*)", out, re.DOTALL)
+    return out if code == 0 else None
+
+
+def _xcode_schemes_from_list(list_output):
+    if not list_output:
+        return []
+    m = re.search(r"Schemes:\s*\n(.*)", list_output, re.DOTALL)
     if not m:
-        return None
-    schemes = [line.strip() for line in m.group(1).splitlines() if line.strip()]
-    return _pick_scheme(schemes, target)
+        return []
+    return [line.strip() for line in m.group(1).splitlines() if line.strip()]
+
+
+def _xcode_scheme(target_flag, target, cwd, timeout):
+    out = _xcode_list_output(target_flag, target, cwd, timeout)
+    return _pick_scheme(_xcode_schemes_from_list(out), target)
 
 
 def _pick_scheme(schemes, target):
@@ -129,6 +139,28 @@ def _pick_scheme(schemes, target):
         if sl and (sl in base or base in sl):
             return s
     return schemes[0]
+
+
+def _has_test_target(list_output, schemes):
+    """Best-effort discovery of a real XCTest target, mirroring _pick_scheme's
+    avoid-false-positive stance: only trust an explicit entry under a
+    'Targets:'/'Tests:' section of `xcodebuild -list`, or an actual scheme
+    name containing 'test' — never assume a test target exists just because
+    run_tests was requested. False negatives are fine (we degrade to a
+    build-only verification); false positives would pay for and then fail a
+    test run that was never real."""
+    if not list_output:
+        return False
+    for header in ("Targets:", "Tests:"):
+        m = re.search(re.escape(header) + r"\s*\n(.*?)(?:\n\s*\n|\Z)",
+                      list_output, re.DOTALL)
+        if not m:
+            continue
+        for line in m.group(1).splitlines():
+            name = line.strip()
+            if name and "test" in name.lower():
+                return True
+    return any("test" in s.lower() for s in (schemes or []))
 
 
 def _generate_xcodeproj(build_dir, timeout):
@@ -156,11 +188,21 @@ def _generate_xcodeproj(build_dir, timeout):
     return ""
 
 
-def _verify_xcode(build_dir, timeout):
+def _verify_xcode(build_dir, timeout, run_tests=False):
+    """Compile-only by default; when ``run_tests`` is set AND a real test
+    target is discoverable, also runs `xcodebuild ... test` — but only AFTER
+    a successful build. Running the (slow, simulator-boot-heavy, sometimes
+    flaky) test action against code that doesn't even compile would just burn
+    the timeout twice for the same failure, so build failure short-circuits
+    the test run entirely (mirrors the repair loop's own build-then-check
+    order). A requested-but-undiscoverable test target degrades gracefully to
+    build-only verification — this must never hard-fail a run just because
+    the generated project has no tests yet."""
     if not shutil.which("xcodebuild"):
         return {"ran": False, "ok": False, "tool": "xcodebuild",
                 "summary": "xcodebuild not found (Xcode command line tools "
-                           "unavailable) — skipping compile check.", "errors": ""}
+                           "unavailable) — skipping compile check.", "errors": "",
+                "tests_ran": False, "tests_ok": None}
     # Absolute so that running xcodebuild with cwd=project_dir can't mis-resolve a
     # relative -project/-workspace path.
     build_dir = os.path.abspath(build_dir)
@@ -179,27 +221,50 @@ def _verify_xcode(build_dir, timeout):
     else:
         return {"ran": False, "ok": False, "tool": "xcodebuild",
                 "summary": "no .xcodeproj/.xcworkspace found%s." % gen_note,
-                "errors": ""}
+                "errors": "", "tests_ran": False, "tests_ok": None}
     cwd = os.path.dirname(target)
-    scheme = _xcode_scheme(target_flag, target, cwd, timeout)
-    cmd = ["xcodebuild"] + target_flag + [target]
+    list_output = _xcode_list_output(target_flag, target, cwd, timeout)
+    schemes = _xcode_schemes_from_list(list_output)
+    scheme = _pick_scheme(schemes, target)
+    cmd_base = ["xcodebuild"] + target_flag + [target]
     if scheme:
-        cmd += ["-scheme", scheme]
-    cmd += ["-sdk", "iphonesimulator",
-            "-destination", "generic/platform=iOS Simulator",
-            "-configuration", "Debug",
-            "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO",
-            "build"]
-    code, out, err = _run(cmd, cwd, timeout)
+        cmd_base += ["-scheme", scheme]
+    common_flags = ["-sdk", "iphonesimulator",
+                    "-destination", "generic/platform=iOS Simulator",
+                    "-configuration", "Debug",
+                    "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO"]
+    code, out, err = _run(cmd_base + common_flags + ["build"], cwd, timeout)
     ok = (code == 0)
     combined = out + "\n" + err
-    return {
+    result = {
         "ran": True, "ok": ok, "tool": "xcodebuild",
         "summary": ("compiled cleanly for the iOS Simulator"
                     if ok else "compile FAILED for the iOS Simulator"),
         "errors": "" if ok else _errors_tail(combined),
         "scheme": scheme or "(default)",
+        # Additive fields (kept separate from ok/ran so nothing that reads the
+        # existing fields breaks): whether a test action actually ran, and
+        # whether it passed. None means "no test action was attempted".
+        "tests_ran": False, "tests_ok": None,
     }
+    if not run_tests:
+        return result
+    if not ok:
+        result["summary"] += " (tests skipped: build failed)"
+        return result
+    if not _has_test_target(list_output, schemes):
+        result["summary"] += " (run_tests requested but no test target " \
+                              "discoverable — build-only verification)"
+        return result
+    tcode, tout, terr = _run(cmd_base + common_flags + ["test"], cwd, timeout)
+    tests_ok = (tcode == 0)
+    result["tests_ran"] = True
+    result["tests_ok"] = tests_ok
+    result["summary"] += " + tests passed" if tests_ok else " + TESTS FAILED"
+    if not tests_ok:
+        result["errors"] = (result.get("errors", "")
+                            + "\n" + _errors_tail(tout + "\n" + terr)).strip()
+    return result
 
 
 def _verify_spm(build_dir, timeout):
@@ -459,7 +524,7 @@ def run_verification(build_dir, spec, timeout=1200):
             return {"ran": False, "ok": False, "tool": vtype,
                     "summary": "no build directory to verify.", "errors": ""}
         if vtype == "xcodebuild":
-            return _verify_xcode(build_dir, timeout)
+            return _verify_xcode(build_dir, timeout, run_tests=bool(spec.get("run_tests")))
         if vtype in ("swift", "spm"):
             return _verify_spm(build_dir, timeout)
         if vtype in ("http", "server", "boot"):
@@ -565,6 +630,15 @@ def persist_verify_result(app_dir, phase_key, result, attempt=0,
         "summary": result.get("summary", ""),
         "errors": (result.get("errors", "") or "")[:8000],
         "tests": result.get("tests"),
+        # Additive, purely observational by default (runtime.tests_gate_release,
+        # default False, is the only thing that lets these affect the release
+        # gate — see _release_gate_failure in orchestrator.py): whether a real
+        # `xcodebuild test` action ran, and whether it passed. Both stay
+        # False/None for every non-xcodebuild verifier and for xcodebuild runs
+        # that didn't request run_tests, so existing consumers of ok/ran are
+        # completely unaffected.
+        "tests_ran": bool(result.get("tests_ran")),
+        "tests_ok": result.get("tests_ok"),
     }
     try:
         with _vr_lock(app_dir):

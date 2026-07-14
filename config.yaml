@@ -142,6 +142,7 @@ rounds:
   # Build phase gets many iterations so the app can actually be finished; it ends
   # early when the coordinator judges the app functionally complete.
   build_coordination: 9
+  write_tests: 6
   build_verification: 9
   human_qa_checklist: 9
   app_store_readiness: 9
@@ -324,6 +325,44 @@ runtime:
   phase_independent_first_round_enabled: true
   phase_quality_gates_enabled: true
   phase_quality_repair_rounds: 2
+  # Adaptive escalation: failure-triggered, not static-always-on (contrast
+  # with models.claude_integrator above, which is a static per-role override
+  # applied on EVERY integration turn). Only the verify/repair loop
+  # (_verify_and_repair) and the phase quality-gate retry path can trigger
+  # this, and only after repeated failure on the SAME phase — so it never
+  # changes a normal, first-try-successful run. Default ON because it's cheap
+  # and safe: it fires only on paths that would otherwise burn identical,
+  # already-failing attempts at the same (weaker) settings.
+  adaptive_escalation_enabled: true
+  # Attempt/call number (1-based) at which escalation kicks in for THAT and
+  # every later attempt in the same repair/quality-gate loop. With the default
+  # verify_repair_iterations=3, a value of 2 means the 1st retry runs
+  # unescalated and the 2nd+ retries get the stronger effort.
+  escalate_repair_after_attempt: 2
+  # Optional full model swap for the escalated claude coordinator turn only
+  # (extends the models.claude_integrator pattern). Blank (default) = no swap;
+  # escalation stays at the cheap reasoning-effort bump (-> "high"/"max").
+  escalation_model_override: ""
+  # Real `xcodebuild test` execution (opt-in per workflow via verify.run_tests
+  # in workflows/*.json — currently only app_build/full_max's build_verification
+  # phase sets it). This is a GLOBAL kill-switch on top of that: tests only
+  # actually run when BOTH the phase/spec ask for them AND this is true.
+  # Flakiness/cost tradeoff: a real test run is slower than a plain compile
+  # (simulator boot, XCTest scheduling) and can be flakier (timing-sensitive
+  # UI tests, shared CI resource contention) — this is the one lever to shut
+  # test execution off everywhere without touching every workflow file.
+  # Default true: it degrades gracefully (build-only) whenever no test target
+  # is discoverable, and by itself a failing test never blocks anything (see
+  # tests_gate_release below), so leaving it on is low-risk.
+  run_generated_tests: true
+  # Whether a FAILED test run (tests_ran=true, tests_ok=false in the latest
+  # verify_results.json record) blocks the release gate (_release_gate_failure)
+  # the same way a failed COMPILE already does. Default false: generated test
+  # suites are new/unproven, so a flaky or wrong test must never be able to
+  # strand an otherwise-compiling build in perpetual repair. Purely additive/
+  # observational by default — turn this on only once you trust the generated
+  # tests enough to treat them as a hard gate.
+  tests_gate_release: false
 
 # Phase rules + knowledge / retrieval (RAG). phase_rules.json gives every app
 # phase an editable playbook: required outputs, acceptance checks, and general

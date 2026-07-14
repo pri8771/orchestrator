@@ -14,6 +14,8 @@ Mistake classes appended by orchestrator.py:
     agent_fallback        (a cloud turn was rescued/lost to the fallback ladder)
     contract_error        (tasks.json/interfaces.json parse or cycle errors)
     consensus_unverified  (integrator declared consensus while the verifier said NO)
+    escalation_triggered  (adaptive escalation bumped effort/model after N
+                           repeated failures on the SAME repair/quality-gate loop)
 
 Contract (mirrors events.py exactly):
   * Best-effort by design — writing a ledger line must NEVER take a run down.
@@ -46,6 +48,7 @@ MISTAKES_FILENAME = "mistakes.jsonl"
 CLASSES = (
     "verify_failure", "repair_queued", "quality_gate_fail",
     "agent_fallback", "contract_error", "consensus_unverified",
+    "escalation_triggered",
 )
 
 _MAX_FIELD_CHARS = 500
