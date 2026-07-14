@@ -514,7 +514,9 @@ final class OrchestratorStore: ObservableObject {
 
     // Pure formatting split out of surfaceError() so it's unit-testable
     // without a live store instance: (line appended to runLog, banner text).
-    static func formatSurfacedError(_ msg: String) -> (logLine: String, banner: String) {
+    // nonisolated: touches no actor state, and XCTest calls it synchronously
+    // from a nonisolated context.
+    nonisolated static func formatSurfacedError(_ msg: String) -> (logLine: String, banner: String) {
         let logLine = msg.hasSuffix("\n") ? msg : msg + "\n"
         let banner = msg.trimmingCharacters(in: .whitespacesAndNewlines)
         return (logLine, banner)
@@ -2344,7 +2346,9 @@ final class OrchestratorStore: ObservableObject {
         }
     }
 
-    static func slugify(_ s: String) -> String {
+    // nonisolated: pure string transform, exercised synchronously by
+    // SlugifyTests from a nonisolated XCTest context.
+    nonisolated static func slugify(_ s: String) -> String {
         var out = ""
         var prevDash = false
         for ch in s.lowercased() {
