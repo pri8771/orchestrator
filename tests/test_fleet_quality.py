@@ -12,6 +12,7 @@ import designlint as dlint
 import evalharness as evallib
 import fleetlearn as fllib
 import orchestrator as orch
+import verify as verifylib
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -234,8 +235,11 @@ class TestEvalHarness(unittest.TestCase):
     def test_score_project_composite(self):
         app_dir = tempfile.mkdtemp()
         os.makedirs(os.path.join(app_dir, "docs"))
-        json.dump({"attempts": [{"ran": True, "ok": True}]},
-                  open(os.path.join(app_dir, "verify_results.json"), "w"))
+        # verify.py's real on-disk shape is a bare LIST of records (written by
+        # persist_verify_result), not {"attempts": [...]}. Use the real writer
+        # so this test can't drift from production again.
+        verifylib.persist_verify_result(app_dir, "release_gate",
+                                        {"ran": True, "ok": True})
         json.dump({"verdict": "PASS", "score": 80},
                   open(os.path.join(app_dir, "docs", "adherence.json"), "w"))
         json.dump({"verdict": "PASS", "score": 100},
@@ -252,6 +256,20 @@ class TestEvalHarness(unittest.TestCase):
         self.assertEqual(r["composite"], 95)
         self.assertTrue(r["compile_ok"])
         self.assertEqual(r["flows"], "2/2")
+
+    def test_missing_evidence_is_not_scored_as_zero_defects(self):
+        # A project with NO crawl/lint reports at all (gates never ran) must
+        # not collect the crawl-hygiene/lint points that a genuinely clean
+        # pass would earn — missing evidence != zero defects.
+        app_dir = tempfile.mkdtemp()
+        json.dump({"done": True},
+                  open(os.path.join(app_dir, "agent_state.json"), "w"))
+        r = evallib.score_project(app_dir)
+        self.assertEqual(r["composite"], 0)
+        self.assertFalse(r["compile_ok"])
+        self.assertEqual(r["crashes"], "n/a")
+        self.assertEqual(r["dead_buttons"], "n/a")
+        self.assertEqual(r["lint_errors"], "n/a")
 
 
 if __name__ == "__main__":

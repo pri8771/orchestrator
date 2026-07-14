@@ -21,6 +21,7 @@ import json
 import os
 
 import fleetlearn as fllib
+import verify as verifylib
 
 
 def _load(app_dir, rel):
@@ -67,30 +68,34 @@ def score_project(app_dir):
     st = _load(app_dir, "agent_state.json") or {}
     verify_ok = False
     verify_ran = False
-    v = _load(app_dir, "verify_results.json")
-    if isinstance(v, dict):
-        attempts = v.get("attempts") or v.get("results") or []
-        if isinstance(attempts, list) and attempts:
-            latest = attempts[-1]
-            verify_ran = bool(latest.get("ran"))
-            verify_ok = bool(latest.get("ok"))
-    adh = _load(app_dir, "docs/adherence.json") or {}
-    vqa = _load(app_dir, "docs/visual_qa.json") or {}
-    crawl = _load(app_dir, "docs/ui_crawl.json") or {}
-    lint = _load(app_dir, "docs/design_lint.json") or {}
+    # verify.py's canonical accessor, not a hand-rolled re-read of the file:
+    # persist_verify_result() writes a bare JSON LIST of records, not a dict
+    # with an "attempts"/"results" key, so parse it the same way verify.py
+    # itself does or "ran"/"ok" silently stay False for every real project.
+    records = verifylib.load_verify_results(app_dir)
+    if records:
+        latest = records[-1]
+        verify_ran = bool(latest.get("ran"))
+        verify_ok = bool(latest.get("ok"))
+    adh = _load(app_dir, "docs/adherence.json")
+    vqa = _load(app_dir, "docs/visual_qa.json")
+    crawl = _load(app_dir, "docs/ui_crawl.json")
+    lint = _load(app_dir, "docs/design_lint.json")
     rating = fllib.load_rating(app_dir)
 
-    flows = crawl.get("flows") or []
+    crawl_ran = isinstance(crawl, dict)
+    lint_ran = isinstance(lint, dict)
+    flows = (crawl or {}).get("flows") or []
     flows_passed = sum(1 for f in flows if f.get("passed"))
-    dead = len(crawl.get("dead_taps") or [])
-    crashes = len(crawl.get("crashes") or [])
-    lint_errors = len(lint.get("errors") or [])
+    dead = len((crawl or {}).get("dead_taps") or [])
+    crashes = len((crawl or {}).get("crashes") or [])
+    lint_errors = len((lint or {}).get("errors") or [])
 
     def pts(cond, full):
         return full if cond else 0
 
-    adh_score = adh.get("score")
-    vqa_score = vqa.get("score")
+    adh_score = (adh or {}).get("score")
+    vqa_score = (vqa or {}).get("score")
     composite = 0
     composite += pts(verify_ok, 30)
     composite += int(round((adh_score or 0) * 0.25)) \
@@ -98,8 +103,10 @@ def score_project(app_dir):
     composite += int(round((vqa_score or 0) * 0.15)) \
         if isinstance(vqa_score, (int, float)) else 0
     composite += int(round(15.0 * flows_passed / len(flows))) if flows else 0
-    composite += pts(crashes == 0 and dead <= 1, 10)
-    composite += pts(lint_errors == 0, 5)
+    # Missing evidence must never score as "zero defects" — only award crawl
+    # hygiene / lint points when that gate's report actually exists.
+    composite += pts(crawl_ran and crashes == 0 and dead <= 1, 10)
+    composite += pts(lint_ran and lint_errors == 0, 5)
 
     wall, turns = _events_span(app_dir)
     return {
@@ -111,9 +118,9 @@ def score_project(app_dir):
         "adherence": adh_score if adh_score is not None else "",
         "visual": vqa_score if vqa_score is not None else "",
         "flows": "%d/%d" % (flows_passed, len(flows)) if flows else "",
-        "crashes": crashes,
-        "dead_buttons": dead,
-        "lint_errors": lint_errors,
+        "crashes": crashes if crawl_ran else "n/a",
+        "dead_buttons": dead if crawl_ran else "n/a",
+        "lint_errors": lint_errors if lint_ran else "n/a",
         "repairs": int(st.get("release_gate_repairs") or 0),
         "wall_minutes": round(wall / 60.0, 1) if wall else "",
         "turns": turns,
