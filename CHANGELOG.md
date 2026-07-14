@@ -1,7 +1,41 @@
 # Changelog
 
-This project doesn't yet cut tagged releases; entries below track the two
+This project doesn't yet cut tagged releases; entries below track the
 audit-driven fix passes against `pyproject.toml`'s `version = "2.0.0"`.
+
+## Round 5 — completeness pass (post-`TASKS_ROUND4.md`)
+
+Not a fresh audit — a targeted sweep closing every remaining known gap: the
+original `TASKS.md` overflow list (finally fully cleared), a real GUI
+data-loss bug it surfaced (the Routing Grid silently dropping hand-edited
+per-role effort overrides on save), and four previously-deferred
+architecture recommendations plus three previously-intentional non-decisions
+that got finished rather than left open indefinitely. Highlights:
+
+- Routing Grid roles round-trip fix (the real bug of this round) + a minimal
+  editing UI; caught a third live instance of the actor-isolation
+  `nonisolated` bug class while adding tests for it.
+- Phase-transition summarization (`phase_summaries.json`, recent phases keep
+  full transcript, older phases get a compact summary) and round-level crash
+  resume (parses the on-disk transcript for the real last-complete round
+  instead of trusting a lone counter).
+- Adaptive quality-based escalation (bump effort/model only on repeated
+  repair or quality-gate failure, revert immediately after) and a
+  `write_tests` phase running real `xcodebuild test`, scoped to the deep
+  pipelines only and purely observational by default.
+- Real Ollama `"think"` effort wiring on the HTTP path (the CLI path stays
+  honestly noop — no equivalent flag); opt-in, honestly-labeled cost
+  estimation for `--postmortem`; a stdlib-only hand-rolled parser closing the
+  Python 3.9/3.10 packaging-test gap without adding a dependency.
+- `knowledge.retrieve`'s bare-header-on-empty-chunk bug, a `try!`→`try?`
+  crash-risk fix in the GUI's transcript parser, QuickLook preview for
+  attached docs, and several smaller overflow-list closures.
+
+Suite grew from 682 to 779 tests; mypy and ruff stayed clean throughout. See
+`AUDIT_HISTORY.md`'s Round 5 entry for the full record, including two items
+left deliberately open (a CI platform-level outage unrelated to this repo's
+code, and GUI design-refresh Tranche 3, which is net-new feature work rather
+than a gap to close).
 
 ## Round 4 — `TASKS_ROUND4.md`
 

@@ -1732,7 +1732,7 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
                      % _budget(transcript, tr_lim))
     else:
         parts.append("\n===== THIS PHASE'S DISCUSSION SO FAR =====\n(You are the first speaker.)")
-    # Retrieved, curated domain knowledge for this phase (set at phase start).
+    # Phase-specific playbook rules rendered from phase_rules.json (set at phase start).
     playbook = cfg.get("_phase_playbook", "")
     if playbook:
         parts.append(playbook)

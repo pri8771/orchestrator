@@ -87,42 +87,41 @@ items Round 3 explicitly deferred.
 
 ## Informational (not tracked as action items)
 
-- `dependabot.yml` has no `pip` ecosystem entry for the new
-  `[project.optional-dependencies] dev = ["ruff", "mypy"]` surface added in
-  Round 3 — only `github-actions` is watched.
-- Command Palette's search field holds focus for the whole time the palette
-  is open with no `.onKeyPress` wired to the `List`; arrow-key navigation
-  reaching the list (vs. the text field consuming it) is unverified without
-  a Swift runtime — flagged as a candidate for a manual click-test, not a
-  confirmed defect.
-- `docs.render_project_management_backfill` still crashes on
-  `verify_summary=None` (`docs.py:182`, missing the `or ""` guard its
-  siblings in the same file have) — currently unreachable from the one
-  in-scope caller and wrapped in a broad `except Exception`, so latent
-  rather than active.
-- `verify.persist_verify_result` timestamps with naive `datetime.now()`
-  (`verify.py:551`) instead of the tz-aware pattern `events.py` already
-  uses — minor ordering ambiguity across a DST transition when correlated
-  against `events.jsonl`.
-- `orchestrator.py:2668,2687` read a `cfg["_installed_ollama_models"]` key
-  that's never set anywhere — always falls through to the correct fallback
-  branch, just via dead/vestigial code, pre-existing and not introduced
-  this round.
+> All four items below are CLOSED as of the post-Round-4 completeness pass
+> (commits through `4c764b9`) — kept here for history, not because they're
+> still open. See `AUDIT_HISTORY.md` for the full closure record.
+
+- ~~`dependabot.yml` has no `pip` ecosystem entry~~ — closed (Round 4 Batch B,
+  `.github/dependabot.yml` now has a `pip` ecosystem entry).
+- ~~Command Palette's search field holds focus ... arrow-key navigation
+  unverified~~ — resolved by design: `.onKeyPress` handlers are attached
+  directly to the search field (not the `List`), which manually drives
+  selection state — confirmed working as intended, not a defect.
+- ~~`docs.render_project_management_backfill` still crashes on
+  `verify_summary=None`~~ — closed, `docs.py` now guards with `(verify_summary
+  or "").upper()...`.
+- ~~`verify.persist_verify_result` timestamps with naive `datetime.now()`~~ —
+  closed, now uses `.astimezone().isoformat(...)` matching `events.py`.
+- ~~`orchestrator.py`'s dead `_installed_ollama_models` cfg key~~ — closed,
+  `_installed_local_models(cfg)` now memoizes a real value onto it.
 
 ## Re-confirmed: Round 3's 5 deferred items — all still open, unchanged
 
-- `phase_rules.load_rules`/`knowledge._load_doc` mtime-cache staleness
-  across same-second file replacement — still present.
-- `localmodels.report()` bypasses the TTL/single-flight cache — still
-  present (`localmodels.py:222`).
-- `global_resource._reap`'s dead-row cleanup still rolled back whenever the
-  claim it ran inside fails the cap check — still present
-  (`global_resource.py:62-79`).
-- `install_launch_agent.sh` has zero test coverage — still true.
-- `tests/test_packaging.py`'s py-modules guard still skips on Python
-  3.9/3.10 (no `tomllib`) — still a genuine stdlib limitation, not closed;
-  closing it would require a `tomli` backport dependency, in tension with
-  the project's stdlib-only rule.
+> All 5 items below are now CLOSED — see `AUDIT_HISTORY.md` for the closure
+> record (all five landed in Round 4 Batch A, commit `1188b28`).
+
+- ~~`phase_rules.load_rules`/`knowledge._load_doc` mtime-cache staleness~~ —
+  closed, both re-keyed on `(st_mtime_ns, st_size)`.
+- ~~`localmodels.report()` bypasses the TTL/single-flight cache~~ — closed,
+  now calls `installed_models_cached()`.
+- ~~`global_resource._reap`'s dead-row cleanup rolled back~~ — closed, `_reap`
+  now commits in its own transaction before the claim transaction.
+- ~~`install_launch_agent.sh` has zero test coverage~~ — closed,
+  `tests/test_install_launch_agent.py` added.
+- ~~`tests/test_packaging.py`'s py-modules guard skips on Python 3.9/3.10~~ —
+  closed in the post-Round-4 completeness pass via a narrowly-scoped,
+  stdlib-only hand-rolled parser for pyproject.toml's `py-modules` array
+  (no `tomli` dependency added, consistent with the stdlib-only rule).
 
 ## Verified clean (no issues found this round)
 

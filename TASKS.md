@@ -145,15 +145,48 @@ changed, with rationale:
 
 ## Overflow (found but below the top-100 cut)
 
-- [P3] Make the GUI ratchet/style guard (`ci_style_check.sh`) fail on any legacy hardcoded font size rather than freezing baselines.
-- [P3] Add QuickLook preview for attached docs per design §3/§4.5.
-- [P3] Replace `try! NSRegularExpression` in `TranscriptParser.swift:21` with lazy validation.
-- [P3] Add a GUI-level snapshot/interaction test target for SwiftUI views.
-- [P3] Add focused unit tests for `docs.py` renderer sections and completeness `stop_after_phase` fallback edges.
-- [P3] Add tests for `run.sh`/`shepherd.sh`/`install_launch_agent.sh` behavior (git-secret refusal, queue ordering).
-- [P3] Add a pytest config/dev-requirements or document unittest-only.
-- [P3] Handle `verify_summary=None` defensively in `docs.render_project_management_backfill` (`docs.py:161`).
-- [P3] Refresh README's file map ("9 built-ins", legacy `locks/` note).
-- [P3] Deduplicate the repeated knowledge-injection comment block in `build_context` (`orchestrator.py:1581-1587`).
-- [P3] Add coverage for `docs.py` renderer and shell-script behaviors noted above.
-- [P3] Refresh accessibility/tooltip affordances flagged in the design doc beyond the top-100 items.
+> This list is fully CLOSED as of the post-Round-4 completeness pass. See
+> `AUDIT_HISTORY.md` for the consolidated closure record; kept here for
+> history rather than deleted.
+
+- ~~[P3] Make the GUI ratchet/style guard fail on any legacy hardcoded font
+  size rather than freezing baselines~~ — closed, `ci_style_check.sh`'s
+  ratchet was cleared to a hard 0 across the board during the design-refresh
+  tranches (no per-file baseline exceptions remain).
+- ~~[P3] Add QuickLook preview for attached docs per design §3/§4.5~~ —
+  closed, `NewAppIntake.swift`'s attached-doc rows now have a preview button
+  wired to `.quickLookPreview($quickLookURL)`.
+- ~~[P3] Replace `try! NSRegularExpression` in `TranscriptParser.swift:21`
+  with lazy validation~~ — closed, now `try?` with a fail-open degrade path.
+- ~~[P3] Add a GUI-level snapshot/interaction test target for SwiftUI
+  views~~ — closed as a documented, deliberate non-goal (no external
+  snapshot-testing dependency allowed under the zero-deps rule, no
+  simulator-backed UI-test runner in CI) — see `gui/DESIGN-REFRESH.md`
+  §8 "Testing scope"; the suite instead maximizes pure-logic coverage
+  feeding views (`ViewLogicTests.swift` and others).
+- ~~[P3] Add focused unit tests for `docs.py` renderer sections and
+  completeness `stop_after_phase` fallback edges~~ — closed across earlier
+  rounds (`tests/test_docs.py`, `tests/test_completeness.py`).
+- ~~[P3] Add tests for `run.sh`/`shepherd.sh`/`install_launch_agent.sh`
+  behavior~~ — closed, all three have dedicated subprocess-driven test
+  suites (`tests/test_run_sh.py`, `tests/test_shepherd.py`,
+  `tests/test_install_launch_agent.py`).
+- ~~[P3] Add a pytest config/dev-requirements or document unittest-only~~ —
+  closed, `pyproject.toml`'s `[project.optional-dependencies] dev` and
+  CONTRIBUTING.md document the unittest-only, stdlib-first toolchain.
+- ~~[P3] Handle `verify_summary=None` defensively in
+  `docs.render_project_management_backfill`~~ — closed, `docs.py` now guards
+  with `(verify_summary or "").upper()...`.
+- ~~[P3] Refresh README's file map~~ — closed, README's file map and CLI
+  surface are current (includes `AUDIT_HISTORY.md`, `MISTAKES.md`,
+  `--mistakes`/`--postmortem`).
+- ~~[P3] Deduplicate the repeated knowledge-injection comment block in
+  `build_context`~~ — closed: the `playbook` block had been mislabeled with
+  the `know` block's comment ("Retrieved, curated domain knowledge...")
+  copy-pasted above it; corrected to describe what it actually injects
+  (phase_rules.json playbook rules).
+- ~~[P3] Add coverage for `docs.py` renderer and shell-script behaviors~~ —
+  duplicate of the two items above; closed.
+- ~~[P3] Refresh accessibility/tooltip affordances flagged in the design
+  doc~~ — closed across the two design-refresh tranches (accessibility
+  values on Pause/Resume, empty-state affordances, etc.).

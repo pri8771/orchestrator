@@ -86,13 +86,93 @@ record (taxonomy + the runtime `mistakes.jsonl` ledger and `--mistakes` /
   pass ("R4 Batch A ... + deferred-backlog clearance"); independently
   re-audited six Round 3 fixes as correct; 584 tests + mypy clean at close.
 
+## Round 5 — post-Round-4 completeness pass (commits `4c764b9`..`40dbdce` + doc closure)
+
+- **Scope:** not a fresh four-lane audit — a targeted completeness sweep
+  triggered by an explicit ask to close every remaining known gap: the
+  original TASKS.md overflow list (never fully cleared, despite this file's
+  Round 1 entry previously claiming it was), a real GUI data-loss bug found
+  during that sweep, and four architecture recommendations from an earlier
+  research pass that had been intentionally deferred (phase-transition
+  summarization, adaptive escalation, round-level crash resume, a
+  test-writing phase with real `xcodebuild test`) plus three previously
+  "intentional non-decisions" (Ollama effort control, opt-in cost
+  estimation, a tomli-free packaging test) that were revisited and finished
+  rather than left as permanent gaps.
+- **Ground-truth verification first:** a dedicated pass ran the actual test
+  suite/mypy/ruff/style-check/syntax-check/shell-syntax-check commands (not
+  a review of commit messages) to establish 682 tests green, mypy clean,
+  ruff clean, GUI style guard at 0, before any fix work started.
+- **Overflow list (7 items, all closed):** `knowledge.retrieve` returning a
+  bare header when every matched chunk truncates to empty; a dead `rnd`
+  parameter in `seed_demo.py`; no DB index backing `global_resource._reap`'s
+  scan; the spoofed `urlfetch` `USER_AGENT` under-documented; `try!` on
+  `NSRegularExpression` in `TranscriptParser.swift`; no GUI-level
+  snapshot/interaction tests (closed as a documented non-goal — see
+  `gui/DESIGN-REFRESH.md` §8 — plus real new pure-logic test coverage
+  instead); QuickLook preview for attached docs never implemented.
+- **Real bug found and fixed (not in any prior audit):** the GUI's Routing
+  Grid could silently DELETE a hand-edited per-role (`roles.worker`/
+  `roles.integrator`) effort override the next time an operator saved any
+  unrelated change from the grid, because `ModelRouting.load()`/`.save()`
+  didn't know that key existed. Fixed with full round-trip support plus a
+  minimal editing UI; caught a *third* live instance of the actor-isolation
+  `nonisolated` bug class (`CommandPaletteView.fuzzyScore`) while adding
+  test coverage for it.
+- **"Intentional gap" items, finished rather than left deferred:** real
+  Ollama `"think"` reasoning-effort wiring on the HTTP `/api/generate` path
+  (the CLI subprocess path has no equivalent flag and honestly stays
+  noop-with-a-warning); opt-in, honestly-labeled per-1k-char cost estimation
+  for `--postmortem` (absent by default, zero behavior change unless an
+  operator configures `cost.pricing`); a stdlib-only hand-rolled parser
+  closing the Python 3.9/3.10 packaging-test gap without adding a `tomli`
+  dependency.
+- **Architecture items, finished:** phase-transition summarization
+  (`phase_summaries.json`, a `runtime.phase_summary_policy` knob, recent
+  phases still get full transcript, older phases get the compact summary);
+  round-level crash resume (parses the on-disk transcript to find the real
+  last-complete round rather than trusting a lone counter, scoped to the
+  sequential round loop only — the parallel build loop already has
+  git-based recovery); adaptive quality-based escalation (bumps effort,
+  then model, only on repeated repair/quality-gate failures, reverts
+  immediately after, gated by `runtime.adaptive_escalation_enabled`); a
+  `write_tests` phase with real `xcodebuild test` execution, scoped to the
+  two deep pipelines only (`app_build`, `full_max` — not the speed-oriented
+  `sprint`/`vslice`/`prototype`/`iterate`), purely observational by default
+  (`runtime.tests_gate_release` defaults false) with a global kill-switch
+  (`runtime.run_generated_tests`) and the flakiness/cost tradeoff documented
+  in config comments rather than silently defaulted into every run.
+- **Self-caught issues during the pass itself:** one implementation attempt
+  returned without doing any work (misread its own role as an orchestrator)
+  — detected via `git status`/`git log` showing nothing changed, and
+  relaunched with explicit "do the work yourself" instructions; a stale
+  documentation claim written during this same closure pass (that a
+  knowledge-injection comment duplication had already been fixed) was
+  caught as false before being committed and the actual one-line mislabeled
+  comment was fixed for real.
+- **Outcome:** 779 tests green (up from 682 at Round 4's close), mypy clean
+  (23 files), ruff clean, GUI style guard at 0. Every item surfaced by the
+  completeness audit that triggered this round is closed or, where genuinely
+  infeasible (full SwiftUI snapshot testing under the zero-dependency rule;
+  Ollama CLI-subprocess effort control absent an actual CLI flag; Gemini
+  effort control absent an actual CLI flag), consciously documented as a
+  permanent, evidence-based non-goal rather than left as a silent gap.
+
 ## Current state
 
-Every item from all four rounds is closed. Since Round 4 the repo has kept
-three enforcing gates green in CI — the unittest suite (682 tests, strict
-warnings), `mypy` (pyproject-pinned config), and `ruff` — while adding the
-mistakes ledger + verification rollup, per-iteration build verification,
-structured `decisions.json` phase handoffs, effort routing, and the
-`--postmortem` correlated failure report. The live, forward-looking record of
-failure classes is `MISTAKES.md`; per-project evidence accumulates in each
-app's `mistakes.jsonl`.
+Every item from all five rounds is closed. The repo keeps three enforcing
+gates green in CI — the unittest suite (779 tests, strict warnings), `mypy`
+(pyproject-pinned config), and `ruff` — plus the GUI style guard at a hard 0
+violations. The live, forward-looking record of failure classes is
+`MISTAKES.md`; per-project evidence accumulates in each app's
+`mistakes.jsonl`, correlated on demand via `--mistakes`/`--postmortem`.
+
+Two things remain genuinely open by deliberate choice, not oversight, and are
+recorded here so a future audit doesn't need to rediscover them: (1) CI's
+GitHub Actions runners were observed failing at the platform level (jobs
+never assigned a runner, not a code issue) during this round — worth
+re-checking the Actions/billing status before trusting a red X; (2) GUI
+design-refresh Tranche 3 (a Files tab, structured-argument palette verbs,
+routing-grid drag-fill-paint, a menu-bar restyle) is net-new feature work
+tracked in `gui/DESIGN-REFRESH.md`, not a "close this gap" item — intentionally
+out of scope for an audit-completeness pass.

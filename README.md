@@ -67,7 +67,7 @@ re-enters instead of skipping.
 
 ```bash
 # From the repo root:
-python3 -m unittest discover -s tests                            # engine suite (400+ tests)
+python3 -m unittest discover -s tests                            # engine suite (700+ tests)
 python3 -W error::ResourceWarning -m unittest discover -s tests  # strict: warnings fail
 
 # Or via the Makefile — the canonical gate. `make verify` is the full macOS
@@ -349,9 +349,9 @@ orchestrator/             # repo root (engine at top level)
 ├── install_launch_agent.sh
 ├── seed_demo.py / simulate_stream.py    # demo data / fake live transcript
 ├── events.py / mistakes.py / postmortem.py  # events.jsonl + mistakes.jsonl writers, --postmortem report
-├── AUDIT_HISTORY.md       # consolidated index of the four audit rounds (TASKS*.md)
+├── AUDIT_HISTORY.md       # consolidated index of the five audit rounds (TASKS*.md)
 ├── MISTAKES.md            # live failure-mode taxonomy + mistakes-ledger docs
-├── tests/                 # unittest suite (600+ tests)
+├── tests/                 # unittest suite (700+ tests)
 ├── gui/                   # native SwiftUI front-end (SwiftPM, zero deps) — see gui/README.md
 └── logs/                  # event log + per-call JSON records (gitignored)
 ```

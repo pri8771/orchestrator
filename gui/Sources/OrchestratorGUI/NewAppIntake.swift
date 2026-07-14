@@ -22,6 +22,7 @@ struct NewAppIntakeSheet: View {
     @State private var idea = ""
     @State private var workflow = "app_build"
     @State private var attachedDocs: [URL] = []
+    @State private var quickLookURL: URL?
     @State private var backfillFromDocs = true
     @State private var docDropTargeted = false
     @State private var routingPreset = "balanced"
@@ -151,6 +152,7 @@ struct NewAppIntakeSheet: View {
         }
         .padding(20)
         .frame(width: 560, height: 620)
+        .quickLookPreview($quickLookURL)
     }
 
     // MARK: Name (auto-slugged from the idea)
@@ -229,6 +231,14 @@ struct NewAppIntakeSheet: View {
                     Text(fileSizeLabel(url))
                         .font(DS.font.caption).foregroundStyle(.tertiary)
                     Spacer()
+                    Button {
+                        quickLookURL = url
+                    } label: {
+                        Image(systemName: "eye")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Preview \(url.lastPathComponent)")
                     Button {
                         attachedDocs.removeAll { $0 == url }
                     } label: {
