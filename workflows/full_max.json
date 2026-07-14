@@ -15,11 +15,12 @@
       "file": "prompt_contract.md",
       "title": "Prompt Contract",
       "purpose": "Preserve the user's original prompt before any discussion, convert it into a clear execution contract, list hard requirements, non-goals, success metrics, production-readiness expectations, and decision rules for every later phase.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "qa",
-        "delivery"
+        "delivery",
+        "red_team"
       ],
       "writes": false,
       "reads_target": false,
@@ -36,7 +37,7 @@
       "file": "product_research.md",
       "title": "Product Research",
       "purpose": "Before product debate begins, infer the likely market, audience, competitors/patterns, platform expectations, risks, and native iOS opportunities from the prompt. Label assumptions clearly and turn the research into implications for the first build.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "design",
@@ -57,7 +58,7 @@
       "file": "portfolio_selection.md",
       "title": "Portfolio Selection",
       "purpose": "If the prompt requests multiple apps, force a real independent selection process: one app per requested category or requested count, with no collapsed wrapper project. Produce the required portfolio-json manifest for sibling child projects. If the prompt is a single app, explicitly record that no portfolio split is needed.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "design",
@@ -78,7 +79,7 @@
       "file": "initial_discussion.md",
       "title": "Initial Discussion",
       "purpose": "Establish a shared, precise understanding of what this app is, who it is for, the core problem it solves, hard scope boundaries, and measurable success criteria.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "design",
@@ -99,7 +100,7 @@
       "file": "per_app_product_brief.md",
       "title": "Per App Product Brief",
       "purpose": "Create a production-grade product brief for this specific app: target user, paid value, core loop, subscription value, competitive wedge, viral or niche growth mechanism, local-first behavior, cloud-ready extension path, and the real reason the app deserves to exist.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "design",
@@ -120,7 +121,7 @@
       "file": "next_steps_small.md",
       "title": "Next Steps Small",
       "purpose": "Define the smallest valuable slice / immediate next steps that de-risk and validate the concept with minimal effort.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "delivery",
@@ -141,7 +142,7 @@
       "file": "detailed_discussion.md",
       "title": "Detailed Discussion",
       "purpose": "Deeply analyze requirements, edge cases, constraints, assumptions, risks, and open questions, resolving ambiguity left from earlier phases.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "qa",
@@ -162,7 +163,7 @@
       "file": "app_features.md",
       "title": "App Features",
       "purpose": "Enumerate and prioritize the full feature set with an explicit scoring / MoSCoW model and clear in-scope vs out-of-scope lines.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "design",
@@ -183,7 +184,7 @@
       "file": "design_discussion.md",
       "title": "Design Discussion",
       "purpose": "Decide UX flows, information architecture, key screens/states, and the design principles that govern them.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "design",
         "frontend",
@@ -204,7 +205,7 @@
       "file": "design_handoff.md",
       "title": "Design Handoff",
       "purpose": "Produce a complete design handoff: screen-by-screen specs, interaction states, motion notes, design tokens, accessibility expectations, and a professional Claude Design prompt or import plan if the run is configured to pause for external design.",
-      "rounds": 9,
+      "rounds": 4,
       "roles": [
         "design",
         "frontend",
@@ -225,7 +226,7 @@
       "file": "ios_architecture_review.md",
       "title": "Ios Architecture Review",
       "purpose": "Review the app as an iOS product before final tech specs: SwiftUI architecture, Apple framework choices, local persistence, privacy, permissions, offline behavior, StoreKit/subscription architecture, permissive dependency policy, and testability.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "frontend",
         "backend",
@@ -246,11 +247,12 @@
       "file": "tech_specs.md",
       "title": "Tech Specs",
       "purpose": "Decide architecture, technology stack, data model, interfaces/APIs, and non-functional requirements with justified trade-offs.",
-      "rounds": 9,
+      "rounds": 4,
       "roles": [
         "frontend",
         "backend",
-        "qa"
+        "qa",
+        "red_team"
       ],
       "writes": false,
       "reads_target": false,
@@ -267,7 +269,7 @@
       "file": "project_plan.md",
       "title": "Project Plan",
       "purpose": "Produce milestones, sequencing, estimates, dependencies, and a risk-managed delivery plan.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "delivery",
         "backend",
@@ -288,7 +290,7 @@
       "file": "task_assignments.md",
       "title": "Task Assignments",
       "purpose": "Produce concrete workstreams, file ownership, forbidden edit zones, branch names, merge strategy, testing responsibilities, communication protocol, and a conflict-prevention plan.",
-      "rounds": 9,
+      "rounds": 4,
       "roles": [
         "delivery",
         "frontend",
@@ -309,7 +311,7 @@
       "file": "implementation_readiness_gate.md",
       "title": "Implementation Readiness Gate",
       "purpose": "Before any code is written, audit whether the product brief, design handoff, iOS architecture, tech specs, project plan, and task contracts are coherent enough for a one-shot production build. Resolve blockers or explicitly downgrade scope before build starts.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "delivery",
         "qa",
@@ -330,7 +332,7 @@
       "file": "agent_messages.md",
       "title": "Build Coordination",
       "purpose": "Iterative build coordination via agent messages. Planning and task assignment only unless build_code_changes_enabled is true.",
-      "rounds": 9,
+      "rounds": 6,
       "roles": [
         "frontend",
         "backend",
@@ -372,7 +374,7 @@
       "file": "build_verification.md",
       "title": "Build Verification",
       "purpose": "Compile and verify the generated app, then run bounded repair iterations against real compiler/test failures until it passes or records honest remaining blockers.",
-      "rounds": 9,
+      "rounds": 4,
       "roles": [
         "qa",
         "frontend",
@@ -397,7 +399,7 @@
       "file": "human_qa_checklist.md",
       "title": "Human Qa Checklist",
       "purpose": "Create a manual simulator/device QA script for every important workflow, including onboarding, empty states, error states, persistence, accessibility, offline behavior, paywall/subscription behavior when relevant, and regression checks.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "qa",
         "design",
@@ -418,7 +420,7 @@
       "file": "app_store_readiness.md",
       "title": "App Store Readiness",
       "purpose": "Prepare launch readiness: App Store positioning, screenshots/storyboard needs, privacy nutrition labels, permission copy, subscription/paywall review risks, support/contact requirements, and release blockers.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "product",
         "qa",
@@ -439,7 +441,7 @@
       "file": "final_review.md",
       "title": "Final Review",
       "purpose": "Final review of completeness, consistency, risks, quality gates, and a clear go / no-go decision.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "qa",
         "product",
@@ -460,7 +462,7 @@
       "file": "portfolio_audit.md",
       "title": "Portfolio Audit",
       "purpose": "For multi-app prompts, audit the portfolio shape: every requested app is a sibling folder, every selected app has the right workflow, child prompts preserve the parent requirements, and no category was silently collapsed. For single-app prompts, record that portfolio audit is not applicable.",
-      "rounds": 9,
+      "rounds": 3,
       "roles": [
         "qa",
         "delivery",

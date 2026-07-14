@@ -12,6 +12,7 @@ import AppKit
 
 // What the sidebar can select.
 enum ShellSelection: Hashable {
+    case home
     case overview
     case activity
     case project(String)
@@ -22,11 +23,12 @@ enum ShellSelection: Hashable {
 struct AppShellView: View {
     @EnvironmentObject var store: OrchestratorStore
 
-    @State private var selection: ShellSelection? = .overview
+    @State private var selection: ShellSelection? = .home
     @State private var searchText = ""
     @State private var showInspector = true
     @State private var showNewApp = false
     @State private var doneExpanded = false
+    @State private var archivedExpanded = false
     @State private var showLanesPopover = false
     @State private var showRunLog = false
     @FocusState private var searchFocused: Bool
@@ -39,26 +41,33 @@ struct AppShellView: View {
         store.appLocks[p.name] != nil || store.canStop(p.name)
     }
 
+    // Archived projects leave the four active sections entirely; they live in
+    // their own collapsed section below with a Restore action.
+    private var activeProjects: [Project] { store.projects.filter { !$0.archived } }
+    private var archivedApps: [Project] {
+        filtered(store.projects.filter(\.archived).sorted { $0.name < $1.name })
+    }
+
     private var runningApps: [Project] {
-        filtered(store.projects.filter { isRunning($0) }
+        filtered(activeProjects.filter { isRunning($0) }
             .sorted { (store.appLocks[$0.name]?.since ?? .distantFuture)
                     < (store.appLocks[$1.name]?.since ?? .distantFuture) })
     }
     private var needsAttentionApps: [Project] {
-        filtered(store.projects.filter {
+        filtered(activeProjects.filter {
             !isRunning($0) && ($0.status == .aborted || $0.awaitingApproval != nil
                                || $0.blockedConflict != nil)
         }.sorted { $0.name < $1.name })
     }
     private var doneApps: [Project] {
-        filtered(store.projects.filter { !isRunning($0) && $0.status == .done }
+        filtered(activeProjects.filter { !isRunning($0) && $0.status == .done }
             .sorted { $0.name < $1.name })
     }
     private var queuedApps: [Project] {
         let attention = Set(needsAttentionApps.map(\.name))
         let idx = Dictionary(store.queueOrder.enumerated().map { ($1, $0) },
                              uniquingKeysWith: { a, _ in a })
-        return filtered(store.projects
+        return filtered(activeProjects
             .filter { !isRunning($0) && $0.status != .done && $0.status != .aborted
                       && !attention.contains($0.name) }
             .sorted { (idx[$0.name] ?? Int.max, $0.name) < (idx[$1.name] ?? Int.max, $1.name) })
@@ -230,6 +239,8 @@ struct AppShellView: View {
     private var sidebar: some View {
         List(selection: $selection) {
             Section("Factory") {
+                Label("Home", systemImage: "bubble.left.and.text.bubble.right")
+                    .tag(ShellSelection.home)
                 Label("Overview", systemImage: "square.grid.2x2")
                     .tag(ShellSelection.overview)
                 Label("Activity", systemImage: "chart.bar.xaxis")
@@ -283,6 +294,17 @@ struct AppShellView: View {
                 ForEach(doneApps) { p in
                     ShellProjectRow(project: p, health: .success, detail: p.workflowTitle)
                         .tag(ShellSelection.project(p.name))
+                }
+            }
+
+            // Removed-from-list projects (folder kept). Materializes only when
+            // non-empty; Restore lives in the row's context menu.
+            if !archivedApps.isEmpty {
+                Section("Archived", isExpanded: $archivedExpanded) {
+                    ForEach(archivedApps) { p in
+                        ShellProjectRow(project: p, health: .idle, detail: "archived")
+                            .tag(ShellSelection.project(p.name))
+                    }
                 }
             }
 
@@ -375,7 +397,10 @@ struct AppShellView: View {
     @ViewBuilder
     private var content: some View {
         switch selection {
-        case .overview, nil:
+        case .home, nil:
+            ChatHomeView(onOpenProject: { selection = .project($0) },
+                         onNewApp: { showNewApp = true })
+        case .overview:
             FactoryOverviewView(
                 running: runningApps, queued: queuedApps,
                 needsAttention: needsAttentionApps, done: doneApps,
@@ -445,12 +470,17 @@ private struct ShellProjectRow: View {
     var position: Int? = nil
 
     @State private var confirmReset = false
-    @State private var confirmDelete = false
+    @State private var confirmRemove = false
     @State private var showHistory = false
     @State private var showIterate = false
 
     private var anyRunnable: Bool {
         store.agentOrder.contains { (store.enabledAgents[$0] ?? false) && (store.cliAvailable[$0] ?? false) }
+    }
+
+    private var isLive: Bool {
+        project.running || store.canStop(project.name)
+            || store.appLocks[project.name] != nil
     }
 
     var body: some View {
@@ -474,20 +504,45 @@ private struct ShellProjectRow: View {
             } message: {
                 Text("Moves transcripts, docs, verification, and the built app to the Trash. Keeps your prompt and settings.")
             }
-            .confirmationDialog("Delete \(project.name)?", isPresented: $confirmDelete) {
-                Button("Move project to Trash", role: .destructive) {
-                    store.deleteProject(project)
+            .confirmationDialog(isLive ? "Stop and remove \(project.name)?"
+                                       : "Remove \(project.name)?",
+                                isPresented: $confirmRemove) {
+                Button("Remove from list — keep folder") {
+                    store.removeProject(project, deleteFolder: false)
+                }
+                Button("Remove and move folder to Trash", role: .destructive) {
+                    store.removeProject(project, deleteFolder: true)
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Moves the whole project folder — prompt included — to the Trash.")
+                Text(isLive
+                     ? "The run is stopped first. Keeping the folder archives the project (restorable from the Archived section); the Trash option removes it entirely."
+                     : "Keeping the folder archives the project (restorable from the Archived section); the Trash option removes it entirely.")
             }
     }
 
     @ViewBuilder
     private var menuItems: some View {
-        let running = project.running || store.canStop(project.name)
-            || store.appLocks[project.name] != nil
+        if project.archived {
+            archivedMenuItems
+        } else {
+            activeMenuItems
+        }
+    }
+
+    @ViewBuilder
+    private var archivedMenuItems: some View {
+        Button("Restore from archive") { store.unarchiveProject(project) }
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([project.dirURL])
+        }
+        Divider()
+        Button("Remove…", role: .destructive) { confirmRemove = true }
+    }
+
+    @ViewBuilder
+    private var activeMenuItems: some View {
+        let running = isLive
         if !running && anyRunnable {
             Button("Run / add to queue") { store.runOrQueue(project.name) }
         }
@@ -510,6 +565,18 @@ private struct ShellProjectRow: View {
         if project.status == .done && !running {
             Button("Add a feature / iterate…") { showIterate = true }
                 .disabled(!anyRunnable)
+            // Staged continuation: a finished research/spec/etc. project can be
+            // re-opened under a different workflow — prior outputs carry over
+            // as context (engine --continue-with).
+            Menu("Continue with workflow…") {
+                ForEach(store.workflows.filter { $0.name != project.workflow },
+                        id: \.name) { wf in
+                    Button(wf.title) {
+                        store.continueProject(project.name, workflow: wf.name)
+                    }
+                }
+            }
+            .disabled(!anyRunnable)
         }
         Divider()
         if let xcode = store.xcodeProjectURL(for: project) {
@@ -520,11 +587,19 @@ private struct ShellProjectRow: View {
         }
         Button("Duplicate as fork") { store.forkProject(project) }
         Button("Build history…") { showHistory = true }
+        Menu("Rate…") {
+            Button("👍 Good — teach from this project") {
+                store.rateProject(project, verdict: "good")
+            }
+            Button("👎 Bad — feed the anti-pattern ledger") {
+                store.rateProject(project, verdict: "bad")
+            }
+            Button("Clear rating") { store.rateProject(project, verdict: nil) }
+        }
         Divider()
         Button("Reset to prompt…", role: .destructive) { confirmReset = true }
             .disabled(running)
-        Button("Delete project…", role: .destructive) { confirmDelete = true }
-            .disabled(running)
+        Button("Remove…", role: .destructive) { confirmRemove = true }
     }
 
     private var rowBody: some View {
@@ -796,11 +871,140 @@ private struct WorkflowsLibraryView: View {
                     .background(RoundedRectangle(cornerRadius: DS.radius.card, style: .continuous)
                         .fill(.quaternary.opacity(0.5)))
                 }
+                ProfilesLibrarySection()
+                SnippetsLibrarySection()
             }
             .padding(DS.space.margin)
         }
         .sheet(isPresented: $showBuilder) {
             WorkflowBuilderSheet().environmentObject(store)
+        }
+    }
+}
+
+// Saved run profiles: workflow + per-phase models/effort/rounds/instructions
+// bundles, saved from a project's Plan tab and applied from the New App sheet.
+private struct ProfilesLibrarySection: View {
+    @EnvironmentObject var store: OrchestratorStore
+    @State private var profiles: [RunProfile] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.xs) {
+            Text("Profiles").font(DS.font.title)
+            Text("A profile bundles a workflow with per-phase models, effort, rounds, and instructions. Save one from any project's Plan tab; apply it in the New App sheet.")
+                .font(DS.font.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if profiles.isEmpty {
+                Text("No profiles yet.").font(DS.font.caption).foregroundStyle(.tertiary)
+            }
+            ForEach(profiles) { p in
+                HStack(spacing: DS.space.s) {
+                    Image(systemName: "square.stack.3d.up")
+                        .foregroundStyle(DS.accent.color).frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(p.name).font(DS.font.headline)
+                        Text(p.workflow.isEmpty ? "any workflow" : p.workflow)
+                            .font(DS.font.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Delete") {
+                        store.deleteProfile(p)
+                        profiles = store.listProfiles()
+                    }
+                    .buttonStyle(.plain)
+                    .font(DS.font.caption)
+                    .foregroundStyle(DS.status.error.color)
+                }
+                .padding(DS.space.s)
+                .background(RoundedRectangle(cornerRadius: DS.radius.card, style: .continuous)
+                    .fill(.quaternary.opacity(0.5)))
+            }
+        }
+        .onAppear { profiles = store.listProfiles() }
+    }
+}
+
+// Reusable per-phase prompt snippets, insertable wherever phase instructions
+// are edited (Plan tab › Phase Rounds & Instructions).
+private struct SnippetsLibrarySection: View {
+    @EnvironmentObject var store: OrchestratorStore
+    @State private var snippets: [PromptSnippet] = []
+    @State private var newName = ""
+    @State private var newPhase = ""
+    @State private var newText = ""
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.xs) {
+            Text("Prompt Snippets").font(DS.font.title)
+            Text("Reusable instruction blocks. Scope one to a phase key (e.g. design_handoff) or leave the scope empty to offer it everywhere.")
+                .font(DS.font.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(snippets) { s in
+                HStack(alignment: .top, spacing: DS.space.s) {
+                    Image(systemName: "text.badge.plus")
+                        .foregroundStyle(DS.accent.color).frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: DS.space.xxs) {
+                            Text(s.name).font(DS.font.headline)
+                            if !s.phase.isEmpty {
+                                Text(s.phase).font(DS.font.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .background(Capsule().fill(.quaternary.opacity(0.6)))
+                            }
+                        }
+                        Text(s.text).font(DS.font.caption)
+                            .foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Spacer()
+                    Button("Delete") {
+                        snippets.removeAll { $0.id == s.id }
+                        store.saveSnippets(snippets)
+                    }
+                    .buttonStyle(.plain)
+                    .font(DS.font.caption)
+                    .foregroundStyle(DS.status.error.color)
+                }
+                .padding(DS.space.s)
+                .background(RoundedRectangle(cornerRadius: DS.radius.card, style: .continuous)
+                    .fill(.quaternary.opacity(0.5)))
+            }
+            VStack(alignment: .leading, spacing: DS.space.xxs) {
+                HStack(spacing: DS.space.xs) {
+                    TextField("Snippet name", text: $newName)
+                        .textFieldStyle(.roundedBorder).frame(width: 180)
+                    TextField("Phase key (optional)", text: $newPhase)
+                        .textFieldStyle(.roundedBorder).frame(width: 180)
+                    Spacer()
+                }
+                TextEditor(text: $newText)
+                    .font(DS.font.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(DS.space.xxs)
+                    .frame(height: 60)
+                    .background(RoundedRectangle(cornerRadius: DS.radius.chip,
+                                                 style: .continuous)
+                        .fill(.quaternary.opacity(0.5)))
+                Button("Add snippet") {
+                    let s = PromptSnippet(
+                        name: newName.trimmingCharacters(in: .whitespaces),
+                        phase: newPhase.trimmingCharacters(in: .whitespaces),
+                        text: newText.trimmingCharacters(in: .whitespacesAndNewlines))
+                    guard !s.name.isEmpty, !s.text.isEmpty,
+                          !snippets.contains(where: { $0.name == s.name }) else { return }
+                    snippets.append(s)
+                    store.saveSnippets(snippets)
+                    newName = ""; newPhase = ""; newText = ""
+                }
+                .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
+                          || newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .onAppear {
+            guard !loaded else { return }
+            snippets = store.loadSnippets()
+            loaded = true
         }
     }
 }
@@ -826,7 +1030,9 @@ enum ProjectScopeTab: String, CaseIterable, Identifiable {
 private struct ProjectShellContent: View {
     @EnvironmentObject var store: OrchestratorStore
     let project: Project
-    @State private var scopeTab: ProjectScopeTab = .run
+    // Transcript-first: clicking a project lands on its phases + discussions
+    // (the Run health zones stay one segment away).
+    @State private var scopeTab: ProjectScopeTab = .transcript
 
     private var liveProject: Project {
         store.projects.first { $0.name == project.name } ?? project
@@ -893,6 +1099,7 @@ private struct ProjectRunHealth: View {
             if let v = project.latestVerify {
                 VerificationCard(record: v, repairCount: project.verifyRepairCount)
             }
+            GateCardsRow(project: project)
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.space.zone) {
                     Text("Agent Board").font(DS.font.headline)
@@ -911,6 +1118,7 @@ private struct ProjectRunHealth: View {
 private struct ProjectPlanTab: View {
     @EnvironmentObject var store: OrchestratorStore
     let project: Project
+    @State private var tuningExpanded = true
 
     private var workflow: WorkflowDef {
         store.workflow(named: project.workflow)
@@ -951,6 +1159,12 @@ private struct ProjectPlanTab: View {
 
     @ViewBuilder
     private var planDisclosures: some View {
+        DisclosureGroup(isExpanded: $tuningExpanded) {
+            PhaseTuningEditor(project: project, workflow: workflow)
+        } label: {
+            Label("Phase Rounds & Instructions", systemImage: "slider.horizontal.2.square.on.square")
+                .font(DS.font.callout)
+        }
         DisclosureGroup {
             Form { QualityGatesSection() }
                 .formStyle(.grouped)
@@ -964,6 +1178,136 @@ private struct ProjectPlanTab: View {
         } label: {
             Label("Fallback Overrides", systemImage: "arrow.uturn.down")
                 .font(DS.font.callout)
+        }
+    }
+}
+
+// Per-phase rounds (∞ = until natural consensus) + operator instructions,
+// written to <project>/model_routing.json — the same file the routing grid
+// edits; the engine honors "rounds"/"instructions" per phase. A profile
+// snapshots this whole setup for reuse on future runs.
+private struct PhaseTuningEditor: View {
+    @EnvironmentObject var store: OrchestratorStore
+    let project: Project
+    let workflow: WorkflowDef
+
+    @State private var routing = ModelRouting()
+    @State private var snippets: [PromptSnippet] = []
+    @State private var loaded = false
+    @State private var profileName = ""
+
+    private func binding(_ key: String) -> Binding<PhaseRoute> {
+        Binding(get: { routing.phases[key] ?? PhaseRoute() },
+                set: { newVal in
+                    routing.phases[key] = newVal.isEmpty ? nil : newVal
+                    store.writeProjectRouting(routing, for: project)
+                })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.s) {
+            Text("Rounds: how long a phase may debate — Default is the workflow's cap, ∞ runs until every model naturally agrees (no forced vote). Instructions are injected into every turn of that phase for THIS project.")
+                .font(DS.font.caption).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(workflow.phases, id: \.key) { phase in
+                PhaseTuningRow(phase: phase, route: binding(phase.key),
+                               snippets: snippets)
+            }
+            Divider()
+            HStack(spacing: DS.space.xs) {
+                TextField("Profile name", text: $profileName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 200)
+                Button("Save as profile") {
+                    store.saveProfile(named: profileName, from: project)
+                    profileName = ""
+                }
+                .disabled(profileName.trimmingCharacters(in: .whitespaces).isEmpty)
+                Spacer()
+            }
+            Text("A profile snapshots this workflow + every phase's model, effort, rounds, and instructions — apply it from the New App sheet.")
+                .font(DS.font.caption).foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, DS.space.xxs)
+        .onAppear {
+            guard !loaded else { return }
+            routing = store.readProjectRouting(project)
+            snippets = store.loadSnippets()
+            loaded = true
+        }
+    }
+}
+
+private struct PhaseTuningRow: View {
+    let phase: PhaseDef
+    @Binding var route: PhaseRoute
+    let snippets: [PromptSnippet]
+
+    @State private var expanded = false
+
+    private var roundsLabel: String {
+        guard let r = route.rounds else { return "Default (\(phase.rounds))" }
+        return r == 0 ? "∞ until consensus" : "\(r)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.xxs) {
+            HStack(spacing: DS.space.xs) {
+                Text(phase.title)
+                    .font(DS.font.callout)
+                    .frame(width: 190, alignment: .leading)
+                    .lineLimit(1)
+                Menu(roundsLabel) {
+                    Button("Workflow default (\(phase.rounds))") { route.rounds = nil }
+                    Button("∞ — until natural consensus") { route.rounds = 0 }
+                    Divider()
+                    ForEach([1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20], id: \.self) { n in
+                        Button("\(n) round\(n == 1 ? "" : "s")") { route.rounds = n }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Rounds for \(phase.title): \(roundsLabel)")
+                if !route.instructions.isEmpty {
+                    Image(systemName: "text.alignleft")
+                        .font(DS.font.caption)
+                        .foregroundStyle(DS.accent.color)
+                        .help("Has custom instructions")
+                }
+                Spacer()
+                Button(expanded ? "Hide instructions" : "Instructions…") {
+                    withAnimation(DS.spring) { expanded.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(DS.font.caption)
+                .foregroundStyle(DS.accent.color)
+            }
+            if expanded {
+                VStack(alignment: .leading, spacing: DS.space.xxs) {
+                    TextEditor(text: $route.instructions)
+                        .font(DS.font.body)
+                        .scrollContentBackground(.hidden)
+                        .padding(DS.space.xxs)
+                        .frame(height: 72)
+                        .background(RoundedRectangle(cornerRadius: DS.radius.chip,
+                                                     style: .continuous)
+                            .fill(.quaternary.opacity(0.5)))
+                        .accessibilityLabel("Instructions for \(phase.title)")
+                    let usable = snippets.filter { $0.phase.isEmpty || $0.phase == phase.key }
+                    if !usable.isEmpty {
+                        Menu("Insert snippet") {
+                            ForEach(usable) { s in
+                                Button(s.name) {
+                                    route.instructions += (route.instructions.isEmpty ? "" : "\n") + s.text
+                                }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        .font(DS.font.caption)
+                        .fixedSize()
+                    }
+                }
+            }
         }
     }
 }
@@ -1064,5 +1408,114 @@ private struct ProjectRunContent: View {
         if selectedPhaseKey == nil || selectedPhaseKey == proj.completedPhases.last {
             selectedPhaseKey = cur
         }
+    }
+}
+
+
+// MARK: - Quality-gate verdict chips (adherence · visual QA · UI crawl ·
+// design lint), read from the docs/*.json artifacts each gate persists.
+
+private struct GateVerdict: Identifiable {
+    let name: String
+    let symbol: String
+    let verdict: String     // PASS / FAIL / — 
+    let detail: String
+    var id: String { name }
+    var kind: StatusKind {
+        switch verdict {
+        case "PASS": return .success
+        case "FAIL": return .error
+        default: return .idle
+        }
+    }
+}
+
+private struct GateCardsRow: View {
+    let project: Project
+
+    private func loadJSON(_ rel: String) -> [String: Any]? {
+        let url = project.dirURL.appendingPathComponent(rel)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    private var verdicts: [GateVerdict] {
+        var out: [GateVerdict] = []
+        if let adh = loadJSON("docs/adherence.json") {
+            let v = (adh["verdict"] as? String) ?? "—"
+            let score = adh["score"].map { "\($0)" } ?? ""
+            out.append(GateVerdict(name: "Adherence", symbol: "checklist",
+                                   verdict: v,
+                                   detail: score.isEmpty ? v : "score \(score)"))
+        }
+        if let vqa = loadJSON("docs/visual_qa.json") {
+            let v = (vqa["verdict"] as? String) ?? "—"
+            let score = vqa["score"].map { "\($0)" } ?? ""
+            out.append(GateVerdict(name: "Visual QA", symbol: "eye",
+                                   verdict: v,
+                                   detail: score.isEmpty ? v : "score \(score)"))
+        }
+        if let crawl = loadJSON("docs/ui_crawl.json") {
+            let crashes = (crawl["crashes"] as? [Any])?.count ?? 0
+            let dead = (crawl["dead_taps"] as? [Any])?.count ?? 0
+            let flows = (crawl["flows"] as? [[String: Any]]) ?? []
+            let passed = flows.filter { ($0["passed"] as? Bool) ?? false }.count
+            let bad = crashes > 0 || passed < flows.count
+            let bits = [
+                "\((crawl["screens"] as? Int) ?? 0) screens",
+                flows.isEmpty ? nil : "\(passed)/\(flows.count) flows",
+                dead > 0 ? "\(dead) dead" : nil,
+                crashes > 0 ? "\(crashes) crash" : nil,
+            ].compactMap { $0 }
+            out.append(GateVerdict(name: "UI Crawl",
+                                   symbol: "cursorarrow.click.2",
+                                   verdict: bad ? "FAIL" : "PASS",
+                                   detail: bits.joined(separator: " · ")))
+        }
+        if let lint = loadJSON("docs/design_lint.json") {
+            let errs = (lint["errors"] as? [Any])?.count ?? 0
+            let warns = (lint["warnings"] as? [Any])?.count ?? 0
+            out.append(GateVerdict(name: "Design Lint",
+                                   symbol: "paintpalette",
+                                   verdict: errs > 0 ? "FAIL" : "PASS",
+                                   detail: errs > 0 ? "\(errs) error(s)"
+                                       : "\(warns) warning(s)"))
+        }
+        return out
+    }
+
+    var body: some View {
+        let items = verdicts
+        if !items.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: DS.space.xs) {
+                    ForEach(items, id: \.name) { g in
+                        chip(g)
+                    }
+                }
+                .padding(.horizontal, DS.space.s)
+                .padding(.vertical, DS.space.xxs)
+            }
+        }
+    }
+
+    private func chip(_ g: GateVerdict) -> some View {
+        let tint = g.kind.tint.color
+        return HStack(spacing: DS.space.xxs) {
+            Image(systemName: g.symbol)
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(g.name).font(DS.font.caption)
+                    .foregroundStyle(.secondary)
+                Text(g.detail).font(DS.font.callout)
+                    .foregroundStyle(tint)
+            }
+        }
+        .padding(.horizontal, DS.space.s)
+        .padding(.vertical, DS.space.xxs)
+        .background(RoundedRectangle(cornerRadius: DS.radius.chip,
+                                     style: .continuous)
+            .fill(.quaternary.opacity(0.5)))
+        .accessibilityLabel("\(g.name): \(g.detail)")
     }
 }

@@ -107,7 +107,10 @@ class TestAppPipelineEndToEnd(unittest.TestCase):
         for phase, _rnd, _agent in self.calls:
             if phase not in first_seen:
                 first_seen.append(phase)
-        self.assertEqual(first_seen, expected_keys)
+        # After every workflow phase, the prompt-adherence gate makes one
+        # grading call before the done flag (fake reply has no adherence-json
+        # block, so the gate passes-through without blocking).
+        self.assertEqual(first_seen, expected_keys + ["adherence_gate"])
 
         # -- prior_outputs handoff: final_review sees earlier decisions --
         fr_prompts = [p for (ph, _r, _a, p) in self.prompts if ph == "final_review"]

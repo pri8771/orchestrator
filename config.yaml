@@ -59,7 +59,7 @@ models:
   # Curated ids live in local_models.json next to the engine (e.g.
   # "qwen3-coder:30b", "devstral:24b", "qwen2.5-coder:7b"). Pull one first
   # with `ollama pull <id>`, then enable agents.ollama_enabled below.
-  ollama: "glm4:9b"
+  ollama: "qwen2.5-coder:14b"
 
   # Optional local participant roster (comma- or semicolon-separated). Each
   # entry becomes a distinct local participant: local:qwen3-coder:30b,
@@ -67,7 +67,7 @@ models:
   # Coder-tier models first: they win the participant slots once pulled, so
   # code review/build fallbacks land on a real coding model (14B/16B) instead
   # of a 3-4B generalist. 48GB RAM handles both coders resident at once.
-  ollama_roster: "qwen2.5-coder:14b, deepseek-coder-v2:16b, qwen2.5vl:3b, gemma3:4b"
+  ollama_roster: "qwen3-coder:30b, qwen2.5-coder:14b, deepseek-coder-v2:16b, qwen2.5vl:3b, gemma3:4b"
   # How many roster models actually join runs as participants. Installed models
   # win the slots first (in roster order), then not-yet-pulled ones. 0 = no
   # limit (every roster entry joins, today's behavior).
@@ -363,6 +363,66 @@ runtime:
   # observational by default — turn this on only once you trust the generated
   # tests enough to treat them as a hard gate.
   tests_gate_release: false
+  # Rate-limit protection: minimum seconds between consecutive calls to the
+  # SAME cloud provider (codex/claude/gemini), across all threads and lanes.
+  # Burst fan-outs are what trip per-minute limits; a short stagger is
+  # invisible next to a multi-minute turn. 0 disables.
+  provider_min_gap_seconds: 8
+  # Bench local roster models whose registry min_ram_gb exceeds this machine's
+  # physical RAM (a too-big model fails to load or swaps the Mac to a crawl).
+  enforce_local_ram_gate: true
+  # Prompt-adherence gate: before a build workflow is marked done, one strong
+  # agent grades the BUILT app against the ORIGINAL PROMPT's requirements
+  # (verdict + per-requirement grades land in docs/adherence.json). Unmet core
+  # requirements route into the same bounded iterate-repair loop the release
+  # gate uses -- "it compiles" stops being the only bar for "done".
+  adherence_gate: true
+  # Visual QA gate: after the release gate, boot the iOS Simulator, install +
+  # launch the built app, screenshot it in light AND dark mode, and grade the
+  # screenshots with a LOCAL vision model over the Ollama loopback API (zero
+  # cloud tokens). A FAIL (blank/placeholder screens, unreadable dark mode,
+  # app not running) routes into the bounded iterate-repair loop. Verdict +
+  # screenshots persist to <app>/docs/. Skips gracefully when xcodebuild,
+  # simctl, Ollama, or the vision model is unavailable.
+  visual_qa_enabled: true
+  # "" = auto: every installed vision model (gemma3:12b/4b, qwen2.5vl:3b)
+  # votes and only a UNANIMOUS BAD fails a screen — small VLM graders are
+  # noisy, and a false FAIL burns a whole repair loop. Set a model id to
+  # grade with just that one.
+  visual_qa_model: ""
+  visual_qa_build_timeout: 600
+  # UI crawl gate: after visual QA, a generic XCUITest runner (uitest-runner/)
+  # taps every hittable element, checks back-navigation restores the previous
+  # screen, screenshots every screen it finds, and replays the spec's declared
+  # user journeys (<app>/flows.json). Crashes and failed flows FAIL the run
+  # (crash repro paths are learned back into flows.json as permanent
+  # regression flows); dead buttons and back violations warn until promoted.
+  ui_crawl_enabled: true
+  ui_crawl_max_screens: 25
+  ui_crawl_max_seconds: 300
+  ui_crawl_fail_on_dead_buttons: false
+  # Deterministic design + dependency lint (designlint.py): inline colors /
+  # raw font sizes outside DesignSystem.swift and banned packages are ERRORS
+  # routed into the repair loop; strict mode also errors unlisted packages.
+  design_lint_enabled: true
+  design_lint_strict: false
+  # Golden scaffold: seed an empty app_build from scaffold/ios_app (starter
+  # DesignSystem.swift + binding conventions) so builds never start blank.
+  golden_scaffold_enabled: true
+  # Research source check: a local model cross-checks product_research claims
+  # against the prompt's fetched URL text; unsupported claims are recorded
+  # (docs/research_verification.json + incident), never blocking.
+  research_source_check: true
+  # Vertical slices: topo-layer tasks.json by depends_on into waves; build
+  # iteration k works wave k (one coherent slice at a time).
+  build_vertical_slices: true
+  # Calibration finding (calib-tip-splitter): locals debate in 10-30s but take
+  # 25+ min WRITING a lane, and every build round waits for the slowest
+  # worker. Locals stay in discussions + the fallback ladder; lanes are cloud.
+  locals_in_build_lanes: false
+  # Hard cap on any single local-model turn (seconds; 0 = off). A local
+  # slower than this is timed out and the round proceeds.
+  local_turn_timeout_seconds: 600
 
 # Phase rules + knowledge / retrieval (RAG). phase_rules.json gives every app
 # phase an editable playbook: required outputs, acceptance checks, and general

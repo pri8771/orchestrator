@@ -429,7 +429,10 @@ def materialize_children(root, parent_app, parent_dir, parent_prompt, manifest,
                     "Claude Design prompt was not supplied in the portfolio manifest.")
         _write_text(os.path.join(child_dir, "initial_prompt", "initial_prompt.md"),
                     _child_prompt(parent_app, app, parent_prompt))
-        workflow = "app_build" if app.get("build") else "app_spec"
+        # app_build_child = app_build minus parent-scoped phases (the child brief
+        # is already fully specified); load_workflow falls back to app_build
+        # if the file is ever removed.
+        workflow = "app_build_child" if app.get("build") else "app_spec"
         _write_text(os.path.join(child_dir, "workflow.txt"), workflow)
         # Older versions parked spec-only children with this marker. New portfolio
         # children should run their per-app spec phases automatically.

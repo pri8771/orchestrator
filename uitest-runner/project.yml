@@ -1,0 +1,36 @@
+# XcodeGen spec for the generic UI-crawl runner (uicrawl.py builds this once
+# and caches the products). The host app is an empty formality — the UITest
+# bundle drives ANY installed app by bundle id (TEST_RUNNER_CRAWL_TARGET).
+name: CrawlerRunner
+options:
+  bundleIdPrefix: com.orchestrator
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  CrawlerHost:
+    type: application
+    platform: iOS
+    sources: [Sources/CrawlerHost]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.orchestrator.crawlerhost
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+  CrawlerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Sources/CrawlerUITests]
+    dependencies:
+      - target: CrawlerHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.orchestrator.crawleruitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  CrawlerRunner:
+    build:
+      targets:
+        CrawlerHost: all
+        CrawlerUITests: all
+    test:
+      targets: [CrawlerUITests]

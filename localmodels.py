@@ -83,6 +83,33 @@ def load_registry(here):
     return data
 
 
+_TOTAL_RAM_GB = None
+_TOTAL_RAM_LOCK = threading.Lock()
+
+
+def total_ram_gb():
+    """Physical RAM in whole GB (0 when undetectable). Cached per process —
+    used by the engine's local-model RAM gate so a roster entry that can't
+    possibly fit is benched instead of swapping the machine to a crawl."""
+    global _TOTAL_RAM_GB
+    with _TOTAL_RAM_LOCK:
+        if _TOTAL_RAM_GB is not None:
+            return _TOTAL_RAM_GB
+        gb = 0
+        try:  # macOS
+            out = subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                 capture_output=True, text=True, timeout=5)
+            gb = int(int(out.stdout.strip()) // (1024 ** 3))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            try:  # POSIX fallback
+                gb = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+                         // (1024 ** 3))
+            except (OSError, ValueError, AttributeError):
+                gb = 0
+        _TOTAL_RAM_GB = max(0, gb)
+        return _TOTAL_RAM_GB
+
+
 def parse_ollama_list(text):
     """Model tags from `ollama list` stdout. The output is a padded table
 

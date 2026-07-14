@@ -53,9 +53,12 @@ bash run.sh --app myapp
 
 Full CLI surface (see `python3 orchestrator.py --help`): `--once` (default),
 `--watch SECONDS`, `--app NAME`, `--project SLUG` (alias of `--app`),
-`--root PATH`, `--resume SLUG`, `--doctor` (+ `--json`), `--mistakes`
-(+ `--app`/`--json`), `--postmortem` (requires `--app`, + `--json`),
-`--search-models QUERY`, `--seed`.
+`--root PATH`, `--resume SLUG`, `--continue-with WORKFLOW` (staged
+continuation: research now, build later), `--doctor` (+ `--json`),
+`--mistakes` (+ `--app`/`--json`), `--postmortem` (requires `--app`,
++ `--json`), `--search-models QUERY`, `--seed`, `--fleet-report` (label
+queue + phase scorecards + anti-pattern ledger), `--eval-report [SLUGS]`,
+`--save-exemplar SLUG`, `--distill-doc PATH_OR_URL --domain ios`.
 
 **`--resume <slug>`** restarts an *existing* project from its saved
 `agent_state.json`. Unlike `--app`, it refuses to run when the project or its
@@ -67,7 +70,7 @@ re-enters instead of skipping.
 
 ```bash
 # From the repo root:
-python3 -m unittest discover -s tests                            # engine suite (700+ tests)
+python3 -m unittest discover -s tests                            # engine suite
 python3 -W error::ResourceWarning -m unittest discover -s tests  # strict: warnings fail
 
 # Or via the Makefile — the canonical gate. `make verify` is the full macOS
@@ -361,3 +364,35 @@ Per-app run locks live in `<workspace>/.orch-locks/`.
 The doctor (`python3 orchestrator.py --doctor`) is the fastest way to see what's
 wired up: CLIs found, resolved models, local-model status, workflows, roles,
 personalities, and knowledge domains.
+
+
+## Quality gates (the "done" bar) and fleet learning
+
+A build workflow is only marked done after passing, in order (all
+best-effort — a missing tool skips a gate, never blocks a run):
+
+1. **Release gate** — the app compiles for the iOS Simulator (verify.py).
+2. **Design lint** (`designlint.py`, zero tokens) — no inline colors/font
+   sizes outside DesignSystem.swift; banned packages (tech_stack.json) are
+   errors. Findings: `docs/design_lint.json`.
+3. **Visual QA** (`visualqa.py`, local vision panel) — light+dark screenshots
+   graded by every installed vision model; unanimous BAD fails.
+4. **UI crawl** (`uicrawl.py` + `uitest-runner/`) — taps every element, checks
+   back-navigation, screenshots every screen, runs an iOS 17 accessibility
+   audit, and replays the spec's declared flows (flows.json). Crashes learn
+   back into flows.json as permanent regression flows.
+5. **Adherence gate** — one strong agent grades the build against the
+   numbered requirements (requirements.json) and the active Definition of
+   Done tier (definition_of_done.json). Verdict: `docs/adherence.json`.
+
+Failures route into the bounded iterate-repair loop with the exact artifacts
+(screenshot paths, lint findings, failing flow step) in the repair prompt.
+
+Every gate failure also records a blamed **incident** (fleetlearn.py) against
+the upstream phase whose output permitted it. `--fleet-report` prints the
+label-confirmation queue (rate projects 👍/👎 in the GUI) and per-phase
+scorecards, and rebuilds `knowledge/anti_patterns.md` — which the knowledge
+splicer injects into future runs. `--save-exemplar <slug>` turns a rated-good
+project's phase outputs into few-shot exemplars. Builds seed from
+`scaffold/ios_app/` (golden scaffold) and slice tasks.json into dependency
+waves (`runtime.build_vertical_slices`).

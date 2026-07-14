@@ -60,6 +60,11 @@ import portfolio as portfoliolib
 import postmortem as pmlib
 import urlfetch as urlfetchlib
 import verify as verifylib
+import visualqa as vqalib
+import uicrawl as uicrawllib
+import designlint as dlintlib
+import fleetlearn as fllib
+import evalharness as evallib
 import procutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1271,6 +1276,34 @@ def _provider_banner(text):
     return None
 
 
+# Provider pacing (rate-limit protection): minimum gap between consecutive
+# calls to the SAME cloud provider, across all threads and lanes in this
+# process. Burst fan-outs are what trip per-minute limits; a short stagger is
+# invisible next to a multi-minute turn. Local models are never paced.
+_PACE_LOCK = threading.Lock()
+_PACE_LAST = {}  # type: dict[str, float]
+
+
+def _pace_provider(cfg, agent):
+    base = str(agent).split(":", 1)[0]
+    if base not in ("codex", "claude", "gemini"):
+        return
+    try:
+        gap = float(cget(cfg, "runtime.provider_min_gap_seconds", 8) or 0)
+    except (TypeError, ValueError):
+        gap = 0.0
+    if gap <= 0:
+        return
+    while not _SHUTDOWN.is_set():
+        with _PACE_LOCK:
+            now = time.time()
+            wait = _PACE_LAST.get(base, 0.0) + gap - now
+            if wait <= 0:
+                _PACE_LAST[base] = now
+                return
+        time.sleep(min(wait, 1.0))
+
+
 def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
     """Invoke an agent CLI, log everything, and return its text response.
 
@@ -1283,6 +1316,13 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
         raw_timeout = cget(cfg, "runtime.timeout_seconds_per_agent", 1200)
     timeout = int(raw_timeout or 0)
     timeout = timeout if timeout > 0 else None
+    if agent == "ollama" or str(agent).startswith("local:"):
+        # A local turn slower than this cap is hurting more than helping —
+        # time it out and let the round proceed (breaker benches repeat
+        # offenders). 0 disables.
+        _lcap = int(cget(cfg, "runtime.local_turn_timeout_seconds", 600) or 0)
+        if _lcap > 0:
+            timeout = min(timeout, _lcap) if timeout else _lcap
     # Sprint/time-budget mode: never let a single turn run past the phase (or run)
     # deadline. Capping each turn to the time remaining is what turns the wall-clock
     # ceiling into a HARD guarantee — a hung turn can't blow the budget.
@@ -1334,6 +1374,9 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
     # slot until the 6-hour age reap.
     _hb_stop = threading.Event()
     try:
+        # Stagger same-provider calls (runtime.provider_min_gap_seconds) so
+        # burst fan-outs don't trip per-minute rate limits.
+        _pace_provider(cfg, agent)
         emit("Starting %s for %s / %s round %s" % (DISPLAY[agent], app, phase, rnd))
         # Structured event sink (§6): one turn_started + exactly one turn_completed
         # per call, success or not, so a UI never has to parse transcript prose.
@@ -1580,7 +1623,7 @@ def _phase_file_path(app_dir, phase):
     return key, os.path.join(app_dir, folder, fname)
 
 
-def prior_discussion_context(app_dir, phases, completed_keys):
+def prior_discussion_context(app_dir, phases, completed_keys, summaries=None):
     """Full earlier phase transcripts, in workflow order, for downstream phases.
 
     Final phase outputs are useful decisions; the actual discussions preserve
@@ -1599,7 +1642,11 @@ def prior_discussion_context(app_dir, phases, completed_keys):
                 text = fh.read().strip()
         except OSError:
             text = ""
-        if text:
+        summ = (summaries or {}).get(key)
+        if summ:
+            blocks.append("--- %s (summary of prior discussion; decisions and "
+                          "disagreements preserved) ---\n%s" % (key, summ))
+        elif text:
             blocks.append("--- %s (complete prior discussion transcript) ---\n%s" % (key, text))
     return "\n\n".join(blocks)
 
@@ -1736,6 +1783,20 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
     playbook = cfg.get("_phase_playbook", "")
     if playbook:
         parts.append(playbook)
+    exemplar = cfg.get("_phase_exemplar", "")
+    if exemplar:
+        parts.append(exemplar)
+    ts_block = cfg.get("_tech_stack_block", "")
+    if ts_block and (cfg.get("_allow_writes")
+                     or key in ("tech_specs", "ios_architecture_review",
+                                "task_assignments")):
+        parts.append("\n" + ts_block)
+    # Operator-supplied per-phase instructions (Plan tab / routing file) —
+    # binding guidance for THIS project's version of the phase.
+    phase_instr = cfg.get("_phase_instructions", "")
+    if phase_instr:
+        parts.append("\n===== OPERATOR INSTRUCTIONS FOR THIS PHASE (binding) =====\n"
+                     + phase_instr)
     # Retrieved, curated domain knowledge for this phase (set at phase start).
     know = cfg.get("_knowledge", "")
     if know:
@@ -1777,6 +1838,14 @@ def prompt_discuss(cfg, agent, ctx, phasedef, rnd, extra="", persona="",
             "hard for whatever you think is strongest right now, and try to win the "
             "group over. Disagree where you really disagree.\n"
         )
+        if rnd > 1:
+            # Token diet: an honest abstention beats a paragraph of restated
+            # agreement — shorter transcripts make every later turn cheaper.
+            turn_goal += (
+                "If you genuinely have NOTHING new to add this round — no "
+                "disagreement, no new risk, nothing to sharpen — reply with the "
+                "single word PASS instead of restating agreement.\n"
+            )
         room_rules = COMMON_RULES
     return (
         ctx
@@ -2040,6 +2109,24 @@ _TASKS_JSON_INSTRUCTION = (
     "graph must be acyclic. The build workers are assigned their lane's tasks "
     "from this block, so make it complete.\n"
 )
+_REQUIREMENTS_JSON_INSTRUCTION = (
+    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit "
+    "ONE fenced ```requirements-json``` block of the form {\"requirements\": "
+    "[{\"id\": \"R-001\", \"text\": \"...\", \"core\": true|false}]}. "
+    "Number EVERY testable promise the app makes (from the original prompt "
+    "plus agreed features). The adherence gate grades the BUILT app against "
+    "exactly this list — an unlisted requirement is an unverified one.\n"
+)
+_FLOWS_JSON_INSTRUCTION = (
+    "MACHINE CONTRACT (required): ALSO emit ONE fenced ```flows-json``` block "
+    'of the form {"flows": [{"name": "add first item", "steps": ['
+    '{"tap": "Get Started"}, {"type": "Sample", "into": "Name"}, '
+    '{"tap": "Save"}, {"assert_exists": "Sample"}, {"back": true}]}]}. '
+    "Cover EVERY primary user journey the app promises (3-8 flows). Steps "
+    "reference visible labels or accessibilityIdentifiers. These are executed "
+    "against the real built app by the UI-crawl gate — a journey you forget "
+    "to declare is a journey nobody verifies.\n"
+)
 _INTERFACES_JSON_INSTRUCTION = (
     "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
     "fenced ```interfaces-json``` block containing a single JSON object of the "
@@ -2100,6 +2187,9 @@ def _phase_contract(cfg, phasedef):
     parts = []
     if key == "task_assignments":
         parts.append(_TASKS_JSON_INSTRUCTION)
+        parts.append(_FLOWS_JSON_INSTRUCTION)
+    if key == "app_features":
+        parts.append(_REQUIREMENTS_JSON_INSTRUCTION)
     if key == "tech_specs":
         parts.append(_INTERFACES_JSON_INSTRUCTION)
     if _decisions_contract_requested(cfg, phasedef):
@@ -2561,6 +2651,125 @@ def parse_tasks_blocks(text):
             if str(d) not in known_ids:
                 errors.append("task %r depends_on unknown id %r" % (t.get("id"), d))
     return tasks, errors
+
+
+def parse_flows_blocks(text):
+    """Extract every ```flows-json``` block ({"flows": [...]}) — the declared
+    user journeys the UI-crawl gate replays. Returns (flows, errors); a flow
+    needs a name and a non-empty steps list. Never raises."""
+    errors = []
+    blocks = schemalib.extract_structured_blocks(text or "", "flows-json",
+                                                 on_error=errors.append)
+    byname = {}
+    for b in blocks:
+        items = b.get("flows") if isinstance(b.get("flows"), list) else [b]
+        for f in items or []:
+            if not isinstance(f, dict):
+                continue
+            name = str(f.get("name") or "").strip()
+            steps = f.get("steps")
+            if not name or not isinstance(steps, list) or not steps:
+                errors.append("flow %r needs a name and non-empty steps" % name)
+                continue
+            byname[name] = {"name": name, "steps": steps}
+    return list(byname.values()), errors
+
+
+def persist_flows(app_dir, flows):
+    """Merge declared flows into <app>/flows.json. Learned regression flows
+    (origin=ui_crawl_crash) are PRESERVED — the spec never overwrites what a
+    crash taught us; same-name declared flows are replaced."""
+    path = os.path.join(app_dir, "flows.json")
+    existing = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict) and isinstance(loaded.get("flows"), list):
+            existing = loaded["flows"]
+    except (OSError, ValueError):
+        pass
+    keep = [f for f in existing if isinstance(f, dict)
+            and f.get("origin") == "ui_crawl_crash"]
+    _write_json_atomic(path, {"schema_version": 1, "flows": flows + keep})
+
+
+def parse_requirements_blocks(text):
+    """Extract ```requirements-json``` blocks -> (requirements, errors).
+    Each needs id + text; core defaults True. Never raises."""
+    errors = []
+    blocks = schemalib.extract_structured_blocks(text or "", "requirements-json",
+                                                 on_error=errors.append)
+    byid = {}
+    for b in blocks:
+        items = b.get("requirements") if isinstance(b.get("requirements"), list) else [b]
+        for r in items or []:
+            if not isinstance(r, dict):
+                continue
+            rid = str(r.get("id") or "").strip()
+            txt = str(r.get("text") or "").strip()
+            if not rid or not txt:
+                errors.append("requirement needs id and text: %r" % r)
+                continue
+            byid[rid] = {"id": rid, "text": txt,
+                         "core": bool(r.get("core", True))}
+    return list(byid.values()), errors
+
+
+def persist_requirements(app_dir, requirements):
+    _write_json_atomic(os.path.join(app_dir, "requirements.json"),
+                       {"schema_version": 1, "requirements": requirements})
+
+
+def load_requirements(app_dir):
+    try:
+        with open(os.path.join(app_dir, "requirements.json"),
+                  encoding="utf-8") as fh:
+            data = json.load(fh)
+        reqs = data.get("requirements")
+        return reqs if isinstance(reqs, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _research_source_check(cfg, app, app_dir, final_output):
+    """Local-model cross-check of research claims against the prompt's
+    fetched URL text (runtime.research_source_check). Records unsupported
+    claims to docs/research_verification.json + an incident; never blocks,
+    never raises."""
+    try:
+        url_ctx = (cfg.get("_url_context") or "").strip()
+        if not url_ctx or not (final_output or "").strip():
+            return
+        tag = (cfg.get("_resolved", {}) or {}).get("ollama_model") \
+            or str(cget(cfg, "models.ollama", "") or "")
+        if not tag or tag not in set(lmlib.installed_models_cached()):
+            return
+        ask = ("SOURCE TEXT (fetched from the user's own links):\n%s\n\n"
+               "RESEARCH OUTPUT:\n%s\n\n"
+               "List every factual claim in the RESEARCH OUTPUT that is NOT "
+               "supported by the SOURCE TEXT and is not marked ASSUMPTION. "
+               "One per line, prefixed 'UNSUPPORTED: '. If everything is "
+               "supported or marked, reply exactly: ALL SUPPORTED."
+               % (url_ctx[:8000], str(final_output)[:6000]))
+        out, _err, code, _cmd = resolve_runner("local:%s" % tag)(cfg, ask, 120)
+        if code != 0 or not (out or "").strip():
+            return
+        unsupported = [l.split("UNSUPPORTED:", 1)[1].strip()[:160]
+                       for l in out.splitlines() if "UNSUPPORTED:" in l]
+        os.makedirs(os.path.join(app_dir, "docs"), exist_ok=True)
+        with open(os.path.join(app_dir, "docs", "research_verification.json"),
+                  "w", encoding="utf-8") as fh:
+            json.dump({"model": tag, "unsupported": unsupported}, fh, indent=2)
+        if unsupported:
+            emit("Research source check: %d unsupported claim(s) — see "
+                 "docs/research_verification.json." % len(unsupported))
+            if len(unsupported) >= 3:
+                fllib.record_incident(app_dir, "research_unsupported",
+                                      "; ".join(unsupported[:3]))
+        else:
+            emit("Research source check: all claims supported or marked.")
+    except Exception as exc:  # noqa: BLE001 - advisory check only
+        emit("WARN research source check skipped (%s)." % exc)
 
 
 def find_task_cycles(tasks):
@@ -3156,6 +3365,28 @@ def enabled_agents(cfg):
                  % ", ".join(skipped))
         local_roster = kept
 
+    # Hardware gate: bench roster models whose registry min_ram_gb exceeds this
+    # machine's physical RAM. The registry carried the numbers as advisory
+    # metadata (the GUI's fit labels); the engine now enforces them so a
+    # too-big model can't be selected into a run and swap the machine.
+    if local_enabled and local_roster and not skip_local and \
+            bool(cget(cfg, "runtime.enforce_local_ram_gate", True)):
+        total_gb = lmlib.total_ram_gb()
+        if total_gb > 0:
+            mins = {str(m.get("id")): m.get("min_ram_gb")
+                    for m in lmlib.load_registry(HERE).get("models", [])}
+            too_big = [m for m in local_roster
+                       if isinstance(mins.get(m), (int, float))
+                       and float(mins[m]) > total_gb]
+            if too_big:
+                local_roster = [m for m in local_roster if m not in too_big]
+                if not cfg.get("_noted_local_ram_gate"):
+                    cfg["_noted_local_ram_gate"] = True
+                    emit("Local Ollama: benching %s — registry min RAM exceeds "
+                         "this machine's %d GB (disable with "
+                         "runtime.enforce_local_ram_gate: false)."
+                         % (", ".join(too_big), total_gb))
+
     # models.local_active_limit: how many roster models actually join runs as
     # participants. Installed models win the slots first (in roster order),
     # then not-yet-pulled ones. 0/missing/garbage = no limit (legacy behavior).
@@ -3301,6 +3532,20 @@ def build_worker_roster(cfg, active):
     target = int(cget(cfg, "runtime.build_parallel_workers", 3) or 3)
     n_lanes = len(BUILD_LANE_IDS)
     avail = [a for a in ordered_agents(active) if _agent_available(a, cfg)]
+    # Local models debate well (10-30s turns) but a 14-30B local WRITING a
+    # whole lane takes 25+ min per iteration — and each build round waits for
+    # the slowest worker. Keep locals out of the lanes by default; they still
+    # participate in every discussion phase and serve the fallback ladder.
+    if not bool(cget(cfg, "runtime.locals_in_build_lanes", False)):
+        cloud_only = [a for a in avail
+                      if not (a == "ollama" or str(a).startswith("local:"))]
+        if cloud_only:
+            if len(cloud_only) < len(avail) and not cfg.get("_noted_local_lane_skip"):
+                cfg["_noted_local_lane_skip"] = True
+                emit("Build lanes: excluding local model(s) from lane duty "
+                     "(runtime.locals_in_build_lanes=false) — they keep "
+                     "discussing and backstopping fallbacks.")
+            avail = cloud_only
     if len(avail) >= 2:
         n = max(len(avail), n_lanes)
         agents = [avail[i % len(avail)] for i in range(n)]
@@ -3331,10 +3576,38 @@ def build_worker_roster(cfg, active):
     return roster
 
 
-def _worker_contract_block(worker, backlog, interfaces):
+def _task_waves(backlog):
+    """Topo-layer tasks by depends_on (Kahn layers). Unknown deps count as
+    satisfied; any cycle leftovers become a final wave. [] for tiny backlogs
+    (< 4 tasks — slicing adds ceremony without value there)."""
+    tasks = [t for t in (backlog or []) if isinstance(t, dict) and t.get("id")]
+    if len(tasks) < 4:
+        return []
+    ids = {str(t["id"]) for t in tasks}
+    remaining = {str(t["id"]): t for t in tasks}
+    placed = set()
+    waves = []
+    while remaining:
+        ready = [t for tid, t in remaining.items()
+                 if all(str(d) in placed or str(d) not in ids
+                        for d in (t.get("depends_on") or []))]
+        if not ready:   # cycle: dump the rest as one final wave
+            waves.append(sorted(remaining.values(), key=lambda t: str(t["id"])))
+            break
+        ready.sort(key=lambda t: str(t["id"]))
+        waves.append(ready)
+        for t in ready:
+            placed.add(str(t["id"]))
+            remaining.pop(str(t["id"]), None)
+    return waves if len(waves) > 1 else []
+
+
+def _worker_contract_block(worker, backlog, interfaces, wave_note=""):
     """The per-lane slice of tasks.json plus the full interfaces.json contract,
     rendered for one build-worker prompt (§19/§20). '' when neither exists."""
     parts = []
+    if wave_note:
+        parts.append("===== BUILD WAVE =====\n" + wave_note)
     if backlog:
         lane_id = worker.get("lane_id")
         mine = [t for t in backlog if str(t.get("owner_lane")) == lane_id]
@@ -3872,6 +4145,16 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
     if backlog or interfaces:
         emit("Injecting build contracts: %d task(s), %d interface(s)."
              % (len(backlog), len(interfaces)))
+    # Vertical slices (runtime.build_vertical_slices): topo-layer the backlog
+    # by depends_on; iteration k works wave k — one coherent slice end-to-end
+    # at a time instead of the whole app at once. Waves beyond the iteration
+    # budget collapse into the final iteration.
+    waves = _task_waves(backlog) \
+        if bool(cget(cfg, "runtime.build_vertical_slices", True)) else []
+    if len(waves) > 1:
+        emit("Vertical slices: %d wave(s) — %s."
+             % (len(waves), "; ".join("W%d: %d task(s)" % (i + 1, len(w))
+                                      for i, w in enumerate(waves))))
 
     emit("PARALLEL build: %d worker(s) [%s]; integrator=%s"
          % (len(roster), ", ".join(w["label"] for w in roster),
@@ -3937,11 +4220,24 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         def _run_worker(pair):
             idx, w = pair
             pers = roleslib.persona_preamble((personas or {}).get(w["agent"]))
+            _wave_backlog, _wave_note = backlog, ""
+            if len(waves) > 1:
+                _widx = min(rnd - 1, len(waves) - 1)
+                _wave_backlog = waves[_widx]
+                _done_n = sum(len(wv) for wv in waves[:_widx])
+                _wave_note = ("VERTICAL SLICE — iteration %d works WAVE %d/%d "
+                              "ONLY (%d task(s); %d task(s) from earlier waves "
+                              "are already built — extend, don't rewrite). "
+                              "Finish this wave's tasks end-to-end (UI + logic "
+                              "+ states) before touching anything else."
+                              % (rnd, _widx + 1, len(waves),
+                                 len(_wave_backlog), _done_n))
             prompt = prompt_build_worker(cfg, w, base_ctx, rnd, tree, roster_desc,
                                          DISPLAY.get(coord, coord), extra=extra,
                                          persona=pers,
                                          contract=_worker_contract_block(
-                                             w, backlog, interfaces))
+                                             w, _wave_backlog, interfaces,
+                                             wave_note=_wave_note))
             # Per-worker cfg: a shallow copy that (a) points an isolated lane at
             # its OWN worktree and (b) keys circuit-breaker health by the worker
             # slug so concurrent threads of the SAME agent never race on one
@@ -4419,6 +4715,14 @@ def _apply_phase_routing(cfg, key):
                  "wins on this phase, giving it more room than the general cap."
                  % (key, routed_timeout, hard_timeout))
         c["_routed_turn_timeout"] = routed_timeout
+    if "rounds" in ov:
+        # Per-phase rounds override (project routing beats the workflow's
+        # value; 0 = unlimited — debate until natural consensus, no vote).
+        c["_routed_rounds"] = int(ov["rounds"])
+    if ov.get("instructions"):
+        # Per-phase operator instructions: spliced into every turn's context
+        # by build_context, right next to the phase playbook.
+        c["_phase_instructions"] = str(ov["instructions"])
     c["models"], c["_resolved"] = models, resolved
     # Per-role overrides (roles.worker / roles.integrator) are applied later,
     # per lane/turn, by _apply_role_routing — stash the validated sub-dict.
@@ -4567,8 +4871,11 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # bounded repair loop without starting another parallel build iteration.
     is_verify_repair = bool(verify_spec) and not is_build
     # Per-phase round budget now lives in the workflow (GUI-editable); fall back
-    # to the legacy config `rounds:` block, then a small default.
+    # to the legacy config `rounds:` block, then a small default. A per-project
+    # routing override (Plan tab) beats them all; its 0 = unlimited.
     raw_rounds = (phasedef.get("rounds") if hasattr(phasedef, "get") else None)
+    if cfg.get("_routed_rounds") is not None:
+        raw_rounds = cfg["_routed_rounds"]
     max_rounds = int(raw_rounds if raw_rounds is not None else cget(cfg, "rounds.%s" % key, 3))
     unlimited_rounds = max_rounds <= 0
     # V2 §7.2: completeness profile scales the round budget (min 1 for any included
@@ -4620,6 +4927,9 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
 
     # Retrieve curated domain knowledge relevant to this phase and stash it so
     # build_context injects it into every turn this phase (the RAG "specialist").
+    # Few-shot exemplar (fleet learning): a rated-good project's output for
+    # THIS phase key, if one has been exported to knowledge/exemplars/.
+    cfg["_phase_exemplar"] = _load_phase_exemplar(key)
     cfg["_phase_playbook"] = phaseruleslib.render_phase_playbook(
         HERE, cfg.get("_workflow_target", "app"), key)
     if cfg["_phase_playbook"]:
@@ -4644,6 +4954,9 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         bool(cget(cfg, "runtime.build_code_changes_enabled", False))
     cfg["_allow_writes"] = allow_writes
     cfg["_build_dir"] = os.path.join(app_dir, "app_build") if allow_writes else None
+    if allow_writes and cfg.get("_workflow_target", "app") == "app" \
+            and bool(cget(cfg, "runtime.golden_scaffold_enabled", True)):
+        _seed_golden_scaffold(cfg["_build_dir"])
     # Session map must exist on the ORIGINAL cfg before any per-thread shallow
     # copies are taken, or each copy would grow its own map and lose sessions.
     cfg.setdefault("_claude_sessions", {})
@@ -4858,6 +5171,17 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                 emit("%s unavailable in %s %d: %s" % (DISPLAY[agent], unit, rnd, aerr))
                 block = "**%s — %s %d (skipped: CLI unavailable)**\n\n_%s_\n" % (
                     DISPLAY[agent], "Iteration" if is_build else "Round", rnd, aerr)
+            elif not is_build and rnd > 1 \
+                    and (resp or "").strip().upper().rstrip(".!").strip() == "PASS":
+                # PASS protocol: an honest abstention is recorded as one line,
+                # keeps the round alive (everyone passing signals convergence
+                # for the coordinator), and shrinks every later turn's context.
+                round_produced += 1
+                any_agent_output = True
+                block = "**%s%s — Round %d**\n\n_PASS — nothing new to add._\n" % (
+                    DISPLAY[agent], hat, rnd)
+                live_log(app_dir, key, agent, "agent_turn_completed", "PASS")
+                emit("%s passed in round %d (nothing new)." % (DISPLAY[agent], rnd))
             else:
                 round_produced += 1
                 any_agent_output = True
@@ -5116,6 +5440,31 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
                             record_decisions=_decisions_contract_requested(
                                 cfg, phasedef))
+    # Flows/requirements contracts: not part of _record_phase_contracts (that
+    # covers tasks.json/interfaces.json/decisions.json/phase_summaries.json)
+    # since these feed the UI-crawl and adherence gates specifically.
+    if key == "task_assignments":
+        blob = transcript + "\n" + (final_output or "")
+        flows, ferrs = parse_flows_blocks(blob)
+        for e in ferrs:
+            emit("FLOWS: ERROR %s" % e)
+        if flows:
+            persist_flows(app_dir, flows)
+            emit("FLOWS: %d user flow(s) -> flows.json (%d error(s)) — the "
+                 "UI-crawl gate replays these against the built app."
+                 % (len(flows), len(ferrs)))
+    if key == "app_features":
+        blob = transcript + "\n" + (final_output or "")
+        reqs, rerrs = parse_requirements_blocks(blob)
+        for e in rerrs:
+            emit("REQUIREMENTS: ERROR %s" % e)
+        if reqs:
+            persist_requirements(app_dir, reqs)
+            emit("REQUIREMENTS: %d requirement(s) -> requirements.json — the "
+                 "adherence gate grades the build against exactly these."
+                 % len(reqs))
+    if key == "product_research" and bool(cget(cfg, "runtime.research_source_check", True)):
+        _research_source_check(cfg, app, app_dir, final_output)
 
     # Audit report phase: synthesize ALL findings (from every audit phase, using the
     # FULL untruncated phase_outputs — not the char-budgeted context) into a ranked
@@ -5394,6 +5743,10 @@ def find_apps(root):
             continue
         if not os.path.exists(os.path.join(full, "initial_prompt", "initial_prompt.md")):
             continue
+        # Archived projects (GUI "Remove from list, keep folder") are invisible
+        # to scan/watch/shepherd passes; deleting the marker restores them.
+        if os.path.exists(os.path.join(full, ".orch_archived")):
+            continue
         apps.append(name)
     return apps
 
@@ -5591,11 +5944,219 @@ def _release_gate_failure(app_dir, phases, state, prompt, cfg=None):
     return None
 
 
+ADHERENCE_JSON_RE = re.compile(r"```adherence-json\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _adherence_gate(cfg, app, app_dir, phases, state, prompt, workflow):
+    """Prompt-adherence gate (runtime.adherence_gate, default true): a compiled
+    app is necessary but not sufficient — this asks one strong agent to grade
+    the BUILT app against the ORIGINAL PROMPT's requirements before the done
+    flag. Returns a human reason string when core requirements are unmet (the
+    caller routes it into the same bounded iterate-repair loop the release
+    gate uses), else None. Best-effort: any error means None — the gate can
+    tighten quality but never take down a run. Verdict + per-requirement
+    grades are persisted to docs/adherence.json for the GUI."""
+    if not bool(cget(cfg, "runtime.adherence_gate", True)):
+        return None
+    if workflow.target != "app":
+        return None
+    has_verify = any((p.get("verify") if hasattr(p, "get") else None)
+                     for p in phases)
+    if not has_verify:
+        return None
+    build_dir = os.path.join(app_dir, "app_build")
+    if not os.path.isdir(build_dir):
+        return None
+    try:
+        tree = []
+        for dp, dns, fns in os.walk(build_dir):
+            dns[:] = [d for d in dns if d not in (".git", ".build", "DerivedData")]
+            for fn in fns:
+                tree.append(os.path.relpath(os.path.join(dp, fn), build_dir))
+            if len(tree) > 400:
+                break
+        spec_bits = []
+        for k in ("app_features", "tech_specs", "design"):
+            v = (state.get("phase_outputs") or {}).get(k)
+            if v:
+                spec_bits.append("--- %s ---\n%s" % (k, str(v)[:3000]))
+        latest_v = verifylib.latest_verify_result(app_dir) or {}
+        # Real runtime evidence (not just a file listing): the UI crawl
+        # actually tapped every element and replayed the declared flows —
+        # dead taps and failed flows are the strongest signal available that
+        # a screen LOOKS done but isn't wired up.
+        func_evidence = ""
+        try:
+            with open(os.path.join(app_dir, "docs", "ui_crawl.json"),
+                      encoding="utf-8") as fh:
+                crawl = json.load(fh)
+            dead = crawl.get("dead_taps") or []
+            flows = crawl.get("flows") or []
+            failed_flows = [f for f in flows if not f.get("passed")]
+            if dead or flows:
+                bits = ["===== FUNCTIONAL EVIDENCE (from actually tapping the "
+                       "running app — weigh this over the file tree) ====="]
+                if dead:
+                    bits.append("%d element(s) did NOTHING when tapped: %s"
+                               % (len(dead), "; ".join(
+                                   (d.get("tapped") or {}).get("label")
+                                   or (d.get("tapped") or {}).get("id") or "?"
+                                   for d in dead[:8])))
+                if flows:
+                    bits.append("%d/%d declared user flows actually work end "
+                               "to end." % (len(flows) - len(failed_flows),
+                                            len(flows)))
+                if failed_flows:
+                    bits.append("Failed flows: " + "; ".join(
+                        "%s (%s)" % (f.get("name"), f.get("failure", "")[:80])
+                        for f in failed_flows[:5]))
+                func_evidence = "\n".join(bits) + "\n\n"
+        except (OSError, ValueError):
+            pass
+        reqs = load_requirements(app_dir)
+        req_block = ""
+        if reqs:
+            req_block = ("===== NUMBERED REQUIREMENTS (requirements.json — "
+                         "grade EACH ONE) =====\n"
+                         + "\n".join("%s%s: %s"
+                                      % (r["id"],
+                                         " [CORE]" if r.get("core") else "",
+                                         r["text"]) for r in reqs[:60])
+                         + "\n\n")
+        dod_block = complib.render_dod(
+            HERE, str(cfg.get("_completeness") or "v1")) + "\n\n"
+        grade_instruction = (
+            "Grade EACH numbered requirement above MET / PARTIAL / UNMET"
+            if reqs else
+            "Extract the concrete requirements from the ORIGINAL PROMPT (not "
+            "the spec — the spec may have drifted) and grade each MET / "
+            "PARTIAL / UNMET")
+        grader_prompt = (
+            "You are the PROMPT ADHERENCE GATE for the app '%s'. Grade the "
+            "built app against what the user actually asked for.\n\n"
+            "CRITICAL RULE: this is NOT a cosmetic review. A screen that "
+            "LOOKS finished but whose controls don't actually work (taps "
+            "that do nothing, hardcoded/fake data standing in for real "
+            "input, calculations never performed, nothing persisted) grades "
+            "UNMET, not MET, no matter how polished it looks. A file simply "
+            "existing (e.g. a 'TipCalculator.swift') is NOT evidence its "
+            "logic is real or wired to the UI — look for actual "
+            "implementation, not just plausible file names.\n\n"
+            "===== ORIGINAL PROMPT =====\n%s\n\n"
+            "%s%s%s"
+            "===== SPEC DECISIONS =====\n%s\n\n"
+            "===== BUILT FILE TREE (app_build/, %d files) =====\n%s\n\n"
+            "===== VERIFICATION =====\n%s\n\n"
+            "%s, judging from the functional evidence above first, then the "
+            "file tree and spec decisions. ALSO grade the Definition of Done "
+            "items — an unmet DoD item counts like a PARTIAL requirement. Be "
+            "strict about core functionality actually working, lenient about "
+            "visual polish. Then output exactly one fenced block:\n"
+            "```adherence-json\n"
+            "{\"score\": 0-100, \"requirements\": [{\"text\": \"...\", "
+            "\"grade\": \"MET|PARTIAL|UNMET\"}], \"verdict\": \"PASS|FAIL\", "
+            "\"reason\": \"one line\"}\n"
+            "```\n"
+            "Verdict FAIL when a CORE requirement is UNMET, INCLUDING when a "
+            "requirement is only cosmetically present without real "
+            "functionality behind it."
+            % (app, str(prompt)[:6000],
+               req_block, dod_block, func_evidence,
+               "\n".join(spec_bits) or "(none recorded)",
+               len(tree), "\n".join(sorted(tree)[:400]),
+               "%s — %s" % (latest_v.get("status", "unverified"),
+                            latest_v.get("summary", "")),
+               grade_instruction))
+        active = enabled_agents(cfg)
+        coord = _pick_coordinator(cfg, active) if active else None
+        if not coord:
+            return None
+        reply = call_agent(cfg, app, "adherence_gate", 1, coord, grader_prompt)
+        m = ADHERENCE_JSON_RE.search(reply or "")
+        if not m:
+            return None
+        data = json.loads(m.group(1))
+        try:
+            with open(os.path.join(app_dir, "docs", "adherence.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+        except OSError:
+            os.makedirs(os.path.join(app_dir, "docs"), exist_ok=True)
+            try:
+                with open(os.path.join(app_dir, "docs", "adherence.json"), "w",
+                          encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2)
+            except OSError:
+                pass
+        if str(data.get("verdict", "")).upper() == "FAIL":
+            unmet = [str(r.get("text", ""))[:120]
+                     for r in (data.get("requirements") or [])
+                     if isinstance(r, dict)
+                     and str(r.get("grade", "")).upper() == "UNMET"]
+            reason = str(data.get("reason") or "core requirements unmet")
+            if unmet:
+                reason += " Unmet: " + "; ".join(unmet[:5])
+            emit("App '%s': ADHERENCE GATE FAILED — %s" % (app, reason))
+            return reason
+        emit("App '%s': adherence gate PASS (score %s)."
+             % (app, data.get("score", "?")))
+        return None
+    except Exception as exc:  # noqa: BLE001 - the gate must never kill a run
+        emit("WARN adherence gate skipped (%s)." % exc)
+        return None
+
+
+def _seed_golden_scaffold(build_dir):
+    """Seed an empty app_build from scaffold/ios_app so builds start from
+    the blessed conventions (starter DesignSystem.swift + binding rules)
+    instead of a blank folder. Only when no Swift source exists yet."""
+    try:
+        src = os.path.join(HERE, "scaffold", "ios_app")
+        if not build_dir or not os.path.isdir(src):
+            return
+        os.makedirs(build_dir, exist_ok=True)
+        for dp, dns, fns in os.walk(build_dir):
+            dns[:] = [d for d in dns if d != ".git"]
+            if any(fn.endswith(".swift") for fn in fns):
+                return   # already a real build — never overwrite
+        copied = []
+        for fn in sorted(os.listdir(src)):
+            dst = os.path.join(build_dir, fn)
+            if not os.path.exists(dst):
+                shutil.copy2(os.path.join(src, fn), dst)
+                copied.append(fn)
+        if copied:
+            emit("Golden scaffold: seeded app_build with %s." % ", ".join(copied))
+    except OSError as exc:
+        emit("WARN golden scaffold skipped (%s)." % exc)
+
+
+def _load_phase_exemplar(key, max_chars=4000):
+    """Newest exported exemplar for this phase key ('' when none)."""
+    d = os.path.join(HERE, "knowledge", "exemplars", str(key))
+    try:
+        files = sorted(
+            (os.path.join(d, n) for n in os.listdir(d) if n.endswith(".md")),
+            key=os.path.getmtime, reverse=True)
+        if not files:
+            return ""
+        with open(files[0], encoding="utf-8") as fh:
+            body = fh.read()[:max_chars]
+        return ("\n===== EXEMPLAR — a previous run's output for this phase "
+                "that the operator rated GOOD (match this bar) =====\n" + body)
+    except OSError:
+        return ""
+
+
 def _queue_release_gate_repair(app, app_dir, state, reason, phases=None,
-                               build_phase_key=None, max_repairs=2):
+                               build_phase_key=None, max_repairs=2,
+                               gate="release_gate", extra_note=""):
     """Refuse the done flag and route the app into the iterate repair flow
     (same mechanism the shepherd uses for hollow builds), capped so a build
-    that never converges can't loop forever."""
+    that never converges can't loop forever. Every call records a blamed
+    incident (fleet learning) and extra_note rides into the repair prompt —
+    e.g. the exact failing screenshot paths for the repairing agent to open."""
+    fllib.record_incident(app_dir, gate, reason)
     n = int(state.get("release_gate_repairs") or 0)
     state["done"] = False
     state["error"] = "release gate: %s" % reason
@@ -5627,8 +6188,10 @@ def _queue_release_gate_repair(app, app_dir, state, reason, phases=None,
                     state.get("consensus_status", {}).pop(k, None)
                     state.get("vote_results", {}).pop(k, None)
         req = ("The app currently FAILS its release gate: %s. Fix every "
-               "compiler error until the build succeeds cleanly for the iOS "
-               "Simulator; do not drop features unless unavoidable." % reason)
+               "problem named until the gates pass; do not drop features "
+               "unless unavoidable." % reason)
+        if extra_note:
+            req += "\n" + extra_note
         prompt_p = os.path.join(app_dir, "initial_prompt", "initial_prompt.md")
         try:
             with open(prompt_p, encoding="utf-8") as fh:
@@ -5855,6 +6418,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         phases = complib.filter_phases(phases, _rc["completeness"],
                                        on_warn=lambda m: emit("WARN " + m))
         cfg["_round_multiplier"] = complib.round_multiplier(_rc["completeness"])
+        cfg["_completeness"] = _rc["completeness"]
         emit("Completeness '%s': %d of %d phases included."
              % (_rc["completeness"], len(phases), _before))
     if _rc.get("stop_after_phase"):
@@ -5995,6 +6559,9 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     if state.get("workflow") != workflow.name:
         state["workflow"] = workflow.name
         save_state(app_dir, state)
+    if workflow.target == "app" and not cfg.get("_tech_stack_block"):
+        cfg["_tech_stack_block"] = dlintlib.render_tech_stack(
+            dlintlib.load_tech_stack(HERE))
     emit("App '%s': workflow '%s' (%d phases, target=%s)."
          % (app, workflow.name, len(phases), workflow.target))
     evlib.emit_event(app_dir, "run_started", project=app,
@@ -6060,6 +6627,13 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 (build_deadline - _start) / 60.0))
 
     prior_outputs = []
+    # Staged continuation (--continue-with): outputs from a PREVIOUS workflow's
+    # phases ride along as context, ahead of this workflow's own outputs, so a
+    # research/spec-only pass genuinely informs the later build pass.
+    _cur_keys = {pk for (pk, *_rest) in phases}
+    for ck, cv in (state.get("carryover_outputs") or {}).items():
+        if cv and ck not in _cur_keys:
+            prior_outputs.append((ck, cv))
     for key in [pk for (pk, *_rest) in phases if pk in state.get("completed_phases", [])]:
         out = state.get("phase_outputs", {}).get(key)
         if out:
@@ -6169,6 +6743,72 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                              status="release_gate_repair", detail=gate_reason,
                              verification=state.get("verification"))
             return
+        if workflow.target == "app":
+            # Free and deterministic first: token/dependency lint.
+            lint_reason = dlintlib.run_design_lint(cfg, cget, emit, app,
+                                                   app_dir, HERE)
+            if lint_reason:
+                _queue_release_gate_repair(
+                    app, app_dir, state, "design lint: " + lint_reason,
+                    phases=phases, build_phase_key=workflow.build_phase,
+                    gate="design_lint",
+                    extra_note="Full findings with file:line are in "
+                               "docs/design_lint.json — fix EVERY error entry.")
+                evlib.emit_event(app_dir, "run_finished", project=app,
+                                 status="design_lint_repair",
+                                 detail=lint_reason)
+                return
+            # Compiles ≠ looks finished: boot the simulator, screenshot the
+            # app in light+dark, grade with the LOCAL vision panel (free).
+            vqa_reason = vqalib.run_visual_qa(cfg, cget, emit, app, app_dir,
+                                              state, prompt)
+            if vqa_reason:
+                _queue_release_gate_repair(
+                    app, app_dir, state, vqa_reason,
+                    phases=phases, build_phase_key=workflow.build_phase,
+                    gate="visual_qa",
+                    extra_note="OPEN THESE IMAGE FILES and fix exactly what "
+                               "you see: docs/screenshots/main_light.png and "
+                               "docs/screenshots/main_dark.png. Grader "
+                               "verdict: docs/visual_qa.json.")
+                evlib.emit_event(app_dir, "run_finished", project=app,
+                                 status="visual_qa_repair", detail=vqa_reason)
+                return
+            # Compiles + looks right ≠ behaves right: crawl every screen, tap
+            # everything, replay declared user journeys. Crashes learn back
+            # into flows.json as permanent regression flows.
+            crawl_reason = uicrawllib.run_ui_crawl(cfg, cget, emit, app,
+                                                   app_dir, state, prompt)
+            if crawl_reason:
+                _gate = "ui_crawl_crash" if "crash" in crawl_reason \
+                    else "ui_crawl_flow"
+                _queue_release_gate_repair(
+                    app, app_dir, state, "UI crawl: " + crawl_reason,
+                    phases=phases, build_phase_key=workflow.build_phase,
+                    gate=_gate,
+                    extra_note="Screen graph, per-screen screenshots, dead "
+                               "taps, and flow results are in docs/ui_crawl/ "
+                               "and docs/ui_crawl.json — open the failing "
+                               "screen's screenshot before fixing.")
+                evlib.emit_event(app_dir, "run_finished", project=app,
+                                 status="ui_crawl_repair", detail=crawl_reason)
+                return
+        # Compiles ≠ does what was asked: grade the build against the original
+        # prompt's requirements; unmet core requirements route into the same
+        # bounded iterate-repair loop instead of a hollow "done".
+        adh_reason = _adherence_gate(cfg, app, app_dir, phases, state, prompt,
+                                     workflow)
+        if adh_reason:
+            _queue_release_gate_repair(app, app_dir, state,
+                                       "prompt adherence: " + adh_reason,
+                                       phases=phases,
+                                       build_phase_key=workflow.build_phase,
+                                       gate="adherence",
+                                       extra_note="Per-requirement grades are "
+                                                  "in docs/adherence.json.")
+            evlib.emit_event(app_dir, "run_finished", project=app,
+                             status="adherence_repair", detail=adh_reason)
+            return
         state["done"] = True
         state["error"] = None
         # A finished run can't still be blocked or awaiting anything — without
@@ -6198,6 +6838,15 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         except Exception as exc:  # noqa: BLE001 - docs are best-effort, never fatal
             emit("WARN docs render failed: %s" % exc)
         emit("App '%s': ALL phases complete. Marked done." % app)
+        # Fleet learning: refresh the anti-pattern ledger after every
+        # finished run (deterministic text only — no model call).
+        try:
+            _lpath, _lclusters = fllib.build_ledger(
+                os.path.dirname(os.path.abspath(app_dir)), HERE)
+            if _lpath:
+                emit("Anti-pattern ledger refreshed (%d cluster(s))." % _lclusters)
+        except Exception:  # noqa: BLE001 - learning must never fail a run
+            pass
         evlib.emit_event(app_dir, "run_finished", project=app, status="done",
                          verification=state.get("verification"))
     except AgentError as exc:
@@ -6495,6 +7144,69 @@ def prepare_resume(root, slug):
     return 0, slug
 
 
+def prepare_continue(root, slug, workflow_name):
+    """--continue-with <workflow>: re-open an EXISTING project (typically done)
+    under a DIFFERENT workflow — e.g. a research/docs-only project continued
+    later into a full build. Generalizes the iterate/release-gate reopen
+    pattern: rewrite workflow.txt, selectively clear completed_phases for the
+    new workflow's phase keys (so they actually run), and stash the previous
+    workflow's outputs in carryover_outputs so they keep informing the run as
+    context. The prompt hash is untouched, so the pipeline enters its normal
+    resume path instead of a from-scratch reset.
+
+    Returns (exit_code, target_app); target_app None means exit exit_code."""
+    app_dir = os.path.join(root, slug)
+    if not os.path.isdir(app_dir):
+        emit("--continue-with: no project '%s' under %s" % (slug, root))
+        return 2, None
+    if not os.path.exists(state_path(app_dir)):
+        emit("--continue-with: project '%s' has never run — a first run already "
+             "honors workflow.txt, so run it normally instead." % slug)
+        return 2, None
+    available = wflib.list_workflows(HERE)
+    if workflow_name not in available:
+        emit("--continue-with: unknown workflow '%s' (available: %s)"
+             % (workflow_name, ", ".join(available)))
+        return 2, None
+    wf = wflib.load_workflow(workflow_name, HERE)
+    new_keys = {p.key for p in wf.phases}
+    st = load_state(app_dir)
+    # Prior-workflow outputs whose phase keys the new workflow does NOT re-run
+    # become carryover context (later continues stack on top of earlier ones).
+    carry = dict(st.get("carryover_outputs") or {})
+    for k, v in (st.get("phase_outputs") or {}).items():
+        if v and k not in new_keys:
+            carry[k] = v
+    st["carryover_outputs"] = carry
+    # Phase keys shared with the new workflow must re-run: drop them from
+    # completed_phases and clear their per-phase records (same surgery the
+    # release-gate repair does) so the pass is never a silent no-op.
+    redo = [k for k in st.get("completed_phases", []) if k in new_keys]
+    st["completed_phases"] = [k for k in st.get("completed_phases", [])
+                              if k not in new_keys]
+    for k in redo:
+        st.get("phase_outputs", {}).pop(k, None)
+        st.get("consensus_status", {}).pop(k, None)
+        st.get("vote_results", {}).pop(k, None)
+    st["done"] = False
+    st["error"] = None
+    st["blocked_conflict"] = None
+    st["awaiting_approval"] = None
+    st["workflow"] = workflow_name
+    save_state(app_dir, st)
+    try:
+        with open(os.path.join(app_dir, "workflow.txt"), "w", encoding="utf-8") as fh:
+            fh.write(workflow_name + "\n")
+    except OSError as exc:
+        emit("--continue-with: could not write workflow.txt for '%s': %s"
+             % (slug, exc))
+        return 2, None
+    emit("--continue-with: '%s' re-opened under workflow '%s' — %d phase(s) will "
+         "run, %d prior output(s) carried forward as context."
+         % (slug, workflow_name, len(new_keys), len(carry)))
+    return 0, slug
+
+
 def run_once(cfg):
     root = cfg["root"]
     if not os.path.isdir(root):
@@ -6534,6 +7246,11 @@ def main():
     ap.add_argument("--resume", metavar="SLUG",
                     help="resume an existing project from its saved state, clearing "
                          "any recorded abort error first (V2 spec §27)")
+    ap.add_argument("--continue-with", dest="continue_with", metavar="WORKFLOW",
+                    help="with --app/--project: re-open the project under this "
+                         "workflow, carrying prior phase outputs forward as "
+                         "context (staged continuation, e.g. research now, "
+                         "full build later)")
     ap.add_argument("--doctor", action="store_true", help="print environment report and exit")
     ap.add_argument("--mistakes", action="store_true",
                     help="print the cross-run mistakes-ledger report (per-class/"
@@ -6549,6 +7266,22 @@ def main():
                          "machine-readable JSON report (V2 spec §27)")
     ap.add_argument("--seed", action="store_true",
                     help="seed built-in workflow JSON files and exit (used by the GUI)")
+    ap.add_argument("--fleet-report", action="store_true",
+                    help="print the fleet-learning report (label confirmation "
+                         "queue + per-phase scorecards) and rebuild the "
+                         "anti-pattern ledger, then exit")
+    ap.add_argument("--eval-report", nargs="*", metavar="SLUG", default=None,
+                    help="print the eval-harness scorecard table over the "
+                         "given project slugs (default: all projects) and exit")
+    ap.add_argument("--save-exemplar", metavar="SLUG",
+                    help="export a rated-good project's phase outputs into "
+                         "knowledge/exemplars/ for few-shot splicing, then exit")
+    ap.add_argument("--distill-doc", metavar="PATH_OR_URL",
+                    help="distill a design/engineering document into a dense "
+                         "knowledge/ cheatsheet via the claude CLI, then exit")
+    ap.add_argument("--domain", metavar="NAME", default="ios",
+                    help="with --distill-doc: knowledge domain folder "
+                         "(default ios)")
     ap.add_argument("--search-models", metavar="QUERY",
                     help="search open-source local models (curated registry + "
                          "Hugging Face GGUF, pullable via ollama) and exit; "
@@ -6615,6 +7348,14 @@ def main():
             ap.error("invalid project name %r — use a single folder name under the "
                      "workspace root (no path separators, '..', or leading '.')" % _slug)
 
+    if args.continue_with:
+        # Validate the combination before any slug is processed.
+        if args.resume:
+            ap.error("--continue-with conflicts with --resume; resume finishes "
+                     "the CURRENT workflow, continue-with switches to a new one")
+        if not target_app:
+            ap.error("--continue-with requires --app/--project SLUG")
+
     if args.resume:
         if target_app and target_app != args.resume:
             ap.error("--resume conflicts with --app/--project; pass only one slug")
@@ -6648,6 +7389,63 @@ def main():
             print(json.dumps(rep, indent=2))
         else:
             print_mistakes_report(rep)
+        return 0
+
+    if args.continue_with:
+        rc, target_app = prepare_continue(cfg["root"], target_app,
+                                          args.continue_with)
+        if target_app is None:
+            return rc
+
+    if args.fleet_report:
+        path, clusters = fllib.build_ledger(
+            cfg["root"], HERE,
+            model=str(cget(cfg, "models.ollama", "") or ""))
+        if path:
+            emit("Anti-pattern ledger rebuilt: %s (%d cluster(s))."
+                 % (path, clusters))
+        print(fllib.render_fleet_report(cfg["root"], HERE))
+        return 0
+
+    if args.eval_report is not None:
+        print(evallib.report(cfg["root"], args.eval_report or None))
+        return 0
+
+    if args.save_exemplar:
+        if not valid_app_slug(args.save_exemplar):
+            ap.error("invalid project name %r" % args.save_exemplar)
+        written = fllib.export_exemplars(
+            os.path.join(cfg["root"], args.save_exemplar), HERE,
+            args.save_exemplar)
+        emit("Exported %d exemplar file(s)%s."
+             % (len(written), ": " + ", ".join(
+                 os.path.relpath(w, HERE) for w in written) if written else
+                " (no substantial phase outputs found)"))
+        return 0
+
+    if args.distill_doc:
+        src = args.distill_doc
+        slug = re.sub(r"[^a-z0-9-]+", "-",
+                      os.path.basename(src.rstrip("/")).lower())[:60] \
+            .strip("-") or "doc"
+        emit("Distilling %s into knowledge/%s/ via claude…" % (src, args.domain))
+        ask = ("Read the document at %s (a file path or URL — open/fetch it "
+               "yourself). Distill it into a dense, actionable cheatsheet for "
+               "agents building iOS apps: concrete rules, exact values, "
+               "do/don'ts, checklists. No prose padding, no attribution "
+               "boilerplate. Maximum ~120 lines of markdown. Output ONLY the "
+               "cheatsheet." % src)
+        out, err, code, _cmd = run_claude(cfg, ask, 900)
+        if code != 0 or not (out or "").strip():
+            emit("Distill failed: %s" % (err or "no output").strip()[:200])
+            return 1
+        dest_dir = os.path.join(HERE, "knowledge", args.domain)
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, "distilled-%s.md" % slug)
+        with open(dest, "w", encoding="utf-8") as fh:
+            fh.write("<!-- distilled from %s on %s -->\n\n%s\n"
+                     % (src, time.strftime("%Y-%m-%d"), out.strip()))
+        emit("Wrote %s." % os.path.relpath(dest, HERE))
         return 0
 
     if args.doctor:

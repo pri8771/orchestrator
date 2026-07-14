@@ -123,8 +123,11 @@ class TestRosterGating(unittest.TestCase):
     """enabled_agents() includes/excludes local identities per config."""
 
     def cfg(self, **kw):
+        # enforce_local_ram_gate is exercised by TestRamGate; disable it here
+        # so these roster-gating tests aren't at the mercy of this machine's
+        # actual RAM vs. the registry's min_ram_gb figures.
         c = {"agents": {"ollama_enabled": True}, "models": {"ollama": "qwen2.5-coder:7b"},
-             "runtime": {}}
+             "runtime": {"enforce_local_ram_gate": False}}
         c.update(kw)
         return c
 

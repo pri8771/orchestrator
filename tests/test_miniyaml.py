@@ -82,7 +82,7 @@ class TestConfigYamlScalarShapes(unittest.TestCase):
         self.assertIn("qwen2.5-coder:14b", roster)
 
     def test_bare_word_string(self):
-        self.assertEqual(self.cfg["models"]["ollama"], "glm4:9b")
+        self.assertEqual(self.cfg["models"]["ollama"], "qwen2.5-coder:14b")
         self.assertEqual(self.cfg["ios"]["code_sign_style"], "Automatic")
 
     def test_bools(self):
