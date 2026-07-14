@@ -40,6 +40,30 @@ REGISTRY_PUBLIC_FIELDS = (
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 
 
+_STRING_FIELDS = ("label", "runtime", "license", "license_url", "notes")
+_NUMERIC_FIELDS = ("min_ram_gb", "recommended_ram_gb", "size_gb", "context_tokens")
+
+
+def _entry_is_well_formed(m):
+    """id-presence was the only check; a GUI/hand edit can still ship a
+    numeric label, a roles STRING instead of a list, or a non-numeric RAM
+    figure that later breaks a doctor/GUI consumer expecting the documented
+    shape. Reject those here instead of letting them ship silently."""
+    if not isinstance(m, dict) or not str(m.get("id", "")).strip():
+        return False
+    for field in _STRING_FIELDS:
+        if field in m and not isinstance(m[field], str):
+            return False
+    for field in _NUMERIC_FIELDS:
+        if field in m and not isinstance(m[field], (int, float)):
+            return False
+    if "roles" in m and not isinstance(m["roles"], list):
+        return False
+    if "commercial_use" in m and not isinstance(m["commercial_use"], bool):
+        return False
+    return True
+
+
 def load_registry(here):
     """The curated local-model registry (spec §12.3) as a dict. A missing,
     unreadable, or malformed file NEVER raises — it yields an empty registry
@@ -53,9 +77,9 @@ def load_registry(here):
         return empty
     if not isinstance(data, dict) or not isinstance(data.get("models"), list):
         return empty
-    # Keep only well-formed entries (an id is the one field everything keys on).
-    data["models"] = [m for m in data["models"]
-                      if isinstance(m, dict) and str(m.get("id", "")).strip()]
+    # Keep only well-formed entries: an id is required, and any of the
+    # documented fields present must be the right basic type.
+    data["models"] = [m for m in data["models"] if _entry_is_well_formed(m)]
     return data
 
 
@@ -102,13 +126,16 @@ def installed_models_cached(ttl=60, run=None):
     local fallback consults this on the failure hot path — it must not pay a
     10s `ollama list` subprocess on every rescued turn."""
     now = time.time()
+    # Single-flight: hold the lock across the refresh so concurrent rescued
+    # turns don't each spawn the 10s `ollama list`. A second caller that was
+    # blocked here re-checks the TTL and returns the just-refreshed cache
+    # instead of running its own subprocess.
     with _CACHE_LOCK:
         if now - _INSTALLED_CACHE["ts"] < ttl:
             return list(_INSTALLED_CACHE["models"])
-    models = installed_models(run=run)
-    with _CACHE_LOCK:
-        _INSTALLED_CACHE.update(ts=now, models=list(models))
-    return list(models)
+        models = installed_models(run=run)
+        _INSTALLED_CACHE.update(ts=time.time(), models=list(models))
+        return list(models)
 
 
 # Hugging Face model search, restricted to GGUF repos — exactly the set Ollama
@@ -192,7 +219,9 @@ def report(here, selected):
     server reachability, the configured model (models.ollama) and whether it's
     actually pulled, plus the curated registry with per-model installed flags."""
     selected = str(selected or "").strip()
-    installed = set(installed_models())
+    # Cached (like search_remote): --doctor/GUI polls hit this repeatedly and
+    # must not re-pay the full `ollama list` subprocess on every call.
+    installed = set(installed_models_cached())
     registry = []
     for m in load_registry(here).get("models", []):
         entry = {k: m.get(k) for k in REGISTRY_PUBLIC_FIELDS if k in m}

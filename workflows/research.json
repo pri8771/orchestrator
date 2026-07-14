@@ -4,6 +4,8 @@
   "description": "A deeper research pipeline: gather what's known, weigh the evidence and resolve contradictions, then write a synthesized, honest report.",
   "target": "research",
   "build_phase": null,
+  "budget": null,
+  "overrides": null,
   "phases": [
     {
       "key": "gather",
@@ -18,7 +20,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "analyze",
@@ -33,7 +41,13 @@
         "product"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "report",
@@ -47,7 +61,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     }
   ]
 }

@@ -126,6 +126,26 @@ class TestClaudeEffortParity(unittest.TestCase):
         cmd = self._run_claude_cmd(cfg)
         self.assertNotIn("--effort", cmd)
 
+    def test_prompt_passed_on_stdin_not_argv(self):
+        # The prompt (and any secret in it) must not land on argv where `ps` /
+        # /proc/<pid>/cmdline expose it to other local users.
+        captured = {}
+
+        def fake_run(cmd, cwd, timeout, env=None, heartbeat=None, input_text=None):
+            captured["cmd"] = list(cmd)
+            captured["input_text"] = input_text
+            return "ok", "", 0
+
+        orig = orch._run_subprocess
+        orch._run_subprocess = fake_run
+        try:
+            orch.run_claude(_cfg(), "SECRET-PROMPT-BODY", 10)
+        finally:
+            orch._run_subprocess = orig
+        self.assertEqual(captured["input_text"], "SECRET-PROMPT-BODY")
+        self.assertNotIn("SECRET-PROMPT-BODY", captured["cmd"])
+        self.assertEqual(captured["cmd"][:2], ["claude", "-p"])
+
     def test_chat_turn_uses_claude_reasoning(self):
         cfg = _cfg()
         cfg["models"]["claude_reasoning"] = "low"
@@ -209,10 +229,12 @@ class TestWorkflowJsonRoundtrip(unittest.TestCase):
         w2 = wf.Workflow.from_json(d)
         self.assertEqual(w2.overrides, {"effort": "fast", "rounds_scale": 0.5})
 
-    def test_no_overrides_not_serialized(self):
-        # Workflows without a preset stay byte-identical to the pre-overrides
-        # serialization (no new key appears in seeded JSON).
-        self.assertNotIn("overrides", _mk_workflow(None).to_json())
+    def test_overrides_serialized_as_null_when_unset(self):
+        # to_json now emits every field for a uniform on-disk shape: `overrides`
+        # is always present, null when there's no preset.
+        d = _mk_workflow(None).to_json()
+        self.assertIn("overrides", d)
+        self.assertIsNone(d["overrides"])
         self.assertIsNone(wf.Workflow.from_json(
             {"name": "x", "phases": []}).overrides)
 
@@ -240,9 +262,14 @@ class TestStarterWorkflows(unittest.TestCase):
         keys = [p.key for p in w.phases]
         self.assertNotIn("human_qa_checklist", keys)
         self.assertNotIn("app_store_readiness", keys)
+        # prototype is speed-oriented, so unlike full_max it also omits
+        # write_tests/real xcodebuild-test execution (item 2: opt-in only for
+        # the deep pipelines, app_build/full_max).
+        self.assertNotIn("write_tests", keys)
         self.assertEqual(keys, [p.key for p in base.phases
                                 if p.key not in ("human_qa_checklist",
-                                                 "app_store_readiness")])
+                                                 "app_store_readiness",
+                                                 "write_tests")])
         self.assertEqual(w.build_phase, "build_coordination")
 
     def test_full_max_loads(self):

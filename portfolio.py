@@ -25,6 +25,10 @@ FENCE = "portfolio-json"
 MANIFEST_NAME = "portfolio_manifest.json"
 CHILD_META_NAME = "portfolio_child.json"
 AUTORUN_DISABLED_NAME = ".orchestrator_autorun_disabled"
+# Well under the 255-byte filename limit most filesystems (ext4/APFS) enforce —
+# an agent-emitted app "name" can run to a full sentence, and that becomes a
+# folder name via slugify(). Leaves room for a "-<n>" dedup suffix too.
+MAX_SLUG_LEN = 80
 
 
 PORTFOLIO_JSON_INSTRUCTION = (
@@ -53,41 +57,50 @@ PORTFOLIO_JSON_INSTRUCTION = (
 )
 
 
+# Signals that a prompt is intentionally a multi-app portfolio. Hoisted to module
+# scope (from inside the function) so the boundaries are inspectable and unit
+# tested — this classifier gates whether the engine fans a prompt out into
+# sibling child projects, so a misclassification is expensive.
+PORTFOLIO_SIGNALS = (
+    "one folder per selected app",
+    "one folder per app",
+    "for every selected app",
+    "each selected app",
+    "selected app list",
+    "apps 1-8",
+    "required app map",
+    "do not build 63 apps",
+    "multiple apps",
+    "more than one app",
+    "one unique app for each",
+    "1 unique app for each",
+    "one app for each",
+    "out of these categories",
+    "these categories",
+    "each app should",
+    "all these apps",
+)
+APP_CATEGORY_NAMES = (
+    "business", "finance", "food & drink", "graphics & design",
+    "health & fitness", "medical", "navigation", "news",
+    "photo & video", "productivity", "reference", "social networking",
+    "travel", "utilities", "weather", "sports", "shopping",
+)
+# The "distributive" phrases that, alongside several category names, imply
+# "one app per category".
+_PORTFOLIO_DISTRIBUTIVE = ("one app", "1 app", "unique app", "each app", "for each")
+
+
 def is_portfolio_parent_prompt(prompt):
     """Heuristic guard for prompts that are intentionally multi-app portfolios."""
     text = (prompt or "").lower()
     if "portfolio_child_project:" in text:
         return False
-    signals = (
-        "one folder per selected app",
-        "one folder per app",
-        "for every selected app",
-        "each selected app",
-        "selected app list",
-        "apps 1-8",
-        "required app map",
-        "do not build 63 apps",
-        "multiple apps",
-        "more than one app",
-        "one unique app for each",
-        "1 unique app for each",
-        "one app for each",
-        "out of these categories",
-        "these categories",
-        "each app should",
-        "all these apps",
-    )
-    category_names = (
-        "business", "finance", "food & drink", "graphics & design",
-        "health & fitness", "medical", "navigation", "news",
-        "photo & video", "productivity", "reference", "social networking",
-        "travel", "utilities", "weather", "sports", "shopping",
-    )
-    category_hits = sum(1 for name in category_names if name in text)
-    return ("portfolio" in text and sum(1 for s in signals if s in text) >= 1) \
-        or sum(1 for s in signals if s in text) >= 2 \
-        or (category_hits >= 4 and any(s in text for s in (
-            "one app", "1 app", "unique app", "each app", "for each")))
+    signal_hits = sum(1 for s in PORTFOLIO_SIGNALS if s in text)
+    category_hits = sum(1 for name in APP_CATEGORY_NAMES if name in text)
+    return ("portfolio" in text and signal_hits >= 1) \
+        or signal_hits >= 2 \
+        or (category_hits >= 4 and any(s in text for s in _PORTFOLIO_DISTRIBUTIVE))
 
 
 def requires_built_children(prompt):
@@ -118,9 +131,11 @@ def requires_built_children(prompt):
 
 
 def slugify(value, fallback="app"):
-    """Folder-safe lowercase slug."""
+    """Folder-safe lowercase slug, capped at MAX_SLUG_LEN so an agent-emitted
+    full-sentence "name" can never produce a filesystem-rejected folder name."""
     s = re.sub(r"[^a-zA-Z0-9]+", "-", str(value or "").strip().lower())
     s = re.sub(r"-+", "-", s).strip("-")
+    s = s[:MAX_SLUG_LEN].rstrip("-")
     return s or fallback
 
 
@@ -225,7 +240,10 @@ def child_autorun_disabled(child_dir):
 
 
 def _write_json(path, payload):
-    tmp = path + ".tmp"
+    # Per-writer temp name: two orchestrator processes expanding portfolio
+    # manifests concurrently (different parent apps) must not share one fixed
+    # ".tmp" path and clobber each other's half-written file.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
     os.replace(tmp, path)
@@ -233,8 +251,10 @@ def _write_json(path, payload):
 
 def _write_text(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text.rstrip() + "\n")
+    os.replace(tmp, path)
 
 
 def _unique_slug(root, preferred, reserved):
@@ -385,8 +405,17 @@ def materialize_children(root, parent_app, parent_dir, parent_prompt, manifest,
         if os.path.exists(child_dir) and not os.path.exists(meta_path):
             result["skipped"].append(slug)
             continue
-        existed = os.path.exists(child_dir)
-        os.makedirs(child_dir, exist_ok=True)
+        # Determine "did THIS call create the dir" atomically via makedirs'
+        # own FileExistsError, rather than a separate os.path.exists() check
+        # beforehand — the two-step check-then-create was a TOCTOU: a second
+        # orchestrator process (a different parent portfolio run) claiming the
+        # same slug between the check and the create would have its directory
+        # silently relabeled "updated" instead of the race being visible.
+        try:
+            os.makedirs(child_dir)
+            existed = False
+        except FileExistsError:
+            existed = True
         _write_json(meta_path, {
             "schema_version": schemalib.SCHEMA_VERSION,
             "parent": parent_app,

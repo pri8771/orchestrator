@@ -84,6 +84,19 @@ struct AppShellView: View {
         store.agentOrder.contains { (store.enabledAgents[$0] ?? false) && (store.cliAvailable[$0] ?? false) }
     }
 
+    // Explains why Run is enabled or disabled, so a greyed-out button isn't a
+    // mystery (the common cause is no logged-in agent CLI).
+    private var runButtonHelp: String {
+        if selectedProject == nil { return "Select a project to run" }
+        if selectedProject?.running ?? false { return "This project is already running" }
+        if store.runQueue.contains(selectedProject?.name ?? "") { return "This project is already queued" }
+        if !anyRunnable {
+            return "No agent is runnable — enable one and make sure its CLI is "
+                + "installed and logged in (codex / claude / gemini), or enable a local model"
+        }
+        return "Run the selected project (queues if the engine is busy)"
+    }
+
     // MARK: Body
 
     var body: some View {
@@ -114,13 +127,26 @@ struct AppShellView: View {
         .shellSearchFocused($searchFocused)
         .toolbar { toolbarContent }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if !store.engineAvailable {
-                EngineMissingBanner(message: store.engineMissingMessage)
+            VStack(spacing: 0) {
+                if !store.engineAvailable {
+                    EngineMissingBanner(message: store.engineMissingMessage)
+                }
+                if let err = store.lastError {
+                    ActionErrorBanner(message: err) { store.lastError = nil }
+                }
             }
         }
         .sheet(isPresented: $showNewApp) {
             NewAppIntakeSheet { slug in selection = .project(slug) }
                 .environmentObject(store)
+        }
+        // ⌘K palette: a floating panel over a dimmed scrim (DESIGN-REFRESH.md
+        // §6), overlaid on the whole shell rather than presented as a sheet.
+        .overlay {
+            if store.showCommandPalette {
+                CommandPaletteView(onJumpToProject: { selection = .project($0) })
+                    .environmentObject(store)
+            }
         }
         .onChange(of: store.uiCommand) { _, cmd in
             guard let cmd else { return }
@@ -134,6 +160,7 @@ struct AppShellView: View {
             case .toggleInspector: showInspector.toggle()
             case .focusSearch: searchFocused = true
             case .toggleLog: withAnimation { showRunLog.toggle() }
+            case .togglePause: store.toggleEnginePaused()
             case .openPlanTab: return     // handled by ProjectShellContent
             }
             store.uiCommand = nil
@@ -167,7 +194,7 @@ struct AppShellView: View {
             }
             .disabled(selectedProject == nil || (selectedProject?.running ?? false)
                       || store.runQueue.contains(selectedProject?.name ?? "") || !anyRunnable)
-            .help("Run the selected project (queues if the engine is busy)")
+            .help(runButtonHelp)
 
             if let p = selectedProject, p.running || store.canStop(p.name) {
                 Button { store.stopRun(p.name) } label: {
@@ -175,6 +202,15 @@ struct AppShellView: View {
                 }
                 .help("Stop this run")
             }
+
+            Button { store.toggleEnginePaused() } label: {
+                Label(store.enginePaused ? "Resume Engine" : "Pause Engine",
+                      systemImage: store.enginePaused ? "play.circle" : "pause.circle")
+            }
+            .help(store.enginePaused
+                  ? "Resume auto-launching queued projects"
+                  : "Pause the engine: queued projects won't auto-launch (running work continues)")
+            .accessibilityValue(store.enginePaused ? "Paused" : "Running")
 
             Button { showNewApp = true } label: {
                 Label("New App", systemImage: "plus")
@@ -362,11 +398,7 @@ struct AppShellView: View {
     }
 
     private func shellPlaceholder(_ title: String, _ symbol: String) -> some View {
-        VStack(spacing: DS.space.s) {
-            Image(systemName: symbol).font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-            Text(title).font(DS.font.body).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(symbol: symbol, title: title)
     }
 }
 
@@ -394,16 +426,9 @@ struct ShellInspectorPane: View {
         if let project {
             ProjectInspectorView(project: project)
         } else {
-            VStack(spacing: DS.space.s) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-                Text("These are global defaults — select a project to override.")
-                    .font(DS.font.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, DS.space.m)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyStateView(symbol: "slider.horizontal.3",
+                           title: "Fleet defaults",
+                           message: "These are global defaults — select a project to override them.")
         }
     }
 }
@@ -696,16 +721,22 @@ private struct FactoryOverviewView: View {
         }
         ForEach(running) { p in
             Button { onOpen(p.name) } label: {
-                HStack(spacing: DS.space.s) {
-                    VStack(alignment: .leading, spacing: DS.space.xxs) {
-                        Text(p.name).font(DS.font.headline)
-                        Text(p.progressText)
-                            .font(DS.font.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: DS.space.xs) {
+                    HStack(spacing: DS.space.s) {
+                        VStack(alignment: .leading, spacing: DS.space.xxs) {
+                            Text(p.name).font(DS.font.headline)
+                            Text(p.progressText)
+                                .font(DS.font.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        StatusPill(kind: .running,
+                                   label: p.currentPhase.map { p.titleFor($0) } ?? "Starting",
+                                   breathing: true)
                     }
-                    Spacer()
-                    StatusPill(kind: .running,
-                               label: p.currentPhase.map { p.titleFor($0) } ?? "Starting",
-                               breathing: true)
+                    // §4.1: the per-phase timeline capsule with agent avatars,
+                    // embedded at glance altitude — the card stays one click.
+                    PhaseTimelineView(project: p, compact: true)
+                        .allowsHitTesting(false)
                 }
                 .padding(DS.space.s)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -721,19 +752,12 @@ private struct FactoryOverviewView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: DS.space.s) {
-            Image(systemName: "sparkles")
-                .font(DS.font.emptyStateIcon)
-                .foregroundStyle(.tertiary)
-            Text("No apps building")
-                .font(DS.font.largeTitle)
-            Text("Press ⌘N to queue your first idea.")
-                .font(DS.font.body).foregroundStyle(.secondary)
-            Button("New App") { onNewApp() }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, DS.space.xs)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(symbol: "sparkles",
+                       title: "No apps building",
+                       message: "Press ⌘N to queue your first idea.",
+                       actionLabel: "New App",
+                       action: onNewApp,
+                       prominent: true)
     }
 }
 
@@ -1017,12 +1041,9 @@ private struct ProjectRunContent: View {
                 if let key = selectedPhaseKey {
                     TranscriptView(project: proj, phaseKey: key)
                 } else {
-                    VStack(spacing: DS.space.s) {
-                        Image(systemName: "bubble.left.and.bubble.right")
-                            .font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-                        Text("Select a phase").foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    EmptyStateView(symbol: "bubble.left.and.bubble.right",
+                                   title: "Select a phase",
+                                   message: "Pick a phase on the left to read its conversation.")
                 }
             }
         }

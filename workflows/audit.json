@@ -5,6 +5,7 @@
   "target": "audit",
   "build_phase": null,
   "budget": null,
+  "overrides": null,
   "phases": [
     {
       "key": "recon",
@@ -20,7 +21,12 @@
       ],
       "writes": false,
       "reads_target": true,
-      "verify": null
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "security",
@@ -36,7 +42,12 @@
       ],
       "writes": false,
       "reads_target": true,
-      "verify": null
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "bugs",
@@ -52,7 +63,12 @@
       ],
       "writes": false,
       "reads_target": true,
-      "verify": null
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "modernization",
@@ -68,7 +84,12 @@
       ],
       "writes": false,
       "reads_target": true,
-      "verify": null
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "report",
@@ -84,7 +105,12 @@
       ],
       "writes": false,
       "reads_target": true,
-      "verify": null
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     }
   ]
 }

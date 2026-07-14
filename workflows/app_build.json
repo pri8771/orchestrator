@@ -5,6 +5,7 @@
   "target": "app",
   "build_phase": "build_coordination",
   "budget": null,
+  "overrides": null,
   "phases": [
     {
       "key": "prompt_contract",
@@ -344,6 +345,26 @@
       "test_deliverable": null
     },
     {
+      "key": "write_tests",
+      "folder": "write_tests",
+      "file": "write_tests.md",
+      "title": "Write Tests",
+      "purpose": "Write real XCTest unit tests covering core logic and view-models (not placeholder tests) for the app just built, so build_verification's xcodebuild test run has real coverage to execute.",
+      "rounds": 6,
+      "roles": [
+        "qa",
+        "backend"
+      ],
+      "writes": true,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": "XCTest unit tests covering core logic/view-models, committed to app_build"
+    },
+    {
       "key": "build_verification",
       "folder": "build_verification",
       "file": "build_verification.md",
@@ -359,7 +380,8 @@
       "reads_target": false,
       "verify": {
         "type": "xcodebuild",
-        "repair_iterations": 3
+        "repair_iterations": 3,
+        "run_tests": true
       },
       "checkpoint": false,
       "structurally_required": false,

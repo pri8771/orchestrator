@@ -24,6 +24,18 @@ PORTFOLIO_BLOCK = """```portfolio-json
 ```"""
 
 
+class TestSlugify(unittest.TestCase):
+    def test_long_name_capped_below_filesystem_limit(self):
+        long_name = "A " * 200  # an agent-emitted full sentence, not a short name
+        slug = port.slugify(long_name)
+        self.assertLessEqual(len(slug), port.MAX_SLUG_LEN)
+        self.assertTrue(slug)
+
+    def test_cap_does_not_leave_a_trailing_dash(self):
+        slug = port.slugify("x" * (port.MAX_SLUG_LEN - 1) + "-y-z-z-z-z")
+        self.assertFalse(slug.endswith("-"))
+
+
 class TestPortfolioExpansion(unittest.TestCase):
     def test_parse_portfolio_manifest(self):
         manifest, errors = port.parse_portfolio_manifest(PORTFOLIO_BLOCK)
@@ -147,6 +159,30 @@ class TestPortfolioExpansion(unittest.TestCase):
             "Out of these categories, I want 1 unique app for each. Each app should be local-first."))
         self.assertFalse(port.is_portfolio_parent_prompt(
             "PORTFOLIO_CHILD_PROJECT: true\nBuild GoEasy."))
+
+    def test_portfolio_detection_boundaries(self):
+        # Single, ordinary app request — must NOT be classified as a portfolio.
+        self.assertFalse(port.is_portfolio_parent_prompt(
+            "Build me a simple weather app with a clean SwiftUI design."))
+        self.assertFalse(port.is_portfolio_parent_prompt(""))
+        self.assertFalse(port.is_portfolio_parent_prompt(None))
+        # "portfolio" word + exactly one signal -> parent.
+        self.assertTrue(port.is_portfolio_parent_prompt(
+            "This is a portfolio; build multiple apps."))
+        # Two distinct signals, no "portfolio" word -> parent.
+        self.assertTrue(port.is_portfolio_parent_prompt(
+            "There are multiple apps here; each selected app gets its own folder."))
+        # Only categories, but no distributive phrase -> not enough.
+        self.assertFalse(port.is_portfolio_parent_prompt(
+            "Business, Finance, Weather, Sports are all interesting spaces."))
+        # A child project is explicitly excluded even if it lists categories.
+        self.assertFalse(port.is_portfolio_parent_prompt(
+            "portfolio_child_project: true\nBusiness Finance Weather Sports, one app for each"))
+
+    def test_heuristic_signals_are_module_constants(self):
+        # The signal tables are hoisted so they can be inspected/tuned/tested.
+        self.assertIn("multiple apps", port.PORTFOLIO_SIGNALS)
+        self.assertIn("weather", port.APP_CATEGORY_NAMES)
 
     def test_prompt_requires_built_children_for_production_multi_app_request(self):
         prompt = (

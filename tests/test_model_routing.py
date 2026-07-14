@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
 import localmodels as lm
 import modelrouting as mr
@@ -28,6 +29,18 @@ class TestLoadRouting(unittest.TestCase):
         self.assertTrue(r["enabled"])
         self.assertTrue(r["fallback"]["cloud_to_local"])
         self.assertEqual(r["phases"], {})
+
+    def test_string_false_round_trips_as_falsy_not_bool_coerced(self):
+        # bool("false") is True — a hand-edited/agent-emitted JSON-as-string
+        # "false" must not flip enabled/cloud_to_local back on.
+        with tempfile.TemporaryDirectory() as d:
+            write_routing(d, {
+                "enabled": "false",
+                "fallback": {"cloud_to_local": "false"},
+            })
+            r = mr.load_routing(d)
+        self.assertIs(r["enabled"], False)
+        self.assertIs(r["fallback"]["cloud_to_local"], False)
 
     def test_malformed_never_raises(self):
         with tempfile.TemporaryDirectory() as d:
@@ -117,6 +130,21 @@ class TestLoadRoutingForApp(unittest.TestCase):
     def test_app_dir_same_as_fleet_dir_is_a_noop(self):
         self.assertEqual(mr.load_routing_for_app(self.fleet, self.fleet),
                          mr.load_routing(self.fleet))
+
+    def test_empty_phases_with_default_fallback_does_not_warn(self):
+        write_routing(self.app, {"enabled": True,
+                                 "fallback": {"cloud_to_local": True, "local_model": ""}})
+        warned = []
+        mr.load_routing_for_app(self.fleet, self.app, on_warn=warned.append)
+        self.assertEqual(warned, [])
+
+    def test_empty_phases_with_real_override_warns(self):
+        write_routing(self.app, {"enabled": False})
+        warned = []
+        r = mr.load_routing_for_app(self.fleet, self.app, on_warn=warned.append)
+        self.assertEqual(r, mr.load_routing(self.fleet))
+        self.assertEqual(len(warned), 1)
+        self.assertIn("ignored", warned[0])
 
 
 class TestOverridesAndFilter(unittest.TestCase):
@@ -249,8 +277,9 @@ class TestApplyPhaseRouting(unittest.TestCase):
         c = orch._apply_phase_routing(cfg, "initial_discussion")
         self.assertEqual(c["_resolved"], cfg["_resolved"])
         self.assertEqual(c["_phase_key"], "initial_discussion")
-        # cooldowns/sessions are SHARED dicts across phase copies
-        self.assertIs(c["_health"], cfg["_health"])
+        # cooldowns/sessions are SHARED dicts across phase copies. The health map
+        # is _agent_health (the old "_health" key was written but never read).
+        self.assertIs(c["_agent_health"], cfg["_agent_health"])
         self.assertIs(c["_claude_sessions"], cfg["_claude_sessions"])
 
     def test_enabled_agents_applies_phase_filter(self):
@@ -361,6 +390,62 @@ class TestFallbackChains(unittest.TestCase):
                             "phases": {"tech_specs": {"timeout": 1800}}}}
         c = orch._apply_phase_routing(cfg, "tech_specs")
         self.assertEqual(c["_routed_turn_timeout"], 1800)
+
+    def test_routed_timeout_exceeding_hard_timeout_is_logged(self):
+        cfg = {"models": {}, "_resolved": {}, "runtime": {"timeout_seconds_per_agent": 600},
+               "_routing": {"enabled": True, "fallback": {},
+                            "phases": {"tech_specs": {"timeout": 1800}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            c = orch._apply_phase_routing(cfg, "tech_specs")
+        self.assertEqual(c["_routed_turn_timeout"], 1800)
+        self.assertTrue(any("exceeds" in m for m in msgs))
+
+    def test_routed_timeout_within_hard_timeout_is_quiet(self):
+        cfg = {"models": {}, "_resolved": {}, "runtime": {"timeout_seconds_per_agent": 3600},
+               "_routing": {"enabled": True, "fallback": {},
+                            "phases": {"tech_specs": {"timeout": 1800}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "tech_specs")
+        self.assertFalse(any("exceeds" in m for m in msgs))
+
+    def test_ollama_override_shadowed_by_roster_is_logged(self):
+        # A phase-level models.ollama override has NO effect on participants
+        # when models.ollama_roster is configured (the roster wins in
+        # enabled_agents()) — that silent no-op must be surfaced, not hidden.
+        cfg = {"models": {"ollama_roster": "model-a, model-b"},
+              "_resolved": {"ollama_roster": ["model-a", "model-b"]},
+              "runtime": {}, "agents": {},
+              "_routing": {"enabled": True, "fallback": {},
+                           "phases": {"initial_discussion": {"ollama": "model-c"}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "initial_discussion")
+        self.assertTrue(any("has no effect on participants" in m for m in msgs))
+
+    def test_ollama_override_not_shadowed_when_in_roster(self):
+        # When the override DOES name a roster member, no confusing warning.
+        cfg = {"models": {"ollama_roster": "model-a, model-b"},
+              "_resolved": {"ollama_roster": ["model-a", "model-b"]},
+              "runtime": {}, "agents": {},
+              "_routing": {"enabled": True, "fallback": {},
+                           "phases": {"initial_discussion": {"ollama": "model-a"}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "initial_discussion")
+        self.assertFalse(any("has no effect on participants" in m for m in msgs))
+
+    def test_ollama_override_not_shadowed_when_no_roster(self):
+        # With no roster at all, the legacy single-model override IS honored,
+        # so no warning should fire.
+        cfg = {"models": {}, "_resolved": {}, "runtime": {}, "agents": {},
+              "_routing": {"enabled": True, "fallback": {},
+                           "phases": {"initial_discussion": {"ollama": "model-c"}}}}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append):
+            orch._apply_phase_routing(cfg, "initial_discussion")
+        self.assertFalse(any("has no effect on participants" in m for m in msgs))
 
 
 class TestCallAgentChain(unittest.TestCase):

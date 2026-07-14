@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestrator"
+version = "2.0.0"
+description = "Autonomous multi-agent orchestrator (V2 engine) — makes the AI CLIs you're already logged into debate to consensus and then act, driven through pluggable workflows."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Priyansh Chordia" }]
+keywords = ["ai", "agents", "orchestrator", "codex", "claude", "gemini", "ollama"]
+# Zero runtime dependencies by design: standard library only. No API keys.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/pri8771/orchestrator"
+
+[project.scripts]
+orchestrator = "orchestrator:main"
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy"]
+
+# The engine is a flat set of stdlib modules at the repo root (not a package),
+# so there's nothing to auto-discover; keep packaging minimal.
+[tool.setuptools]
+py-modules = [
+    "orchestrator", "workflows", "phase_rules", "schemas", "verify", "docs",
+    "backfill", "completeness", "events", "global_resource", "knowledge",
+    "localmodels", "miniyaml", "mistakes", "modelrouting", "portfolio",
+    "postmortem", "procutil",
+    "resilience", "roles", "urlfetch", "seed_demo", "simulate_stream",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff (linter). Conservative rule set so it can be a passing gate on a large
+# existing codebase: real-bug checks (pyflakes) + a few hygiene rules, with the
+# noisier stylistic rules left off until the monolith is decomposed.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = ["gui", "sample-run"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "W6"]   # pyflakes, syntax errors, deprecated-ish warnings
+ignore = ["F401"]            # re-export shims intentionally import names
+
+# ---------------------------------------------------------------------------
+# Mypy (optional local type checking). Lenient: the codebase is untyped by
+# design (stdlib-only, duck-typed config dicts), so this only surfaces genuine
+# import/attribute mistakes rather than demanding annotations everywhere.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+# mypy >= 2.2 dropped 3.9 analysis support; 3.10 is the lowest it accepts.
+# The runtime floor is still 3.9 (requires-python) — CI's 3.9 test leg covers it.
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = false
+# tests/ intentionally monkeypatches module attributes with lambdas whose
+# signatures don't match the real function being replaced (that's the point —
+# it's stubbing behavior for the test) — mypy's inference chokes on that
+# dynamic-by-design pattern, not a real bug, so the source (not the tests) is
+# the type-checking surface that matters here.
+# build/ is created by `pip install .` (CI's typecheck job does this) and would
+# otherwise make every root module a "duplicate module" error under `mypy .`.
+exclude = ["gui/", "sample-run/", "tests/", "build/"]

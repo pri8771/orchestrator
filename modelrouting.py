@@ -19,9 +19,16 @@ Shape (schema_version 1):
     "initial_discussion": {
       "claude": "claude-haiku-4-5",        # claude -p --model override
       "codex": "gpt-5.3-codex-spark",      # codex exec --model override
-      "codex_reasoning": "low",            # reasoning effort for this phase
+      "codex_reasoning": "low",            # codex -c model_reasoning_effort=...
+      "claude_reasoning": "high",          # claude -p --effort ...
+      "gemini_reasoning": "low",           # ACCEPTED BUT IGNORED (see below)
+      "ollama_reasoning": "medium",        # HTTP path only (see below)
       "ollama": "qwen2.5-coder:7b",        # local model override
-      "agents": "cloud"                    # participant filter, see below
+      "agents": "cloud",                   # participant filter, see below
+      "roles": {                           # per-ROLE effort within one phase
+        "worker": {"codex_reasoning": "low"},
+        "integrator": {"claude_reasoning": "high"}
+      }
     }
   }
 }
@@ -30,10 +37,32 @@ Shape (schema_version 1):
 ("claude,codex"), local model tags, or the groups "cloud" / "local".
 A filter that would empty the roster is ignored (fail-open).
 
+"roles" applies extra overrides per build role within the phase: "worker"
+patches every parallel build lane's per-lane cfg, "integrator" patches only
+the integrator's turn — the cheap-workers/expensive-integrator split. Inner
+keys are validated against PHASE_FIELDS; unknown role names are ignored with
+a warning.
+
+Reasoning-effort parity note (evidence-based): the codex CLI
+(`-c model_reasoning_effort=...`) and claude CLI (`--effort ...`) expose an
+effort control in how this engine invokes them; so does Ollama's
+/api/generate HTTP endpoint, via its documented boolean "think" field for
+reasoning-capable models (deepseek-r1, qwen3, ...). "ollama_reasoning" maps
+onto that field (medium/high/max -> think=true; unset/low -> omitted) but
+ONLY on the HTTP path — orchestrator.run_local, used by dynamic
+local:<model> agents. The gemini CLI (`gemini -p ...`) and the roster
+"ollama" agent's plain `ollama run <model>` CLI invocation (orchestrator.
+run_ollama) carry no effort/thinking flag as invoked here, so
+"gemini_reasoning" is ACCEPTED (valid schema, GUI can round-trip it) but
+IGNORED at runtime with a logged warning rather than inventing a flag the
+CLI may reject, and "ollama_reasoning" is honored on the HTTP path but still
+noop (also warned) on the CLI roster path.
+
 Every reader is best-effort: a missing/corrupt file or unknown phase key
 degrades to "no overrides" and can never take down a run.
 """
 
+import copy as _copy
 import json
 import os
 import re
@@ -41,8 +70,16 @@ import re
 ROUTING_FILENAME = "model_routing.json"
 
 # Per-phase override fields the engine honors (anything else is dropped).
+# gemini_reasoning is accepted-but-noop (the gemini CLI exposes no effort
+# control as invoked here). ollama_reasoning is honored on the HTTP
+# local:<model> path (run_local's "think" field) and noop on the CLI roster
+# path (run_ollama) — see module docstring.
 PHASE_FIELDS = ("claude", "claude_reasoning", "codex", "codex_reasoning",
-                "gemini", "ollama", "agents")
+                "gemini", "gemini_reasoning", "ollama", "ollama_reasoning",
+                "agents")
+
+# Role names honored inside a phase's "roles" sub-dict.
+ROLE_NAMES = ("worker", "integrator")
 
 # Model ids / filters reach subprocess argv lists directly (never a shell),
 # but keep the charset tidy anyway so a corrupt file can't smuggle newlines
@@ -64,14 +101,29 @@ _CHAIN_AGENTS = ("codex", "claude", "gemini")
 _MAX_CHAIN_STEPS = 5
 
 
+def _as_bool(value, default):
+    """bool() coercion that doesn't treat the string "false" as truthy — hand-
+    edited model_routing.json commonly has JSON-string booleans."""
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("false", "no", "0", ""):
+            return False
+        if v in ("true", "yes", "1"):
+            return True
+        return default
+    return bool(value)
+
+
 def default_routing():
     return json.loads(json.dumps(_DEFAULT))   # deep copy
 
 
-def load_routing(here):
+def load_routing(here, on_warn=None):
     """model_routing.json as a validated dict. A missing, unreadable, or
     malformed file NEVER raises — it yields the default (routing on, fallback
-    on, no per-phase overrides) so callers need no special-casing."""
+    on, no per-phase overrides) so callers need no special-casing.
+    ``on_warn(msg)`` (optional) surfaces dropped-but-intentional-looking
+    content, e.g. an unknown role name in a phase's "roles" sub-dict."""
     out = default_routing()
     path = os.path.join(here, ROUTING_FILENAME)
     try:
@@ -81,10 +133,10 @@ def load_routing(here):
         return out
     if not isinstance(data, dict):
         return out
-    out["enabled"] = bool(data.get("enabled", True))
+    out["enabled"] = _as_bool(data.get("enabled", True), True)
     fb = data.get("fallback")
     if isinstance(fb, dict):
-        out["fallback"]["cloud_to_local"] = bool(fb.get("cloud_to_local", True))
+        out["fallback"]["cloud_to_local"] = _as_bool(fb.get("cloud_to_local", True), True)
         model = fb.get("local_model", "")
         if isinstance(model, str) and _SAFE_VALUE.match(model.strip() or "x"):
             out["fallback"]["local_model"] = model.strip()
@@ -119,12 +171,36 @@ def load_routing(here):
                 t = 0
             if 0 < t <= 7200:
                 clean["timeout"] = t
+            # Per-role overrides within the phase (worker lanes vs integrator).
+            roles = ov.get("roles")
+            if isinstance(roles, dict):
+                clean_roles = {}
+                for role, rov in roles.items():
+                    if role not in ROLE_NAMES:
+                        if on_warn:
+                            on_warn("model_routing phase %r: unknown role %r in "
+                                    "\"roles\" ignored (expected one of: %s)"
+                                    % (key, role, ", ".join(ROLE_NAMES)))
+                        continue
+                    if not isinstance(rov, dict):
+                        continue
+                    rclean = {}
+                    for field in PHASE_FIELDS:
+                        val = rov.get(field, "")
+                        if isinstance(val, str):
+                            val = val.strip()
+                            if val and _SAFE_VALUE.match(val):
+                                rclean[field] = val
+                    if rclean:
+                        clean_roles[role] = rclean
+                if clean_roles:
+                    clean["roles"] = clean_roles
             if clean:
                 out["phases"][key.strip()] = clean
     return out
 
 
-def load_routing_for_app(here, app_dir):
+def load_routing_for_app(here, app_dir, on_warn=None):
     """Fleet routing (model_routing.json next to the engine) with the app's
     own model_routing.json phase overrides layered on top — the engine side
     of the GUI's per-project Plan tab (DESIGN-NATIVE-PRO.md #5.7).
@@ -135,16 +211,31 @@ def load_routing_for_app(here, app_dir):
     always come from the fleet file — the grid never edits those at project
     scope, so an app's file always round-trips harmless defaults for them
     (ModelRouting.save always writes enabled=true, cloud_to_local=true) that
-    must not shadow a deliberately different fleet setting."""
-    fleet = load_routing(here)
+    must not shadow a deliberately different fleet setting.
+
+    ``on_warn(msg)`` (optional) is called when the project's file has no
+    per-phase overrides but DOES carry a non-default enabled/fallback value —
+    those are silently ignored by design (see above), which used to be
+    indistinguishable from "the file is a no-op"; surfaced instead of hidden."""
+    fleet = load_routing(here, on_warn=on_warn)
     if not app_dir or os.path.abspath(app_dir) == os.path.abspath(here):
         return fleet
     if not os.path.exists(os.path.join(app_dir, ROUTING_FILENAME)):
         return fleet
-    project = load_routing(app_dir)
+    project = load_routing(app_dir, on_warn=on_warn)
     if not project["phases"]:
+        if on_warn and (not project.get("enabled", True)
+                        or project.get("fallback") != _DEFAULT["fallback"]):
+            on_warn("Project routing file %s has no phase overrides — its "
+                    "enabled/fallback settings are ignored (those are fleet-scoped "
+                    "only)." % os.path.join(app_dir, ROUTING_FILENAME))
         return fleet
     out = dict(fleet)
+    # dict(fleet) is shallow: without this, out["fallback"]/out["chains"] alias
+    # the fleet's nested dicts, so a downstream mutation of the per-app view would
+    # bleed into the fleet view.
+    out["fallback"] = _copy.deepcopy(fleet.get("fallback"))
+    out["chains"] = _copy.deepcopy(fleet.get("chains"))
     merged_phases = {key: dict(ov) for key, ov in fleet["phases"].items()}
     for key, ov in project["phases"].items():
         merged_phases[key] = dict(merged_phases.get(key, {}), **ov)

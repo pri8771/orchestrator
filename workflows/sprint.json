@@ -12,6 +12,7 @@
     "build_turn_timeout": 300,
     "verify_timeout": 240
   },
+  "overrides": null,
   "phases": [
     {
       "key": "initial_discussion",
@@ -26,7 +27,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "design_discussion",
@@ -41,7 +48,13 @@
         "product"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "tech_specs",
@@ -56,7 +69,13 @@
         "qa"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "build_coordination",
@@ -72,10 +91,16 @@
         "qa"
       ],
       "writes": true,
+      "reads_target": false,
       "verify": {
         "type": "xcodebuild",
         "repair_iterations": 2
-      }
+      },
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     },
     {
       "key": "final_review",
@@ -90,7 +115,13 @@
         "delivery"
       ],
       "writes": false,
-      "verify": null
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null
     }
   ]
 }

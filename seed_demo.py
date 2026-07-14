@@ -91,8 +91,11 @@ def sha256_text(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def agent_message(agent, phase_title, rnd, others):
-    crit = others[(hash(phase_title + agent) % len(others))]
+def agent_message(agent, phase_title, others):
+    # Deterministic critic pick: builtin hash() is per-process salted for str
+    # (PYTHONHASHSEED), which would break the "deterministic/idempotent" contract
+    # — a re-run must reproduce the same demo transcript.
+    crit = others[int(sha256_text(phase_title + agent), 16) % len(others)]
     return (
         "%s Honestly, for the %s stage I keep landing in the same place: keep it "
         "dead simple and get something real in front of people fast. %s made a fair "
@@ -104,7 +107,7 @@ def agent_message(agent, phase_title, rnd, others):
     )
 
 
-def coordinator_message(phase_title, rnd, final_text):
+def coordinator_message(phase_title, final_text):
     return (
         "Okay, I think we've actually landed here. Everyone's circling the same "
         "answer for the %s stage now and that earlier disagreement got resolved in "
@@ -145,11 +148,11 @@ def render_phase_md(app, phasedef, original_prompt, rounds, complete):
         for agent in order:
             others = [a for a in order if a != agent]
             block = "**%s — Round %d**\n\n%s\n" % (
-                DISPLAY[agent], rnd, agent_message(agent, title, rnd, others))
+                DISPLAY[agent], rnd, agent_message(agent, title, others))
             out.append("\n" + block)
         # Coordinator turn (Gemini). Declares consensus on the final round only.
         last = (rnd == rounds) and complete
-        cresp = (coordinator_message(title, rnd, final) if last
+        cresp = (coordinator_message(title, final) if last
                  else "Good progress this round, but we're not fully agreed yet — a "
                       "couple of things still to hash out before we lock it in.\n\n"
                       "CONSENSUS: NO")
@@ -182,8 +185,14 @@ def write_prompt(app_dir, prompt):
 
 def save_state(app_dir, state):
     state["last_processed"] = now_str()
-    with open(os.path.join(app_dir, "agent_state.json"), "w", encoding="utf-8") as fh:
+    # Atomic write (per-writer temp + os.replace), matching simulate_stream.py's
+    # sibling — an interrupted seed run must not leave a corrupt agent_state.json
+    # the GUI/engine can't parse.
+    path = os.path.join(app_dir, "agent_state.json")
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=2)
+    os.replace(tmp, path)
 
 
 def base_state(prompt):

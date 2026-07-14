@@ -155,4 +155,5 @@ def load_run_config(app_dir):
 
 
 def _phase_key(ph):
-    return ph.key if hasattr(ph, "key") else (ph[0] if isinstance(ph, (list, tuple)) else ph)
+    import workflows
+    return workflows.phase_key(ph)  # one shared accessor across modules

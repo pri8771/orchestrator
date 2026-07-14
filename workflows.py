@@ -21,6 +21,7 @@ Design constraints (unchanged from the rest of the project):
     when present (that's how GUI edits to rounds/roles persist).
 """
 
+import copy
 import json
 import os
 
@@ -28,6 +29,53 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOWS_DIR = os.path.join(HERE, "workflows")
 
 DEFAULT_WORKFLOW = "app_build"
+
+
+def _as_bool(value, default):
+    """bool() coercion that doesn't treat the string "false" as truthy — agents
+    (and hand-edited workflow JSON) sometimes emit booleans as strings. An
+    unrecognized string spelling ("off", "0.0") returns the caller-supplied
+    schema default rather than bool()'s raw truthiness (mirrors
+    modelrouting._as_bool)."""
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("false", "no", "0", ""):
+            return False
+        if v in ("true", "yes", "1"):
+            return True
+        return default
+    return bool(value)
+
+
+def _as_str_list(value):
+    """list() coercion that only accepts a real sequence: a bare string would
+    shatter into single characters, and a dict would silently yield its keys —
+    neither is what a malformed edit meant, so both fall back to []."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(value)
+
+
+def _as_dict(value):
+    """Structured-field guard: verify (and any future dict-shaped field) must
+    be a dict — a bare string like "verify": "xcodebuild" would crash the
+    engine's spec.get(...) consumer mid-phase instead of degrading to
+    'unverified'. Same safe-default philosophy as _as_bool/_as_str_list."""
+    return value if isinstance(value, dict) and value else None
+
+
+def phase_key(phase):
+    """The canonical way to read a phase's key from any of its shapes: a Phase
+    object (``.key``), a dict (``["key"]``), or a legacy ``(key, ...)`` tuple.
+    Centralizes the three ad-hoc accessors that had drifted across modules."""
+    if hasattr(phase, "key"):
+        return phase.key
+    if hasattr(phase, "get"):
+        return phase.get("key")
+    try:
+        return phase[0]
+    except (TypeError, IndexError, KeyError):
+        return None
 
 
 class Phase:
@@ -55,20 +103,20 @@ class Phase:
         self.purpose = purpose
         self.title = title or key.replace("_", " ").title()
         self.rounds = int(rounds)
-        self.roles = list(roles) if roles else []
-        self.writes = bool(writes)
+        self.roles = _as_str_list(roles)
+        self.writes = _as_bool(writes, False)
         # When true, this phase reads a pre-existing TARGET codebase (audit mode) —
         # read-only, never written to. Mutually exclusive with writes in practice.
-        self.reads_target = bool(reads_target)
-        self.verify = verify or None
+        self.reads_target = _as_bool(reads_target, False)
+        self.verify = _as_dict(verify)
         # V2 fields (§8): checkpoint = pause in Semi-Autonomous; structurally_required
         # = turns floor of 1 when included; requires_verification = gate final output
         # on a structured verification label; doc_sections = named blueprint subsection
         # keys this phase emits; test_deliverable = per-stack test descriptor.
-        self.checkpoint = bool(checkpoint)
-        self.structurally_required = bool(structurally_required)
-        self.requires_verification = bool(requires_verification)
-        self.doc_sections = list(doc_sections) if doc_sections else []
+        self.checkpoint = _as_bool(checkpoint, False)
+        self.structurally_required = _as_bool(structurally_required, False)
+        self.requires_verification = _as_bool(requires_verification, False)
+        self.doc_sections = _as_str_list(doc_sections)
         self.test_deliverable = test_deliverable or None
 
     # --- legacy 4-tuple compatibility: key, folder, file, purpose ---
@@ -136,31 +184,31 @@ class Workflow:
             (p.key for p in phases if p.writes), None)
         # Optional time-budget parameters (dict). When present, the engine enforces
         # a hard wall-clock ceiling for the whole run (see Sprint mode). None means
-        # unbounded — the normal behavior for every other workflow.
-        self.budget = dict(budget) if budget else None
+        # unbounded — the normal behavior for every other workflow. Deep-copied (like
+        # modelrouting's per-phase overrides) so a caller mutating the Workflow's copy
+        # can never bleed back into the caller's own budget dict.
+        self.budget = copy.deepcopy(dict(budget)) if budget else None
         # Optional per-run preset (dict): claude_model / codex_model / effort
         # ("fast" | "standard" | "max") / rounds_scale (0.5-2.0). Applied by the
         # engine where the workflow is loaded for a run; None (the default, and
         # anything that isn't a dict) leaves every existing workflow untouched.
-        self.overrides = dict(overrides) if isinstance(overrides, dict) and overrides \
-            else None
+        self.overrides = copy.deepcopy(dict(overrides)) \
+            if isinstance(overrides, dict) and overrides else None
 
     def phase(self, key):
         return next((p for p in self.phases if p.key == key), None)
 
     def to_json(self):
-        d = {
+        # Every field is emitted (budget/overrides as null when unset) so the
+        # on-disk shape is uniform and consumers can rely on each key's presence.
+        return {
             "name": self.name, "title": self.title,
             "description": self.description, "target": self.target,
             "build_phase": self.build_phase,
             "budget": self.budget,
+            "overrides": self.overrides,
             "phases": [p.to_json() for p in self.phases],
         }
-        # Only serialized when set, so workflows without a preset stay
-        # byte-identical to what they were before "overrides" existed.
-        if self.overrides:
-            d["overrides"] = self.overrides
-        return d
 
     @staticmethod
     def from_json(d):
@@ -584,6 +632,40 @@ _AUDIT = Workflow(
 
 _BUILTINS = {w.name: w for w in (_APP_BUILD, _APP_SPEC, _ANSWER_QUESTION, _RESEARCH,
                                  _PRODUCTIONIZE, _SPRINT, _AUDIT)}
+
+
+def _load_shipped_fallbacks():
+    """Give every workflow name that ships as JSON next to this module (not a
+    project's orch_dir — the packaged copy under WORKFLOWS_DIR) an in-memory
+    fallback in _BUILTINS, for the names that only exist as JSON
+    (app_build_child, brainstorm, full_max, iterate, library_mining, prototype,
+    vslice — everything not hand-authored above as a Python Workflow).
+
+    Without this, load_workflow() falls back to `if name in _BUILTINS: ...
+    else return _BUILTINS[DEFAULT_WORKFLOW]` for those 7 names, meaning a
+    missing/corrupt on-disk iterate.json silently turns an intended surgical
+    `iterate` run into a full `app_build` rebuild — a correctness bug with real
+    consequences, not just a degraded fallback. Sourcing the fallback from the
+    same shipped JSON (rather than hand-duplicating it as Python prose) means
+    it can never drift from the on-disk version. This also fixes
+    ensure_seeded()'s self-healing for these 7 files, which previously only
+    covered the 7 hand-authored ones. Best-effort at import time; a bad shipped
+    file is skipped rather than breaking import."""
+    try:
+        names = [fn[:-5] for fn in os.listdir(WORKFLOWS_DIR) if fn.endswith(".json")]
+    except OSError:
+        return
+    for name in names:
+        if name in _BUILTINS:
+            continue  # hand-authored Python version already covers it
+        try:
+            with open(os.path.join(WORKFLOWS_DIR, name + ".json"), encoding="utf-8") as fh:
+                _BUILTINS[name] = Workflow.from_json(json.load(fh))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+
+
+_load_shipped_fallbacks()
 
 
 # ---------------------------------------------------------------------------

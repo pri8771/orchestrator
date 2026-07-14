@@ -33,7 +33,11 @@ Standard library only, matching the rest of the engine.
 import datetime as _dt
 import json
 import os
+import types
+import typing
+import warnings
 
+_schemalib: typing.Optional[types.ModuleType]
 try:
     import schemas as _schemalib
 except Exception:  # noqa: BLE001 - events must work even if schemas breaks
@@ -50,6 +54,9 @@ KINDS = (
 )
 
 _MAX_FIELD_CHARS = 500
+# Keep a serialized event line under Linux's PIPE_BUF so concurrent appenders
+# from parallel projects don't interleave mid-line in events.jsonl.
+_MAX_EVENT_LINE_BYTES = 3500
 
 
 def events_path(app_dir):
@@ -80,13 +87,38 @@ def emit_event(app_dir, kind, **fields):
     try:
         if not app_dir or not kind:
             return False
-        evt = {"ts": _dt.datetime.now().isoformat(timespec="seconds"),
+        if kind not in KINDS:
+            # A typo'd kind would still write successfully but stay invisible to
+            # any UI/tooling that filters read_events(kinds=...) against KINDS —
+            # surface it immediately instead of silently shipping an
+            # unfilterable event. Still written below (best-effort, not blocked);
+            # a warnings-as-errors test filter must not swallow the event itself.
+            try:
+                warnings.warn("emit_event: unknown kind %r (not in events.KINDS)" % kind,
+                              stacklevel=2)
+            except Warning:
+                pass
+        # tz-aware (local + offset) so event ordering is unambiguous across DST
+        # boundaries, unlike a naive datetime.now().
+        evt = {"ts": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                "kind": str(kind)}
         for k, v in fields.items():
             if v is None:
                 continue
             evt[str(k)] = _clean(v)
         line = json.dumps(evt, default=str)
+        # POSIX guarantees an append() write is atomic only up to PIPE_BUF
+        # (>=512; 4096 on Linux). A longer line can interleave with a concurrent
+        # writer's line and corrupt events.jsonl. Per-field caps aren't enough
+        # when there are many fields, so shrink the largest string field until
+        # the whole line fits — keeping it valid JSON.
+        while len(line.encode("utf-8", "replace")) > _MAX_EVENT_LINE_BYTES:
+            longest = max((k for k, v in evt.items() if isinstance(v, str)),
+                          key=lambda k: len(evt[k]), default=None)
+            if longest is None or len(evt[longest]) <= 16:
+                break  # non-string bloat we can't trim — accept best-effort
+            evt[longest] = evt[longest][:len(evt[longest]) // 2] + "…"
+            line = json.dumps(evt, default=str)
         with open(events_path(app_dir), "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
         return True

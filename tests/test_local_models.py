@@ -20,16 +20,21 @@ class TestRegistry(unittest.TestCase):
         reg = lm.load_registry(HERE)
         self.assertEqual(reg["schema_version"], 1)
         ids = [m["id"] for m in reg["models"]]
-        self.assertEqual(ids, ["qwen3-coder:30b", "glm-5.2:latest", "qwen3-max:latest",
-                               "kimi-k2-thinking:latest", "kimi-k2.6:latest", "qwen3.7:latest",
+        self.assertEqual(ids, ["qwen3-coder:30b", "glm4:9b", "qwen3:32b",
+                               "qwq:32b", "qwen3:8b", "qwen3:14b",
                                "qwen2.5-coder:7b", "devstral:24b", "deepseek-r1:8b",
-                               "deepseek-r1:14b", "deepseek-v4-pro:latest",
+                               "deepseek-r1:14b", "deepseek-r1:32b",
                                "qwen2.5vl:3b", "gemma3:12b", "gemma3:4b",
                                "phi4:14b", "llama3.2:3b", "mistral:7b",
                                "qwen2.5-coder:14b", "deepseek-coder-v2:16b"])
+        # Registry tags must be real ollama pull targets (a fictional tag like
+        # glm-5.2:latest fails hard at `ollama pull`). Guard the naming shapes
+        # that previously slipped through.
+        for bad in ("glm-5.2", "qwen3-max", "qwen3.7", "kimi-k2", "deepseek-v4"):
+            self.assertFalse(any(bad in i for i in ids), "fictional tag %r" % bad)
         # Licenses that back a commercial_use=true claim: permissive OSS plus
         # the vendor terms that explicitly permit commercial use.
-        commercial_ok_licenses = ("MIT", "Apache-2.0", "Gemma", "Llama")
+        commercial_ok_licenses = ("MIT", "Apache-2.0", "Gemma", "Llama", "GLM")
         for m in reg["models"]:
             self.assertEqual(m["runtime"], "ollama")
             self.assertEqual(m["pull_command"], ["ollama", "pull", m["id"]])
@@ -41,6 +46,9 @@ class TestRegistry(unittest.TestCase):
                 )
             self.assertTrue(m["license_url"].startswith("https://"))
             self.assertGreaterEqual(m["min_ram_gb"], 8)
+            # context_tokens is normalized to be present on every entry.
+            self.assertIsInstance(m.get("context_tokens"), int)
+            self.assertGreater(m["context_tokens"], 0)
             self.assertTrue(m["roles"])
 
     def test_missing_file_yields_empty_registry(self):
@@ -65,6 +73,16 @@ class TestRegistry(unittest.TestCase):
                                       {"id": "mistral:7b", "label": "ok"}]}, fh)
             self.assertEqual([m["id"] for m in lm.load_registry(d)["models"]],
                              ["mistral:7b"])
+            # basic type validation beyond id presence: a numeric "label" or a
+            # "roles" string instead of a list must be dropped, not shipped.
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "models": [
+                    {"id": "bad-label", "label": 12345},
+                    {"id": "bad-roles", "roles": "implementation"},
+                    {"id": "bad-ram", "min_ram_gb": "lots"},
+                    {"id": "good", "label": "ok", "roles": ["review"], "min_ram_gb": 8},
+                ]}, fh)
+            self.assertEqual([m["id"] for m in lm.load_registry(d)["models"]], ["good"])
 
 
 class TestOllamaListParsing(unittest.TestCase):
@@ -127,20 +145,40 @@ class TestRosterGating(unittest.TestCase):
 
     def test_can_skip_uninstalled_roster_models(self):
         c = self.cfg()
-        c["models"]["ollama_roster"] = "qwen2.5-coder:7b,glm-5.2:latest,gemma3:4b"
+        c["models"]["ollama_roster"] = "qwen2.5-coder:7b,glm4:9b,gemma3:4b"
         c["runtime"]["skip_uninstalled_local_models"] = True
         c["_installed_ollama_models"] = ["gemma3:4b"]
         self.assertEqual(orch.enabled_agents(c),
                          ["codex", "claude", "gemini", "local:gemma3:4b"])
         self.assertTrue(c.get("_noted_ollama_uninstalled_skip"))
 
+    def test_installed_models_memoized_on_cfg_when_key_absent(self):
+        # Without an injected key, enabled_agents resolves the installed set
+        # via the TTL-cached helper ONCE and memoizes it on the cfg — the key
+        # is real now, not a dead read.
+        c = self.cfg()
+        c["models"]["ollama_roster"] = "qwen2.5-coder:7b,glm4:9b"
+        c["runtime"]["skip_uninstalled_local_models"] = True
+        calls = []
+        orig = orch.lmlib.installed_models_cached
+        orch.lmlib.installed_models_cached = \
+            lambda ttl=60, run=None: calls.append(1) or ["glm4:9b"]
+        try:
+            self.assertEqual(orch.enabled_agents(c),
+                             ["codex", "claude", "gemini", "local:glm4:9b"])
+            self.assertEqual(c["_installed_ollama_models"], ["glm4:9b"])
+            orch.enabled_agents(c)   # second build reuses the cfg memo
+            self.assertEqual(len(calls), 1)
+        finally:
+            orch.lmlib.installed_models_cached = orig
+
     def test_uses_resolved_roster_when_present(self):
         c = self.cfg()
-        c["_resolved"] = {"ollama_roster": ["glm-5.2:latest", "kimi-k2-thinking:latest"]}
+        c["_resolved"] = {"ollama_roster": ["glm4:9b", "qwq:32b"]}
         c["models"]["ollama_roster"] = "qwen3-coder:30b"
         self.assertEqual(orch.enabled_agents(c),
                          ["codex", "claude", "gemini",
-                          "local:glm-5.2:latest", "local:kimi-k2-thinking:latest"])
+                          "local:glm4:9b", "local:qwq:32b"])
 
     def test_enabled_without_model_is_excluded(self):
         c = self.cfg()
@@ -182,7 +220,7 @@ class TestCoordinatorNeverLocal(unittest.TestCase):
         orch._agent_available = self._avail
 
     def test_cloud_agent_wins_when_available(self):
-        orch._agent_available = lambda a: True
+        orch._agent_available = lambda a, cfg=None: True
         self.assertEqual(orch._pick_coordinator({}, ["codex", "claude", "gemini", "local:qwen2.5-coder:7b"]),
                          "claude")
         self.assertEqual(orch._pick_coordinator({}, ["gemini", "local:qwen2.5-coder:7b"]), "gemini")
@@ -190,18 +228,60 @@ class TestCoordinatorNeverLocal(unittest.TestCase):
     def test_enabled_cloud_agent_wins_even_if_uninstalled(self):
         # Only the local runtime is actually invokable, but a cloud agent is
         # still enabled: it must still out-rank the local model as coordinator.
-        orch._agent_available = lambda a: a == "local:qwen2.5-coder:7b"
+        orch._agent_available = lambda a, cfg=None: a == "local:qwen2.5-coder:7b"
         self.assertEqual(orch._pick_coordinator({}, ["claude", "local:qwen2.5-coder:7b"]), "claude")
 
     def test_local_only_roster_may_coordinate(self):
         # No cloud agent enabled at all — the local model is the only choice.
-        orch._agent_available = lambda a: a == "local:qwen2.5-coder:7b"
+        orch._agent_available = lambda a, cfg=None: a == "local:qwen2.5-coder:7b"
         self.assertEqual(orch._pick_coordinator({}, ["local:qwen2.5-coder:7b"]),
                          "local:qwen2.5-coder:7b")
 
     def test_ollama_not_in_coordinator_preference(self):
         self.assertNotIn("ollama", orch.COORDINATOR_PREFERENCE)
         self.assertEqual(orch.AGENT_ORDER[-1], "ollama")
+
+
+class TestAgentAvailableChecksPulledModel(unittest.TestCase):
+    """_agent_available for a local identity must require the SPECIFIC roster
+    model to be pulled, not just the Ollama server being up — a live server
+    missing the configured model fails every turn just as hard as no server."""
+
+    def setUp(self):
+        self._orig_which = orch.which
+        self._orig_up = orch._ollama_up
+        self._orig_installed = orch.lmlib.installed_models_cached
+        orch.which = lambda name: "/usr/bin/%s" % name
+        orch._ollama_up = lambda: True
+
+    def tearDown(self):
+        orch.which = self._orig_which
+        orch._ollama_up = self._orig_up
+        orch.lmlib.installed_models_cached = self._orig_installed
+
+    def test_local_tag_not_pulled_is_unavailable(self):
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertFalse(orch._agent_available("local:llama3:8b"))
+
+    def test_local_tag_pulled_is_available(self):
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertTrue(orch._agent_available("local:qwen2.5-coder:7b"))
+
+    def test_server_down_is_unavailable_regardless_of_pulled_models(self):
+        orch._ollama_up = lambda: False
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertFalse(orch._agent_available("local:qwen2.5-coder:7b"))
+
+    def test_bare_ollama_checks_cfg_models_ollama_when_cfg_given(self):
+        orch.lmlib.installed_models_cached = lambda: ["qwen2.5-coder:7b"]
+        self.assertFalse(orch._agent_available(
+            "ollama", {"models": {"ollama": "llama3:8b"}}))
+        self.assertTrue(orch._agent_available(
+            "ollama", {"models": {"ollama": "qwen2.5-coder:7b"}}))
+
+    def test_bare_ollama_without_cfg_degrades_to_server_only_check(self):
+        orch.lmlib.installed_models_cached = lambda: []
+        self.assertTrue(orch._agent_available("ollama"))
 
 
 class TestRunnerDispatch(unittest.TestCase):
@@ -259,10 +339,14 @@ class TestDoctorLocalModels(unittest.TestCase):
         lm.server_running = lambda timeout=3: True
         lm.installed_models = lambda run=None: ["qwen2.5-coder:7b"]
         orch.which = lambda name: None   # no real version probes in tests
+        # report() reads through the TTL cache — reset it so this test neither
+        # sees another test's priming nor leaks its stub values onward.
+        lm._INSTALLED_CACHE.update(ts=0.0, models=[])
 
     def tearDown(self):
         lm.server_running, lm.installed_models = self._server, self._installed
         orch.which = self._which
+        lm._INSTALLED_CACHE.update(ts=0.0, models=[])
 
     def test_report_shape(self):
         rep = lm.report(HERE, "qwen2.5-coder:7b")
@@ -287,6 +371,21 @@ class TestDoctorLocalModels(unittest.TestCase):
         rep = lm.report(HERE, "")
         self.assertEqual(rep["selected"], "")
         self.assertFalse(rep["selected_installed"])
+
+    def test_report_uses_installed_models_cache(self):
+        # Repeated --doctor/GUI polls must not re-pay the `ollama list`
+        # subprocess every time — report() reads through the TTL cache.
+        calls = []
+
+        def counting(run=None):
+            calls.append(1)
+            return ["qwen2.5-coder:7b"]
+
+        lm.installed_models = counting
+        lm.report(HERE, "qwen2.5-coder:7b")
+        rep = lm.report(HERE, "qwen2.5-coder:7b")
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(rep["selected_installed"])
 
     def test_preflight_report_includes_local_models(self):
         cfg = {"root": tempfile.gettempdir(),

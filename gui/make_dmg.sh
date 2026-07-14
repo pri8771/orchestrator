@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build Orchestrator.app and wrap it in a distributable DMG.
 #
-#   bash orchestrator-v2-source/gui/make_dmg.sh
+#   bash gui/make_dmg.sh   # from the repo root
 #
 # Produces .../gui/dist/Orchestrator.dmg with the app + an Applications
 # symlink, so installing is the usual "drag to Applications" gesture.

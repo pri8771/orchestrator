@@ -37,10 +37,13 @@ final class NativeProTests: XCTestCase {
     // existing project folders keep resolving)
 
     func testIntakeSlugRule() {
-        // Lowercase, spaces→hyphens, strip everything not [a-z0-9-].
+        // Lowercase, spaces→hyphens, strip everything not [a-z0-9-], collapse
+        // runs of separators, empty/all-punctuation falls back to "new-chat"
+        // (see SlugifyTests.swift — NewAppIntakeSheet.slugify now delegates
+        // to the shared OrchestratorStore.slugify).
         XCTAssertEqual(NewAppIntakeSheet.slugify("Back Timer 2!"), "back-timer-2")
-        XCTAssertEqual(NewAppIntakeSheet.slugify("Åpp  Ünïq"), "pp--nq")
-        XCTAssertEqual(NewAppIntakeSheet.slugify(""), "")
+        XCTAssertEqual(NewAppIntakeSheet.slugify("Åpp  Ünïq"), "pp-n-q")
+        XCTAssertEqual(NewAppIntakeSheet.slugify(""), "new-chat")
         XCTAssertEqual(NewAppIntakeSheet.slugify("BackTimer"), "backtimer")
         XCTAssertEqual(NewAppIntakeSheet.slugify("notes app"), "notes-app")
         XCTAssertEqual(NewAppIntakeSheet.slugify("a-b-c"), "a-b-c")

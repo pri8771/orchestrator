@@ -54,21 +54,22 @@ import docs as docslib
 import completeness as complib
 import global_resource as grlib
 import knowledge as knowlib
+import mistakes as mistklib
 import phase_rules as phaseruleslib
 import portfolio as portfoliolib
+import postmortem as pmlib
 import urlfetch as urlfetchlib
 import verify as verifylib
 import procutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(HERE, "logs")
-LOCK_PATH = os.path.join(HERE, ".lock")   # legacy global lock (kept for compat)
 # Per-app locks. Default is engine-local, but main() re-points this at
 # <root>/.orch-locks once the workspace root is known: two engine copies (a
 # repo checkout and the GUI's Application Support install) must contend for the
 # SAME lock when they target the same workspace, or one app can run twice.
 LOCKS_DIR = os.path.join(HERE, "locks")
-_HELD_LOCKS = set()
+_HELD_LOCKS: "set[str]" = set()
 
 # Phases are now driven by pluggable workflows (see workflows.py). Each app can
 # run a different workflow (build an app, answer a question, research a topic,
@@ -178,72 +179,40 @@ def _quiet():
     return _QUIET or os.environ.get("ORCH_QUIET", "") == "1"
 
 
+# Serializes the file appends in emit()/live_log(): both are called from
+# parallel discussion/build worker threads, and two threads writing a long
+# redacted line to the same file with plain open("a") can interleave and corrupt
+# it. Stdout printing stays outside the lock (print is already atomic enough).
+_LOG_LOCK = threading.Lock()
+
+
 def emit(msg):
     """Timestamped, immediately-flushed terminal line + append to text log."""
     line = "[%s] %s" % (now_str(), msg)
     if not _quiet():
         print(line, flush=True)
     try:
-        with open(os.path.join(LOG_DIR, "orchestrator.log"), "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        with _LOG_LOCK:
+            with open(os.path.join(LOG_DIR, "orchestrator.log"), "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
     except OSError:
         pass
 
 
 # ---------------------------------------------------------------------------
-# Minimal YAML / JSON config loader (stdlib only)
+# Minimal YAML / JSON config loader (stdlib only). The mini-YAML parser now
+# lives in miniyaml.py (extracted to start decomposing this monolith); it's
+# re-exported here so existing references (orchestrator.parse_min_yaml, the
+# tests) keep working unchanged.
 # ---------------------------------------------------------------------------
-def _coerce_scalar(raw):
-    s = raw.strip()
-    if (len(s) >= 2) and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
-        return s[1:-1]
-    low = s.lower()
-    if low == "true":
-        return True
-    if low == "false":
-        return False
-    if low in ("null", "~", ""):
-        return None
-    try:
-        return int(s)
-    except ValueError:
-        pass
-    try:
-        return float(s)
-    except ValueError:
-        pass
-    return s
-
-
-def parse_min_yaml(text):
-    """Parse the restricted YAML subset used by config.yaml (nested maps only)."""
-    root = {}
-    # stack of (indent, container)
-    stack = [(-1, root)]
-    for rawline in text.splitlines():
-        if not rawline.strip() or rawline.lstrip().startswith("#"):
-            continue
-        indent = len(rawline) - len(rawline.lstrip(" "))
-        line = rawline.strip()
-        if ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        key = key.strip()
-        val = val.strip()
-        # pop to correct parent
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        parent = stack[-1][1]
-        if val == "":
-            child = {}
-            parent[key] = child
-            stack.append((indent, child))
-        else:
-            parent[key] = _coerce_scalar(val)
-    return root
+from miniyaml import parse_min_yaml, coerce_scalar as _coerce_scalar, \
+    strip_inline_comment as _strip_inline_comment  # noqa: E402,F401
 
 
 def load_config():
+    """Load config.json (if present) else config.yaml via the built-in mini-YAML
+    reader. Platform: like resolve_root below, path handling here assumes POSIX
+    (os.path.join / os.path.exists on forward-slash paths) — untested on Windows."""
     json_path = os.path.join(HERE, "config.json")
     yaml_path = os.path.join(HERE, "config.yaml")
     if os.path.exists(json_path):
@@ -257,9 +226,18 @@ def load_config():
 
 def resolve_root(cfg, cli_root=None):
     """Resolve the workspace root. Precedence: --root CLI flag > ORCH_ROOT env >
-    config root. A relative path is resolved against this repo (the parent of the
-    engine dir), so the shipped default `./workspace` means <repo>/workspace on
-    any machine — never a hardcoded absolute path (V2 spec §27)."""
+    config root. `~` is expanded, and a relative path is resolved against this
+    repo (the parent of the engine dir) — so the shipped default,
+    `~/Documents/iOS-App-Factory`, is portable across machines even though it
+    isn't repo-relative: it depends only on the current user's home directory,
+    never a hardcoded absolute path baked in for one specific machine/user
+    (V2 spec §27).
+
+    Platform: POSIX paths only, same as procutil (the engine targets macOS/
+    Linux). ``os.path.expanduser``'s `~` expansion and the forward-slash join
+    below assume a POSIX-shaped HOME; on Windows this needs `~` -> USERPROFILE
+    handling and drive-letter-aware path joining, neither of which is
+    implemented here."""
     root = cli_root or os.environ.get("ORCH_ROOT") or cfg.get("root") or ""
     root = os.path.expanduser(str(root))
     if root and not os.path.isabs(root):
@@ -365,43 +343,9 @@ def _is_stale_running_state(app_dir, state, stale_seconds=5400):
     return True
 
 
-def acquire_lock(stale_seconds):
-    if os.path.exists(LOCK_PATH):
-        age = time.time() - os.path.getmtime(LOCK_PATH)
-        try:
-            with open(LOCK_PATH, encoding="utf-8") as fh:
-                info = fh.read().strip()
-        except OSError:
-            info = "(unreadable)"
-        lock_pid = _extract_lock_pid(info)
-        alive = _pid_alive(lock_pid)
-        if alive and age <= stale_seconds:
-            emit("Another orchestrator run holds the lock (age %ds): %s" % (int(age), info))
-            emit("Refusing to start. If this is wrong, delete %s" % LOCK_PATH)
-            return False
-        if alive:
-            emit("Found STALE lock (age %ds > %ds) from live pid=%s. Reclaiming. Was: %s"
-                 % (int(age), stale_seconds, lock_pid, info))
-        else:
-            emit("Found orphaned lock (pid=%s, age %ds). Reclaiming. Was: %s"
-                 % (lock_pid, int(age), info))
-        try:
-            os.remove(LOCK_PATH)
-        except OSError:
-            pass
-    payload = "pid=%d host=%s started=%s" % (os.getpid(), socket.gethostname(), now_str())
-    with open(LOCK_PATH, "w", encoding="utf-8") as fh:
-        fh.write(payload + "\n")
-    return True
-
-
-def release_lock():
-    try:
-        if os.path.exists(LOCK_PATH):
-            os.remove(LOCK_PATH)
-            emit("Released lock.")
-    except OSError:
-        pass
+# NOTE: the legacy machine-wide global lock (acquire_lock/release_lock/LOCK_PATH)
+# was removed — locking is per-app (<workspace>/.orch-locks/<app>.lock), handled
+# by the functions below.
 
 
 # Per-app locks: different apps run concurrently; one app can't run twice.
@@ -528,6 +472,25 @@ def which(name):
     return shutil.which(name)
 
 
+def _probe_cache_path(filename):
+    """Path for a 4h probe-verdict cache file, in the first writable dir. A
+    bundled/read-only engine dir would otherwise silently fail every write, so
+    the verdict never persists and the CLI re-probes (spending tokens/latency)
+    on every run. Falls back to ~/.orchestrator, then the temp dir. Resolved per
+    call (not cached) so it always tracks the current engine dir."""
+    for d in (HERE, os.path.expanduser("~/.orchestrator")):
+        try:
+            os.makedirs(d, exist_ok=True)
+            probe = os.path.join(d, ".orch_write_test.%d" % os.getpid())
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("")
+            os.remove(probe)
+            return os.path.join(d, filename)
+        except OSError:
+            continue
+    return os.path.join(tempfile.gettempdir(), filename)
+
+
 def detect_codex_model(cfg):
     """Return preferred Codex model if it actually works right now, else the
     configured default, else '' (let Codex use its own default).
@@ -542,7 +505,7 @@ def detect_codex_model(cfg):
     fallback = cget(cfg, "models.codex", "") or ""
     if not (preferred and which("codex")):
         return fallback
-    cache_p = os.path.join(HERE, ".codex_model_probe.json")
+    cache_p = _probe_cache_path(".codex_model_probe.json")
     try:
         with open(cache_p, encoding="utf-8") as fh:
             c = json.load(fh)
@@ -608,18 +571,19 @@ def _run_subprocess(cmd, cwd, timeout, env=None, heartbeat=None, input_text=None
 def _gemini_api_key(cfg):
     """A Gemini API key from the environment or a local key file. With a key,
     the gemini CLI runs reliably headless over HTTP — unlike agy, which needs an
-    interactive terminal. The default key file lives OUTSIDE the repo
-    (~/.orchestrator/gemini_api_key) so a real key can never be committed or
-    pushed by run.sh's auto-commit; the legacy in-repo path is still read as a
-    fallback but is gitignored. Returns None if no key is set."""
+    interactive terminal. The key file lives OUTSIDE the repo
+    (~/.orchestrator/gemini_api_key, or models.gemini_api_key_file) so a real key
+    can never be committed or pushed by run.sh's auto-commit. Returns None if no
+    key is set."""
     for var in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
         v = os.environ.get(var)
         if v and v.strip():
             return v.strip()
+    # Only outside-the-repo locations: the legacy in-repo path is dropped so a
+    # real key is never read from (and at risk of being committed from) the repo.
     paths = [cget(cfg, "models.gemini_api_key_file", "")] if \
         cget(cfg, "models.gemini_api_key_file", "") else [
             os.path.expanduser("~/.orchestrator/gemini_api_key"),
-            os.path.join(HERE, "gemini_api_key"),  # legacy location (gitignored)
         ]
     for path in paths:
         try:
@@ -683,7 +647,11 @@ def run_codex(cfg, prompt, timeout):
 def run_claude(cfg, prompt, timeout):
     # Optional per-call model override (e.g. a stronger integrator model).
     model = cfg.get("_claude_model_override") or cfg["_resolved"]["claude_model"]
-    cmd = ["claude", "-p", prompt]
+    # Prompt goes over stdin, not argv: on argv the full prompt (and any secret
+    # spliced into it) is visible to every local user via `ps`/`/proc/<pid>/
+    # cmdline`. `claude -p` reads the prompt from stdin when no positional is
+    # given, matching run_codex/run_ollama.
+    cmd = ["claude", "-p"]
     # CLI-session reuse (set by call_agent_sessioned): the first turn creates a
     # session with a known id; later turns resume it with only the delta prompt,
     # skipping the full-context cold start that dominates per-call latency.
@@ -729,11 +697,12 @@ def run_claude(cfg, prompt, timeout):
     else:
         cwd, ephemeral = _agent_cwd(cfg)
     try:
-        out, err, code = _run_subprocess(cmd, cwd, timeout, heartbeat=hb)
+        out, err, code = _run_subprocess(cmd, cwd, timeout, heartbeat=hb,
+                                         input_text=prompt)
     finally:
         if ephemeral:
             shutil.rmtree(cwd, ignore_errors=True)
-    return out, err, code, _display_cmd(cmd)
+    return out, err, code, _display_cmd(cmd + ["<prompt on stdin>"])
 
 
 # Antigravity/gemini failure fingerprints. `agy` needs a controlling terminal;
@@ -772,7 +741,7 @@ def detect_gemini_available(cfg):
         if which("agy"):
             return True, ""
         return False, "no gemini/agy CLI on PATH"
-    cache_p = os.path.join(HERE, ".gemini_probe.json")
+    cache_p = _probe_cache_path(".gemini_probe.json")
     try:
         with open(cache_p, encoding="utf-8") as fh:
             c = json.load(fh)
@@ -927,6 +896,23 @@ def run_ollama(cfg, prompt, timeout):
     if not model:
         raise AgentError("Local (Ollama) has no model selected — set models.ollama "
                          "in config.yaml (see local_models.json for the curated list).")
+    # models.ollama_reasoning IS honored on the HTTP path (run_local, used by
+    # dynamic local:<model> agents) as Ollama's /api/generate "think" field —
+    # but this function shells out to the plain `ollama run <model>` CLI with
+    # the prompt on stdin, which exposes no equivalent think-mode flag as
+    # invoked here. Accepted but ignored on this path; warn once per phase so
+    # a routing edit that only works for the other path doesn't look silently
+    # broken.
+    if cget(cfg, "models.ollama_reasoning", ""):
+        _memo = "_noted_ollama_reasoning_noop_cli_%s" % cfg.get("_phase_key")
+        if not cfg.get(_memo):
+            cfg[_memo] = True
+            emit("Phase '%s': routing sets ollama_reasoning, but the roster "
+                 "'ollama' agent runs via the `ollama run` CLI, which this "
+                 "engine invokes with no think-mode flag — accepted but "
+                 "ignored on this path. (The HTTP local:<model> path, "
+                 "run_local, does honor it as Ollama's 'think' field.)"
+                 % cfg.get("_phase_key"))
     cmd = ["ollama", "run", model]
     cwd, ephemeral = _agent_cwd(cfg)
     try:
@@ -941,11 +927,23 @@ def run_ollama(cfg, prompt, timeout):
 def run_local(cfg, prompt, timeout, model=None):
     """Local-model adapter (V2 spec §12): talks to Ollama's loopback-only HTTP
     API. Never sends data off the machine. ``model`` is an Ollama tag like
-    'qwen2.5-coder:7b' (defaults to config or llama3.1:8b). Returns the same
+    'qwen2.5-coder:7b'. Defaults to models.local_default, then the configured
+    models.ollama, then llama3.1:8b as a last resort. Returns the same
     (out, err, code, command) shape as the CLI runners."""
-    model = model or cget(cfg, "models.local_default", "") or "llama3.1:8b"
+    model = (model or cget(cfg, "models.local_default", "")
+             or cget(cfg, "models.ollama", "") or "llama3.1:8b")
     url = "http://127.0.0.1:11434/api/generate"
-    payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    body = {"model": model, "prompt": prompt, "stream": False}
+    # Real Ollama capability (verified against /api/generate's documented
+    # request schema, not invented): reasoning-capable models (deepseek-r1,
+    # qwen3, ...) accept a boolean "think" field. Effort levels below
+    # "medium" map to omitting it (== today's behavior, no chain-of-thought
+    # overhead on cheap/fast turns); "medium" and above turn it on. Models
+    # that don't support thinking silently ignore the field per Ollama's API.
+    _effort = str(cget(cfg, "models.ollama_reasoning", "") or "").strip().lower()
+    if _effort and _effort != "low":
+        body["think"] = True
+    payload = json.dumps(body).encode("utf-8")
     cmd = "ollama:generate model=%s" % model
     try:
         req = urllib.request.Request(url, data=payload,
@@ -1146,10 +1144,13 @@ def _bump_fallback_count(cfg, agent):
         app_dir = cfg.get("_app_dir")
         if st is None or not app_dir:
             return
-        counts = st.setdefault("fallback_counts", {})
-        key = str(agent)
-        counts[key] = int(counts.get(key, 0) or 0) + 1
-        save_state(app_dir, st)
+        # Hold the state lock across the read-modify-write so parallel build
+        # workers bumping different agents don't lose each other's increments.
+        with _STATE_LOCK:
+            counts = st.setdefault("fallback_counts", {})
+            key = str(agent)
+            counts[key] = int(counts.get(key, 0) or 0) + 1
+            save_state(app_dir, st)
     except Exception:  # noqa: BLE001 - a badge must never take a run down
         pass
 
@@ -1179,6 +1180,15 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                              round=rnd, agent=str(agent), from_model=primary,
                              to_model=to_model, status=status,
                              reason=str(reason)[:200])
+            # Mistakes ledger (never raises): record fallback OUTCOMES, not the
+            # per-step "attempt" transitions the event stream already carries.
+            if status != "attempt":
+                mistklib.append_mistake(_ev_dir, {
+                    "app": app, "workflow": cfg.get("_workflow_name"),
+                    "phase": phase, "agent": str(agent), "cls": "agent_fallback",
+                    "summary": "%s -> %s (%s): %s"
+                               % (primary, to_model or "(none)", status,
+                                  str(reason)[:160])})
 
         installed = lmlib.installed_models_cached()
         for step in steps:
@@ -1190,7 +1200,19 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                 continue
             fcfg = dict(cfg)
             fcfg["_session"] = None       # retries are stateless
-            fcfg["_health_key"] = "fallback:%s:%s" % (agent, step)
+            # Include the caller's lane/slug (if any) in the fallback health
+            # key too — parallel-build lanes set cfg["_health_key"] to their
+            # worker slug (distinct from the bare agent id) before calling
+            # call_agent, and a fallback key of just "fallback:<agent>:<step>"
+            # would collide across concurrent lanes retrying the same
+            # agent+step, corrupting one lane's circuit-breaker state with
+            # another's. The bare-agent-id case (discussion-round turns,
+            # single-agent phases, or no _health_key at all) keeps the
+            # original key format unchanged.
+            _lane = cfg.get("_health_key")
+            fcfg["_health_key"] = ("fallback:%s:%s:%s" % (agent, step, _lane)
+                                   if _lane and _lane != agent
+                                   else "fallback:%s:%s" % (agent, step))
             to_model = "local:%s" % local_tag if local_tag else step
             try:
                 if local_tag:
@@ -1282,41 +1304,55 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
     if reslib.in_cooldown(health, time.time()):
         raise AgentError("%s skipped — in cooldown (%s)."
                          % (DISPLAY[agent], health.get("failure_signature") or "repeated failures"))
+    # due_for_probe: cooldown just elapsed but status is still "down" (nothing
+    # has recorded success/failure since). The call below IS the half-open
+    # probe — this only makes that moment visible in the log, so "agent came
+    # back after a cooldown" reads differently from "agent's first call ever."
+    if reslib.due_for_probe(health, time.time()):
+        emit("%s: cooldown elapsed — attempting recovery probe (%s)."
+             % (DISPLAY[agent], health.get("failure_signature") or "repeated failures"))
     # Global cross-project worker cap (§4.5): claim a machine-wide slot before
     # spending an agent turn, so many concurrent projects can't oversubscribe the
     # machine or the provider rate limits. Fail-open + timeout-safe (proceeds rather
     # than hangs). Off by default; enable runtime.global_worker_cap_enabled.
     _rclass = None
     _claimed = False
+    _claim_token = False
     if bool(cget(cfg, "runtime.global_worker_cap_enabled", False)):
         _is_local = isinstance(agent, str) and (agent == "ollama" or agent.startswith("local:"))
         _rclass = "local_model" if _is_local else "cli_remote"
         _cap = int(cget(cfg, "runtime.global_worker_cap.%s" % _rclass,
                         1 if _rclass == "local_model" else 12))
-        _claimed = grlib.claim_slot(app, _rclass, _cap, max_wait=min(int(timeout or 300), 300))
+        _claim_token = grlib.claim_slot(app, _rclass, _cap, max_wait=min(int(timeout or 300), 300))
+        _claimed = _claim_token is not False
         if not _claimed:
             emit("Global cap for %s busy — proceeding uncapped for %s." % (_rclass, DISPLAY[agent]))
-    emit("Starting %s for %s / %s round %s" % (DISPLAY[agent], app, phase, rnd))
-    # Structured event sink (§6): one turn_started + exactly one turn_completed
-    # per call, success or not, so a UI never has to parse transcript prose.
-    _ev_dir = _event_app_dir(cfg, app)
-    _model_req = _primary_model_label(cfg, agent)
-    evlib.emit_event(_ev_dir, "turn_started", project=app, phase=phase,
-                     round=rnd, agent=str(agent), model_requested=_model_req)
-    t0 = time.time()
-    # Slow-turn heartbeat: long build/integrate turns (10+ min) are legitimate,
-    # but silence is indistinguishable from a hang without this — humans kill
-    # healthy runs. Emits progress every 5 min until the turn returns.
+    # Everything after a successful claim runs inside the try whose finally
+    # releases the slot: Thread.start() below can genuinely raise (RuntimeError
+    # under thread exhaustion — realistic exactly when many parallel workers
+    # run), and a raise between claim and the guarded region used to leak the
+    # slot until the 6-hour age reap.
     _hb_stop = threading.Event()
-
-    def _heartbeat():
-        while not _hb_stop.wait(300):
-            emit("%s still working on %s/%s round %s — %ds elapsed (timeout %s)."
-                 % (DISPLAY[agent], app, phase, rnd,
-                    int(time.time() - t0), timeout or "none"))
-
-    threading.Thread(target=_heartbeat, daemon=True).start()
     try:
+        emit("Starting %s for %s / %s round %s" % (DISPLAY[agent], app, phase, rnd))
+        # Structured event sink (§6): one turn_started + exactly one turn_completed
+        # per call, success or not, so a UI never has to parse transcript prose.
+        _ev_dir = _event_app_dir(cfg, app)
+        _model_req = _primary_model_label(cfg, agent)
+        evlib.emit_event(_ev_dir, "turn_started", project=app, phase=phase,
+                         round=rnd, agent=str(agent), model_requested=_model_req)
+        t0 = time.time()
+
+        # Slow-turn heartbeat: long build/integrate turns (10+ min) are legitimate,
+        # but silence is indistinguishable from a hang without this — humans kill
+        # healthy runs. Emits progress every 5 min until the turn returns.
+        def _heartbeat():
+            while not _hb_stop.wait(300):
+                emit("%s still working on %s/%s round %s — %ds elapsed (timeout %s)."
+                     % (DISPLAY[agent], app, phase, rnd,
+                        int(time.time() - t0), timeout or "none"))
+
+        threading.Thread(target=_heartbeat, daemon=True).start()
         try:
             out, err, code, command = resolve_runner(agent)(cfg, prompt, timeout)
         except FileNotFoundError as exc:
@@ -1391,11 +1427,12 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
                          output_len=len(text), dur=round(dur, 1))
     finally:
         _hb_stop.set()
-        # Release ONLY a slot this call actually claimed — releasing after a
-        # failed claim would decrement some OTHER worker's slot and corrupt
-        # the machine-wide counter.
+        # Release ONLY the slot this call actually claimed, by its exact token
+        # — releasing after a failed claim, or by (pid, resource_class) alone,
+        # could free a DIFFERENT concurrent claim's row and corrupt the
+        # machine-wide counter.
         if _rclass is not None and _claimed:
-            grlib.release(_rclass)
+            grlib.release(_rclass, _claim_token)
     reslib.record_success(health)
     text = ensure_signature(text, agent)
     return text
@@ -1405,7 +1442,13 @@ def ensure_signature(text, agent):
     # Sign-offs are no longer required — the orchestrator already labels every
     # speaker. Strip any "From X" a model tacked on so the chat reads naturally.
     tail = text.rstrip()
-    for sig in SIGNATURE.values():
+    # SIGNATURE.values() only holds the four static ids; SIGNATURE[agent] derives
+    # the right "From <display>" for a dynamic local:<model> id so its sign-off
+    # is stripped too.
+    candidates = list(SIGNATURE.values())
+    if SIGNATURE[agent] not in candidates:
+        candidates.append(SIGNATURE[agent])
+    for sig in candidates:
         if tail.endswith(sig):
             tail = tail[: -len(sig)].rstrip()
             break
@@ -1480,8 +1523,8 @@ How to talk in this room:
 - Go deep and be specific. Make a real argument with concrete examples and think
   out loud. A couple of rich paragraphs, not a shallow blurb.
 - React to what the others actually just said, by name (Codex / Claude /
-  Gemini / and the human if they chimed in). Quote or paraphrase their point,
-  then build on it or push back on it.
+  Gemini / any local model in the room / and the human if they chimed in).
+  Quote or paraphrase their point, then build on it or push back on it.
 - Genuinely try to CONVINCE the group of whatever you think is the single best
   idea right now — it does NOT have to be your own. If someone makes a better
   case, say so and change your mind out loud.
@@ -1505,11 +1548,23 @@ How to talk in this room:
 
 
 def _budget(text, limit):
+    """Tail-keep budgeting. When truncation actually happens, the result is
+    prefixed with an explicit marker line — agents must KNOW their context is
+    incomplete instead of silently losing the oldest (most foundational) part.
+
+    Correct for the hybrid summary+raw PRIOR PHASE DISCUSSIONS shape too: the
+    blocks stay in workflow order (oldest phase first) regardless of whether a
+    given block is a full transcript or a compact summary, so a tail-cut still
+    keeps the most RECENT phases' content preferentially — which under the
+    hybrid policy is exactly the raw, most-detail-worth-preserving material.
+    Older phases are already compact summaries by construction, so they rarely
+    need trimming at all, which is precisely why the hybrid policy shrinks how
+    often this truncation marker fires in the first place."""
     if text is None:
         return ""
     if len(text) <= limit:
         return text
-    return text[-limit:]
+    return "[...earlier context truncated...]\n" + text[-limit:]
 
 
 def _phase_file_path(app_dir, phase):
@@ -1549,6 +1604,96 @@ def prior_discussion_context(app_dir, phases, completed_keys):
     return "\n\n".join(blocks)
 
 
+def hybrid_prior_context(app_dir, phases, completed_keys, recency_window=2):
+    """Like prior_discussion_context, but a genuine size REDUCTION rather than
+    an additive block: only the most recent ``recency_window`` completed
+    phases get their full raw transcript injected; every OLDER completed
+    phase gets its compact phase_summaries.json entry instead (see
+    _PHASE_SUMMARY_JSON_INSTRUCTION / merge_phase_summary). Recency still
+    matters most for the phase(s) immediately upstream of the current one —
+    that's where continuity of an ongoing debate's specific wording/tradeoffs
+    is worth the size — while a phase from several steps back is already
+    captured in decisions.json (authoritative) and now also this readable
+    paragraph, so its multi-thousand-char transcript is pure bloat.
+
+    Never silently drops an older phase's context: if no summary was ever
+    persisted for it (e.g. it completed before this feature existed, or its
+    wrap-up dropped the phase-summary-json block under format drift), that
+    phase falls back to its raw transcript exactly like the legacy behavior.
+    """
+    done = set(completed_keys or [])
+    ordered = []
+    for phase in phases or []:
+        key, path = _phase_file_path(app_dir, phase)
+        if key in done:
+            ordered.append((key, path))
+    recent = set(k for k, _p in ordered[-recency_window:]) if recency_window > 0 else set()
+    summaries = {s.get("phase"): s for s in load_phase_summaries(app_dir)
+                if isinstance(s, dict)}
+
+    def _raw(key, path, note=""):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read().strip()
+        except OSError:
+            text = ""
+        if not text:
+            return None
+        return "--- %s (complete prior discussion transcript%s) ---\n%s" % (
+            key, note, text)
+
+    blocks = []
+    for key, path in ordered:
+        if key in recent:
+            b = _raw(key, path)
+            if b:
+                blocks.append(b)
+            continue
+        summ = summaries.get(key)
+        rendered = render_phase_summary(summ) if summ else ""
+        if rendered:
+            blocks.append("--- %s (phase summary; raw transcript omitted — see "
+                          "the DECISIONS LOG for authoritative decisions) ---\n%s"
+                          % (key, rendered))
+        else:
+            b = _raw(key, path, note="; no summary available")
+            if b:
+                blocks.append(b)
+    return "\n\n".join(blocks)
+
+
+def _select_prior_context(cfg, app_dir, phases, completed_keys, phasedef):
+    """Resolve cfg['_prior_discussions'] for the phase about to run, per
+    runtime.phase_summary_policy (sibling to runtime.build_context_policy,
+    which governs BUILD WORKER lane context specifically — this knob governs
+    the cross-phase history injected into every phase's own coordinator/
+    discussion turns). "hybrid" (default): only the most recent phase(s) get
+    their raw transcript; older completed phases get their compact
+    phase_summaries.json entry instead — a real size reduction, not an
+    additive block. "legacy" restores today's inject-every-completed-phase's-
+    full-transcript behavior exactly, for compatibility/debugging.
+
+    Split out of the main phase loop so the policy branch and the recency-
+    window choice are independently testable without driving the whole run
+    loop.
+    """
+    key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
+    is_build_phase = bool(phasedef.get("writes", False)) \
+        if hasattr(phasedef, "get") else (key == "build_coordination")
+    # Build-adjacent phases keep only the immediately preceding phase in full
+    # (workers already get a further-trimmed context anyway via
+    # build_context_policy; the integrator mainly needs continuity with what
+    # just happened). Discussion-heavy phases keep the last two so an ongoing
+    # multi-phase debate doesn't lose its immediate thread.
+    recency_window = 1 if is_build_phase else 2
+    policy = str(cget(cfg, "runtime.phase_summary_policy", "hybrid")
+                or "hybrid").strip().lower()
+    if policy == "legacy":
+        return prior_discussion_context(app_dir, phases, completed_keys)
+    return hybrid_prior_context(app_dir, phases, completed_keys,
+                                recency_window=recency_window)
+
+
 def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript):
     key, _folder, _fname, purpose = phasedef
     pri_lim = int(cget(cfg, "runtime.max_prior_output_chars", 4000))
@@ -1569,16 +1714,25 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
         parts.append("\n===== DECISIONS FROM EARLIER PHASES =====")
         for pk, pout in prior_outputs:
             parts.append("\n--- %s (final decision) ---\n%s" % (pk, _budget(pout, pri_lim)))
+    # Structured, authoritative decisions log (decisions.json) — injected BEFORE
+    # the raw prior discussions and never tail-truncated away (compact by
+    # construction; the huge cap is purely defensive).
+    dec_log = render_decisions_log(load_decisions(cfg.get("_app_dir") or "")) \
+        if cfg.get("_app_dir") else ""
+    if dec_log:
+        parts.append("\n===== DECISIONS LOG (structured, authoritative) =====\n%s"
+                     % _budget(dec_log, 60000))
     prior_discussions = (cfg.get("_prior_discussions") or "").strip()
-    if prior_discussions:
-        parts.append("\n===== PRIOR PHASE DISCUSSIONS (build from these; not just the summaries) =====\n%s"
+    if prior_discussions and not cfg.get("_drop_prior_discussions"):
+        parts.append("\n===== PRIOR PHASE DISCUSSIONS (build from these; recent phases in "
+                     "full, older phases may be summarized — see each block's label) =====\n%s"
                      % _budget(prior_discussions, prior_disc_lim))
     if transcript.strip():
         parts.append("\n===== THIS PHASE'S DISCUSSION SO FAR =====\n%s"
                      % _budget(transcript, tr_lim))
     else:
         parts.append("\n===== THIS PHASE'S DISCUSSION SO FAR =====\n(You are the first speaker.)")
-    # Retrieved, curated domain knowledge for this phase (set at phase start).
+    # Phase-specific playbook rules rendered from phase_rules.json (set at phase start).
     playbook = cfg.get("_phase_playbook", "")
     if playbook:
         parts.append(playbook)
@@ -1724,7 +1878,7 @@ def prompt_coordinate(cfg, agent, ctx, phasedef, rnd, is_build=False, final_roun
             "phase in plain English. If not, write `CONSENSUS: NO` and say what they "
             "still need to hash out next round."
         )
-    contract = _phase_contract(key)
+    contract = _phase_contract(cfg, phasedef)
     return (
         ctx
         + "\n\n===== %s is wrapping up round %d =====\n" % (DISPLAY[agent], rnd)
@@ -1740,7 +1894,7 @@ def prompt_quality_check(cfg, agent, ctx, phasedef, rnd, coordinator_output):
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
     rubric = phaseruleslib.render_phase_quality_rubric(
         HERE, cfg.get("_workflow_target", "app"), key)
-    contract = _phase_contract(key)
+    contract = _phase_contract(cfg, phasedef)
     rubric_block = rubric or (
         "No editable phase rubric was found. Still require a concrete, useful "
         "phase artifact that the next phase can act on without restarting debate.")
@@ -1898,13 +2052,65 @@ _INTERFACES_JSON_INSTRUCTION = (
 )
 
 
-def _phase_contract(key):
-    """The structured-block instruction (if any) for this phase key."""
+_DECISIONS_JSON_INSTRUCTION = (
+    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
+    "fenced ```decisions-json``` block containing a single JSON object of the "
+    'form {"decisions": [{"id": "DEC-<phase>-001", "decision": ..., '
+    '"rationale": ..., "rejected_alternatives": [...], "constraints": [...], '
+    '"supersedes": null}]}. Record every decision this phase actually made, '
+    "one entry each: the decision in one sentence, why it won, what was "
+    "rejected, and any hard constraints later phases must respect. Set "
+    '"supersedes" to an earlier decision id ONLY when this decision replaces '
+    "it. These entries become the authoritative cross-phase DECISIONS LOG "
+    "injected into every later phase, so completeness beats prose.\n"
+)
+
+
+_PHASE_SUMMARY_JSON_INSTRUCTION = (
+    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
+    "fenced ```phase-summary-json``` block containing a single JSON object of the "
+    'form {"phase": "<this phase\'s key>", "one_paragraph_summary": ..., '
+    '"key_decisions": [...decision ids from decisions.json this phase made, if '
+    'any...], "open_risks": [...]}. Once this phase is no longer one of the most '
+    "recently completed phases, THIS summary — not the raw transcript above — is "
+    "what later phases see, so make the paragraph self-contained: state what was "
+    "actually decided or produced, not just that a discussion happened.\n"
+)
+
+
+def _decisions_contract_requested(cfg, phasedef):
+    """True when this phase's coordinator wrap-up must emit decisions-json:
+    every non-build discussion phase of an app/app_spec workflow (product/
+    spec/architecture/plan-type phases). Build, verify/repair, and
+    target-reading audit phases are excluded — their outputs are code or
+    findings, not planning decisions."""
+    if (cfg or {}).get("_workflow_target", "app") not in ("app", "app_spec"):
+        return False
+    if not hasattr(phasedef, "get"):
+        return False
+    if phasedef.get("writes") or phasedef.get("verify") \
+            or phasedef.get("reads_target"):
+        return False
+    return True
+
+
+def _phase_contract(cfg, phasedef):
+    """The structured-block instruction(s), if any, for this phase's wrap-up."""
+    key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
+    parts = []
     if key == "task_assignments":
-        return _TASKS_JSON_INSTRUCTION
+        parts.append(_TASKS_JSON_INSTRUCTION)
     if key == "tech_specs":
-        return _INTERFACES_JSON_INSTRUCTION
-    return ""
+        parts.append(_INTERFACES_JSON_INSTRUCTION)
+    if _decisions_contract_requested(cfg, phasedef):
+        parts.append(_DECISIONS_JSON_INSTRUCTION)
+    # Every phase (not just decision-bearing ones) gets the phase-summary
+    # request piggybacked onto this same wrap-up turn: build phases and
+    # verify/repair phases produce prior context worth summarizing too, and
+    # this is the one coordinator call every non-parallel-build phase already
+    # makes, so no extra agent call is needed to get it.
+    parts.append(_PHASE_SUMMARY_JSON_INSTRUCTION)
+    return "\n".join(parts)
 
 
 # Phase-specific extra guidance.
@@ -2094,6 +2300,69 @@ def write_md(path, text):
         fh.write(text)
 
 
+# Round/iteration header the sequential discussion loop writes at the top of
+# every round ("### Round 3") — shared by process_phase's round-resume logic
+# below. Anchored to a whole line so it never matches inside a quoted/prose
+# mention of "### Round" in an agent's own message body.
+_ROUND_HDR_RE = re.compile(r"^### (?:Round|Iteration) (\d+)\s*$", re.MULTILINE)
+# The coordinator's decision block header — its presence right after a round's
+# header (and before the next round's) is what makes that round "complete":
+# every agent turn AND the coordinator turn for it are already on disk.
+_COORD_DECISION_RE = re.compile(r"^\*\*Coordinator \(", re.MULTILINE)
+
+
+def _resume_round_state(existing_md_text):
+    """Determine where a phase's round loop should restart after a crash, by
+    reading the persisted .md transcript itself rather than trusting the
+    persisted current_round counter alone.
+
+    Why the transcript, not the counter: state["current_round"] is written at
+    the TOP of each round's body (before that round's agent/coordinator turns
+    run), so a crash between that write and the round's completion leaves the
+    counter one round AHEAD of what actually made it to disk. Re-running that
+    round is safe (nothing of it was ever written). But an eager-counter
+    design (bump it after every turn instead) has the opposite failure mode:
+    a crash between the LAST turn of round N finishing and the counter update
+    for N+1 would leave the counter reading N even though round N's content
+    is already fully on disk — resuming "at N" would re-run a round whose
+    output is already there, duplicating every agent's post. Parsing the file
+    is immune to either lag because it asks the only question that matters:
+    which rounds' content actually made it to disk, complete?
+
+    A round counts as "complete" only if a "**Coordinator (" decision block
+    appears somewhere between its header and the next round's header (or EOF)
+    — i.e. every agent turn AND the coordinator turn for it are present, not
+    just some agent posts. Returns (resume_round, safe_transcript_prefix):
+    the round to restart the loop at, and the on-disk text truncated to drop
+    any trailing INCOMPLETE round (its partial agent posts are discarded and
+    that round is redone from scratch — resuming mid-round is not attempted,
+    since re-running a "discussion turn" for a round that already got some
+    but not all agents' posts would duplicate whichever agents did speak).
+    """
+    matches = list(_ROUND_HDR_RE.finditer(existing_md_text))
+    if not matches:
+        # No round ever started (crash before the first "### Round 1" line was
+        # appended) — nothing to resume; caller falls back to a fresh start.
+        return 1, existing_md_text, len(existing_md_text)
+    last_complete_round = 0
+    last_complete_end = 0
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(existing_md_text)
+        if _COORD_DECISION_RE.search(existing_md_text[start:end]):
+            rnd_num = int(m.group(1))
+            if rnd_num > last_complete_round:
+                last_complete_round = rnd_num
+                last_complete_end = end
+    if last_complete_round == 0:
+        # Rounds were started but NONE completed — drop them all, keep only
+        # the header text that precedes the first round marker.
+        header_end = matches[0].start()
+        return 1, existing_md_text[:header_end], header_end
+    header_end = matches[0].start()
+    return last_complete_round + 1, existing_md_text[:last_complete_end], header_end
+
+
 def drain_human_inbox(app_dir, md_path, transcript, section_label):
     """If the human dropped a message into <app>/human_inbox.txt (e.g. from the
     GUI text box), fold it into the live conversation so the agents see and
@@ -2168,14 +2437,54 @@ def derive_run_status(state):
     return "running"
 
 
+def derive_verification(app_dir, state):
+    """verified | failed | unverified — the §15 rollup of the LATEST persisted
+    verification record for this run (prompt_hash-scoped, verify_results.json).
+
+    "verified": the latest verify ran and passed; "failed": ran and did not;
+    "unverified": no record, or the toolchain was absent (ran=false). This
+    makes an all-UNVERIFIED run distinguishable from a genuinely verified one
+    in agent_state.json. Observability ONLY — nothing gates on it. Never
+    raises; any read problem degrades to "unverified"."""
+    try:
+        latest = verifylib.latest_verify_result(
+            app_dir, prompt_hash=(state or {}).get("prompt_hash"))
+        if not latest or not latest.get("ran"):
+            return "unverified"
+        return "verified" if latest.get("ok") else "failed"
+    except Exception:  # noqa: BLE001 - a rollup must never take a save down
+        return "unverified"
+
+
+# Guards every save_state mutation+write. During build_coordination the main
+# thread and several parallel build-worker threads share one `state` dict and
+# one agent_state.json (workers reach save_state via _bump_fallback_count), so
+# an unsynchronized read-modify-write loses updates and two writers racing on the
+# same temp file corrupt it. Reentrant so _bump_fallback_count can hold it across
+# its own save_state call. One global lock is fine — saves are small and rare.
+_STATE_LOCK = threading.RLock()
+
+
 def save_state(app_dir, state):
-    state["runner_pid"] = os.getpid()
-    state["last_processed"] = now_str()
-    state["status"] = derive_run_status(state)
-    tmp = state_path(app_dir) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(state, fh, indent=2)
-    os.replace(tmp, state_path(app_dir))
+    with _STATE_LOCK:
+        state["runner_pid"] = os.getpid()
+        state["last_processed"] = now_str()
+        state["status"] = derive_run_status(state)
+        state["verification"] = derive_verification(app_dir, state)
+        # Per-writer temp name so concurrent savers never clobber one shared
+        # ".tmp" mid-write; the os.replace onto the real path stays atomic.
+        tmp = "%s.%d.%x.tmp" % (state_path(app_dir), os.getpid(),
+                                threading.get_ident())
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(state, fh, indent=2)
+            os.replace(tmp, state_path(app_dir))
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def sha256_text(text):
@@ -2194,14 +2503,16 @@ def live_log(app_dir, lane, agent, kind, summary):
     try:
         entry = {
             "schema_version": schemalib.SCHEMA_VERSION,
-            "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+            # tz-aware so live_log entries order unambiguously across DST.
+            "ts": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "lane": str(lane or ""),
             "agent": str(agent or ""),
             "kind": str(kind or ""),
             "summary": schemalib.redact_secrets(" ".join(str(summary or "").split()))[:280],
         }
-        with open(os.path.join(app_dir, "live_log.jsonl"), "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        with _LOG_LOCK:
+            with open(os.path.join(app_dir, "live_log.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
     except Exception:  # noqa: BLE001 - logging must never raise
         pass
 
@@ -2233,8 +2544,23 @@ def parse_tasks_blocks(text):
                 continue
             t.setdefault("depends_on", [])
             t.setdefault("acceptance_criteria", [])
+            status = str(t.get("status", "pending")).strip().lower()
+            t["status"] = status if status in schemalib.TASK_STATUS else "pending"
             byid[str(t["id"])] = t
-    return list(byid.values()), errors
+    # Report (don't drop) two planning errors the build would otherwise swallow:
+    # an owner_lane the roster can't route (falls back to showing the task to
+    # every worker), and a depends_on pointing at a task that doesn't exist.
+    tasks = list(byid.values())
+    known_ids = set(byid)
+    for t in tasks:
+        lane = t.get("owner_lane")
+        if lane is not None and str(lane) not in BUILD_LANE_IDS:
+            errors.append("task %r has unknown owner_lane %r (expected one of: %s)"
+                          % (t.get("id"), lane, ", ".join(BUILD_LANE_IDS)))
+        for d in t.get("depends_on") or []:
+            if str(d) not in known_ids:
+                errors.append("task %r depends_on unknown id %r" % (t.get("id"), d))
+    return tasks, errors
 
 
 def find_task_cycles(tasks):
@@ -2322,6 +2648,187 @@ def parse_interface_blocks(text):
                 continue
             byname[str(it["name"])] = it
     return list(byname.values()), errors
+
+
+def parse_decision_blocks(text):
+    """Extract every ```decisions-json``` block (one JSON object per block:
+    a {"decisions": [...]} wrapper or a single decision item). Returns
+    (decisions, errors) with items validated against
+    REQUIRED_FIELDS["decision_item"], de-duplicated by id (last emission wins,
+    so the coordinator's final revision beats a draft). Never raises."""
+    errors = []
+    blocks = schemalib.extract_structured_blocks(text or "", "decisions-json",
+                                                 on_error=errors.append)
+    byid = {}
+    order = []
+    for b in blocks:
+        items = b["decisions"] if isinstance(b.get("decisions"), list) else [b]
+        for d in items:
+            ok, missing = schemalib.validate_required_fields(
+                d, schemalib.REQUIRED_FIELDS["decision_item"])
+            if not ok:
+                errors.append("decision %r missing required field(s): %s"
+                              % (d.get("id") if isinstance(d, dict) else d,
+                                 ", ".join(missing)))
+                continue
+            d.setdefault("rationale", "")
+            for lk in ("rejected_alternatives", "constraints"):
+                v = d.get(lk)
+                d[lk] = [str(x) for x in v] if isinstance(v, list) else \
+                    ([str(v)] if v else [])
+            did = str(d["id"])
+            if did not in byid:
+                order.append(did)
+            byid[did] = d
+    return [byid[i] for i in order], errors
+
+
+def _decisions_path(app_dir):
+    return os.path.join(app_dir, "decisions.json")
+
+
+def load_decisions(app_dir):
+    try:
+        with open(_decisions_path(app_dir), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("decisions", []) if isinstance(data, dict) else []
+    except (OSError, ValueError):
+        return []
+
+
+def merge_decisions(app_dir, new_decisions):
+    """Merge freshly-parsed decisions into <app_dir>/decisions.json.
+
+    New ids are appended; a re-emitted id replaces its entry (last revision
+    wins). When an entry's "supersedes" names an existing id, that older entry
+    is MARKED superseded (superseded=true, superseded_by=<id>) rather than
+    deleted, preserving the audit trail. Atomic write; returns the merged
+    list. Best-effort — an unwritable file loses persistence, never the run."""
+    existing = load_decisions(app_dir)
+    byid = {str(d.get("id")): d for d in existing if isinstance(d, dict)}
+    order = [str(d.get("id")) for d in existing if isinstance(d, dict)]
+    for nd in new_decisions or []:
+        did = str(nd.get("id"))
+        sup = nd.get("supersedes")
+        if sup is not None and str(sup) in byid and str(sup) != did:
+            byid[str(sup)]["superseded"] = True
+            byid[str(sup)]["superseded_by"] = did
+        if did in byid:
+            # Re-emission of an id: replace, but never lose a superseded mark
+            # someone else already stamped on it.
+            if byid[did].get("superseded") and not nd.get("superseded"):
+                nd = dict(nd, superseded=True,
+                          superseded_by=byid[did].get("superseded_by"))
+            byid[did] = nd
+        else:
+            byid[did] = nd
+            order.append(did)
+    merged = [byid[i] for i in order]
+    try:
+        _write_json_atomic(_decisions_path(app_dir),
+                           {"schema_version": schemalib.SCHEMA_VERSION,
+                            "decisions": merged})
+    except OSError as exc:
+        emit("WARN could not write decisions.json: %s" % exc)
+    return merged
+
+
+def render_decisions_log(decisions):
+    """Compact human/agent rendering of the decisions log: superseded entries
+    are hidden, but each survivor shows what it replaced. '' when empty."""
+    lines = []
+    superseded = sum(1 for d in decisions or []
+                     if isinstance(d, dict) and d.get("superseded"))
+    for d in decisions or []:
+        if not isinstance(d, dict) or d.get("superseded"):
+            continue
+        lines.append("- [%s] %s" % (d.get("id"), str(d.get("decision", "")).strip()))
+        if d.get("rationale"):
+            lines.append("  rationale: %s" % str(d["rationale"]).strip())
+        if d.get("rejected_alternatives"):
+            lines.append("  rejected: %s"
+                         % "; ".join(str(x) for x in d["rejected_alternatives"]))
+        if d.get("constraints"):
+            lines.append("  constraints: %s"
+                         % "; ".join(str(x) for x in d["constraints"]))
+        if d.get("supersedes"):
+            lines.append("  (supersedes %s)" % d["supersedes"])
+    if not lines:
+        return ""
+    if superseded:
+        lines.append("(%d superseded decision(s) hidden — see decisions.json "
+                     "for history)" % superseded)
+    return "\n".join(lines)
+
+
+def parse_phase_summary_blocks(text):
+    """Extract ```phase-summary-json``` block(s) from ``text``. Last emission
+    wins (matches the decisions/tasks/interfaces convention: the coordinator's
+    final revision beats a draft). Returns (summary_dict_or_None, errors)."""
+    errors = []
+    blocks = schemalib.extract_structured_blocks(
+        text or "", "phase-summary-json",
+        schemalib.REQUIRED_FIELDS["phase_summary"], on_error=errors.append)
+    return (blocks[-1] if blocks else None), errors
+
+
+def _phase_summaries_path(app_dir):
+    return os.path.join(app_dir, "phase_summaries.json")
+
+
+def load_phase_summaries(app_dir):
+    try:
+        with open(_phase_summaries_path(app_dir), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("summaries", []) if isinstance(data, dict) else []
+    except (OSError, ValueError):
+        return []
+
+
+def phase_summary_for(app_dir, key):
+    for s in load_phase_summaries(app_dir):
+        if isinstance(s, dict) and s.get("phase") == key:
+            return s
+    return None
+
+
+def merge_phase_summary(app_dir, key, summary):
+    """Persist/replace this phase's entry in <app_dir>/phase_summaries.json —
+    one entry per phase key, in first-seen (workflow) order; re-running a
+    phase (e.g. "Request Changes") replaces its entry in place rather than
+    duplicating it. Atomic write; best-effort — never blocks the run."""
+    existing = load_phase_summaries(app_dir)
+    byphase = {s.get("phase"): s for s in existing if isinstance(s, dict)}
+    order = [s.get("phase") for s in existing if isinstance(s, dict)]
+    if key not in byphase:
+        order.append(key)
+    byphase[key] = summary
+    merged = [byphase[k] for k in order]
+    try:
+        _write_json_atomic(_phase_summaries_path(app_dir),
+                           {"schema_version": schemalib.SCHEMA_VERSION,
+                            "summaries": merged})
+    except OSError as exc:
+        emit("WARN could not write phase_summaries.json: %s" % exc)
+    return merged
+
+
+def render_phase_summary(summary):
+    """Compact rendering of one phase_summaries.json entry for prompt
+    injection in place of that phase's raw transcript. '' when empty."""
+    if not isinstance(summary, dict):
+        return ""
+    para = str(summary.get("one_paragraph_summary", "")).strip()
+    if not para:
+        return ""
+    lines = [para]
+    if summary.get("key_decisions"):
+        lines.append("key decisions: %s"
+                     % ", ".join(str(x) for x in summary["key_decisions"]))
+    if summary.get("open_risks"):
+        lines.append("open risks: %s"
+                     % ", ".join(str(x) for x in summary["open_risks"]))
+    return "\n".join(lines)
 
 
 def persist_interfaces(app_dir, interfaces, errors):
@@ -2457,24 +2964,26 @@ QUALITY_FAIL_RE = re.compile(r"QUALITY:\s*FAIL", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 # Audit findings: parse agent-emitted finding-json blocks, dedupe, rank, render.
 # ---------------------------------------------------------------------------
-_FIND_RE = re.compile(r"```finding-json\s*(\{.*?\})\s*```", re.DOTALL)
 SEV_RANK = {"Critical": 4, "High": 3, "Med": 2, "Low": 1}
 _CONF_W = {"high": 1.0, "medium": 0.6, "low": 0.3}
 _CAT_ORDER = {"security": 0, "bug": 1, "update": 2}
 _CAT_PREFIX = {"security": "SEC", "bug": "BUG", "update": "UPD"}
+# Cosmetic only: strip finding-json fences out of a human-facing summary blob.
+# Parsing goes through schemas.extract_structured_blocks; this just deletes the
+# fenced regions (lazy-to-first-close is correct for removal).
+_FIND_STRIP_RE = re.compile(r"```finding-json\b.*?```", re.DOTALL)
 
 
 def parse_finding_blocks(text):
     """Extract every ```finding-json``` block from text; normalize so malformed
-    agent output never crashes the render."""
+    agent output never crashes the render.
+
+    Uses schemas.extract_structured_blocks — a lazy ```finding-json\\s*(\\{.*?\\})```
+    regex (the old approach) can't match array/multi-object bodies and swallows
+    text across an unclosed fence, silently dropping real findings. The shared
+    extractor scans fence-to-fence and recovers from truncated blocks."""
     out = []
-    for m in _FIND_RE.finditer(text or ""):
-        try:
-            d = json.loads(m.group(1))
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(d, dict):
-            continue
+    for d in schemalib.extract_structured_blocks(text or "", "finding-json"):
         sev = str(d.get("severity", "Med")).strip().title()
         sev = {"Medium": "Med", "Moderate": "Med", "Info": "Low",
                "Informational": "Low", "Critical": "Critical", "High": "High",
@@ -2484,6 +2993,8 @@ def parse_finding_blocks(text):
         d["confidence"] = conf if conf in _CONF_W else "medium"
         cat = str(d.get("category", "bug")).strip().lower()
         d["category"] = cat if cat in _CAT_ORDER else "bug"
+        src = str(d.get("source", "audit")).strip().lower()
+        d["source"] = src if src in schemalib.FINDING_SOURCE else "audit"
         d["file"] = str(d.get("file", "")).strip()
         d["title"] = str(d.get("title", "")).strip()
         if not d["title"]:
@@ -2585,6 +3096,17 @@ def render_audit_report(findings, app, target_path, agents="", summary=""):
     return "\n".join(lines)
 
 
+def _installed_local_models(cfg):
+    """Installed Ollama model tags as a set, memoized per run on
+    cfg["_installed_ollama_models"] (tests inject the key directly) and backed
+    by the module TTL cache, so repeated roster builds never re-pay the
+    `ollama list` subprocess. Previously the key was read here but never set
+    anywhere — a dead read that always fell through to the uncached call."""
+    if cfg.get("_installed_ollama_models") is None:
+        cfg["_installed_ollama_models"] = list(lmlib.installed_models_cached())
+    return set(cfg["_installed_ollama_models"])
+
+
 def enabled_agents(cfg):
     """The active roster.
 
@@ -2592,10 +3114,10 @@ def enabled_agents(cfg):
     a model exists in configuration. A roster may list multiple local models:
 
       - models.ollama: "qwen2.5-coder:7b" (legacy single model)
-      - models.ollama_roster: "glm-5.2:latest, qwen3.7:latest"
+      - models.ollama_roster: "glm4:9b, qwen3:14b"
 
     When a roster exists, each entry becomes an explicit local identity,
-    e.g. "local:glm5.2:latest". If no roster exists, legacy "ollama"
+    e.g. "local:glm4:9b". If no roster exists, legacy "ollama"
     (single identity) is used for backward compatibility.
 
     Sprint/time-budgeted workflows drop local participants unless
@@ -2624,7 +3146,7 @@ def enabled_agents(cfg):
 
     if local_enabled and local_roster and not skip_local and \
             bool(cget(cfg, "runtime.skip_uninstalled_local_models", False)):
-        installed = set(cfg.get("_installed_ollama_models") or lmlib.installed_models())
+        installed = _installed_local_models(cfg)
         kept = [model for model in local_roster if model in installed]
         skipped = [model for model in local_roster if model not in installed]
         if skipped and not cfg.get("_noted_ollama_uninstalled_skip"):
@@ -2643,8 +3165,7 @@ def enabled_agents(cfg):
         except (TypeError, ValueError):
             limit = 0
         if limit > 0 and len(local_roster) > limit:
-            installed = set(cfg.get("_installed_ollama_models")
-                            or lmlib.installed_models())
+            installed = _installed_local_models(cfg)
             ordered = ([m for m in local_roster if m in installed]
                        + [m for m in local_roster if m not in installed])
             dropped = ordered[limit:]
@@ -2733,10 +3254,31 @@ INTEGRATION_FILES = (
 )
 
 
-def _agent_available(agent):
-    """True if the CLI (or local runtime) backing this agent is invokable."""
+def _agent_available(agent, cfg=None):
+    """True if the CLI (or local runtime) backing this agent is invokable.
+
+    For local identities this also requires the SPECIFIC roster model to
+    already be pulled, not just the Ollama server being reachable — a live
+    server with the configured model missing fails every turn exactly like no
+    server at all, so treating "server up" alone as "available" was a false
+    positive. ``local:<tag>`` carries its tag directly; the legacy bare
+    "ollama" identity needs ``cfg`` (models.ollama) to know which tag to check
+    — with no cfg there's nothing to check against, so it degrades to the old
+    server-only behavior."""
     if agent == "ollama" or (isinstance(agent, str) and agent.startswith("local:")):
-        return bool(which("ollama")) and _ollama_up()
+        if not (which("ollama") and _ollama_up()):
+            return False
+        if agent.startswith("local:"):
+            tag = agent[len("local:"):]
+        elif cfg is not None:
+            tag = str(cget(cfg, "models.ollama", "") or "").strip()
+        else:
+            tag = ""
+        if not tag:
+            return True
+        installed = (cfg.get("_installed_ollama_models") if cfg else None) \
+            or lmlib.installed_models_cached()
+        return tag in installed
     if agent == "gemini":
         return bool(which("agy") or which("gemini"))
     return bool(which(agent))
@@ -2749,13 +3291,21 @@ def build_worker_roster(cfg, active):
     lane. With only ONE installed, replicate it into `build_parallel_workers`
     concurrent workers (e.g. three Codex workers) so the build is still parallel
     and fast today. With none installed, return the enabled agents unchanged so
-    call_agent surfaces a clear error."""
+    call_agent surfaces a clear error.
+
+    Either way the roster covers EVERY build lane: the planner is told all of
+    BUILD_LANE_IDS are valid owner_lane values, so with fewer workers than lanes
+    a lane like polish_resilience would own no worker and its tasks.json items
+    would be shown to nobody and silently never built. Extra slots beyond the
+    distinct CLIs round-robin the available CLIs."""
     target = int(cget(cfg, "runtime.build_parallel_workers", 3) or 3)
-    avail = [a for a in ordered_agents(active) if _agent_available(a)]
+    n_lanes = len(BUILD_LANE_IDS)
+    avail = [a for a in ordered_agents(active) if _agent_available(a, cfg)]
     if len(avail) >= 2:
-        agents = avail
+        n = max(len(avail), n_lanes)
+        agents = [avail[i % len(avail)] for i in range(n)]
     elif len(avail) == 1:
-        agents = [avail[0]] * max(1, target)
+        agents = [avail[0]] * max(1, target, n_lanes)
     else:
         agents = ordered_agents(active) or list(active)
 
@@ -2811,7 +3361,7 @@ def _worker_contract_block(worker, backlog, interfaces):
 def _pick_coordinator(cfg, active):
     """Integrator preference: a reliable, installed agent first (so the decision
     turn actually runs), otherwise deterministic fallback."""
-    avail = [a for a in COORDINATOR_PREFERENCE if a in active and _agent_available(a)]
+    avail = [a for a in COORDINATOR_PREFERENCE if a in active and _agent_available(a, cfg)]
     if avail:
         return avail[0]
     return coordinator_agent(active) or (active[0] if active else None)
@@ -2994,8 +3544,24 @@ def fix_ios_signing(build_dir, team="", style="Automatic", bundle_prefix=""):
         text = re.sub(r"CODE_SIGN_STYLE\s*=\s*Manual\s*;",
                       "CODE_SIGN_STYLE = %s;" % style, text)
         if team:
-            text = re.sub(r'DEVELOPMENT_TEAM\s*=\s*(""|"")\s*;',
-                          "DEVELOPMENT_TEAM = %s;" % team, text)
+            team_val = team.strip()
+            # Xcode writes team IDs bare (alnum); quote anything else so the
+            # pbxproj stays valid.
+            repl = team_val if re.fullmatch(r"[A-Za-z0-9]+", team_val) \
+                else '"%s"' % team_val.replace('"', "")
+            team_line = "DEVELOPMENT_TEAM = %s;" % repl
+            # Point every existing assignment at the team — the old
+            # `(""|"")` alternation was two identical dead branches that only
+            # matched an empty "" value, so a stale or bare team id slipped
+            # through. `[^;]*` covers empty, quoted, and bare-id forms.
+            text = re.sub(r'DEVELOPMENT_TEAM\s*=\s*[^;]*;', team_line, text)
+            # If the key is absent entirely (the common case for generated
+            # projects — the old regex left these unsigned), add it to each
+            # target that declares a bundle id.
+            if "DEVELOPMENT_TEAM" not in text:
+                text = re.sub(
+                    r'(PRODUCT_BUNDLE_IDENTIFIER\s*=\s*[^;]*;)',
+                    lambda m: m.group(1) + "\n\t\t\t\t" + team_line, text)
         if bundle_prefix:
             text = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*com\.local\.',
                           "PRODUCT_BUNDLE_IDENTIFIER = %s." % bundle_prefix.rstrip("."),
@@ -3029,6 +3595,40 @@ def _git(build_dir, *args, timeout=60):
         return 1, "", str(exc)
 
 
+# Build artifacts and secret-shaped files that must never enter the persistent
+# build repo. Re-asserted before every `git add -A` so a missing or agent-edited
+# .gitignore can't let DerivedData / node_modules / a stray key slip in.
+_BUILD_GITIGNORE_RULES = [
+    "DerivedData/", "build/", ".build/", "Pods/", ".gradle/", "node_modules/",
+    "*.xcuserstate", ".DS_Store", "*.log",
+    "*.pem", "*.key", "*.p12", ".env", ".env.*", "gemini_api_key", "*_api_key",
+]
+
+
+def _ensure_build_gitignore(build_dir):
+    """Write/restore the build repo's .gitignore so `git add -A` can't stage
+    artifacts or secrets. Preserves any extra user rules; only appends missing
+    managed rules. Best-effort, never raises."""
+    gi = os.path.join(build_dir, ".gitignore")
+    try:
+        existing = ""
+        if os.path.exists(gi):
+            with open(gi, encoding="utf-8") as fh:
+                existing = fh.read()
+        have = set(existing.splitlines())
+        missing = [r for r in _BUILD_GITIGNORE_RULES if r not in have]
+        if not existing:
+            with open(gi, "w", encoding="utf-8") as fh:
+                fh.write("# Managed by the orchestrator — build artifacts + secrets.\n")
+                fh.write("\n".join(_BUILD_GITIGNORE_RULES) + "\n")
+        elif missing:
+            sep = "" if existing.endswith("\n") else "\n"
+            with open(gi, "a", encoding="utf-8") as fh:
+                fh.write(sep + "\n".join(missing) + "\n")
+    except OSError:
+        pass
+
+
 def ensure_build_repo(build_dir):
     """Initialize app_build as a git repo once (idempotent). Adds a .gitignore for
     build artifacts and an empty initial commit so later commits always have a
@@ -3042,13 +3642,7 @@ def ensure_build_repo(build_dir):
         return False
     _git(build_dir, "config", "user.email", "orchestrator@local")
     _git(build_dir, "config", "user.name", "Orchestrator")
-    gi = os.path.join(build_dir, ".gitignore")
-    if not os.path.exists(gi):
-        try:
-            with open(gi, "w", encoding="utf-8") as fh:
-                fh.write("DerivedData/\nbuild/\n*.xcuserstate\n.DS_Store\n")
-        except OSError:
-            pass
+    _ensure_build_gitignore(build_dir)
     _git(build_dir, "add", "-A")
     _git(build_dir, "commit", "-q", "--allow-empty", "-m", "orchestrator: build repo initialized")
     return True
@@ -3059,6 +3653,9 @@ def commit_build_state(build_dir, message):
     or the dir isn't a git repo. Returns the short commit sha or ''."""
     if not build_dir or not os.path.isdir(os.path.join(build_dir, ".git")):
         return ""
+    # Re-assert the ignore rules first: agents may have deleted or rewritten
+    # .gitignore mid-build, and a blind add -A would then commit artifacts/secrets.
+    _ensure_build_gitignore(build_dir)
     _git(build_dir, "add", "-A")
     # Only commit if there's something staged (avoid empty commits per iteration).
     if _git(build_dir, "diff", "--cached", "--quiet")[0] == 0:
@@ -3172,6 +3769,83 @@ def cleanup_lane_worktrees(build_dir, worktrees):
     _git(build_dir, "worktree", "prune")
 
 
+def _gated_verify_spec(cfg, spec):
+    """Global kill-switch for the xcodebuild verify-spec's optional
+    "run_tests": true (runtime.run_generated_tests, default True): a workflow
+    phase + its verify spec can ASK for a real `xcodebuild test` run, but it
+    only actually happens when this runtime knob also allows it. Real test
+    runs are slower and can be flakier than a plain compile (simulator boot,
+    timing-sensitive UI tests) — this is the one global lever to shut that off
+    without editing every workflow's verify block. Purely additive: with the
+    knob at its default True, behavior is unchanged from before this existed."""
+    if not isinstance(spec, dict) or not spec.get("run_tests"):
+        return spec
+    if bool(cget(cfg, "runtime.run_generated_tests", True)):
+        return spec
+    spec = dict(spec)
+    spec["run_tests"] = False
+    return spec
+
+
+def _run_iteration_verify(cfg, app, app_dir, phasedef, state, md_path, rnd):
+    """Per-iteration compile check for the parallel build (the evidence behind
+    the consensus gate, runtime.verify_between_iterations).
+
+    Returns the raw run_verification result dict, or None when the check was
+    skipped (knob off, no build dir, or the toolchain is already known absent
+    this phase). A ran=False result is persisted once and then cached via
+    cfg["_iter_verify_toolchain_absent"] so a doomed subprocess isn't re-paid
+    every iteration. Best-effort and non-fatal, like every verify path."""
+    if not bool(cget(cfg, "runtime.verify_between_iterations", True)):
+        return None
+    build_dir = cfg.get("_build_dir")
+    if not build_dir or cfg.get("_iter_verify_toolchain_absent"):
+        return None
+    key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
+    # This build phase rarely carries its own verify spec — reuse the
+    # workflow's (usually build_verification's), so both gates compile the
+    # same way; else fall back to auto-detection.
+    spec = (phasedef.get("verify") if hasattr(phasedef, "get") else None) \
+        or cfg.get("_workflow_verify_spec") or {"type": "auto"}
+    if isinstance(spec, dict) and spec.get("run_tests"):
+        # Per-iteration checks stay build-only even when the reused spec (see
+        # comment above) asks for run_tests: a real test suite is slow, and
+        # paying for it on every single build iteration (vs. once, at
+        # build_verification) would dominate build wall-clock for no extra
+        # signal beyond "does it still compile" until the very end anyway.
+        spec = dict(spec)
+        spec["run_tests"] = False
+    timeout = int(cget(cfg, "runtime.iteration_verify_timeout_seconds", 600) or 600)
+    hard = int(cget(cfg, "runtime.verify_timeout_seconds", 1200) or 0)
+    if hard:
+        timeout = min(timeout, hard)
+    if cfg.get("_deadline"):
+        timeout = max(10, min(timeout, int(cfg["_deadline"] - time.time())))
+    res = verifylib.run_verification(build_dir, spec, timeout)
+    verifylib.persist_verify_result(app_dir, key, res, attempt=0,
+                                    prompt_hash=state.get("prompt_hash"),
+                                    workflow=cfg.get("_workflow_name"))
+    status = verifylib.verification_status(res)
+    emit("ITER-VERIFY %d: %s — %s (%s)" % (rnd, status, res.get("summary", ""),
+                                           res.get("tool", "")))
+    live_log(app_dir, key, "orchestrator", "verify_result",
+             "iteration %d: %s (%s)" % (rnd, status, res.get("summary", "")))
+    evlib.emit_event(app_dir, "verify_result", project=app, phase=key,
+                     status=status,
+                     detail="iteration %d: %s" % (rnd, res.get("summary", "")))
+    if not res.get("ran"):
+        cfg["_iter_verify_toolchain_absent"] = True
+        append_md(md_path, "\n_Iteration %d verification skipped: %s — further "
+                  "per-iteration checks disabled for this phase._\n"
+                  % (rnd, res.get("summary", "no toolchain")))
+    elif not res.get("ok"):
+        mistklib.append_mistake(app_dir, {
+            "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+            "cls": "verify_failure",
+            "summary": "iteration %d: %s" % (rnd, res.get("summary", ""))})
+    return res
+
+
 def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                         state, md_path, max_rounds, transcript, extra, personas=None):
     """Run the build phase with agents working CONCURRENTLY.
@@ -3235,7 +3909,20 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd)
 
         tree = _build_file_tree(build_dir)
-        base_ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
+        # Worker-lane context policy (runtime.build_context_policy): under
+        # "contracts" (default) the raw prior-phase discussion transcripts are
+        # dropped from WORKER prompts — they keep the original prompt, prior
+        # final decisions, the DECISIONS LOG, playbook/knowledge, file tree and
+        # their tasks/interfaces contract, which is what they actually use.
+        # The integrator (ictx below) and discussion phases keep full context.
+        # "legacy" preserves the old behavior exactly.
+        wctx_cfg = cfg
+        if str(cget(cfg, "runtime.build_context_policy", "contracts")
+               or "contracts").strip().lower() != "legacy":
+            wctx_cfg = dict(cfg)
+            wctx_cfg["_drop_prior_discussions"] = True
+        base_ctx = build_context(wctx_cfg, app, phasedef, original_prompt,
+                                 prior_outputs, transcript)
 
         # V2 §5.2-5.5: optionally isolate each lane in its own git worktree so
         # concurrent workers can't clobber each other. Empty dict => transparent
@@ -3262,6 +3949,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
             # each per-slug entry is only ever touched by its own thread).
             wcfg = dict(cfg)
             wcfg["_health_key"] = w["slug"]
+            # Per-role routing: cheap workers / expensive integrator (§4b).
+            _apply_role_routing(wcfg, "worker")
             if worktrees.get(w["slug"]):
                 wcfg["_build_dir"] = worktrees[w["slug"]]
             # Resumed lane session: the contract + full context live in the
@@ -3428,6 +4117,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                                         is_build=True,
                                         final_round=(not unlimited_rounds and rnd == max_rounds))
             icfg = dict(cfg)
+            # Per-role routing for the integrator's turn only (§4b).
+            _apply_role_routing(icfg, "integrator")
             idelta = None
             if candidate == "claude":
                 # Optional stronger model for the integration turn only — the
@@ -3484,11 +4175,43 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                 "health or enable a different coordinator before resuming."
                 % integrationless_iterations)
 
+        # Per-iteration verification (runtime.verify_between_iterations): compile
+        # the just-committed state; a failure feeds a compact errors tail into
+        # the next iteration's context (mirroring _verify_and_repair's loop).
+        iter_verify = _run_iteration_verify(cfg, app, app_dir, phasedef, state,
+                                            md_path, rnd)
+        if iter_verify is not None and iter_verify.get("ran") \
+                and not iter_verify.get("ok"):
+            vblock = ("**Build verification — iteration %d FAILED (%s)**\n\n"
+                      "```\n%s\n```\n_Fix these compile errors next iteration._\n"
+                      % (rnd, iter_verify.get("summary", ""),
+                         (iter_verify.get("errors", "") or "")[:4000]))
+            append_md(md_path, "\n" + vblock)
+            transcript += "\n" + vblock
+
         final_output = cresp
         if CONSENSUS_RE.search(cresp):
-            consensus = True
-            emit("BUILD consensus reached at iteration %d." % rnd)
-            break
+            # Evidence-backed consensus: a verifier that RAN and said NO
+            # overrides the integrator's claim. CRITICAL fail-open rule: an
+            # unverified build (ran=false / no record / knob off) must NEVER
+            # block consensus — only real failing evidence does.
+            if iter_verify is not None and iter_verify.get("ran") \
+                    and not iter_verify.get("ok"):
+                note = ("Observer: integrator declared consensus but the build "
+                        "fails to compile — continuing.")
+                emit(note)
+                append_md(md_path, "\n_%s_\n" % note)
+                transcript += "\n_%s_\n" % note
+                mistklib.append_mistake(app_dir, {
+                    "app": app, "workflow": cfg.get("_workflow_name"),
+                    "phase": key, "agent": integrator,
+                    "cls": "consensus_unverified",
+                    "summary": "consensus rejected at iteration %d: %s"
+                               % (rnd, iter_verify.get("summary", ""))})
+            else:
+                consensus = True
+                emit("BUILD consensus reached at iteration %d." % rnd)
+                break
 
     return consensus, final_output, transcript
 
@@ -3507,6 +4230,7 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
         return transcript, ""
     if not bool(cget(cfg, "runtime.verify_build_enabled", True)):
         return transcript, ""
+    spec = _gated_verify_spec(cfg, spec)
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
     timeout = int(cget(cfg, "runtime.verify_timeout_seconds", 1200))
     max_repairs = int(spec.get("repair_iterations", cget(cfg, "runtime.verify_repair_iterations", 3)))
@@ -3536,6 +4260,11 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
         evlib.emit_event(app_dir, "verify_result", project=app, phase=key,
                          status=verifylib.verification_status(r),
                          detail="%s: %s" % (attempt_label, r.get("summary", "")))
+        if r.get("ran") and not r.get("ok"):
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "agent": coord, "cls": "verify_failure",
+                "summary": "%s: %s" % (attempt_label, r.get("summary", ""))})
 
     verifylib.persist_verify_result(app_dir, key, res, attempt=0,
                                     prompt_hash=state.get("prompt_hash"),
@@ -3546,7 +4275,13 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
     if res.get("ok"):
         return transcript, "verified: %s" % res.get("summary", "compiles")
 
-    # Repair loop.
+    # Repair loop. Adaptive escalation (runtime.adaptive_escalation_enabled):
+    # once an attempt crosses runtime.escalate_repair_after_attempt, THAT and
+    # every later attempt in this loop run with a stronger reasoning effort
+    # (or an explicit runtime.escalation_model_override for claude) — see
+    # _maybe_escalate. `cfg` itself is never touched, so a later fresh verify
+    # cycle (or any other phase) is unaffected.
+    _escalation_logged = False
     for attempt in range(1, max_repairs + 1):
         # Sprint: stop repairing if the run deadline is essentially here.
         if cfg.get("_deadline") and time.time() >= cfg["_deadline"] - 10:
@@ -3567,8 +4302,10 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
             "compile without breaking features. When done, briefly say what you "
             "changed." % (tree, res.get("tool", ""), res.get("errors", "")[:8000])
         )
+        acfg, _escalation_logged = _maybe_escalate(
+            cfg, app, app_dir, key, coord, attempt, _escalation_logged)
         try:
-            rresp = call_agent(cfg, app, key, "repair.%d" % attempt, coord, repair_prompt)
+            rresp = call_agent(acfg, app, key, "repair.%d" % attempt, coord, repair_prompt)
         except AgentError as exc:
             emit("Repair agent (%s) unavailable on attempt %d: %s"
                  % (DISPLAY.get(coord, coord), attempt, exc))
@@ -3596,10 +4333,13 @@ def _apply_phase_routing(cfg, key):
     apply the phase's participant filter. No overrides -> plain tagged copy."""
     routing = cfg.get("_routing")
     if routing is None:
-        routing = cfg["_routing"] = mrlib.load_routing_for_app(HERE, cfg.get("_app_dir"))
+        routing = cfg["_routing"] = mrlib.load_routing_for_app(
+            HERE, cfg.get("_app_dir"), on_warn=emit)
     # Shared mutable run state must exist BEFORE the copy so every phase-scoped
     # copy aliases the same dicts (cooldowns/sessions survive across phases).
-    cfg.setdefault("_health", {})
+    # The health map is _agent_health everywhere else — the old "_health" key was
+    # written here and never read, so cooldowns didn't actually survive the copy.
+    cfg.setdefault("_agent_health", {})
     cfg.setdefault("_claude_sessions", {})
     c = dict(cfg)
     c["_phase_key"] = key
@@ -3621,20 +4361,194 @@ def _apply_phase_routing(cfg, key):
         # Same one-knob rule for claude's --effort (see run_claude).
         models["claude_reasoning"] = ov["claude_reasoning"]
         models["claude_build_reasoning"] = ov["claude_reasoning"]
+    if ov.get("ollama_reasoning"):
+        # Real capability (not invented): Ollama's /api/generate accepts a
+        # boolean "think" field for reasoning-capable models (deepseek-r1,
+        # qwen3, ...). run_local (the HTTP path used by dynamic local:<model>
+        # agents) maps this effort level onto that flag — see run_local. The
+        # roster "ollama" agent instead shells out to `ollama run <model>`
+        # (run_ollama), which this engine invokes with no equivalent CLI flag,
+        # so that path stays accepted-but-noop (warned there, once).
+        models["ollama_reasoning"] = ov["ollama_reasoning"]
+    # gemini effort parity is accepted-but-noop (evidence-based): the gemini
+    # CLI is invoked as `gemini -p ...`, which exposes no effort/thinking
+    # control, so the field is honored in the schema but ignored here, loudly
+    # (once).
+    _roles_ov = ov.get("roles") if isinstance(ov.get("roles"), dict) else {}
+    for _noop_field in ("gemini_reasoning",):
+        _vals = [ov.get(_noop_field)] + [r.get(_noop_field)
+                                         for r in _roles_ov.values()]
+        if any(_vals):
+            _memo = "_noted_%s_noop_%s" % (_noop_field, key)
+            if not cfg.get(_memo):
+                cfg[_memo] = True
+                emit("Phase '%s': routing sets %s, but the %s CLI exposes no "
+                     "effort control in how this engine invokes it — field "
+                     "accepted but ignored."
+                     % (key, _noop_field, _noop_field.split("_")[0]))
     if ov.get("gemini"):
         models["gemini_fallback"] = ov["gemini"]
         if valid_gemini_model(ov["gemini"]):
             resolved["gemini_model"] = ov["gemini"]
     if ov.get("ollama"):
         models["ollama"] = resolved["ollama_model"] = ov["ollama"]
+        # enabled_agents() only falls back to models.ollama as a participant
+        # when NO roster is configured — with a roster active, this override
+        # is silently ignored for participant purposes (the roster's own
+        # entries win). Surface that once instead of leaving a routing edit
+        # that looks like it should do something quietly do nothing.
+        _roster_now = _split_local_roster(
+            resolved.get("ollama_roster") or cget(c, "models.ollama_roster", []))
+        if _roster_now and ov["ollama"] not in _roster_now:
+            _memo = "_noted_ollama_override_shadowed_%s" % key
+            if not cfg.get(_memo):
+                cfg[_memo] = True
+                emit("Phase '%s': routing sets models.ollama=%r, but "
+                     "models.ollama_roster is configured and doesn't include "
+                     "it — the roster's own entries are used for this phase "
+                     "instead; the override has no effect on participants."
+                     % (key, ov["ollama"]))
     if ov.get("timeout"):
         # Per-phase turn timeout: strong models get room to think on the
         # phases that deserve it. process_phase folds this into _turn_timeout.
-        c["_routed_turn_timeout"] = int(ov["timeout"])
+        routed_timeout = int(ov["timeout"])
+        hard_timeout = int(cget(c, "runtime.timeout_seconds_per_agent", 1200) or 0)
+        if hard_timeout and routed_timeout > hard_timeout:
+            emit("Phase '%s': routing timeout %ds exceeds the configured "
+                 "runtime.timeout_seconds_per_agent (%ds) — the routed timeout "
+                 "wins on this phase, giving it more room than the general cap."
+                 % (key, routed_timeout, hard_timeout))
+        c["_routed_turn_timeout"] = routed_timeout
     c["models"], c["_resolved"] = models, resolved
+    # Per-role overrides (roles.worker / roles.integrator) are applied later,
+    # per lane/turn, by _apply_role_routing — stash the validated sub-dict.
+    if _roles_ov:
+        c["_role_routing"] = _roles_ov
     emit("Phase '%s': model routing active (%s)."
          % (key, ", ".join("%s=%s" % (k, v) for k, v in sorted(ov.items()))))
     return c
+
+
+def _apply_role_routing(rcfg, role):
+    """Patch one per-call cfg copy with the phase's per-ROLE routing overrides
+    (model_routing.json phases.<key>.roles.<role>): "worker" for each parallel
+    build lane, "integrator" for the integrator's turn only — the cheap-
+    workers/expensive-integrator split. ``rcfg`` MUST already be a per-call
+    copy (dict(cfg)); models/_resolved are re-copied here so the phase-shared
+    dicts are never mutated. Returns rcfg for chaining."""
+    rov = (rcfg.get("_role_routing") or {}).get(role) or {}
+    if not rov:
+        return rcfg
+    models = dict(rcfg.get("models") or {})
+    resolved = dict(rcfg.get("_resolved") or {})
+    if rov.get("claude"):
+        models["claude"] = resolved["claude_model"] = rov["claude"]
+    if rov.get("codex"):
+        models["codex"] = resolved["codex_model"] = rov["codex"]
+    if rov.get("codex_reasoning"):
+        models["codex_reasoning"] = rov["codex_reasoning"]
+        models["codex_build_reasoning"] = rov["codex_reasoning"]
+    if rov.get("claude_reasoning"):
+        models["claude_reasoning"] = rov["claude_reasoning"]
+        models["claude_build_reasoning"] = rov["claude_reasoning"]
+    if rov.get("gemini") and valid_gemini_model(rov["gemini"]):
+        models["gemini_fallback"] = rov["gemini"]
+        resolved["gemini_model"] = rov["gemini"]
+    if rov.get("ollama"):
+        models["ollama"] = resolved["ollama_model"] = rov["ollama"]
+    if rov.get("ollama_reasoning"):
+        # See _apply_phase_routing: honored by run_local's HTTP "think" flag,
+        # noop on the CLI "ollama run" roster path.
+        models["ollama_reasoning"] = rov["ollama_reasoning"]
+    # gemini_reasoning: accepted-but-noop (warned once at phase-routing time;
+    # the gemini CLI exposes no effort control as invoked here).
+    rcfg["models"], rcfg["_resolved"] = models, resolved
+    return rcfg
+
+
+def _escalated_effort(current):
+    """One-step bump for a reasoning-effort string: 'high' -> 'max', anything
+    else (including blank/unrecognized) -> 'high'. Deliberately not a full
+    ladder walk — the spec asks for exactly this two-rung bump."""
+    return "max" if str(current or "").strip().lower() == "high" else "high"
+
+
+def _apply_adaptive_escalation(cfg, coord):
+    """Failure-triggered escalation lever (runtime.adaptive_escalation_enabled,
+    default True): bump the acting coordinator's reasoning effort for exactly
+    ONE call. Returns a NEW cfg dict — ``cfg`` itself is never mutated — so
+    escalation can never leak into a later unrelated phase or the next fresh
+    verify cycle; the caller just stops passing the escalated copy once the
+    triggering attempt(s) are done.
+
+    Default lever: bump models.<agent>_reasoning / <agent>_build_reasoning to
+    "high" (or "max" if already "high") — cheap, always available, mirrors the
+    one-knob-sets-both convention in _apply_phase_routing/_apply_role_routing.
+    Full model swap only happens if the operator explicitly set
+    runtime.escalation_model_override (extends the models.claude_integrator
+    single-agent-override pattern to the claude coordinator only).
+
+    gemini/ollama have no reasoning-effort lever in this engine (see the
+    accepted-but-noop notes on run_claude/run_codex/_apply_phase_routing), so
+    for those agents this is a no-op cfg-wise; the caller still logs/ledgers
+    the escalation event for visibility even though there's no lever to pull.
+    """
+    ecfg = dict(cfg)
+    models = dict(ecfg.get("models") or {})
+    if coord == "codex":
+        new = _escalated_effort(models.get("codex_reasoning")
+                                or cget(cfg, "models.codex_reasoning", "low"))
+        models["codex_reasoning"] = new
+        models["codex_build_reasoning"] = new
+    elif coord == "claude":
+        new = _escalated_effort(models.get("claude_reasoning")
+                                or cget(cfg, "models.claude_reasoning", ""))
+        models["claude_reasoning"] = new
+        models["claude_build_reasoning"] = new
+        override = str(cget(cfg, "runtime.escalation_model_override", "") or "").strip()
+        if override:
+            ecfg["_claude_model_override"] = override
+    ecfg["models"] = models
+    return ecfg
+
+
+def _maybe_escalate(cfg, app, app_dir, key, coord, attempt_no, already_logged):
+    """Shared by _verify_and_repair's repair loop and process_phase's quality-
+    gate retry path: both are ONLY reachable via repeated failures on the same
+    phase, so escalating here can never affect a normal successful run.
+
+    ``attempt_no`` is 1-based (repair attempt number / quality-gate call
+    number). Escalates from runtime.escalate_repair_after_attempt (default 2)
+    onward. Returns (cfg_to_use, logged) — logged flips True the first time
+    escalation actually triggers for this phase invocation, so the caller
+    emits the log line + mistakes-ledger entry exactly once per escalation
+    event, not once per subsequent (already-escalated) attempt.
+
+    cls choice: a new mistakes.CLASSES value "escalation_triggered" rather
+    than reusing "repair_queued" — repair_queued means "the release gate
+    refused done and queued a whole repair phase", a different (and rarer)
+    event than "this in-phase repair/quality-gate attempt got a stronger
+    model". Keeping them distinct lets `--mistakes` answer "how often does
+    escalation actually fire" without conflating it with release-gate queues.
+    """
+    if not bool(cget(cfg, "runtime.adaptive_escalation_enabled", True)):
+        return cfg, already_logged
+    threshold = int(cget(cfg, "runtime.escalate_repair_after_attempt", 2) or 2)
+    if attempt_no < threshold:
+        return cfg, already_logged
+    ecfg = _apply_adaptive_escalation(cfg, coord)
+    if not already_logged:
+        emit("ADAPTIVE ESCALATION: phase '%s' attempt %d crossed "
+             "escalate_repair_after_attempt=%d — bumping %s's reasoning effort "
+             "for this and subsequent attempts in this loop only."
+             % (key, attempt_no, threshold, DISPLAY.get(coord, coord)))
+        mistklib.append_mistake(app_dir, {
+            "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+            "agent": coord, "cls": "escalation_triggered",
+            "summary": "adaptive escalation triggered at attempt %d "
+                       "(threshold %d)" % (attempt_no, threshold)})
+        already_logged = True
+    return ecfg, already_logged
 
 
 def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
@@ -3684,7 +4598,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     personas = roleslib.assign_personas(
         phase_index, speaking, cfg.get("_personalities", roleslib.DEFAULT_PERSONALITIES),
         cfg.get("_roles", roleslib.DEFAULT_ROLES), phase_roles,
-        cfg.get("_agent_role_overrides", {}))
+        cfg.get("_agent_role_overrides", {}), cfg.get("_role_by_id"))
     if personas:
         emit("Personas — " + "; ".join(
             "%s: %s" % (DISPLAY[a], roleslib.persona_label(personas[a])) for a in speaking))
@@ -3692,7 +4606,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # Verification gate (§16): a requires_verification phase (e.g. final review) is
     # fed the real persisted verification result as context. Set-or-CLEAR each phase.
     _needs_vlabel = (bool(phasedef.get("requires_verification", False)) if hasattr(phasedef, "get")
-                     else False) or key in ("final_review", "launch_readiness_review")
+                     else False) or key == "final_review"
     if _needs_vlabel:
         _vr = verifylib.load_verify_results(app_dir)
         _latest = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
@@ -3790,8 +4704,53 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                      agents=",".join(active), coordinator=coord,
                      rounds=(0 if unlimited_rounds else max_rounds))
 
-    write_md(md_path, phase_header(app, phasedef, original_prompt))
-    transcript = ""
+    # Round-level crash resume: scoped to the SEQUENTIAL round loop (plain
+    # discussion/verify-repair phases, and a "build" phase with code changes
+    # disabled) — NOT the parallel build loop (is_build and allow_writes),
+    # whose iterations already land in a git-versioned app_build repo (see
+    # ensure_build_repo) with its own crash-recovery path via that history,
+    # and whose concurrent per-lane worker/worktree state makes a safe
+    # mid-iteration resume a materially harder problem than resuming a
+    # strictly-sequential round.
+    #
+    # The pipeline is strictly sequential (see the phase while-loop in run():
+    # a phase is only entered after every earlier one is in completed_phases,
+    # and process_phase is never called concurrently for two phases), so a
+    # single state["current_phase"] + state["current_round"] pair unambiguously
+    # describes at most one in-flight phase — no per-phase-keyed dict needed.
+    #
+    # "Resuming" requires ALL of: this phase is not in completed_phases
+    # (guaranteed by the caller — it never calls process_phase for a completed
+    # phase), the loaded state says THIS phase was the one in flight
+    # (current_phase == key: set at the start of an earlier, crashed attempt
+    # at this exact phase and never cleared because that attempt didn't
+    # finish — a genuinely fresh phase would see the PREVIOUS phase's key
+    # here instead), and current_round > 0 (at least one round was entered).
+    # The actual resume point is then derived from the .md file itself, not
+    # from current_round directly — see _resume_round_state's docstring for
+    # why the counter alone is not trustworthy.
+    resume_round, resuming = 1, False
+    if not (is_build and allow_writes) and state.get("current_phase") == key \
+            and int(state.get("current_round") or 0) > 0:
+        try:
+            with open(md_path, encoding="utf-8") as fh:
+                _existing = fh.read()
+        except OSError:
+            _existing = ""
+        if _existing.strip():
+            resume_round, _kept, _header_end = _resume_round_state(_existing)
+            resuming = resume_round > 1
+    if resuming:
+        # Preserve the on-disk transcript (write_md would TRUNCATE it) except
+        # for a trailing incomplete round, which is dropped and redone.
+        write_md(md_path, _kept)
+        transcript = _kept[_header_end:]
+        emit("Phase '%s': resuming a crashed run at round %d (%d completed "
+             "round(s), %d char(s) of transcript recovered)."
+             % (key, resume_round, resume_round - 1, len(transcript)))
+    else:
+        write_md(md_path, phase_header(app, phasedef, original_prompt))
+        transcript = ""
     extra = phase_extra(cfg, key)
 
     state["current_phase"] = key
@@ -3800,6 +4759,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     consensus = False
     final_output = ""
     quality_failures = 0
+    _quality_escalation_logged = False   # see _maybe_escalate; scoped to this phase call
     quality_repair_limit = max(0, int(cget(cfg, "runtime.phase_quality_repair_rounds", 1) or 0))
     independent_first = _independent_first_enabled(cfg, is_build or is_verify_repair)
     if independent_first:
@@ -3816,8 +4776,13 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             state, md_path, max_rounds, transcript, extra, personas=personas)
     rounds_iter = [] if (is_build and allow_writes) else (
-        itertools.count(1) if unlimited_rounds else range(1, max_rounds + 1))
-    any_agent_output = False
+        itertools.count(resume_round) if unlimited_rounds
+        else range(resume_round, max_rounds + 1))
+    # A resumed phase already has real agent output on disk (recovered into
+    # `transcript` above) even before this loop produces anything new — the
+    # "no enabled agent could produce output" guard below must not fire just
+    # because every agent happens to be unavailable on the FIRST resumed round.
+    any_agent_output = resuming
     empty_round_streak = 0   # consecutive rounds where NO agent spoke
     _seen_chars = {}   # per-agent transcript offset for session delta prompts
     for rnd in rounds_iter:
@@ -3983,10 +4948,18 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             consensus = True
             if _phase_quality_gate_enabled(cfg, is_build or is_verify_repair):
                 try:
-                    qctx = build_context(cfg, app, phasedef, original_prompt,
+                    # Same failure-triggered escalation as the repair loop:
+                    # once this is the Nth-or-later quality-gate call for this
+                    # phase (N = runtime.escalate_repair_after_attempt), the
+                    # evaluator turn gets a stronger reasoning effort. `cfg`
+                    # itself is untouched, so this never leaks past the phase.
+                    qcfg, _quality_escalation_logged = _maybe_escalate(
+                        cfg, app, app_dir, key, coord,
+                        quality_failures + 1, _quality_escalation_logged)
+                    qctx = build_context(qcfg, app, phasedef, original_prompt,
                                          prior_outputs, transcript)
                     qpass, qresp, transcript = run_phase_quality_gate(
-                        cfg, app, app_dir, phasedef, rnd, coord, qctx,
+                        qcfg, app, app_dir, phasedef, rnd, coord, qctx,
                         cresp, md_path, transcript)
                 except AgentError as exc:
                     emit("Quality gate unavailable in phase '%s': %s — accepting coordinator decision."
@@ -4015,6 +4988,11 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                 )
                 emit("Quality gate warning recorded for phase '%s'; closing under current limits."
                      % key)
+                mistklib.append_mistake(app_dir, {
+                    "app": app, "workflow": cfg.get("_workflow_name"),
+                    "phase": key, "agent": coord, "cls": "quality_gate_fail",
+                    "summary": "phase closed with a failing quality gate after "
+                               "%d repair failure(s)" % quality_failures})
                 break
             emit("CONSENSUS reached in phase '%s' at %s %d." % (key, unit, rnd))
             break
@@ -4026,7 +5004,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                          "the agent CLIs installed and logged in? See logs/." % key)
 
     vote = {}
-    available_active = [a for a in active if _agent_available(a)]
+    available_active = [a for a in active if _agent_available(a, cfg)]
     if not consensus and not unlimited_rounds and not is_build and len(available_active) >= 2:
         emit("No consensus by max %s in phase '%s' — forcing a weighted vote." % (unit, key))
         append_md(md_path, "\n### Forced Vote (max %ss reached)\n\n" % unit)
@@ -4135,29 +5113,9 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # the transcript + final output (last emission of an id/name wins, so the
     # coordinator's final revision beats any draft). Cycles are an error recorded
     # in tasks.json — never a crash.
-    if key == "task_assignments":
-        blob = transcript + "\n" + (final_output or "")
-        tasks, terrs = parse_tasks_blocks(blob)
-        for c in find_task_cycles(tasks):
-            terrs.append("dependency cycle: %s" % c)
-        for e in terrs:
-            emit("TASKS: ERROR %s" % e)
-        persist_tasks(app_dir, tasks, terrs)
-        emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
-        live_log(app_dir, key, "orchestrator", "tasks_recorded",
-                 "%d task(s) persisted to tasks.json; %d error(s)"
-                 % (len(tasks), len(terrs)))
-    if key == "tech_specs":
-        blob = transcript + "\n" + (final_output or "")
-        ifaces, ierrs = parse_interface_blocks(blob)
-        for e in ierrs:
-            emit("INTERFACES: ERROR %s" % e)
-        persist_interfaces(app_dir, ifaces, ierrs)
-        emit("INTERFACES: %d interface(s) -> interfaces.json (%d error(s))."
-             % (len(ifaces), len(ierrs)))
-        live_log(app_dir, key, "orchestrator", "interfaces_recorded",
-                 "%d interface(s) persisted to interfaces.json; %d error(s)"
-                 % (len(ifaces), len(ierrs)))
+    _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
+                            record_decisions=_decisions_contract_requested(
+                                cfg, phasedef))
 
     # Audit report phase: synthesize ALL findings (from every audit phase, using the
     # FULL untruncated phase_outputs — not the char-budgeted context) into a ranked
@@ -4179,7 +5137,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         rep_dir = os.path.join(app_dir, "report")
         os.makedirs(rep_dir, exist_ok=True)
         agents = ", ".join(DISPLAY[a] for a in active)
-        summary = _FIND_RE.sub("", final_output or "").strip()[:800]
+        summary = _FIND_STRIP_RE.sub("", final_output or "").strip()[:800]
         rendered = render_audit_report(findings, app, cfg.get("_target_path"),
                                        agents=agents, summary=summary)
         try:
@@ -4239,6 +5197,98 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     return final_output.strip()
 
 
+def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
+                            record_decisions=False):
+    """Post-phase contract recording: tasks.json / interfaces.json (§19/§20)
+    and, when the phase requested it, the decisions-json log (decisions.json).
+
+    Bounded, non-fatal by design: parse/cycle errors are persisted in the
+    contract file, WARNed prominently, and ledgered (contract_error) — never a
+    hard block, because a wrongly-strict gate here would brick runs."""
+    # Phase-transition summarization (unconditional — every completed phase
+    # needs an entry in phase_summaries.json, not just decision-bearing ones,
+    # since build_context's hybrid policy replaces ANY older phase's raw
+    # transcript with this once it ages out of the recency window). Parsed
+    # from the same wrap-up turn's phase-summary-json block when the phase
+    # requested it via _phase_contract(). Phases whose coordinator turn never
+    # runs this contract (the parallel-build integrator prompt doesn't request
+    # it — see _phase_contract's docstring) or that dropped the block under
+    # format drift get a synthesized fallback from final_output instead of a
+    # missing entry — correctness (never silently lose a phase's substance)
+    # beats a perfectly-worded summary.
+    blob_all = transcript + "\n" + (final_output or "")
+    summary, serrs = parse_phase_summary_blocks(blob_all)
+    for e in serrs:
+        emit("PHASE_SUMMARY: ERROR %s" % e)
+    if summary:
+        summary = dict(summary)
+        summary["phase"] = key   # never trust the agent's self-reported key
+        summary.setdefault("key_decisions", [])
+        summary.setdefault("open_risks", [])
+    else:
+        summary = {
+            "phase": key,
+            "one_paragraph_summary": (final_output or "").strip()[:800],
+            "key_decisions": [],
+            "open_risks": [],
+        }
+    merge_phase_summary(app_dir, key, summary)
+    if record_decisions:
+        blob = transcript + "\n" + (final_output or "")
+        decisions, derrs = parse_decision_blocks(blob)
+        for e in derrs:
+            emit("DECISIONS: ERROR %s" % e)
+        if decisions:
+            merged = merge_decisions(app_dir, decisions)
+            emit("DECISIONS: %d new/updated decision(s) -> decisions.json "
+                 "(%d total, %d error(s))."
+                 % (len(decisions), len(merged), len(derrs)))
+            live_log(app_dir, key, "orchestrator", "decisions_recorded",
+                     "%d decision(s) merged into decisions.json; %d error(s)"
+                     % (len(decisions), len(derrs)))
+    if key == "task_assignments":
+        blob = transcript + "\n" + (final_output or "")
+        tasks, terrs = parse_tasks_blocks(blob)
+        for c in find_task_cycles(tasks):
+            terrs.append("dependency cycle: %s" % c)
+        for e in terrs:
+            emit("TASKS: ERROR %s" % e)
+        if terrs:
+            emit("WARN CONTRACT: %d error(s) in tasks.json (malformed blocks / "
+                 "unknown lanes / dependency cycles) — the build proceeds, but "
+                 "review tasks.json 'errors' and the mistakes ledger." % len(terrs))
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "contract_error",
+                "summary": "%d tasks.json contract error(s)" % len(terrs),
+                "detail": {"errors": terrs[:10]}})
+        persist_tasks(app_dir, tasks, terrs)
+        emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
+        live_log(app_dir, key, "orchestrator", "tasks_recorded",
+                 "%d task(s) persisted to tasks.json; %d error(s)"
+                 % (len(tasks), len(terrs)))
+    if key == "tech_specs":
+        blob = transcript + "\n" + (final_output or "")
+        ifaces, ierrs = parse_interface_blocks(blob)
+        for e in ierrs:
+            emit("INTERFACES: ERROR %s" % e)
+        if ierrs:
+            emit("WARN CONTRACT: %d error(s) in interfaces.json — the build "
+                 "proceeds, but review interfaces.json 'errors' and the "
+                 "mistakes ledger." % len(ierrs))
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "contract_error",
+                "summary": "%d interfaces.json contract error(s)" % len(ierrs),
+                "detail": {"errors": ierrs[:10]}})
+        persist_interfaces(app_dir, ifaces, ierrs)
+        emit("INTERFACES: %d interface(s) -> interfaces.json (%d error(s))."
+             % (len(ifaces), len(ierrs)))
+        live_log(app_dir, key, "orchestrator", "interfaces_recorded",
+                 "%d interface(s) persisted to interfaces.json; %d error(s)"
+                 % (len(ifaces), len(ierrs)))
+
+
 # ---------------------------------------------------------------------------
 # App processing
 # ---------------------------------------------------------------------------
@@ -4252,6 +5302,16 @@ def _should_pause_after(cfg, phasedef):
     if autonomy == "semi_autonomous":
         return bool(phasedef.get("checkpoint", False)) if hasattr(phasedef, "get") else False
     return False
+
+
+def _approval_timeout(cfg):
+    """How long a checkpoint waits for a human decision before proceeding. In
+    parallel-project mode this bounds how long a blocked thread is held, so it's
+    configurable (runtime.approval_timeout_seconds); default 2h."""
+    try:
+        return int(cget(cfg, "runtime.approval_timeout_seconds", 7200) or 7200)
+    except (TypeError, ValueError):
+        return 7200
 
 
 def _await_approval(app_dir, phase_key, state, timeout=7200, poll=2.0):
@@ -4373,6 +5433,18 @@ def process_app(cfg, root, app):
         cfg["_warned_no_git_repo"] = True
         emit("WARN runtime.require_git_repo=true but %s is not a git repo — "
              "run.sh will skip its commit/push step (run `git init` there to fix)." % root)
+    # No agent runnable at all (every cloud CLI disabled/missing AND no local
+    # model pulled) is otherwise discovered deep in phase 1's call_agent —
+    # every turn fails one at a time with no upfront diagnosis. Check once per
+    # run (not per app) and give a single clear pointer to --doctor.
+    if not cfg.get("_checked_any_agent_runnable"):
+        cfg["_checked_any_agent_runnable"] = True
+        if not any(_agent_available(a, cfg) for a in enabled_agents(cfg)):
+            emit("WARN no agent is runnable: every enabled agent's CLI is "
+                 "missing/logged-out, and no local Ollama model is enabled+pulled. "
+                 "Every phase will fail immediately. Run `--doctor` to see what's "
+                 "wired up, or enable/log in to at least one of codex/claude/"
+                 "gemini, or pull+enable a local model.")
     # Per-app lock so different apps can run at the same time.
     stale = int(cget(cfg, "runtime.stale_lock_seconds", 5400))
     if not acquire_app_lock(app, stale):
@@ -4399,6 +5471,11 @@ def _portfolio_manifest_blob(state, latest_output=""):
 def _maybe_materialize_portfolio_children(cfg, root, app, app_dir, prompt, state,
                                           latest_output=""):
     """Parse the portfolio manifest, if present, and create sibling projects."""
+    # Materialized once already (recorded on state): the children exist and
+    # materialize_children would just re-skip them. Skip the re-parse + fs walk
+    # this call site does at the top of every phase iteration.
+    if state.get("portfolio_manifest"):
+        return None
     if not portfoliolib.is_portfolio_parent_prompt(prompt):
         return None
     manifest, errors = portfoliolib.parse_portfolio_manifest(
@@ -4481,13 +5558,18 @@ _PORTFOLIO_DELEGATED_PHASES = {
 }
 
 
-def _release_gate_failure(app_dir, phases, state, prompt):
+def _release_gate_failure(app_dir, phases, state, prompt, cfg=None):
     """A build workflow may only be marked done when the thing it claims to
     have built exists and compiles (the nickel lesson: 10 failed verifies and
     a NO final_review still ended in 'Marked done'). Returns a human reason
     string when the gate fails, else None. Spec/research workflows (no
     verify-bearing phase) and portfolio parents whose build is delegated to
-    children are exempt."""
+    children are exempt.
+
+    Test failures are opt-in here: runtime.tests_gate_release (default False)
+    — a test run failing does NOT block release unless an operator explicitly
+    turns this on, since generated test suites are new/unproven and shouldn't
+    be able to strand an otherwise-compiling build."""
     has_verify = any((p.get("verify") if hasattr(p, "get") else None)
                      for p in phases)
     if not has_verify:
@@ -4503,6 +5585,9 @@ def _release_gate_failure(app_dir, phases, state, prompt):
         return None
     if not latest.get("ok"):
         return "last verification failed (%s)" % latest.get("summary", "")
+    if bool(cget(cfg or {}, "runtime.tests_gate_release", False)) \
+            and latest.get("tests_ran") and not latest.get("tests_ok"):
+        return "last test run failed (%s)" % latest.get("summary", "")
     return None
 
 
@@ -4514,6 +5599,12 @@ def _queue_release_gate_repair(app, app_dir, state, reason, phases=None,
     n = int(state.get("release_gate_repairs") or 0)
     state["done"] = False
     state["error"] = "release gate: %s" % reason
+    mistklib.append_mistake(app_dir, {
+        "app": app, "phase": build_phase_key, "cls": "repair_queued",
+        "summary": ("release gate failed: %s (repair %d/%d)"
+                    % (reason, min(n + 1, max_repairs), max_repairs))
+                   if n < max_repairs else
+                   "release gate failed: %s (repair budget exhausted)" % reason})
     if n < max_repairs:
         state["release_gate_repairs"] = n + 1
         # The queued repair only does anything if build_coordination (and
@@ -4715,6 +5806,12 @@ def _prepare_url_context(cfg, app, app_dir, prompt):
     cfg["_url_context"] = urlfetchlib.build_url_context(results)
 
 
+# Directories excluded from the target-change signature: VCS/build/dependency
+# churn shouldn't re-trigger a run, and skipping them keeps the walk cheap.
+_TSIG_PRUNE_DIRS = {".git", "node_modules", "DerivedData", ".build", "build",
+                    "Pods", ".gradle", "__pycache__", ".venv", "venv"}
+
+
 def _run_app_pipeline(cfg, app, app_dir, prompt):
     state = load_state(app_dir)
     # Sinks for structured events (§6) + fallback-count aggregation: every
@@ -4770,8 +5867,16 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         cfg["_autonomy"] = _rc["autonomy"]
     cfg["_workflow_name"] = workflow.name
     cfg["_workflow_target"] = workflow.target
+    # First verify spec any phase carries (usually build_verification's): the
+    # per-iteration build verifier reuses it so both gates compile the same way.
+    cfg["_workflow_verify_spec"] = next(
+        (p.get("verify") for p in phases if hasattr(p, "get") and p.get("verify")),
+        None)
     cfg["_personalities"], cfg["_roles"] = roleslib.load_roles(HERE)
     cfg["_agent_role_overrides"] = roleslib.load_agent_role_overrides(HERE)
+    # Precomputed once per run (not rebuilt on every process_phase call) — see
+    # assign_personas' role_by_id parameter.
+    cfg["_role_by_id"] = {r.get("id"): r for r in cfg["_roles"]}
 
     # Audit target: the read-only pre-existing codebase this app analyzes.
     cfg["_target_path"] = wflib.read_target_path(app_dir, HERE)
@@ -4803,10 +5908,28 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     _tsig = ""
     if _tgt:
         try:
-            _tsig = "|".join(sorted(
-                os.path.relpath(os.path.join(dp, fn), _tgt)
-                + str(int(os.path.getmtime(os.path.join(dp, fn))))
-                for dp, _dn, fns in os.walk(_tgt) for fn in fns))[:200000]
+            # Cheap aggregate signature instead of a giant sorted relpath+mtime
+            # string: prune heavy/irrelevant dirs and track running (count,
+            # newest-mtime, total-size) in O(1) memory. Any file edit bumps the
+            # mtime; adds/removes change the count/size; a dir mtime catches a
+            # rename that doesn't touch a file. Much faster on large targets.
+            count, newest, total = 0, 0.0, 0
+            for dp, dns, fns in os.walk(_tgt):
+                dns[:] = [d for d in dns if d not in _TSIG_PRUNE_DIRS]
+                try:
+                    newest = max(newest, os.path.getmtime(dp))
+                except OSError:
+                    pass
+                for fn in fns:
+                    try:
+                        st = os.stat(os.path.join(dp, fn))
+                    except OSError:
+                        continue
+                    count += 1
+                    total += st.st_size
+                    if st.st_mtime > newest:
+                        newest = st.st_mtime
+            _tsig = "%d|%.3f|%d" % (count, newest, total)
         except OSError:
             _tsig = _tgt
     phash = sha256_text(prompt + "\n#target:" + _tgt + "\n#tsig:" + sha256_text(_tsig))
@@ -4850,7 +5973,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             # skipping the human decision.
             emit("Re-arming interrupted approval checkpoint after phase '%s'."
                  % pending_approval)
-            decision, payload = _await_approval(app_dir, pending_approval, state)
+            decision, payload = _await_approval(app_dir, pending_approval, state,
+                                                timeout=_approval_timeout(cfg))
             if decision == "changes_requested":
                 if pending_approval in state.get("completed_phases", []):
                     state["completed_phases"].remove(pending_approval)
@@ -4977,8 +6101,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                         "manifest. portfolio_selection must emit the selected-app "
                         "manifest before any per-app phase begins; refusing to "
                         "collapse multiple apps into one app_build folder." % key)
-            cfg["_prior_discussions"] = prior_discussion_context(
-                app_dir, phases, state.get("completed_phases", []))
+            cfg["_prior_discussions"] = _select_prior_context(
+                cfg, app_dir, phases, state.get("completed_phases", []), phasedef)
             if budget:
                 _now = time.time()
                 _is_build = (build_idx is not None and i == build_idx)
@@ -5006,7 +6130,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             # V2 §3: semi-autonomous / manual checkpoint pause. Fully-autonomous
             # (the default) never pauses. Not for the last phase (nothing follows).
             if i < len(phases) - 1 and _should_pause_after(cfg, phasedef):
-                decision, payload = _await_approval(app_dir, key, state)
+                decision, payload = _await_approval(app_dir, key, state,
+                                                    timeout=_approval_timeout(cfg))
                 if decision == "edited" and (payload or "").strip():
                     # Edit & Approve: the human's text REPLACES the phase output
                     # everywhere downstream phases read it.
@@ -5036,12 +6161,13 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                     emit("Changes requested on '%s' — re-running the phase." % key)
                     continue
             i += 1
-        gate_reason = _release_gate_failure(app_dir, phases, state, prompt)
+        gate_reason = _release_gate_failure(app_dir, phases, state, prompt, cfg=cfg)
         if gate_reason:
             _queue_release_gate_repair(app, app_dir, state, gate_reason,
                                        phases=phases, build_phase_key=workflow.build_phase)
             evlib.emit_event(app_dir, "run_finished", project=app,
-                             status="release_gate_repair", detail=gate_reason)
+                             status="release_gate_repair", detail=gate_reason,
+                             verification=state.get("verification"))
             return
         state["done"] = True
         state["error"] = None
@@ -5072,20 +6198,23 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         except Exception as exc:  # noqa: BLE001 - docs are best-effort, never fatal
             emit("WARN docs render failed: %s" % exc)
         emit("App '%s': ALL phases complete. Marked done." % app)
-        evlib.emit_event(app_dir, "run_finished", project=app, status="done")
+        evlib.emit_event(app_dir, "run_finished", project=app, status="done",
+                         verification=state.get("verification"))
     except AgentError as exc:
         state["error"] = str(exc)
         state["done"] = False
         save_state(app_dir, state)
         emit("App '%s': ABORTED — %s" % (app, exc))
         evlib.emit_event(app_dir, "run_finished", project=app,
-                         status="aborted", detail=str(exc))
+                         status="aborted", detail=str(exc),
+                         verification=state.get("verification"))
     except AppError as exc:
         state["error"] = str(exc)
         save_state(app_dir, state)
         emit("App '%s': skipped — %s" % (app, exc))
         evlib.emit_event(app_dir, "run_finished", project=app,
-                         status="skipped", detail=str(exc))
+                         status="skipped", detail=str(exc),
+                         verification=state.get("verification"))
 
 
 # ---------------------------------------------------------------------------
@@ -5182,6 +6311,56 @@ def preflight_report(cfg):
         # Per-phase routing + cloud->local fallback (model_routing.json).
         "model_routing": mrlib.summary(mrlib.load_routing(HERE)),
     }
+
+
+def mistakes_report(root, app=None):
+    """Structured `--mistakes` report: the cross-run mistakes-ledger aggregation
+    (per-class / per-phase / per-agent counts) plus the verification rollup per
+    app. Pure disk reads — never invokes an agent turn. ``app`` filters to one
+    project; JSON-serializable for `--mistakes --json`."""
+    agg = mistklib.aggregate_mistakes(root)
+    if app:
+        names = [app]
+    else:
+        try:
+            discovered = find_apps(root) if root and os.path.isdir(root) else []
+        except OSError:
+            discovered = []
+        names = sorted(set(list(agg["apps"]) + discovered))
+    apps = {}
+    for name in names:
+        per = dict(agg["apps"].get(name) or {"total": 0, "by_class": {},
+                                             "by_phase": {}, "by_agent": {}})
+        app_dir = os.path.join(root, name)
+        st = load_state(app_dir)
+        per["verification"] = st.get("verification") or derive_verification(app_dir, st)
+        apps[name] = per
+    if app:
+        per = apps[app]
+        totals = {k: per[k] for k in ("total", "by_class", "by_phase", "by_agent")}
+    else:
+        totals = {k: agg[k] for k in ("total", "by_class", "by_phase", "by_agent")}
+    report = {"schema_version": 1, "root": root, "apps": apps}
+    report.update(totals)
+    return report
+
+
+def print_mistakes_report(rep):
+    """Human rendering of mistakes_report (the --mistakes default output)."""
+    print("=== MISTAKES: cross-run ledger report ===")
+    print("Root: %s" % rep["root"])
+    print("Total recorded mistakes: %d" % rep["total"])
+    for label, key in (("By class", "by_class"), ("By phase", "by_phase"),
+                       ("By agent", "by_agent")):
+        counts = rep.get(key) or {}
+        if counts:
+            print("%s:" % label)
+            for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+                print("  %-28s %d" % (k, n))
+    for name, per in sorted((rep.get("apps") or {}).items()):
+        print("App %-24s: %d mistake(s); verification=%s"
+              % (name, per.get("total", 0), per.get("verification", "unverified")))
+    print("=== MISTAKES report complete ===")
 
 
 def doctor(cfg):
@@ -5356,8 +6535,18 @@ def main():
                     help="resume an existing project from its saved state, clearing "
                          "any recorded abort error first (V2 spec §27)")
     ap.add_argument("--doctor", action="store_true", help="print environment report and exit")
+    ap.add_argument("--mistakes", action="store_true",
+                    help="print the cross-run mistakes-ledger report (per-class/"
+                         "per-phase/per-agent counts + verification rollup per "
+                         "app) and exit; combine with --app and/or --json")
+    ap.add_argument("--postmortem", action="store_true",
+                    help="print one correlated failure report for a project "
+                         "(run status, phases, event failure chain, verify "
+                         "attempts, mistakes ledger, turn telemetry) and exit; "
+                         "requires --app/--project, supports --json")
     ap.add_argument("--json", action="store_true",
-                    help="with --doctor: emit a machine-readable JSON preflight report (V2 spec §27)")
+                    help="with --doctor/--mistakes/--postmortem: emit a "
+                         "machine-readable JSON report (V2 spec §27)")
     ap.add_argument("--seed", action="store_true",
                     help="seed built-in workflow JSON files and exit (used by the GUI)")
     ap.add_argument("--search-models", metavar="QUERY",
@@ -5365,6 +6554,15 @@ def main():
                          "Hugging Face GGUF, pullable via ollama) and exit; "
                          "combine with --json for machine-readable output")
     args = ap.parse_args()
+
+    # --json means stdout must be ONLY the JSON blob (any consumer — CI, the
+    # GUI's onboarding flow — parses stdout directly). Silence emit()'s
+    # terminal printing up front, before anything below (workflow seeding,
+    # resolve_models' gemini probe, etc.) can print a log line ahead of it.
+    # emit() still writes to orchestrator.log either way.
+    if args.json:
+        global _QUIET
+        _QUIET = True
 
     # Always materialize built-in workflows to workflows/*.json (never clobbers an
     # existing file), so the engine and the GUI both have editable definitions.
@@ -5390,9 +6588,11 @@ def main():
     cfg = load_config()
     resolve_models(cfg)
     # runtime.stream_terminal_output=false: engine lines go only to the log file
-    # (the GUI's live run log needs the default true).
+    # (the GUI's live run log needs the default true). `_QUIET` was already
+    # declared global above (for the --json case); Python forbids repeating a
+    # `global` statement for a name once it's been assigned earlier in the
+    # function, so this just assigns.
     if not bool(cget(cfg, "runtime.stream_terminal_output", True)):
-        global _QUIET
         _QUIET = True
     # Log hygiene: prune old per-call logs + rotate orchestrator.log at ~5 MB.
     prune_logs(retention_days=cget(cfg, "runtime.log_retention_days", 14))
@@ -5421,6 +6621,34 @@ def main():
         rc, target_app = prepare_resume(cfg["root"], args.resume)
         if target_app is None:
             return rc
+
+    if args.postmortem:
+        if not target_app:
+            ap.error("--postmortem requires --app/--project <name>")
+        # Opt-in cost estimation (§ config.yaml cost.pricing): absent/empty by
+        # default, so build_postmortem's pricing=None keeps output identical
+        # to before this feature existed.
+        _pricing = cget(cfg, "cost.pricing", None)
+        rep = pmlib.build_postmortem(os.path.join(cfg["root"], target_app),
+                                     app=target_app,
+                                     pricing=_pricing if isinstance(_pricing, dict) else None)
+        if args.json:
+            # Same contract as --doctor --json: stdout is ONLY the JSON blob
+            # (_QUIET was set above so no emit() line can precede it).
+            print(json.dumps(rep, indent=2))
+        else:
+            print(pmlib.render_postmortem(rep))
+        return 0
+
+    if args.mistakes:
+        rep = mistakes_report(cfg["root"], app=target_app)
+        if args.json:
+            # Same contract as --doctor --json: stdout is ONLY the JSON blob
+            # (_QUIET was set above so no emit() line can precede it).
+            print(json.dumps(rep, indent=2))
+        else:
+            print_mistakes_report(rep)
+        return 0
 
     if args.doctor:
         if args.json:

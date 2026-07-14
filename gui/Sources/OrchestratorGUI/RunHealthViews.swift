@@ -13,6 +13,10 @@ import AppKit
 struct PhaseTimelineView: View {
     @EnvironmentObject var store: OrchestratorStore
     let project: Project
+    /// Compact mode (DESIGN-REFRESH.md tranche 2): the Overview's Active Runs
+    /// cards embed the same capsule chain at reduced height, without the
+    /// round sublabel. Same data, lower altitude.
+    var compact = false
 
     private var phases: [PhaseDef] { store.phases(for: project) }
 
@@ -34,8 +38,8 @@ struct PhaseTimelineView: View {
                             .id(phase.key)
                     }
                 }
-                .padding(.horizontal, DS.space.s)
-                .padding(.vertical, DS.space.xs)
+                .padding(.horizontal, compact ? 0 : DS.space.s)
+                .padding(.vertical, compact ? 2 : DS.space.xs)
             }
             .onAppear {
                 if let cur = project.currentPhase { proxy.scrollTo(cur, anchor: .center) }
@@ -44,7 +48,7 @@ struct PhaseTimelineView: View {
                 if let cur { withAnimation { proxy.scrollTo(cur, anchor: .center) } }
             }
         }
-        .frame(height: 64)
+        .frame(height: compact ? 28 : 64)
     }
 
     @ViewBuilder
@@ -66,7 +70,7 @@ struct PhaseTimelineView: View {
             .background(Capsule().fill(background(status, isCurrent: isCurrent)))
             .overlay(Capsule().stroke(
                 status == .pending ? DS.hairline : Color.clear, lineWidth: 1))
-            if isCurrent {
+            if isCurrent && !compact {
                 Text("round \(project.currentRound)\(phase.rounds > 0 ? " of \(phase.rounds)" : "")")
                     .font(DS.font.caption).monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -435,21 +439,14 @@ struct StallBanner: View {
     var body: some View {
         let mins = Int(Date().timeIntervalSince(lastEvent) / 60)
         if !dismissed {
-            HStack(spacing: DS.space.xs) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(DS.status.warning.color)
-                Text("\(project.titleFor(project.currentPhase ?? "")) hasn't reported for \(mins) min — the engine often recovers on its own.")
-                    .font(DS.font.caption)
-                Spacer()
-                Button("Wait") { dismissed = true }
-                    .font(DS.font.caption)
-                Button("Kill run", role: .destructive) { store.stopRun(project.name) }
-                    .font(DS.font.caption)
+            InlineBanner(kind: .warning,
+                         title: "\(project.titleFor(project.currentPhase ?? "")) hasn't reported for \(mins) min",
+                         message: "The engine often recovers on its own.") {
+                HStack(spacing: DS.space.xs) {
+                    Button("Wait") { dismissed = true }
+                    Button("Kill run", role: .destructive) { store.stopRun(project.name) }
+                }
             }
-            .padding(DS.space.xs)
-            .background(DS.status.warning.fill)
-            .overlay(alignment: .bottom) { Divider() }
-            .accessibilityElement(children: .combine)
         }
     }
 }
@@ -657,17 +654,9 @@ struct ProjectHistoryView: View {
     var body: some View {
         let list = runs
         if list.isEmpty {
-            VStack(spacing: DS.space.s) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(DS.font.emptyStateIcon).foregroundStyle(.tertiary)
-                Text("No recorded runs yet")
-                    .font(DS.font.body).foregroundStyle(.secondary)
-                Text("Run history builds from events.jsonl — runs started before the event stream landed aren't shown.")
-                    .font(DS.font.caption).foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 380)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyStateView(symbol: "clock.arrow.circlepath",
+                           title: "No recorded runs yet",
+                           message: "Run history builds from events.jsonl — runs started before the event stream landed aren't shown.")
         } else {
             HStack(spacing: 0) {
                 runList(list)

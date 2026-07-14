@@ -36,6 +36,92 @@ struct RemoteModelHit: Identifiable, Equatable {
     }
 }
 
+// Per-role model/effort overrides within one phase (model_routing.json
+// phases.<key>.roles.<role>): "worker" patches every parallel build lane,
+// "integrator" patches only the integrator's turn — the cheap-workers/
+// expensive-integrator split (modelrouting.py's ROLE_NAMES, applied by
+// orchestrator.py's _apply_role_routing). That function only ever reads
+// these six fields — "agents", "gemini_reasoning", and "ollama_reasoning"
+// are accepted at the JSON-schema level (PHASE_FIELDS) but never consulted
+// per-role, so they're intentionally not modeled here.
+struct RoleFields: Equatable {
+    var claude = ""
+    var codex = ""
+    var codexReasoning = ""
+    var claudeReasoning = ""
+    var gemini = ""
+    var ollama = ""
+    var isEmpty: Bool {
+        claude.isEmpty && codex.isEmpty && codexReasoning.isEmpty
+            && claudeReasoning.isEmpty && gemini.isEmpty && ollama.isEmpty
+    }
+
+    func model(for agent: String) -> String {
+        switch agent {
+        case "claude": return claude
+        case "codex": return codex
+        case "gemini": return gemini
+        case "ollama": return ollama
+        default: return ""
+        }
+    }
+    mutating func setModel(_ value: String, for agent: String) {
+        switch agent {
+        case "claude": claude = value
+        case "codex": codex = value
+        case "gemini": gemini = value
+        case "ollama": ollama = value
+        default: break
+        }
+    }
+    func effort(for agent: String) -> String {
+        switch agent {
+        case "claude": return claudeReasoning
+        case "codex": return codexReasoning
+        default: return ""
+        }
+    }
+    mutating func setEffort(_ value: String, for agent: String) {
+        switch agent {
+        case "claude": claudeReasoning = value
+        case "codex": codexReasoning = value
+        default: break
+        }
+    }
+
+    // Parses one role's sub-dict ("worker" or "integrator") from JSON.
+    static func parse(_ raw: [String: Any]) -> RoleFields {
+        var f = RoleFields()
+        f.claude = (raw["claude"] as? String) ?? ""
+        f.codex = (raw["codex"] as? String) ?? ""
+        f.codexReasoning = (raw["codex_reasoning"] as? String) ?? ""
+        f.claudeReasoning = (raw["claude_reasoning"] as? String) ?? ""
+        f.gemini = (raw["gemini"] as? String) ?? ""
+        f.ollama = (raw["ollama"] as? String) ?? ""
+        return f
+    }
+
+    // Serializes back to JSON, dropping empty fields (never emits "").
+    var jsonObject: [String: Any] {
+        var out: [String: Any] = [:]
+        if !claude.isEmpty { out["claude"] = claude }
+        if !codex.isEmpty { out["codex"] = codex }
+        if !codexReasoning.isEmpty { out["codex_reasoning"] = codexReasoning }
+        if !claudeReasoning.isEmpty { out["claude_reasoning"] = claudeReasoning }
+        if !gemini.isEmpty { out["gemini"] = gemini }
+        if !ollama.isEmpty { out["ollama"] = ollama }
+        return out
+    }
+}
+
+// Both roles a phase can carry per-role overrides for. Equatable/isEmpty so
+// PhaseRoute's own isEmpty and dirty-tracking keep working unmodified.
+struct RoleOverrides: Equatable {
+    var worker = RoleFields()
+    var integrator = RoleFields()
+    var isEmpty: Bool { worker.isEmpty && integrator.isEmpty }
+}
+
 // GUI-side mirror of model_routing.json (per-phase model overrides + the
 // cloud->local fallback switch). Tolerant load, atomic save — same file the
 // engine's modelrouting.py reads.
@@ -50,10 +136,14 @@ struct PhaseRoute: Equatable {
     var ollama = ""
     var agents = ""
     var timeout = 0            // seconds per turn; 0 = run default
+    // Per-role (worker/integrator) overrides within this phase; nil when the
+    // phase carries none. Kept separate from isEmpty's field list below so a
+    // phase with ONLY role overrides still round-trips (isEmpty covers it).
+    var roles: RoleOverrides?
     var isEmpty: Bool {
         claude.isEmpty && codex.isEmpty && codexReasoning.isEmpty
             && claudeReasoning.isEmpty && gemini.isEmpty && ollama.isEmpty
-            && agents.isEmpty && timeout == 0
+            && agents.isEmpty && timeout == 0 && (roles?.isEmpty ?? true)
     }
 
     // Grid accessors: the per-phase model / effort override for one agent.
@@ -126,6 +216,12 @@ struct ModelRouting: Equatable {
             p.ollama = (ov["ollama"] as? String) ?? ""
             p.agents = (ov["agents"] as? String) ?? ""
             p.timeout = (ov["timeout"] as? Int) ?? 0
+            if let rolesRaw = ov["roles"] as? [String: Any] {
+                var ro = RoleOverrides()
+                if let w = rolesRaw["worker"] as? [String: Any] { ro.worker = RoleFields.parse(w) }
+                if let i = rolesRaw["integrator"] as? [String: Any] { ro.integrator = RoleFields.parse(i) }
+                if !ro.isEmpty { p.roles = ro }
+            }
             if !p.isEmpty { r.phases[key] = p }
         }
         return r
@@ -143,6 +239,12 @@ struct ModelRouting: Equatable {
             if !p.ollama.isEmpty { ov["ollama"] = p.ollama }
             if !p.agents.isEmpty { ov["agents"] = p.agents }
             if p.timeout > 0 { ov["timeout"] = p.timeout }
+            if let ro = p.roles, !ro.isEmpty {
+                var rolesObj: [String: Any] = [:]
+                if !ro.worker.isEmpty { rolesObj["worker"] = ro.worker.jsonObject }
+                if !ro.integrator.isEmpty { rolesObj["integrator"] = ro.integrator.jsonObject }
+                if !rolesObj.isEmpty { ov["roles"] = rolesObj }
+            }
             phasesObj[key] = ov
         }
         var fb: [String: Any] = ["cloud_to_local": cloudToLocal,
@@ -198,11 +300,12 @@ struct OpenModelSearchSection: View {
                 SearchHitRow(hit: hit)
             }
             if !store.modelSearchNote.isEmpty {
-                Text(store.modelSearchNote).font(.caption2).foregroundStyle(.orange)
+                Text(store.modelSearchNote).font(.caption2)
+                    .foregroundStyle(DS.status.warning.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text("Every result runs fully on this Mac via Ollama. Hugging Face results are GGUF repos pulled as hf.co/<org>/<repo>; confirm each model card's license before shipping it commercially.")
-                .font(.system(size: 9)).foregroundStyle(.tertiary)
+                .font(DS.font.caption).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -215,18 +318,21 @@ struct SearchHitRow: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(hit.id).font(.system(size: 12, design: .monospaced))
+                Text(hit.id).font(DS.font.monoInline)
                     .lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 8) {
+                    // Source badges are identity, not state: accent for the
+                    // curated registry, neutral gray for Hugging Face.
                     Text(hit.source == "curated" ? "curated" : "Hugging Face")
                         .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background((hit.source == "curated" ? Color.green : Color.blue).opacity(0.15),
+                        .background(hit.source == "curated" ? DS.accent.fill
+                                                            : DS.status.idlePill.fill,
                                     in: Capsule())
                     if !hit.license.isEmpty { Text(hit.license) }
                     if let d = hit.downloads { Text("\(compactCount(d)) pulls") }
                     if let s = hit.sizeGB { Text(String(format: "%.1fGB", s)) }
                 }
-                .font(.system(size: 9)).foregroundStyle(.secondary)
+                .font(DS.font.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             if let p = store.pullProgress[hit.id] {
@@ -234,12 +340,13 @@ struct SearchHitRow: View {
                     ProgressView().controlSize(.small)
                 } else {
                     ProgressView(value: p).frame(width: 90)
-                    Text("\(Int(p * 100))%").font(.system(size: 9)).monospacedDigit()
+                    Text("\(Int(p * 100))%").font(DS.font.caption2).monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
             } else if hit.installed {
                 Label("installed", systemImage: "checkmark.seal.fill")
-                    .font(.system(size: 10)).foregroundStyle(.green)
+                    .font(DS.font.caption2)
+                    .foregroundStyle(DS.status.success.color)
             } else {
                 Button {
                     if hit.source == "curated" {
@@ -302,7 +409,7 @@ struct ModelRoutingSections: View {
                 loaded = true
             }
         }
-        .onChange(of: routing) { newValue in
+        .onChange(of: routing) { _, newValue in
             if loaded {
                 // Preserve fields the grid owns: re-read, merge only the
                 // sections these controls edit, then write.
@@ -362,15 +469,15 @@ struct FallbackChainEditor: View {
                     HStack(spacing: 6) {
                         ForEach(Array(chain.enumerated()), id: \.offset) { i, step in
                             HStack(spacing: 4) {
-                                Text("\(i + 1)").font(.system(size: 9, weight: .bold))
+                                Text("\(i + 1)").font(DS.font.caption2)
                                     .foregroundStyle(.secondary)
-                                Text(step).font(.system(size: 10, design: .monospaced))
+                                Text(step).font(DS.font.monoCaption)
                                     .lineLimit(1)
                                 Button {
                                     chain.remove(at: i)
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 9))
+                                        .font(DS.font.caption2)
                                 }
                                 .buttonStyle(.plain).foregroundStyle(.secondary)
                                 .accessibilityLabel("Remove \(step)")
@@ -402,11 +509,12 @@ struct PhaseRouteRow: View {
             HStack(spacing: 6) {
                 Text(phase.title).font(.callout).fontWeight(.medium)
                 if phase.writes || isHeavy {
+                    // Accent, not purple — purple means fallback, exclusively.
                     Text(phase.writes ? "BUILD" : "CRITICAL")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(DS.font.caption2)
                         .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(Color.purple.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.purple)
+                        .background(DS.accent.fill, in: Capsule())
+                        .foregroundStyle(DS.accent.color)
                 }
                 Spacer()
                 if !route.isEmpty {

@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import Combine
 import UserNotifications
+import SwiftUI
 
 private enum BackgroundProjectLoader {
     static func discoverApps(rootURL: URL) -> [String] {
@@ -292,7 +293,9 @@ private enum BackgroundConfigLoader {
         var out = ["codex": true, "claude": true, "gemini": true, "ollama": false]
         guard let text = try? String(contentsOf: configURL, encoding: .utf8) else { return out }
         for agent in agentOrder {
-            if let m = firstMatch(in: text, pattern: "\(agent)_enabled:\\s*(true|false)") {
+            // Anchor to line start (ignoring indent) so a commented-out line like
+            // `# ollama_enabled: true` can't be mis-read as the live setting.
+            if let m = firstMatch(in: text, pattern: "(?m)^\\s*\(agent)_enabled:\\s*(true|false)") {
                 out[agent] = (m == "true")
             }
         }
@@ -342,9 +345,7 @@ private enum BackgroundConfigLoader {
     // Which agent CLIs are actually invokable on PATH (codex/claude/gemini or agy).
     static func detectCLIs() -> [String: Bool] {
         let fm = FileManager.default
-        let dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map(String.init)
-            + ["\(NSHomeDirectory())/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+        let dirs = OrchestratorStore.cliSearchDirs()
         func has(_ names: [String]) -> Bool {
             for d in dirs { for n in names {
                 let p = (d as NSString).appendingPathComponent(n)
@@ -442,11 +443,53 @@ private enum FactoryScanner {
 // Commands routed from the menu bar (⌘N / ⌘R / ⌥⌘I / ⌘F / …) into the active
 // shell (ContentView / AppShellView), which owns the selection and sheet
 // state the actions need. One action layer, several invocation surfaces.
-enum UICommand: Equatable {
+enum UICommand: Equatable, Hashable {
     case newChat, runSelected, toggleLog
     case toggleInspector   // ⌥⌘I — Native Pro shell inspector
     case focusSearch       // ⌘F — focus the sidebar project filter
     case openPlanTab       // Inspector "Open Plan tab" jump (§3 region 3)
+    case togglePause       // Pause/Resume Engine (toolbar + Command Palette)
+}
+
+// Single source of truth for the commands that appear in both the menu bar
+// (OrchestratorApp's .commands{}) and the ⌘K Command Palette
+// (CommandPaletteView), so their titles/shortcuts can't drift apart.
+// Pause/Resume is deliberately excluded: it's toolbar + palette only (no
+// menu-bar entry) and its title is dynamic (depends on store.enginePaused).
+struct MenuCommandSpec: Identifiable {
+    let action: UICommand
+    let title: String
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+    var id: UICommand { action }
+
+    // "⌘N" / "⌥⌘I" style label for the palette; the menu bar renders its own
+    // shortcut glyph from key/modifiers via .keyboardShortcut().
+    var shortcutDisplay: String {
+        var s = ""
+        if modifiers.contains(.control) { s += "⌃" }
+        if modifiers.contains(.option) { s += "⌥" }
+        if modifiers.contains(.shift) { s += "⇧" }
+        if modifiers.contains(.command) { s += "⌘" }
+        return s + String(key.character).uppercased()
+    }
+
+    static let all: [MenuCommandSpec] = [
+        MenuCommandSpec(action: .newChat, title: "New App", key: "n", modifiers: .command),
+        MenuCommandSpec(action: .toggleInspector, title: "Toggle Inspector",
+                         key: "i", modifiers: [.option, .command]),
+        MenuCommandSpec(action: .focusSearch, title: "Find Project", key: "f", modifiers: .command),
+        MenuCommandSpec(action: .runSelected, title: "Run Selected Project",
+                         key: "r", modifiers: .command),
+        MenuCommandSpec(action: .toggleLog, title: "Toggle Run Log", key: "l", modifiers: .command),
+    ]
+
+    static func spec(for action: UICommand) -> MenuCommandSpec {
+        guard let s = all.first(where: { $0.action == action }) else {
+            fatalError("MenuCommandSpec.spec(for:) called with an action not in .all: \(action)")
+        }
+        return s
+    }
 }
 
 // Reads everything the orchestrator writes to disk and republishes it on a
@@ -458,15 +501,49 @@ final class OrchestratorStore: ObservableObject {
     @Published var projects: [Project] = []
     @Published var orchestratorRunning = false
     @Published var runLog: String = ""   // tail of the most recent action's output
+    // A failed action's message, shown as a dismissible top banner so errors
+    // don't hide in the ⌘L-collapsed run log. Set via surfaceError().
+    @Published var lastError: String?
+
+    /// Report a user-facing error both in the run log and as a banner.
+    func surfaceError(_ msg: String) {
+        let (logLine, banner) = OrchestratorStore.formatSurfacedError(msg)
+        runLog += logLine
+        lastError = banner
+    }
+
+    // Pure formatting split out of surfaceError() so it's unit-testable
+    // without a live store instance: (line appended to runLog, banner text).
+    // nonisolated: touches no actor state, and XCTest calls it synchronously
+    // from a nonisolated context.
+    nonisolated static func formatSurfacedError(_ msg: String) -> (logLine: String, banner: String) {
+        let logLine = msg.hasSuffix("\n") ? msg : msg + "\n"
+        let banner = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (logLine, banner)
+    }
     // Run queue: projects waiting to run one at a time (FIFO). advanceQueueIfIdle()
     // launches the next as soon as nothing is running.
     @Published var runQueue: [String] = []
+    // Pause/resume the engine (design §3 toolbar): when paused, queued projects
+    // are NOT auto-launched. In-flight runs are left alone — pause holds the
+    // queue, it doesn't kill work. Persisted (UserDefaults, matching
+    // workspaceRoot's pattern) so a user who paused and quit isn't silently
+    // un-paused on next launch with no indication anything changed.
+    @Published var enginePaused = UserDefaults.standard.bool(forKey: "enginePaused") {
+        didSet { UserDefaults.standard.set(enginePaused, forKey: "enginePaused") }
+    }
     // Menu-bar command relay (⌘N/⌘R/⌘L) — ContentView observes and handles.
     @Published var uiCommand: UICommand?
+    // ⌘K command palette overlay (design §3/§8). Commands chosen in it are
+    // dispatched through uiCommand, so there's one command path.
+    @Published var showCommandPalette = false
     private var launchingName: String?      // just-launched, not yet seen as running
     private var launchingAt: Date?
+    // Pre-refresh seed must match the engine default (local model OFF) so the
+    // first render doesn't briefly show Ollama enabled; refresh() then loads the
+    // real config value.
     @Published var enabledAgents: [String: Bool] = ["codex": true, "claude": true,
-                                                    "gemini": true, "ollama": true]
+                                                    "gemini": true, "ollama": false]
     @Published var agentModels: [String: String] = [:]   // provider -> chosen model
     @Published var agentEfforts: [String: String] = [:]  // provider -> reasoning effort
     @Published var customModelPresets: [String: [String]] = [:] // provider -> user-added menu options
@@ -654,15 +731,28 @@ final class OrchestratorStore: ObservableObject {
 
     // First launch on a machine that never ran the engine: materialize the
     // built-in workflow JSON files so the picker/editors have something to show.
+    // The python seed is spawned and waited on OFF the main thread — doing it
+    // inline (as before) froze the whole UI on first launch until it finished.
     private func seedWorkflowsIfMissing() {
         guard engineAvailable, !fm.fileExists(atPath: workflowsDirURL.path) else { return }
+        // Capture main-actor state here, run the blocking Process on a utility
+        // queue, then refresh back on the main actor so the seeded workflows show.
         let py = resolvePython()
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: py)
-        proc.arguments = [orchDirURL.appendingPathComponent("orchestrator.py").path, "--seed"]
-        proc.currentDirectoryURL = rootURL
-        try? proc.run()
-        proc.waitUntilExit()
+        let scriptPath = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let cwd = rootURL
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.arguments = [scriptPath, "--seed"]
+            proc.currentDirectoryURL = cwd
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                return
+            }
+            Task { @MainActor in self?.refresh() }
+        }
     }
 
     deinit { timer?.invalidate() }
@@ -788,16 +878,42 @@ final class OrchestratorStore: ObservableObject {
 
     private var configURL: URL { orchDirURL.appendingPathComponent("config.yaml") }
 
-    func setAgentEnabled(_ agent: String, _ on: Bool) {
-        guard var text = try? String(contentsOf: configURL, encoding: .utf8) else { return }
-        let pattern = "(\(agent)_enabled:\\s*)(true|false)"
-        if let re = try? NSRegularExpression(pattern: pattern) {
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            text = re.stringByReplacingMatches(in: text, range: range,
-                                               withTemplate: "$1\(on ? "true" : "false")")
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+    /// Persist updated config.yaml text. On failure the error is surfaced in the
+    /// run log instead of being swallowed by `try?`, and false is returned so
+    /// callers skip the matching @Published update — otherwise the UI would show
+    /// a setting that never reached disk. Returns true on a successful write.
+    @discardableResult
+    private func writeConfig(_ text: String) -> Bool {
+        do {
+            try text.write(to: configURL, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            surfaceError("Failed to save settings to \(configURL.lastPathComponent): "
+                + error.localizedDescription)
+            return false
         }
-        enabledAgents[agent] = on
+    }
+
+    func setAgentEnabled(_ agent: String, _ on: Bool) {
+        guard var text = try? String(contentsOf: configURL, encoding: .utf8) else {
+            surfaceError("Could not read \(configURL.lastPathComponent) to update \(agent).")
+            return
+        }
+        let pattern = "(\(agent)_enabled:\\s*)(true|false)"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        // No match means the key doesn't exist in config.yaml — surface that
+        // instead of silently no-op'ing, matching the read/write-failure siblings.
+        guard re.firstMatch(in: text, range: range) != nil else {
+            surfaceError("Could not find \(agent)_enabled in \(configURL.lastPathComponent).")
+            return
+        }
+        text = re.stringByReplacingMatches(in: text, range: range,
+                                           withTemplate: "$1\(on ? "true" : "false")")
+        // Only reflect the toggle in the UI if the write actually landed.
+        if writeConfig(text) {
+            enabledAgents[agent] = on
+        }
     }
 
     // MARK: - macOS notifications (run finished / needs approval / failed)
@@ -1058,10 +1174,14 @@ final class OrchestratorStore: ObservableObject {
             runInTerminal("ollama pull \(id)")
             return
         }
+        guard let pullURL = URL(string: "http://127.0.0.1:11434/api/pull") else {
+            runInTerminal("ollama pull \(id)")
+            return
+        }
         pullProgress[id] = -1
         Task { [weak self] in
             do {
-                var req = URLRequest(url: URL(string: "http://127.0.0.1:11434/api/pull")!)
+                var req = URLRequest(url: pullURL)
                 req.httpMethod = "POST"
                 req.httpBody = try JSONSerialization.data(withJSONObject: ["name": id])
                 req.timeoutInterval = 3600
@@ -1163,7 +1283,7 @@ final class OrchestratorStore: ObservableObject {
                 text.insert(contentsOf: "  ollama_roster: \"\(value)\"\n",
                             at: modelsRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
         objectWillChange.send()
     }
@@ -1315,11 +1435,37 @@ final class OrchestratorStore: ObservableObject {
         return v.isEmpty ? nil : String(v.prefix(60))
     }
 
+    // PATH plus the common install locations a Finder-launched app (which
+    // inherits a minimal PATH) would otherwise miss: Homebrew, /usr/local,
+    // user-local, and the per-tool bins these CLIs ship into (npm global, codex,
+    // bun, cargo). Shared by detectCLIs / ollamaOnPath so both look in one place.
+    // nonisolated: called from the background refresh queue (detectCLIs) and
+    // from tests; it touches no store state.
+    nonisolated static func cliSearchDirs() -> [String] {
+        let home = NSHomeDirectory()
+        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+                     "\(home)/.local/bin", "\(home)/.codex/bin",
+                     "\(home)/.npm-global/bin", "\(home)/.bun/bin",
+                     "\(home)/.cargo/bin"]
+        let fromPath = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+        // Drop empties (a leading/trailing/doubled ":" in PATH would otherwise
+        // resolve to the process's own cwd) and de-duplicate while preserving
+        // order, so detectCLIs()/ollamaOnPath() don't repeat the same stat
+        // calls for a directory listed in both PATH and the extras above.
+        var seen = Set<String>()
+        var out: [String] = []
+        for dir in fromPath + extra where !dir.isEmpty && !seen.contains(dir) {
+            seen.insert(dir)
+            out.append(dir)
+        }
+        return out
+    }
+
     func ollamaOnPath() -> Bool {
-        let dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map(String.init)
-            + ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "\(NSHomeDirectory())/.local/bin"]
-        return dirs.contains { fm.isExecutableFile(atPath: ($0 as NSString).appendingPathComponent("ollama")) }
+        return OrchestratorStore.cliSearchDirs().contains {
+            fm.isExecutableFile(atPath: ($0 as NSString).appendingPathComponent("ollama"))
+        }
     }
 
     // Open Terminal running a fixed command (install/pull). No user free-text reaches
@@ -1334,7 +1480,12 @@ final class OrchestratorStore: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         p.arguments = ["-e", script]
-        try? p.run()
+        do {
+            try p.run()
+        } catch {
+            surfaceError("Could not open Terminal for `\(command)`: "
+                + error.localizedDescription)
+        }
     }
 
     // MARK: - Global worker cap toggle (config.yaml)
@@ -1351,7 +1502,7 @@ final class OrchestratorStore: ObservableObject {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             text = re.stringByReplacingMatches(in: text, range: range,
                                                withTemplate: "$1\(on ? "true" : "false")")
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
     }
 
@@ -1383,7 +1534,7 @@ final class OrchestratorStore: ObservableObject {
             } else if let runtimeRange = text.range(of: "runtime:\\n") {
                 text.insert(contentsOf: "  \(key): \(v)\n", at: runtimeRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
     }
 
@@ -1399,7 +1550,7 @@ final class OrchestratorStore: ObservableObject {
                 text.insert(contentsOf: "  \(key): \(value ? "true" : "false")\n",
                             at: runtimeRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            writeConfig(text)
         }
     }
 
@@ -1546,7 +1697,11 @@ final class OrchestratorStore: ObservableObject {
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !lines.isEmpty else { return }
         let url = rootURL.appendingPathComponent(name).appendingPathComponent("target_path.txt")
-        try? (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            surfaceError("Could not save target paths for \(name): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Per-project run config (autonomy / completeness / stop target)
@@ -1648,9 +1803,10 @@ final class OrchestratorStore: ObservableObject {
                 // insert it under models: so the edit still lands.
                 text.insert(contentsOf: "  \(key): \"\(value)\"\n", at: modelsRange.upperBound)
             }
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            if writeConfig(text) {
+                agentEfforts[agent] = value
+            }
         }
-        agentEfforts[agent] = value
     }
 
     func setModel(_ agent: String, _ value: String) {
@@ -1662,9 +1818,10 @@ final class OrchestratorStore: ObservableObject {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             let escaped = NSRegularExpression.escapedTemplate(for: "\"\(v)\"")
             text = re.stringByReplacingMatches(in: text, range: range, withTemplate: "$1\(escaped)")
-            try? text.write(to: configURL, atomically: true, encoding: .utf8)
+            if writeConfig(text) {
+                agentModels[agent] = v
+            }
         }
-        agentModels[agent] = v
     }
 
     private func discoverApps() -> [String] {
@@ -1986,7 +2143,13 @@ final class OrchestratorStore: ObservableObject {
         let url = inboxURL(project)
         var existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         if !existing.isEmpty && !existing.hasSuffix("\n") { existing += "\n" }
-        try? (existing + msg + "\n").write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try (existing + msg + "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            // Don't silently drop the user's message — tell them it didn't queue.
+            surfaceError("Could not queue your message for \(project.name): "
+                + error.localizedDescription)
+        }
         refresh()
     }
 
@@ -2183,7 +2346,9 @@ final class OrchestratorStore: ObservableObject {
         }
     }
 
-    static func slugify(_ s: String) -> String {
+    // nonisolated: pure string transform, exercised synchronously by
+    // SlugifyTests from a nonisolated XCTest context.
+    nonisolated static func slugify(_ s: String) -> String {
         var out = ""
         var prevDash = false
         for ch in s.lowercased() {
@@ -2239,10 +2404,17 @@ final class OrchestratorStore: ObservableObject {
             let stale = Date().timeIntervalSince(launchingAt ?? Date()) > 20
             if running || stale { launchingName = nil }
         }
+        // Paused: hold the queue (don't auto-launch the next project).
+        if enginePaused { return }
         if !orchestratorRunning && launchingName == nil, let next = runQueue.first {
             runQueue.removeFirst()
             launchQueued(next)
         }
+    }
+
+    func toggleEnginePaused() {
+        enginePaused.toggle()
+        if !enginePaused { advanceQueueIfIdle() }   // resume: pick up where we left off
     }
 
     func runProject(_ name: String) {
@@ -2302,7 +2474,16 @@ final class OrchestratorStore: ObservableObject {
                 let ownedByStopped = ownerPid == pid
                 let ownerAlive = ownerPid.map { kill($0, 0) == 0 } ?? false
                 if ownedByStopped || !ownerAlive {
-                    try? self.fm.removeItem(at: lockURL)
+                    do {
+                        try self.fm.removeItem(at: lockURL)
+                    } catch {
+                        // A lock we can't clear leaves the lane looking "running"
+                        // forever — surface it (skip the benign already-gone case).
+                        if self.fm.fileExists(atPath: lockURL.path) {
+                            self.surfaceError("Could not clear stale lock for \(name) at "
+                                + "\(lockURL.path): \(error.localizedDescription)")
+                        }
+                    }
                 }
             }
             self.refresh()
@@ -2368,8 +2549,20 @@ final class OrchestratorStore: ObservableObject {
     }
 
     private func resolvePython() -> String {
-        for p in ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]
-        where fm.isExecutableFile(atPath: p) { return p }
+        // Common install locations first (a Finder-launched app inherits a
+        // minimal PATH), THEN whatever is actually on PATH — the old version
+        // hardcoded three dirs and blindly returned /usr/bin/python3 even when
+        // it didn't exist, aborting every launch.
+        var dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+        if let path = ProcessInfo.processInfo.environment["PATH"] {
+            dirs += path.split(separator: ":").map(String.init)
+        }
+        for dir in dirs {
+            for name in ["python3", "python"] {
+                let p = (dir as NSString).appendingPathComponent(name)
+                if fm.isExecutableFile(atPath: p) { return p }
+            }
+        }
         return "/usr/bin/python3"
     }
 
@@ -2461,6 +2654,19 @@ final class OrchestratorStore: ObservableObject {
     // their own sessions; SIGKILL after 5s), then clear the lock so the lane
     // frees. Deliberately NOT killpg: a shepherd-launched run shares its
     // process group with shepherd.sh and every other lane.
+    // Remove a run lock, surfacing failure (a lock we can't delete keeps the
+    // lane pinned "running"). Silent on the benign already-gone case.
+    private func clearLockFile(_ url: URL, _ name: String) {
+        do {
+            try fm.removeItem(at: url)
+        } catch {
+            if fm.fileExists(atPath: url.path) {
+                surfaceError("Could not clear the run lock for \(name) at \(url.path): "
+                    + error.localizedDescription)
+            }
+        }
+    }
+
     func stopRun(_ name: String) {
         if canStop(name) {
             stopProject(name)
@@ -2469,7 +2675,7 @@ final class OrchestratorStore: ObservableObject {
         let lockURL = rootURL.appendingPathComponent(".orch-locks/\(name).lock")
         manualStops[name] = Date()
         guard let pid = appLocks[name]?.pid, pid > 0 else {
-            try? fm.removeItem(at: lockURL)
+            clearLockFile(lockURL, name)
             refresh()
             return
         }
@@ -2482,7 +2688,7 @@ final class OrchestratorStore: ObservableObject {
                 kill(pid, SIGKILL)
                 self.runLog += "\(name) didn't exit within 5s — killed.\n"
             }
-            try? self.fm.removeItem(at: lockURL)
+            self.clearLockFile(lockURL, name)
             self.refresh()
         }
         refresh()

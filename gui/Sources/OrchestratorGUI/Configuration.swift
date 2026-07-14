@@ -21,9 +21,11 @@ struct AgentModelRow: View {
                 .toggleStyle(.switch)
                 Spacer()
                 if store.cliAvailable[agent] ?? false {
-                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.system(size: 11))
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(DS.status.success.color).font(DS.font.caption)
                 } else {
-                    Text("CLI not found").font(.system(size: 10)).foregroundStyle(.orange)
+                    Text("CLI not found").font(DS.font.caption)
+                        .foregroundStyle(DS.status.warning.color)
                 }
             }
             HStack(spacing: 6) {
@@ -136,7 +138,7 @@ struct SubAgentsEditor: View {
                                 TextField("Name", text: $role.name).textFieldStyle(.roundedBorder)
                                 TextField("Focus — what this role cares about", text: $role.focus)
                                     .textFieldStyle(.roundedBorder)
-                                    .font(.system(size: 11))
+                                    .font(DS.font.caption)
                             }
                         }
                     }
@@ -152,7 +154,7 @@ struct SubAgentsEditor: View {
                                 TextField("Name (e.g. the Skeptic)", text: $p.name).textFieldStyle(.roundedBorder)
                                 TextField("Style — how this voice argues", text: $p.style)
                                     .textFieldStyle(.roundedBorder)
-                                    .font(.system(size: 11))
+                                    .font(DS.font.caption)
                             }
                         }
                     }
@@ -214,7 +216,7 @@ struct SubAgentsEditor: View {
                                               @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(title).font(.system(size: 13, weight: .medium))
+                Text(title).font(DS.font.headline)
                 Spacer()
                 Button(action: onAdd) { Label(addLabel, systemImage: "plus") }
                     .font(.caption)
@@ -228,7 +230,7 @@ struct SubAgentsEditor: View {
                                         @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) { content() }
-            Button(action: onDelete) { Image(systemName: "trash").font(.system(size: 11)) }
+            Button(action: onDelete) { Image(systemName: "trash").font(DS.font.caption) }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
         }
         .padding(8)
@@ -258,10 +260,10 @@ struct RoundsEditor: View {
                 ForEach(store.workflows) { w in Text(w.title).tag(w.name) }
             }
             .pickerStyle(.menu)
-            .onChange(of: selected) { _ in loadRounds() }
+            .onChange(of: selected) { loadRounds() }
 
             if let wf = wf, !wf.description.isEmpty {
-                Text(wf.description).font(.system(size: 11)).foregroundStyle(.tertiary)
+                Text(wf.description).font(DS.font.caption).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -272,12 +274,12 @@ struct RoundsEditor: View {
                     ForEach(wf?.phases ?? []) { phase in
                         HStack(spacing: 10) {
                             Image(systemName: phase.writes ? "hammer" : "circle")
-                                .font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 14)
+                                .font(DS.font.caption).foregroundStyle(.secondary).frame(width: 14)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(phase.title).font(.system(size: 12, weight: .medium))
+                                Text(phase.title).font(DS.font.callout)
                                 if !phase.roles.isEmpty {
                                     Text(phase.roles.joined(separator: " · "))
-                                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                                        .font(DS.font.caption).foregroundStyle(.tertiary)
                                 }
                             }
                             Spacer()
@@ -295,7 +297,7 @@ struct RoundsEditor: View {
 
                                 if (rounds[phase.key] ?? phase.rounds) == 0 {
                                     Text("∞")
-                                        .font(.system(size: 12, design: .monospaced))
+                                        .font(DS.font.monoInline)
                                         .foregroundStyle(.secondary)
                                         .frame(width: 82, alignment: .trailing)
                                 } else {
@@ -314,7 +316,7 @@ struct RoundsEditor: View {
                                         }
                                     ))
                                     .textFieldStyle(.roundedBorder)
-                                    .font(.system(size: 12, design: .monospaced))
+                                    .font(DS.font.monoInline)
                                     .multilineTextAlignment(.trailing)
                                     .frame(width: 82)
                                     .help("Enter 1–120, 0, ∞, or infinite")
@@ -466,8 +468,9 @@ struct LocalModelSettings: View {
                 Spacer()
                 if let i = info {
                     Text(i.serverRunning ? "server running" : "server not running")
-                        .font(.system(size: 10))
-                        .foregroundStyle(i.serverRunning ? Color.green : Color.orange)
+                        .font(DS.font.caption)
+                        .foregroundStyle(i.serverRunning ? DS.status.success.color
+                                                         : DS.status.warning.color)
                     if ollama && !i.serverRunning {
                         Button("Start") { store.startOllamaServer() }
                             .font(.caption)
@@ -556,12 +559,13 @@ struct LocalModelSettings: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Select \(m.id) as the local model")
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(m.id).font(.system(size: 12, design: .monospaced))
-                        Text(m.label).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(m.id).font(DS.font.monoInline)
+                        Text(m.label).font(DS.font.caption).foregroundStyle(.secondary)
                         HStack(spacing: 8) {
                             if !m.license.isEmpty {
                                 Label(m.license, systemImage: m.commercialUse ? "checkmark.shield" : "exclamationmark.triangle")
-                                    .foregroundStyle(m.commercialUse ? Color.green : Color.orange)
+                                    .foregroundStyle(m.commercialUse ? DS.status.success.color
+                                                                     : DS.status.warning.color)
                             }
                             if let min = m.minRAMGB {
                                 Text("min \(min)GB RAM")
@@ -578,10 +582,10 @@ struct LocalModelSettings: View {
                             Text(m.fitLabel(totalRAMGB: store.systemMemoryGB))
                                 .foregroundStyle(fitColor(m.fitLabel(totalRAMGB: store.systemMemoryGB)))
                         }
-                        .font(.system(size: 9))
+                        .font(DS.font.caption2)
                         .foregroundStyle(.tertiary)
                         if !m.notes.isEmpty {
-                            Text(m.notes).font(.system(size: 9)).foregroundStyle(.tertiary)
+                            Text(m.notes).font(DS.font.caption2).foregroundStyle(.tertiary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -591,7 +595,7 @@ struct LocalModelSettings: View {
                             ProgressView().controlSize(.small)
                         } else {
                             ProgressView(value: p).frame(width: 80)
-                            Text("\(Int(p * 100))%").font(.system(size: 9)).monospacedDigit()
+                            Text("\(Int(p * 100))%").font(DS.font.caption2).monospacedDigit()
                                 .foregroundStyle(.secondary)
                         }
                     } else if m.installed {
@@ -599,10 +603,10 @@ struct LocalModelSettings: View {
                             get: { store.readLocalRoster().contains(m.id) },
                             set: { store.setRosterMembership(m.id, $0) }
                         ))
-                        .toggleStyle(.checkbox).font(.system(size: 10))
+                        .toggleStyle(.checkbox).font(DS.font.caption2)
                         .help("Include this model as an extra participant in runs (models.ollama_roster)")
                         Label("installed", systemImage: "checkmark.seal.fill")
-                            .font(.system(size: 10)).foregroundStyle(.green)
+                            .font(DS.font.caption2).foregroundStyle(DS.status.success.color)
                             .labelStyle(.titleAndIcon)
                         Button {
                             store.deleteLocalModel(m.id)
@@ -613,7 +617,8 @@ struct LocalModelSettings: View {
                         .help("Delete this local model with ollama rm")
                         .accessibilityLabel("Delete \(m.id)")
                     } else {
-                        Text("needs pull").font(.system(size: 10)).foregroundStyle(.orange)
+                        Text("needs pull").font(DS.font.caption2)
+                            .foregroundStyle(DS.status.warning.color)
                         Button("Pull") { store.pullModelInApp(m.id) }
                             .font(.caption).disabled(!(store.cliAvailable["ollama"] ?? false))
                     }
@@ -622,7 +627,7 @@ struct LocalModelSettings: View {
             }
             if !selected.isEmpty, let i = info, i.selected == selected, !i.selectedInstalled {
                 Text("\(selected) is selected but not pulled yet — pull it before running.")
-                    .font(.caption2).foregroundStyle(.orange)
+                    .font(.caption2).foregroundStyle(DS.status.warning.color)
             }
 
             Divider()
@@ -637,9 +642,9 @@ struct LocalModelSettings: View {
     }
 
     private func fitColor(_ label: String) -> Color {
-        if label == "good fit" { return .green }
-        if label == "tight fit" { return .orange }
-        if label == "too large" { return .red }
+        if label == "good fit" { return DS.status.success.color }
+        if label == "tight fit" { return DS.status.warning.color }
+        if label == "too large" { return DS.status.error.color }
         return .secondary
     }
 }
@@ -673,20 +678,20 @@ struct UsageSheet: View {
                     Divider()
                     ForEach(usage.rows, id: \.project) { row in
                         GridRow {
-                            Text(row.project).font(.system(size: 12))
+                            Text(row.project).font(DS.font.body)
                             ForEach(agents, id: \.self) { a in
-                                Text("\(row.byAgent[a] ?? 0)").font(.system(size: 12, design: .monospaced))
+                                Text("\(row.byAgent[a] ?? 0)").font(DS.font.monoInline)
                             }
-                            Text("\(row.total)").font(.system(size: 12, weight: .medium, design: .monospaced))
+                            Text("\(row.total)").font(DS.font.monoInline)
                         }
                     }
                     Divider()
                     GridRow {
-                        Text("All").font(.system(size: 12, weight: .medium))
+                        Text("All").font(DS.font.callout)
                         ForEach(agents, id: \.self) { a in
-                            Text("\(usage.agentTotals[a] ?? 0)").font(.system(size: 12, design: .monospaced))
+                            Text("\(usage.agentTotals[a] ?? 0)").font(DS.font.monoInline)
                         }
-                        Text("\(usage.grandTotal)").font(.system(size: 12, weight: .medium, design: .monospaced))
+                        Text("\(usage.grandTotal)").font(DS.font.monoInline)
                     }
                 }
             }
@@ -887,7 +892,8 @@ struct EngineSettings: View {
                         }
                 } else {
                     Text("Disabled. A provider can run silently until its overall timeout, or forever if timeout is also unlimited.")
-                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        .font(.caption).foregroundStyle(DS.status.warning.color)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 

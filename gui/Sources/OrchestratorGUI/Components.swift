@@ -1,47 +1,9 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Legacy dark tokens (WorkflowBuilder sheet only)
-//
-// The factory dashboard these tokens skinned was deleted in M5 (§9). The
-// workflow-builder sheet still renders in this dark mono style, so the tokens
-// survive until that sheet is restyled onto the DS ramp — nothing else may
-// adopt them.
-struct ThemeTokens {
-    static let bg = Color(hex: 0x0D1117)            // window background
-    static let card = Color(hex: 0x161B22)          // cards / selected rows
-    static let borderSubtle = Color(hex: 0x21262D)  // hairline separators
-    static let borderStrong = Color(hex: 0x30363D)  // control borders
-    static let well = Color(hex: 0x010409)          // terminal well
-    static let accent = Color(hex: 0x9FEF00)        // lime
-    static let accentOn = Color(hex: 0x0D1117)      // text on lime
-    static let ok = Color(hex: 0x3FB950)
-    static let fail = Color(hex: 0xF85149)
-    static let text = Color(hex: 0xE6EDF3)
-    static let muted = Color(hex: 0x7D8590)
-    static let dim = Color(hex: 0x484F58)
-    static let toggleOn = Color(hex: 0x238636)
-
-    // Status glyphs — always paired with color, never color alone.
-    static let glyphRunning = "●"
-    static let glyphDone = "✓"
-    static let glyphFailed = "✗"
-    static let glyphQueued = "◌"
-
-    static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
-    }
-}
-
-private extension Color {
-    init(hex: UInt32) {
-        self.init(.sRGB,
-                  red: Double((hex >> 16) & 0xFF) / 255,
-                  green: Double((hex >> 8) & 0xFF) / 255,
-                  blue: Double(hex & 0xFF) / 255,
-                  opacity: 1)
-    }
-}
+// The legacy GitHub-dark tokens (the deleted factory dashboard's skin, last
+// hosted here for the WorkflowBuilder sheet) are gone — DESIGN-REFRESH.md
+// tranche 2. ThemeTokens.swift's DS is the only token source.
 
 // A small pulsing dot used for "live / thinking" affordances. Purely decorative
 // for assistive tech — the surrounding view supplies a textual status.
@@ -99,8 +61,8 @@ struct RunLogPanel: View {
                 )
             Divider()
             HStack(spacing: 8) {
-                Image(systemName: "terminal").font(.system(size: 11)).foregroundStyle(.secondary)
-                Text("Run log").font(.system(size: 12, weight: .medium))
+                Image(systemName: "terminal").font(DS.font.caption).foregroundStyle(.secondary)
+                Text("Run log").font(DS.font.callout)
                 if store.orchestratorRunning {
                     PulseDot(color: DS.accent.color)
                     Text("running").font(.caption).foregroundStyle(.secondary)
@@ -139,7 +101,7 @@ struct RunLogPanel: View {
                         .padding(10)
                         .id("logEnd")
                 }
-                .onChange(of: store.runLog) { _ in
+                .onChange(of: store.runLog) {
                     withAnimation { proxy.scrollTo("logEnd", anchor: .bottom) }
                 }
             }

@@ -9,25 +9,17 @@ import orchestrator as orch
 class TestLockHandling(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self._orig_lock_path = orch.LOCK_PATH
         self._orig_locks_dir = orch.LOCKS_DIR
         self._orig_pid_alive = orch._pid_alive
         self._orig_held = set(orch._HELD_LOCKS)
 
-        orch.LOCK_PATH = os.path.join(self.tmp, "orch.lock")
         orch.LOCKS_DIR = os.path.join(self.tmp, "locks")
 
     def tearDown(self):
         orch._pid_alive = self._orig_pid_alive
-        temp_lock_path = orch.LOCK_PATH
-        orch.LOCK_PATH = self._orig_lock_path
         orch.LOCKS_DIR = self._orig_locks_dir
         orch._HELD_LOCKS.clear()
         orch._HELD_LOCKS.update(self._orig_held)
-        try:
-            os.remove(temp_lock_path)
-        except OSError:
-            pass
         lock_file = os.path.join(self.tmp, "locks")
         if os.path.isdir(lock_file):
             for name in os.listdir(lock_file):
@@ -47,21 +39,8 @@ class TestLockHandling(unittest.TestCase):
         old = time.time() - age_seconds
         os.utime(path, (old, old))
 
-    def test_global_lock_reclaims_dead_owner(self):
-        self._write_lock(orch.LOCK_PATH, pid=999999, age_seconds=10)
-        orch._pid_alive = lambda _pid: False
-        got = orch.acquire_lock(stale_seconds=3600)
-        self.assertTrue(got)
-        with open(orch.LOCK_PATH, encoding="utf-8") as fh:
-            content = fh.read()
-        self.assertIn("pid=%d" % os.getpid(), content)
-        orch.release_lock()
-
-    def test_global_lock_blocks_live_owner(self):
-        self._write_lock(orch.LOCK_PATH, pid=999998, age_seconds=10)
-        orch._pid_alive = lambda _pid: True
-        got = orch.acquire_lock(stale_seconds=3600)
-        self.assertFalse(got)
+    # (The legacy machine-wide global lock — acquire_lock/release_lock/LOCK_PATH —
+    # was removed; locking is per-app. Those tests were removed with it.)
 
     def test_app_lock_reclaims_dead_owner(self):
         p = os.path.join(orch.LOCKS_DIR, "app-a.lock")

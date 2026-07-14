@@ -1,5 +1,7 @@
 # Autonomous Multi-Agent Orchestrator (V2 engine)
 
+[![CI](https://github.com/pri8771/orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/pri8771/orchestrator/actions/workflows/ci.yml)
+
 A local, **no-extra-API-cost** engine that makes the AI CLIs you're **already
 logged into** — **Codex**, **Claude** (Claude Code), and **Gemini/Antigravity**,
 optionally joined by a **local Ollama model** — debate to consensus and then
@@ -10,10 +12,14 @@ the same debate → consensus → forced-vote → (optional) build machinery can
 an app, answer a question, research a topic, audit a codebase, or productionize
 a prototype — you pick the workflow.
 
-- **Engine:** `<repo>/orchestrator-v2-source/` (this directory).
-- **Workspace (projects):** `/Users/pchordia/Documents/iOS-App-Factory/`.
-  Every direct child folder is one project. Override per run with `--root PATH`
-  or the `ORCH_ROOT` env var.
+- **Engine:** this repository (stdlib Python at the repo root).
+- **Workspace (projects):** `~/Documents/iOS-App-Factory/` by default. Every
+  direct child folder is one project. Override per run with `--root PATH` or the
+  `ORCH_ROOT` env var (or `root:` in `config.yaml`).
+- **Platform:** the engine runs on POSIX (macOS/Linux; process-group control and
+  the file locks are Unix APIs). The **GUI**, the **iOS build/verify**
+  (`xcodebuild`, simulator, code-signing), and `install_launch_agent.sh` are
+  **macOS-only**; on Linux use the CLI and schedule `run.sh` with cron/systemd.
 - **Dependencies:** Python 3 standard library only. No API keys — `run.sh` and
   the GUI strip `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` /
   `GOOGLE_API_KEY` (and related vars) before launching, so every call counts
@@ -27,13 +33,11 @@ a prototype — you pick the workflow.
 ## How to run
 
 ```bash
-# GUI (recommended): from the repo root — builds the SwiftUI app and points it
-# at /Users/pchordia/Documents/iOS-App-Factory.
-bash run-orchestrator.sh
+# GUI (recommended, macOS): build the SwiftUI app from source and launch it.
+# Defaults the workspace to ~/Documents/iOS-App-Factory (override with ORCH_ROOT).
+bash gui/run_gui.sh
 
-# CLI: from this directory. The default root is already
-# /Users/pchordia/Documents/iOS-App-Factory.
-cd orchestrator-v2-source
+# CLI: from the repo root. The default root is ~/Documents/iOS-App-Factory.
 python3 orchestrator.py --doctor            # environment preflight
 python3 orchestrator.py --doctor --json     # machine-readable preflight (§27)
 python3 orchestrator.py --app myapp         # process one project
@@ -49,7 +53,9 @@ bash run.sh --app myapp
 
 Full CLI surface (see `python3 orchestrator.py --help`): `--once` (default),
 `--watch SECONDS`, `--app NAME`, `--project SLUG` (alias of `--app`),
-`--root PATH`, `--resume SLUG`, `--doctor` (+ `--json`), `--seed`.
+`--root PATH`, `--resume SLUG`, `--doctor` (+ `--json`), `--mistakes`
+(+ `--app`/`--json`), `--postmortem` (requires `--app`, + `--json`),
+`--search-models QUERY`, `--seed`.
 
 **`--resume <slug>`** restarts an *existing* project from its saved
 `agent_state.json`. Unlike `--app`, it refuses to run when the project or its
@@ -60,15 +66,16 @@ re-enters instead of skipping.
 ### Tests and the verification gate
 
 ```bash
-cd orchestrator-v2-source
-python3 -m unittest discover -s tests                          # engine suite (191 tests)
+# From the repo root:
+python3 -m unittest discover -s tests                            # engine suite (700+ tests)
 python3 -W error::ResourceWarning -m unittest discover -s tests  # strict: warnings fail
 
-# Or from the repo root — the canonical gate (this repo has no git remote and
-# therefore no hosted CI; the Makefile is the gate):
-make verify        # = test-strict + gui-build + gui-test + doctor
-make app           # package gui/dist/Orchestrator.app
-make dmg           # package gui/dist/Orchestrator.dmg
+# Or via the Makefile — the canonical gate. `make verify` is the full macOS
+# gate; CI (.github/workflows) runs the engine subset on Linux.
+make test          # engine unittest suite
+make verify        # = test-strict + gui-build + gui-test + doctor (macOS)
+make app           # package gui/dist/Orchestrator.app (macOS)
+make dmg           # package gui/dist/Orchestrator.dmg (macOS)
 ```
 
 ### Scheduled runs
@@ -90,7 +97,7 @@ bash install_launch_agent.sh uninstall
 Each project starts as a single file:
 
 ```
-/Users/pchordia/Documents/iOS-App-Factory/<app_name>/initial_prompt/initial_prompt.md
+~/Documents/iOS-App-Factory/<app_name>/initial_prompt/initial_prompt.md
 ```
 
 When the orchestrator sees a **new or changed** `initial_prompt.md` (tracked by
@@ -106,8 +113,8 @@ a different temperament each phase. The pairing is deterministic (a resumed run
 reproduces it).
 
 **Knowledge.** For phases that benefit, the orchestrator scores the curated
-cheatsheets in `knowledge/<domain>/` (ios / backend / web) against the phase
-text and splices the top few into the agents' context.
+cheatsheets in `knowledge/<domain>/` (ios / backend / web / general) against
+the phase text and splices the top few into the agents' context.
 
 **Consensus / vote.** Each phase runs up to a configurable number of rounds. If
 the coordinator declares `CONSENSUS: YES`, the phase ends. Otherwise a **forced
@@ -178,17 +185,25 @@ Resolved in priority order:
 
 ### Built-in workflows
 
-| Name | Target | Phases |
-|---|---|---|
-| `app_build` | app | product_research → initial_discussion → next_steps_small → detailed_discussion → app_features → design_discussion → tech_specs → project_plan → task_assignments → **build_coordination** → final_review |
-| `sprint` | app | initial_discussion → design_discussion → tech_specs → **build_coordination** → final_review (time-budgeted) |
-| `vslice` | app | tech_specs → **build_coordination** → final_review (minimal, token-light) |
-| `iterate` | app | iterate_scope → **build_coordination** → final_review (feature/fix on an existing app) |
-| `answer_question` | answer | deliberation → answer |
-| `research` | research | gather → analyze → report |
-| `audit` | audit | recon → security → bugs → modernization → report (read-only over a target repo) |
-| `productionize` | productionize | assess_prototype → backend_design → infra_and_security → integration_plan → **build_backend** → production_review |
-| `library_mining` | library_mining | portfolio_recon → commonality_analysis → extraction_candidates |
+14 workflows ship (14 `workflows/*.json` files). Phase counts and the exact
+phase keys are authoritative in the JSON; the summaries below are a guide.
+
+| Name | Target | Phases | What it's for |
+|---|---|---|---|
+| `app_build` | app | 21 | The full production pipeline (prompt_contract → product_research → portfolio_selection → initial_discussion → per_app_product_brief → next_steps_small → detailed_discussion → app_features → design_discussion → design_handoff → ios_architecture_review → tech_specs → project_plan → task_assignments → implementation_readiness_gate → **build_coordination** → build_verification → human_qa_checklist → app_store_readiness → final_review → portfolio_audit) |
+| `full_max` | app | 21 | Same phases as `app_build`, discussion phases run at maximum effort |
+| `prototype` | app | 19 | `app_build` trimmed for a working prototype (no human-QA / app-store phases) |
+| `app_build_child` | app | 18 | `app_build` minus parent-scoped phases, for portfolio children |
+| `app_spec` | app_spec | 18 | Per-app specification pipeline for portfolio child projects (no build) |
+| `sprint` | app | 5 | Time-boxed build with a hard wall-clock ceiling |
+| `brainstorm` | app | 3 | Fast idea-shaping: prompt_contract → product_research → convergence |
+| `vslice` | app | 3 | Minimal end-to-end build to smoke-test the pipeline |
+| `iterate` | app | 3 | Add a feature / fix a bug on an existing app without rebuilding |
+| `audit` | audit | 5 | Read-only prioritized findings over a pre-existing codebase |
+| `productionize` | productionize | 6 | Turn a working prototype into something deployable (backend/infra) |
+| `research` | research | 3 | Gather → weigh evidence → report |
+| `answer_question` | answer | 2 | Point the agents at a question instead of an app |
+| `library_mining` | library_mining | 3 | Read-only: find shared/reusable patterns across several repos |
 
 Built-ins are seeded to `workflows/*.json` on first run (`--seed`) so you can
 edit them; a deleted file falls back to the built-in. On-disk JSON always wins —
@@ -226,8 +241,9 @@ error/conflict first.
 
 - Curated registry: `local_models.json` next to the engine
   (`qwen3-coder:30b`, `qwen2.5-coder:7b`, `deepseek-r1:8b`,
-  `deepseek-r1:14b`, `deepseek-v4-pro:latest`, `mistral:7b`). Pull one with
-  `ollama pull <id>` or from the GUI's Settings -> Local Models pane.
+  `deepseek-r1:14b`, `deepseek-r1:32b`, `qwen3:14b`, `glm4:9b`, `mistral:7b`).
+  Every id is a real `ollama pull <id>` target; pull from the CLI or the GUI's
+  Settings → Local Models pane.
 - Registry entries include license/commercial-use metadata and are tested to
   stay permissive for commercial use.
 - Enable with `models.ollama: "<id>"` **and** `agents.ollama_enabled: true` in
@@ -310,16 +326,17 @@ A missing toolchain leaves the build **unverified** — recorded honestly in
 ## File map
 
 ```
-orchestrator-v2-source/
+orchestrator/             # repo root (engine at top level)
 ├── orchestrator.py        # main engine (stdlib only): CLI, phases, build, resume
 ├── workflows.py           # pluggable workflow model + loader/seeder
-├── workflows/*.json       # editable workflow definitions (9 built-ins)
+├── workflows/*.json       # editable workflow definitions (14 built-ins)
+├── Makefile               # canonical gate: test / test-strict / verify / app / dmg
 ├── phase_rules.py / phase_rules.json   # editable per-phase quality playbooks
 ├── modelrouting.py / model_routing.json  # per-phase model routing + cloud→local fallback
 ├── localmodels.py / local_models.json    # Ollama detection, curated registry, HF search
 ├── roles.py / roles.json  # roles + rotating-personality assignment
 ├── knowledge.py           # keyword retrieval / RAG injection
-├── knowledge/{ios,backend,web}/*.md
+├── knowledge/{ios,backend,web,general}/*.md
 ├── verify.py              # compile/boot-the-build verification loop
 ├── docs.py                # deterministic per-project docs renderer (docs/)
 ├── schemas.py             # structured-block parsing + secret redaction
@@ -328,14 +345,18 @@ orchestrator-v2-source/
 ├── global_resource.py     # machine-wide worker cap (opt-in)
 ├── procutil.py            # hardened subprocess helpers
 ├── config.yaml            # root, models, agents, rounds, runtime, knowledge, ios
-├── run.sh                 # unset API keys → run with --root /Users/pchordia/Documents/iOS-App-Factory → git steps
+├── run.sh                 # unset API keys → run with --root $ORCH_ROOT (default ~/Documents/iOS-App-Factory) → git steps
 ├── install_launch_agent.sh
 ├── seed_demo.py / simulate_stream.py    # demo data / fake live transcript
-├── tests/                 # unittest suite (191 tests)
+├── events.py / mistakes.py / postmortem.py  # events.jsonl + mistakes.jsonl writers, --postmortem report
+├── AUDIT_HISTORY.md       # consolidated index of the five audit rounds (TASKS*.md)
+├── MISTAKES.md            # live failure-mode taxonomy + mistakes-ledger docs
+├── tests/                 # unittest suite (700+ tests)
 ├── gui/                   # native SwiftUI front-end (SwiftPM, zero deps) — see gui/README.md
-├── logs/                  # event log + per-call JSON records (gitignored)
-└── locks/                 # legacy lock dir — per-app run locks now live in <workspace>/.orch-locks/
+└── logs/                  # event log + per-call JSON records (gitignored)
 ```
+
+Per-app run locks live in `<workspace>/.orch-locks/`.
 
 The doctor (`python3 orchestrator.py --doctor`) is the fastest way to see what's
 wired up: CLIs found, resolved models, local-model status, workflows, roles,

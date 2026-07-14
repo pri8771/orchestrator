@@ -17,7 +17,7 @@ class TestBuildVerificationPhase(unittest.TestCase):
         self._orig_call_agent = orch.call_agent
         self._orig_available = orch._agent_available
 
-        orch._agent_available = lambda agent: True
+        orch._agent_available = lambda agent, cfg=None: True
 
         def fake_agent(_cfg, _app, _phase, _rnd, _agent, _prompt):
             return "We agree. CONSENSUS: YES\n## Final Output\nready to verify."

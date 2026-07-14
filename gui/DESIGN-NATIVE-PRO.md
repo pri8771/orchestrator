@@ -119,6 +119,8 @@ Leading: sidebar toggle. Principal: **Fleet Health capsule** + **Fallback bell**
 
 A floating overlay dispatching **through the existing `store.uiCommand` enum — one action layer, two invocation surfaces.** v1 scope: fuzzy project jump ("bri…" → Brinekeeper), parameterless verbs (Pause queue, Retry failed), and structured-argument verbs via picker steps ("Set lanes to…" → number row; "Apply preset…" → preset list; "Retry codex on…" → project list). No natural-language parsing — arguments are palette pages, which is buildable and faster anyway.
 
+**Shipped scope is narrower than the above.** `CommandPaletteView` (ContentView.swift) is a fixed, filterable list of the six menu-bar/toolbar parameterless verbs (New App, Run Selected Project, Pause/Resume Engine, Toggle Run Log, Toggle Inspector, Find Project) — no fuzzy project jump and no structured-argument verbs/picker steps. Those remain future work if the palette grows beyond command dispatch.
+
 ### Secondary surfaces
 
 - **New App intake** — sheet 560×620 (§4.5)
@@ -265,7 +267,7 @@ The grid IS `model_routing.json` — per-project file in the project dir, resolv
 
 ## 8. Migration Plan — six milestones, each independently shippable
 
-All GUI paths under `orchestrator-v2-source/gui/Sources/OrchestratorGUI/`. `OrchestratorStore.swift` (2,378 lines) remains the single ObservableObject throughout; new surfaces get lightweight derived models, never a store rewrite. Realistic total: **4–6 weeks part-time** (the judges rated 3 weeks as ~50% optimistic).
+All GUI paths under `gui/Sources/OrchestratorGUI/` (repo root). `OrchestratorStore.swift` (2,378 lines) remains the single ObservableObject throughout; new surfaces get lightweight derived models, never a store rewrite. Realistic total: **4–6 weeks part-time** (the judges rated 3 weeks as ~50% optimistic).
 
 **M0 — Tokens + guardrails (1–2 days, zero visual risk).** Create `ThemeTokens.swift` (`DS` enum: dynamic NSColor pairs from §2, spacing/radius scales, type ramp, `AgentIdentity` map with tint/symbol/effort-capability). Bump `Package.swift` platforms `.macOS(.v13)` → `.v14` (required for `.inspector`). Mechanically sweep the 27 `Color(red` sites (Models.swift ×18, ContentView.swift ×5, TranscriptView.swift ×3, Components.swift ×1) — both legacy UIs instantly share one palette with correct light/dark. Add the CI grep rejecting `Color(red:` and hardcoded font sizes outside `ThemeTokens.swift`. Build the component kit in `Components.swift` (or a `Components/` folder): StatusPill, AgentAvatar, EffortGauge, Sparkline, StatTile, Chip — pure views, `#Preview` in both schemes.
 

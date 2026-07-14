@@ -17,8 +17,9 @@
 # ============================================================================
 
 # Workspace root. Every direct child folder is one orchestrated project.
-# Override per-run with --root PATH or the ORCH_ROOT env var.
-root: "/Users/pchordia/Documents/iOS-App-Factory"
+# `~` is expanded, so this is portable across machines. Override per-run with
+# --root PATH or the ORCH_ROOT env var.
+root: "~/Documents/iOS-App-Factory"
 
 models:
   # Claude Code model (used with `claude -p --model <model>`)
@@ -31,6 +32,10 @@ models:
   gemini: "Gemini 3.5 Flash (High)"
   # Gemini CLI fallback model id (used with `gemini -m <id>`)
   gemini_fallback: "gemini-3.5-flash"
+  # Optional path to a file holding the Gemini API key for headless runs. Blank
+  # (the default) falls back to ~/.orchestrator/gemini_api_key. Keep the key file
+  # OUTSIDE this repo — secret-shaped names are gitignored and never committed.
+  gemini_api_key_file: ""
   # Optional stronger Claude model for the build INTEGRATOR turn only (the
   # quality chokepoint). Blank = same as models.claude.
   claude_integrator: ""
@@ -54,11 +59,11 @@ models:
   # Curated ids live in local_models.json next to the engine (e.g.
   # "qwen3-coder:30b", "devstral:24b", "qwen2.5-coder:7b"). Pull one first
   # with `ollama pull <id>`, then enable agents.ollama_enabled below.
-  ollama: "glm-5.2:latest"
+  ollama: "glm4:9b"
 
   # Optional local participant roster (comma- or semicolon-separated). Each
   # entry becomes a distinct local participant: local:qwen3-coder:30b,
-  # local:glm-5.2:latest, etc. Keep this enabled if you want 6-7+ total bots.
+  # local:glm4:9b, etc. Keep this enabled if you want 6-7+ total bots.
   # Coder-tier models first: they win the participant slots once pulled, so
   # code review/build fallbacks land on a real coding model (14B/16B) instead
   # of a 3-4B generalist. 48GB RAM handles both coders resident at once.
@@ -67,6 +72,34 @@ models:
   # win the slots first (in roster order), then not-yet-pulled ones. 0 = no
   # limit (every roster entry joins, today's behavior).
   local_active_limit: 3
+
+# Optional, OFF by default: per-model dollar-cost estimates surfaced in
+# `--postmortem`'s turn-telemetry section. This engine measures OUTPUT
+# length in CHARACTERS only (no tokenizer, no input/prompt char tracking
+# anywhere) — see postmortem.py's _telemetry docstring — so rates are named
+# and computed per 1000 output chars, never "per token", to stay honest
+# about what's actually measured.
+#
+# Leave `pricing` empty (the default) and --postmortem's output is
+# byte-for-byte identical to a build with no cost.pricing section at all —
+# this is a strictly additive, opt-in feature.
+#
+# To enable for a model, add an entry keyed by the exact model id used
+# elsewhere in this file (models.claude, models.codex, etc):
+#   cost:
+#     pricing:
+#       claude-sonnet-5:
+#         output_per_1k_chars: 0.006
+# `input_per_1k_chars` is accepted for forward-compatibility with a
+# possible future input-tracking feature but is NEVER used today.
+#
+# NOTE: this mini-YAML reader splits each line on its first ":", so a model
+# id that itself contains a colon (e.g. an Ollama tag like
+# "qwen2.5-coder:14b") cannot be used as a pricing key here — use a
+# config.json file instead (it takes precedence over config.yaml and is
+# parsed as real JSON, so colons in keys are unambiguous).
+cost:
+  pricing:
 
 agents:
   codex_enabled: true
@@ -109,6 +142,7 @@ rounds:
   # Build phase gets many iterations so the app can actually be finished; it ends
   # early when the coordinator judges the app functionally complete.
   build_coordination: 9
+  write_tests: 6
   build_verification: 9
   human_qa_checklist: 9
   app_store_readiness: 9
@@ -135,6 +169,12 @@ runtime:
   # output. 0 disables the abort cap.
   coordinator_failover_enabled: true
   max_build_iterations_without_integrator: 2
+  # Semi-Autonomous / Manual mode (run_config.json "autonomy"): how long a
+  # checkpoint phase waits under <app>/approvals/ for a human decision
+  # (approve/edit/request-changes) before proceeding on its own rather than
+  # hanging forever. Fully Autonomous mode (the default) never pauses, so this
+  # only matters if you've opted a project into Semi-Autonomous/Manual.
+  approval_timeout_seconds: 7200
   # When false, engine log lines are written ONLY to logs/orchestrator.log (no
   # terminal echo). Keep true for GUI runs — the live run-log panel reads stdout.
   stream_terminal_output: true
@@ -165,6 +205,19 @@ runtime:
   verify_build_enabled: true
   verify_timeout_seconds: 1200
   verify_repair_iterations: 3
+  # Per-iteration verification: after each parallel-build iteration is
+  # committed, actually compile the build (using the workflow's verify spec if
+  # any phase carries one, else auto-detect) and feed the compile errors into
+  # the next iteration's context. Consensus becomes evidence-backed: an
+  # integrator's `CONSENSUS: YES` is NOT accepted while the latest in-phase
+  # verification ran and FAILED. Fail-open by design: an UNVERIFIED build
+  # (toolchain absent / knob off) never blocks consensus — only a verifier
+  # that ran and said no. A ran=false result disables further per-iteration
+  # checks for the phase (no re-paying a doomed subprocess each iteration).
+  verify_between_iterations: true
+  # Modest per-iteration compile timeout (also capped by verify_timeout_seconds
+  # and the sprint deadline). The full verify/repair phase keeps its own budget.
+  iteration_verify_timeout_seconds: 600
   # When true, the build_coordination phase lets agents actually create/edit
   # files inside <app>/app_build (codex runs workspace-write there). Discussion
   # phases stay read-only in a throwaway dir regardless.
@@ -252,9 +305,64 @@ runtime:
   # (decisions + machine contracts stay full-size; only the raw debate text is
   # trimmed). Discussion phases keep max_prior_discussion_chars.
   build_max_prior_discussion_chars: 30000
+  # Build WORKER context policy. "contracts" (default): worker lanes drop the
+  # raw prior-phase discussion transcripts entirely and build from the
+  # structured context — original prompt, prior final decisions, the DECISIONS
+  # LOG (decisions.json), playbook/knowledge, file tree, and their full tasks/
+  # interfaces contract. The integrator and all discussion phases keep the
+  # current full-context behavior. "legacy" restores the old worker context
+  # (transcripts included, tail-truncated) exactly.
+  build_context_policy: "contracts"
+  # Cross-phase history policy for every phase's OWN discussion/coordinator
+  # turns (sibling to build_context_policy above, which is scoped to BUILD
+  # WORKER lanes specifically). "hybrid" (default): only the most recent
+  # completed phase (build-adjacent) or two (discussion-heavy) phase(s) get
+  # their full raw transcript injected; every older completed phase gets its
+  # compact phase_summaries.json entry instead — a genuine reduction, not an
+  # additive block, in every downstream prompt. "legacy" restores today's
+  # inject-every-completed-phase's-full-transcript behavior exactly.
+  phase_summary_policy: "hybrid"
   phase_independent_first_round_enabled: true
   phase_quality_gates_enabled: true
   phase_quality_repair_rounds: 2
+  # Adaptive escalation: failure-triggered, not static-always-on (contrast
+  # with models.claude_integrator above, which is a static per-role override
+  # applied on EVERY integration turn). Only the verify/repair loop
+  # (_verify_and_repair) and the phase quality-gate retry path can trigger
+  # this, and only after repeated failure on the SAME phase — so it never
+  # changes a normal, first-try-successful run. Default ON because it's cheap
+  # and safe: it fires only on paths that would otherwise burn identical,
+  # already-failing attempts at the same (weaker) settings.
+  adaptive_escalation_enabled: true
+  # Attempt/call number (1-based) at which escalation kicks in for THAT and
+  # every later attempt in the same repair/quality-gate loop. With the default
+  # verify_repair_iterations=3, a value of 2 means the 1st retry runs
+  # unescalated and the 2nd+ retries get the stronger effort.
+  escalate_repair_after_attempt: 2
+  # Optional full model swap for the escalated claude coordinator turn only
+  # (extends the models.claude_integrator pattern). Blank (default) = no swap;
+  # escalation stays at the cheap reasoning-effort bump (-> "high"/"max").
+  escalation_model_override: ""
+  # Real `xcodebuild test` execution (opt-in per workflow via verify.run_tests
+  # in workflows/*.json — currently only app_build/full_max's build_verification
+  # phase sets it). This is a GLOBAL kill-switch on top of that: tests only
+  # actually run when BOTH the phase/spec ask for them AND this is true.
+  # Flakiness/cost tradeoff: a real test run is slower than a plain compile
+  # (simulator boot, XCTest scheduling) and can be flakier (timing-sensitive
+  # UI tests, shared CI resource contention) — this is the one lever to shut
+  # test execution off everywhere without touching every workflow file.
+  # Default true: it degrades gracefully (build-only) whenever no test target
+  # is discoverable, and by itself a failing test never blocks anything (see
+  # tests_gate_release below), so leaving it on is low-risk.
+  run_generated_tests: true
+  # Whether a FAILED test run (tests_ran=true, tests_ok=false in the latest
+  # verify_results.json record) blocks the release gate (_release_gate_failure)
+  # the same way a failed COMPILE already does. Default false: generated test
+  # suites are new/unproven, so a flaky or wrong test must never be able to
+  # strand an otherwise-compiling build in perpetual repair. Purely additive/
+  # observational by default — turn this on only once you trust the generated
+  # tests enough to treat them as a hard gate.
+  tests_gate_release: false
 
 # Phase rules + knowledge / retrieval (RAG). phase_rules.json gives every app
 # phase an editable playbook: required outputs, acceptance checks, and general

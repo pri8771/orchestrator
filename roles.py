@@ -23,6 +23,7 @@ edit them. If that file is missing we fall back to the built-in defaults below,
 so the engine keeps working with zero config.
 """
 
+import copy as _copy
 import json
 import os
 
@@ -88,7 +89,13 @@ def _valid_pool(obj, keys):
 
 def load_roles(orch_dir=None):
     """Return (personalities, roles). Reads roles.json if present and valid;
-    otherwise the built-in defaults. Never raises."""
+    otherwise the built-in defaults. Never raises.
+
+    Always returns fresh copies, never the module-level DEFAULT_* lists by
+    reference: a caller that mutates its result in place (e.g. filtering,
+    `assign_personas`'s empty-pool fallback) would otherwise corrupt the
+    built-in defaults for the rest of the process, including every other
+    concurrent project that later falls back to them."""
     path = os.path.join(orch_dir, "roles.json") if orch_dir else ROLES_PATH
     personalities, roles = DEFAULT_PERSONALITIES, DEFAULT_ROLES
     try:
@@ -104,7 +111,7 @@ def load_roles(orch_dir=None):
             roles = r
     except (OSError, ValueError):
         pass
-    return personalities, roles
+    return _copy.deepcopy(personalities), _copy.deepcopy(roles)
 
 
 def load_agent_role_overrides(orch_dir=None):
@@ -135,7 +142,7 @@ def _role_pool_for_phase(roles, phase_role_ids):
 
 
 def assign_personas(phase_index, agents, personalities, roles, phase_role_ids=None,
-                    agent_role_overrides=None):
+                    agent_role_overrides=None, role_by_id=None):
     """Deterministically hand each agent a (role, personality) for this phase.
 
     Rotation guarantees:
@@ -143,10 +150,27 @@ def assign_personas(phase_index, agents, personalities, roles, phase_role_ids=No
       * across phases, a given agent's personality changes (phase index shifts),
     so nobody is ever locked to one personality.
 
+    ``role_by_id`` lets a caller that invokes this once per phase (every phase
+    of a run, same ``roles`` list) precompute the full-roster id lookup once
+    per run instead of rebuilding it on every call; omitted, it's built here
+    same as before.
+
     Returns {agent: {"role": <role dict>, "personality": <personality dict>}}.
     """
     role_pool = _role_pool_for_phase(roles, phase_role_ids)
-    by_role_id = {r.get("id"): r for r in roles}
+    # Guard the modulo below against empty pools (a caller passing gutted
+    # roles/personalities would otherwise raise ZeroDivisionError). Fall back to
+    # the built-in defaults so every agent still gets a (role, personality).
+    if not personalities:
+        personalities = DEFAULT_PERSONALITIES
+    if not role_pool:
+        role_pool = DEFAULT_ROLES
+    # agent_role_overrides is looked up against the FULL roster, not the
+    # phase-restricted role_pool: an override is a deliberate per-agent admin
+    # choice (roles.json / GUI "Configure -> Sub-agents") and is meant to win
+    # over a phase's generic role restriction — see
+    # test_agent_role_overrides_drive_personas, which pins this intentionally.
+    by_role_id = role_by_id if role_by_id is not None else {r.get("id"): r for r in roles}
     overrides = agent_role_overrides or {}
     out = {}
     for j, agent in enumerate(agents):

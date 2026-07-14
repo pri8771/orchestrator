@@ -50,9 +50,8 @@ def _pget(phase, key, default=None):
 
 
 def _phase_key(phase):
-    if hasattr(phase, "get"):
-        return phase.get("key")
-    return phase[0]  # legacy 4-tuple compatibility
+    import workflows
+    return workflows.phase_key(phase)  # one shared accessor across modules
 
 
 def _remove_marker(app_dir):
@@ -110,8 +109,12 @@ def gather_docs(app_dir, emit=_emit):
 
 def _live_only(phase):
     """True for phases that must NEVER be backfilled: anything that writes
-    code, carries a verify spec, or is a QA/review/verification gate."""
-    if _pget(phase, "writes", False) or _pget(phase, "verify"):
+    code, carries a verify spec, must be verified, reads the built target, or
+    is a QA/review/verification gate. requires_verification/reads_target phases
+    have a real gate that a distilled-from-docs stand-in would skip."""
+    if (_pget(phase, "writes", False) or _pget(phase, "verify")
+            or _pget(phase, "requires_verification", False)
+            or _pget(phase, "reads_target", False)):
         return True
     low = str(_phase_key(phase) or "").lower()
     return "qa" in low or "review" in low or "verification" in low
@@ -150,21 +153,47 @@ def run_backfill(cfg, app, app_dir, phases, state, call_agent):
                   "stopping backfill; remaining phases run live." % (app, key, exc))
             _remove_marker(app_dir)
             return
-        if (reply or "").strip() == "NOT_COVERED":
-            _emit("App '%s': docs do not cover phase '%s' — stopping backfill; "
-                  "remaining phases run live." % (app, key))
+        # An empty/blank reply is NOT coverage — treat it like NOT_COVERED so a
+        # phase is never marked complete against an empty backfilled doc.
+        reply_text = (reply or "").strip()
+        if reply_text == "NOT_COVERED" or not reply_text:
+            _emit("App '%s': docs do not cover phase '%s' (or the reply was "
+                  "empty) — stopping backfill; remaining phases run live."
+                  % (app, key))
             _remove_marker(app_dir)
             return
         folder = str(_pget(phase, "folder") or key)
         fname = str(_pget(phase, "file") or (key + ".md"))
         title = str(_pget(phase, "title") or key.replace("_", " ").title())
+        # folder/fname come from workflow/phase config; refuse a value that
+        # joins to a path outside app_dir (a "../" or absolute escape).
+        app_real = os.path.realpath(app_dir)
+        dest = os.path.realpath(os.path.join(app_dir, folder, fname))
         try:
-            os.makedirs(os.path.join(app_dir, folder), exist_ok=True)
-            with open(os.path.join(app_dir, folder, fname), "w",
-                      encoding="utf-8") as fh:
-                fh.write("# %s — %s\n\n_Backfilled from user-supplied docs._"
-                         "\n\n%s" % (app, title, reply))
+            within = os.path.commonpath([app_real, dest]) == app_real
+        except ValueError:
+            within = False
+        if not within:
+            _emit("App '%s': backfill target '%s/%s' escapes the app directory "
+                  "— stopping backfill." % (app, folder, fname))
+            _remove_marker(app_dir)
+            return
+        # Atomic write (per-writer temp name + os.replace): a crash/kill mid-
+        # write must never leave a truncated file that completed/outputs/
+        # save_state below then treat as a legitimately backfilled phase.
+        body = ("# %s — %s\n\n_Backfilled from user-supplied docs._\n\n%s"
+               % (app, title, reply))
+        tmp = "%s.%d.tmp" % (dest, os.getpid())
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.replace(tmp, dest)
         except OSError as exc:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             _emit("App '%s': backfill could not write %s/%s (%s) — stopping "
                   "backfill." % (app, folder, fname, exc))
             _remove_marker(app_dir)

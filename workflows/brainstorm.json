@@ -5,6 +5,9 @@
   "target": "app",
   "build_phase": null,
   "budget": null,
+  "overrides": {
+    "effort": "fast"
+  },
   "phases": [
     {
       "key": "prompt_contract",
@@ -69,8 +72,5 @@
       "doc_sections": [],
       "test_deliverable": null
     }
-  ],
-  "overrides": {
-    "effort": "fast"
-  }
+  ]
 }

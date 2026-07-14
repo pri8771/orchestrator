@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import QuickLook
 
 // MARK: - New App intake (DESIGN-NATIVE-PRO.md §4.5, milestone M2)
 //
@@ -22,6 +23,7 @@ struct NewAppIntakeSheet: View {
     @State private var idea = ""
     @State private var workflow = "app_build"
     @State private var attachedDocs: [URL] = []
+    @State private var quickLookURL: URL?
     @State private var backfillFromDocs = true
     @State private var docDropTargeted = false
     @State private var routingPreset = "balanced"
@@ -53,9 +55,9 @@ struct NewAppIntakeSheet: View {
     // Same slug rule as the factory intake (lowercase, spaces→hyphens,
     // [a-z0-9-] only).
     static func slugify(_ s: String) -> String {
-        String(s.lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-            .filter { ($0.isLetter && $0.isASCII) || ($0.isNumber && $0.isASCII) || $0 == "-" })
+        // Delegate to the store's slugify so folder names are consistent — the
+        // old local version left consecutive hyphens (e.g. "Åpp Ünïq" -> "pp--nq").
+        OrchestratorStore.slugify(s)
     }
 
     // The prompt written when docs are attached and the idea box stays empty.
@@ -151,6 +153,7 @@ struct NewAppIntakeSheet: View {
         }
         .padding(20)
         .frame(width: 560, height: 620)
+        .quickLookPreview($quickLookURL)
     }
 
     // MARK: Name (auto-slugged from the idea)
@@ -229,6 +232,14 @@ struct NewAppIntakeSheet: View {
                     Text(fileSizeLabel(url))
                         .font(DS.font.caption).foregroundStyle(.tertiary)
                     Spacer()
+                    Button {
+                        quickLookURL = url
+                    } label: {
+                        Image(systemName: "eye")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Preview \(url.lastPathComponent)")
                     Button {
                         attachedDocs.removeAll { $0 == url }
                     } label: {

@@ -62,12 +62,15 @@ class TestLoadWorkflowMalformedJson(unittest.TestCase):
         self.assertTrue(w.phases)
         self.assertIsNone(w.phase("x"))  # built-in, not the broken file
 
-    def test_non_iterable_roles_falls_back_to_builtin(self):
+    def test_non_iterable_roles_coerces_to_empty_list(self):
+        # roles=5 used to TypeError inside list() and reject the whole file;
+        # _as_str_list now coerces every non-list/tuple shape (string, dict,
+        # int) to [] uniformly, so the edited file still loads.
         self._write({"name": "app_build", "phases": [
             {"key": "x", "purpose": "y", "roles": 5}]})
         w = wf.load_workflow("app_build", self.tmp)
         self.assertTrue(w.phases)
-        self.assertIsNone(w.phase("x"))
+        self.assertEqual(w.phase("x").roles, [])
 
     def test_non_dict_budget_falls_back_to_builtin(self):
         self._write({"name": "app_build", "budget": 3, "phases": [

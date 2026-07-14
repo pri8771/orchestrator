@@ -5,6 +5,9 @@
   "target": "app",
   "build_phase": "build_coordination",
   "budget": null,
+  "overrides": {
+    "rounds_scale": 0.5
+  },
   "phases": [
     {
       "key": "prompt_contract",
@@ -409,8 +412,5 @@
       "doc_sections": [],
       "test_deliverable": null
     }
-  ],
-  "overrides": {
-    "rounds_scale": 0.5
-  }
+  ]
 }

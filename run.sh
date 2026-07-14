@@ -18,7 +18,8 @@
 set -uo pipefail
 
 ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="/Users/pchordia/Documents/iOS-App-Factory"
+# Workspace root: ORCH_ROOT env wins, else a portable home-relative default.
+ROOT="${ORCH_ROOT:-$HOME/Documents/iOS-App-Factory}"
 mkdir -p "$ROOT"
 
 # 1) Move into the root workspace.

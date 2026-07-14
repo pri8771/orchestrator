@@ -17,17 +17,29 @@ needs no device, team, or provisioning profile. Device-signing correctness is a
 separate deterministic pass (fix_ios_signing in orchestrator.py).
 """
 
+import contextlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
+import socket
 import subprocess
+import tempfile
 import time
+import types
+import typing
 import urllib.error
 import urllib.request
 
 import procutil
+
+fcntl: typing.Optional[types.ModuleType]
+try:
+    import fcntl
+except ImportError:  # non-Unix; the cross-process lock degrades to best-effort
+    fcntl = None
 
 
 def _run(cmd, cwd, timeout):
@@ -88,16 +100,26 @@ def _errors_tail(text, limit=3000):
     return tail[-limit:]
 
 
-def _xcode_scheme(target_flag, target, cwd, timeout):
+def _xcode_list_output(target_flag, target, cwd, timeout):
+    """Raw `xcodebuild -list` text, or None if the command failed. Shared by
+    scheme picking and test-target discovery so both read the same listing."""
     code, out, _err = _run(["xcodebuild"] + target_flag + [target, "-list"],
                            cwd, min(timeout, 120))
-    if code != 0:
-        return None
-    m = re.search(r"Schemes:\s*\n(.*)", out, re.DOTALL)
+    return out if code == 0 else None
+
+
+def _xcode_schemes_from_list(list_output):
+    if not list_output:
+        return []
+    m = re.search(r"Schemes:\s*\n(.*)", list_output, re.DOTALL)
     if not m:
-        return None
-    schemes = [line.strip() for line in m.group(1).splitlines() if line.strip()]
-    return _pick_scheme(schemes, target)
+        return []
+    return [line.strip() for line in m.group(1).splitlines() if line.strip()]
+
+
+def _xcode_scheme(target_flag, target, cwd, timeout):
+    out = _xcode_list_output(target_flag, target, cwd, timeout)
+    return _pick_scheme(_xcode_schemes_from_list(out), target)
 
 
 def _pick_scheme(schemes, target):
@@ -117,6 +139,28 @@ def _pick_scheme(schemes, target):
         if sl and (sl in base or base in sl):
             return s
     return schemes[0]
+
+
+def _has_test_target(list_output, schemes):
+    """Best-effort discovery of a real XCTest target, mirroring _pick_scheme's
+    avoid-false-positive stance: only trust an explicit entry under a
+    'Targets:'/'Tests:' section of `xcodebuild -list`, or an actual scheme
+    name containing 'test' — never assume a test target exists just because
+    run_tests was requested. False negatives are fine (we degrade to a
+    build-only verification); false positives would pay for and then fail a
+    test run that was never real."""
+    if not list_output:
+        return False
+    for header in ("Targets:", "Tests:"):
+        m = re.search(re.escape(header) + r"\s*\n(.*?)(?:\n\s*\n|\Z)",
+                      list_output, re.DOTALL)
+        if not m:
+            continue
+        for line in m.group(1).splitlines():
+            name = line.strip()
+            if name and "test" in name.lower():
+                return True
+    return any("test" in s.lower() for s in (schemes or []))
 
 
 def _generate_xcodeproj(build_dir, timeout):
@@ -144,11 +188,21 @@ def _generate_xcodeproj(build_dir, timeout):
     return ""
 
 
-def _verify_xcode(build_dir, timeout):
+def _verify_xcode(build_dir, timeout, run_tests=False):
+    """Compile-only by default; when ``run_tests`` is set AND a real test
+    target is discoverable, also runs `xcodebuild ... test` — but only AFTER
+    a successful build. Running the (slow, simulator-boot-heavy, sometimes
+    flaky) test action against code that doesn't even compile would just burn
+    the timeout twice for the same failure, so build failure short-circuits
+    the test run entirely (mirrors the repair loop's own build-then-check
+    order). A requested-but-undiscoverable test target degrades gracefully to
+    build-only verification — this must never hard-fail a run just because
+    the generated project has no tests yet."""
     if not shutil.which("xcodebuild"):
         return {"ran": False, "ok": False, "tool": "xcodebuild",
                 "summary": "xcodebuild not found (Xcode command line tools "
-                           "unavailable) — skipping compile check.", "errors": ""}
+                           "unavailable) — skipping compile check.", "errors": "",
+                "tests_ran": False, "tests_ok": None}
     # Absolute so that running xcodebuild with cwd=project_dir can't mis-resolve a
     # relative -project/-workspace path.
     build_dir = os.path.abspath(build_dir)
@@ -167,27 +221,50 @@ def _verify_xcode(build_dir, timeout):
     else:
         return {"ran": False, "ok": False, "tool": "xcodebuild",
                 "summary": "no .xcodeproj/.xcworkspace found%s." % gen_note,
-                "errors": ""}
+                "errors": "", "tests_ran": False, "tests_ok": None}
     cwd = os.path.dirname(target)
-    scheme = _xcode_scheme(target_flag, target, cwd, timeout)
-    cmd = ["xcodebuild"] + target_flag + [target]
+    list_output = _xcode_list_output(target_flag, target, cwd, timeout)
+    schemes = _xcode_schemes_from_list(list_output)
+    scheme = _pick_scheme(schemes, target)
+    cmd_base = ["xcodebuild"] + target_flag + [target]
     if scheme:
-        cmd += ["-scheme", scheme]
-    cmd += ["-sdk", "iphonesimulator",
-            "-destination", "generic/platform=iOS Simulator",
-            "-configuration", "Debug",
-            "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO",
-            "build"]
-    code, out, err = _run(cmd, cwd, timeout)
+        cmd_base += ["-scheme", scheme]
+    common_flags = ["-sdk", "iphonesimulator",
+                    "-destination", "generic/platform=iOS Simulator",
+                    "-configuration", "Debug",
+                    "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO"]
+    code, out, err = _run(cmd_base + common_flags + ["build"], cwd, timeout)
     ok = (code == 0)
     combined = out + "\n" + err
-    return {
+    result = {
         "ran": True, "ok": ok, "tool": "xcodebuild",
         "summary": ("compiled cleanly for the iOS Simulator"
                     if ok else "compile FAILED for the iOS Simulator"),
         "errors": "" if ok else _errors_tail(combined),
         "scheme": scheme or "(default)",
+        # Additive fields (kept separate from ok/ran so nothing that reads the
+        # existing fields breaks): whether a test action actually ran, and
+        # whether it passed. None means "no test action was attempted".
+        "tests_ran": False, "tests_ok": None,
     }
+    if not run_tests:
+        return result
+    if not ok:
+        result["summary"] += " (tests skipped: build failed)"
+        return result
+    if not _has_test_target(list_output, schemes):
+        result["summary"] += " (run_tests requested but no test target " \
+                              "discoverable — build-only verification)"
+        return result
+    tcode, tout, terr = _run(cmd_base + common_flags + ["test"], cwd, timeout)
+    tests_ok = (tcode == 0)
+    result["tests_ran"] = True
+    result["tests_ok"] = tests_ok
+    result["summary"] += " + tests passed" if tests_ok else " + TESTS FAILED"
+    if not tests_ok:
+        result["errors"] = (result.get("errors", "")
+                            + "\n" + _errors_tail(tout + "\n" + terr)).strip()
+    return result
 
 
 def _verify_spm(build_dir, timeout):
@@ -203,16 +280,39 @@ def _verify_spm(build_dir, timeout):
             "errors": "" if ok else _errors_tail(out + "\n" + err)}
 
 
+def _has_python_tests(build_dir):
+    """True if the project ships a discoverable test suite (test_*.py / *_test.py
+    / conftest.py) — worth running to catch unresolved imports."""
+    if _find(build_dir, "conftest.py"):
+        return True
+    for hit in _find(build_dir, ".py"):
+        base = os.path.basename(hit)
+        if base.startswith("test_") or base.endswith("_test.py"):
+            return True
+    return False
+
+
 def _verify_shell(build_dir, command, timeout):
     if not command:
         # Auto-detect a sensible check.
         kind = detect_project(build_dir)
         if kind == "spm":
             return _verify_spm(build_dir, timeout)
-        if kind == "node" and shutil.which("node"):
+        if kind == "node" and shutil.which("npm"):
+            # The auto-detected command runs `npm`, so that's the binary to
+            # gate on — checking only `node` let a node-without-npm install
+            # (rare but possible, e.g. a minimal node runtime) through to a
+            # command-not-found shell failure instead of the clean "skip" path.
             command = "npm run build --if-present || node -e \"process.exit(0)\""
         elif kind == "python" and shutil.which("python3"):
-            command = "python3 -m compileall -q ."
+            # compileall is syntax-only and would bless code with unresolved
+            # imports as "verified". If the project ships tests, run them too —
+            # they exercise real imports/behavior — otherwise keep the syntax check.
+            if _has_python_tests(build_dir):
+                command = ("python3 -m compileall -q . && "
+                           "python3 -m unittest discover -q")
+            else:
+                command = "python3 -m compileall -q ."
         else:
             return {"ran": False, "ok": False, "tool": "shell",
                     "summary": "no verification command and no auto-detectable "
@@ -240,10 +340,14 @@ def _detect_start(build_dir, port):
             continue
         scripts = (data.get("scripts") or {})
         cwd = os.path.dirname(pkg)
+        # Use the caller's `port` (env PORT is set to it by _verify_http) rather
+        # than a hardcoded 3000 — the old hardcode both ignored an explicit
+        # spec["port"] and collided under concurrent verifications regardless
+        # of the free-port allocation above.
         if "start" in scripts:
-            return "npm start", cwd, 3000
+            return "npm start", cwd, port
         if "dev" in scripts:
-            return "npm run dev", cwd, 3000
+            return "npm run dev", cwd, port
     # Python: a module exposing a FastAPI/Flask `app`.
     for cand in ("main.py", "app.py", "server.py"):
         for hit in _find(build_dir, cand):
@@ -255,12 +359,33 @@ def _detect_start(build_dir, port):
             cwd = os.path.dirname(hit)
             mod = os.path.basename(hit)[:-3]
             if "FastAPI(" in src or "fastapi" in src.lower():
+                # `mod` is interpolated into a command later run via `/bin/sh
+                # -lc`, so an agent-authored file named e.g. `x;whoami main.py`
+                # would inject shell. A uvicorn import target must be a valid
+                # Python identifier anyway; reject anything else and fall
+                # through to the compile/import check.
+                if not mod.isidentifier():
+                    continue
                 if shutil.which("uvicorn"):
                     return "uvicorn %s:app --host 127.0.0.1 --port %d" % (mod, port), cwd, port
                 return "python3 -m uvicorn %s:app --host 127.0.0.1 --port %d" % (mod, port), cwd, port
             if "Flask(" in src:
-                return "python3 %s" % os.path.basename(hit), cwd, port
+                # Same shell exposure — quote the filename so a crafted name
+                # can't break out of the `python3 <file>` invocation.
+                return "python3 %s" % shlex.quote(os.path.basename(hit)), cwd, port
     return None, None, None
+
+
+def _free_port():
+    """An ephemeral TCP port that's free at the moment of the call. Best-effort:
+    a small race remains between closing this probe socket and the server
+    binding it (the same trade-off test frameworks like pytest-xdist accept) —
+    but it's vastly cheaper than a fixed port (the old default 8000/3000)
+    colliding when two verifications run at once (parallel portfolio children
+    or build workers each booting a server to verify)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _http_ok(url, timeout=3):
@@ -276,7 +401,11 @@ def _http_ok(url, timeout=3):
 
 
 def _verify_http(build_dir, spec, timeout):
-    port = int(spec.get("port") or 8000)
+    # An explicit spec["port"] is honored as-is; otherwise allocate a free
+    # ephemeral port rather than a fixed default (was 8000) so two
+    # verifications running at once — parallel portfolio children or build
+    # workers — don't collide and one falsely report "did not respond".
+    port = int(spec.get("port") or _free_port())
     start = spec.get("start")
     cwd = build_dir
     if start:
@@ -295,13 +424,30 @@ def _verify_http(build_dir, spec, timeout):
     env = dict(os.environ)
     env["PORT"] = str(port)
     proc = None
-    out_path = os.path.join(build_dir, ".verify_server.log")
+    server_pgid = None
+    # Write the server log to a temp file OUTSIDE the built project — dropping
+    # it into build_dir pollutes the generated app tree that later gets
+    # committed/shipped.
+    log_fd, out_path = tempfile.mkstemp(prefix="verify_server_", suffix=".log")
+    os.close(log_fd)
     try:
         outfh = open(out_path, "w", encoding="utf-8")
         proc = subprocess.Popen(["/bin/sh", "-lc", start], cwd=cwd, env=env,
                                 stdout=outfh, stderr=subprocess.STDOUT,
                                 start_new_session=True)
+        # Register the server's process group so a run-wide SIGTERM
+        # (procutil.kill_live_groups) also tears it down — otherwise a booted
+        # server leaks past the run.
+        try:
+            server_pgid = os.getpgid(proc.pid)
+        except OSError:
+            server_pgid = proc.pid
+        procutil.track_pgid(server_pgid)
     except (OSError, subprocess.SubprocessError) as exc:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
         return {"ran": True, "ok": False, "tool": "http boot",
                 "summary": "could not start the server (`%s`)" % start,
                 "errors": str(exc)}
@@ -337,6 +483,8 @@ def _verify_http(build_dir, spec, timeout):
                     proc.wait(timeout=5)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+        if server_pgid is not None:
+            procutil.untrack_pgid(server_pgid)
         try:
             outfh.close()
         except OSError:
@@ -348,6 +496,11 @@ def _verify_http(build_dir, spec, timeout):
             log_tail = _errors_tail(fh.read())
     except OSError:
         pass
+    finally:
+        try:
+            os.remove(out_path)   # temp log — never leave it behind
+        except OSError:
+            pass
     if booted:
         return {"ran": True, "ok": True, "tool": "http boot",
                 "summary": "server booted (`%s`) and responded %s on :%d"
@@ -371,7 +524,7 @@ def run_verification(build_dir, spec, timeout=1200):
             return {"ran": False, "ok": False, "tool": vtype,
                     "summary": "no build directory to verify.", "errors": ""}
         if vtype == "xcodebuild":
-            return _verify_xcode(build_dir, timeout)
+            return _verify_xcode(build_dir, timeout, run_tests=bool(spec.get("run_tests")))
         if vtype in ("swift", "spm"):
             return _verify_spm(build_dir, timeout)
         if vtype in ("http", "server", "boot"):
@@ -412,6 +565,35 @@ def _vr_path(app_dir):
     return os.path.join(app_dir, "verify_results.json")
 
 
+@contextlib.contextmanager
+def _vr_lock(app_dir):
+    """Exclusive lock (flock) around a verify_results.json read-modify-write so
+    concurrent verifications — parallel portfolio children, or build-worker
+    threads in one process — don't lose each other's records. Best-effort: on a
+    platform without fcntl, or if the lock file can't be opened, it degrades to
+    no locking rather than raising."""
+    if fcntl is None:
+        yield
+        return
+    fh = None
+    try:
+        fh = open(_vr_path(app_dir) + ".lock", "w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        if fh is not None:
+            fh.close()
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
 def load_verify_results(app_dir):
     """Return the list of persisted verification records (oldest first). []
     if none/unreadable. Never raises."""
@@ -431,7 +613,10 @@ def persist_verify_result(app_dir, phase_key, result, attempt=0,
     result = result or {}
     record = {
         "schema_version": 1,
-        "timestamp": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # tz-aware (local + offset), matching events.py, so ordering against
+        # events.jsonl stays unambiguous across DST transitions. Consumers
+        # (GUI VerificationCard, shepherd.sh) treat this as an opaque string.
+        "timestamp": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "phase": phase_key,
         "workflow": workflow,
         "prompt_hash": prompt_hash,
@@ -445,14 +630,27 @@ def persist_verify_result(app_dir, phase_key, result, attempt=0,
         "summary": result.get("summary", ""),
         "errors": (result.get("errors", "") or "")[:8000],
         "tests": result.get("tests"),
+        # Additive, purely observational by default (runtime.tests_gate_release,
+        # default False, is the only thing that lets these affect the release
+        # gate — see _release_gate_failure in orchestrator.py): whether a real
+        # `xcodebuild test` action ran, and whether it passed. Both stay
+        # False/None for every non-xcodebuild verifier and for xcodebuild runs
+        # that didn't request run_tests, so existing consumers of ok/ran are
+        # completely unaffected.
+        "tests_ran": bool(result.get("tests_ran")),
+        "tests_ok": result.get("tests_ok"),
     }
     try:
-        records = load_verify_results(app_dir)
-        records.append(record)
-        tmp = _vr_path(app_dir) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            _json.dump(records, fh, indent=2)
-        os.replace(tmp, _vr_path(app_dir))
+        with _vr_lock(app_dir):
+            records = load_verify_results(app_dir)
+            records.append(record)
+            # Per-writer temp name so a concurrent writer on another thread/
+            # process can't clobber this one's half-written file (the flock
+            # serializes, but a unique name is belt-and-suspenders).
+            tmp = "%s.%d.tmp" % (_vr_path(app_dir), os.getpid())
+            with open(tmp, "w", encoding="utf-8") as fh:
+                _json.dump(records, fh, indent=2)
+            os.replace(tmp, _vr_path(app_dir))
     except OSError:
         pass
     return record

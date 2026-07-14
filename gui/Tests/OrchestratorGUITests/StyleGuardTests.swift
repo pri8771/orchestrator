@@ -1,8 +1,8 @@
 import XCTest
 
 // Native Pro M0 guardrail: runs the repo's CI style grep as part of the test
-// suite, so `swift test` rejects `Color(red:` and hardcoded font sizes outside
-// ThemeTokens.swift (DESIGN-NATIVE-PRO.md §2/§9).
+// suite, so `swift test` rejects raw RGB color literals and hardcoded font
+// sizes outside ThemeTokens.swift (DESIGN-NATIVE-PRO.md §2/§9).
 final class StyleGuardTests: XCTestCase {
 
     func testNoRogueColorsOrFontSizes() throws {

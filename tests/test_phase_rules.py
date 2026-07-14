@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 import orchestrator as orch
 import phase_rules as pr
@@ -15,6 +16,66 @@ class TestPhaseRules(unittest.TestCase):
             with open(os.path.join(d, pr.RULES_FILENAME), "w", encoding="utf-8") as fh:
                 fh.write("{not json")
             self.assertEqual(pr.load_rules(d)["phases"], {})
+
+    def test_bad_gui_edit_rules_as_string_does_not_mis_render(self):
+        # A GUI edit that turns "rules" (a list) into a bare string must not
+        # reach _bullets(), which would silently iterate its characters.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, pr.RULES_FILENAME), "w", encoding="utf-8") as fh:
+                json.dump({
+                    "schema_version": 1, "global_app_rules": [],
+                    "phases": {"tech_specs": {
+                        "rules": "not a list",
+                        "required_output": {"also": "not a list"},
+                        "acceptance_checks": ["Real check."],
+                    }},
+                }, fh)
+            phase = pr.load_rules(d)["phases"]["tech_specs"]
+            out = pr.render_phase_playbook(d, "app", "tech_specs")
+        self.assertEqual(phase["rules"], [])
+        self.assertEqual(phase["required_output"], [])
+        self.assertNotIn("Phase rules:", out)
+        self.assertIn("Real check.", out)
+
+    def test_load_rules_reads_disk_once_until_mtime_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, pr.RULES_FILENAME)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "global_app_rules": [], "phases": {}}, fh)
+            real_open = open
+            calls = []
+
+            def counting_open(p, *a, **kw):
+                if p == path:
+                    calls.append(p)
+                return real_open(p, *a, **kw)
+
+            with unittest.mock.patch("builtins.open", counting_open):
+                pr.load_rules(d)
+                pr.load_rules(d)
+                pr.load_rules(d)
+            self.assertEqual(len(calls), 1)
+
+    def test_same_mtime_different_size_replacement_busts_cache(self):
+        # A same-second file replacement used to serve stale content because
+        # the cache key was mtime alone; keying on (mtime_ns, size) catches a
+        # replacement whose length differs even with an identical mtime.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, pr.RULES_FILENAME)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "global_app_rules": ["old rule"],
+                           "phases": {}}, fh)
+            st = os.stat(path)
+            self.assertEqual(pr.load_rules(d)["global_app_rules"], ["old rule"])  # prime
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1,
+                           "global_app_rules": ["a longer replacement rule"],
+                           "phases": {}}, fh)
+            # Pin the mtime back to the original — simulates a same-second
+            # replacement that a coarse mtime key can't distinguish.
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+            self.assertEqual(pr.load_rules(d)["global_app_rules"],
+                             ["a longer replacement rule"])
 
     def test_render_app_phase_playbook(self):
         with tempfile.TemporaryDirectory() as d:

@@ -22,8 +22,20 @@ Everything here is best-effort: a missing knowledge dir just yields "".
 
 import os
 import re
+import typing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Per-file (kws, body_terms, body) cache keyed by (st_mtime_ns, st_size). The
+# query changes every call so scoring itself can't be cached, but the
+# read+parse of each cheatsheet (unchanged between phases within a run) can
+# be — this file set is small and rarely edited, so a stat check is cheap
+# insurance against ever serving a stale parse after an on-disk edit,
+# including a same-second replacement (which an mtime-alone key served stale).
+# A same-second, same-length rewrite is still theoretically stale; mtime_ns +
+# size is the accepted stdlib-only tradeoff (no content hashing).
+_DOC_CACHE: typing.Dict[str, typing.Tuple[typing.Tuple[int, int], typing.Tuple[
+    typing.Set[str], typing.Set[str], str]]] = {}
 
 _KW_RE = re.compile(r"<!--\s*keywords:\s*(.*?)\s*-->", re.IGNORECASE | re.DOTALL)
 _WORD_RE = re.compile(r"[a-z0-9@._+]+")
@@ -99,7 +111,17 @@ def _doc_keywords(body):
         for k in m.group(1).replace("\n", ",").split(","):
             k = k.strip().lower()
             if k:
-                kws.add(k)
+                # Tokenize each entry with the same word regex the query text
+                # is tokenized with (_terms). A single-word keyword yields
+                # itself unchanged, so existing single-word behavior is
+                # preserved exactly; a multi-word phrase ("app router",
+                # "refresh token rotation") yields its constituent words.
+                # Previously the verbatim phrase was stored and could never
+                # intersect the single-token query terms — every multi-word
+                # annotation in knowledge/*.md was dead weight. (This also
+                # revives entries whose separators _WORD_RE splits on, e.g.
+                # "offline-first" -> {"offline", "first"}.)
+                kws |= _terms(k)
     # Also weight the headings (## ...) as soft keywords.
     for h in re.findall(r"^#{1,3}\s+(.+)$", body, re.MULTILINE):
         kws |= _terms(h)
@@ -119,6 +141,29 @@ def should_inject(phase_key):
     return phase_key not in _SKIP_PHASES
 
 
+def _load_doc(path):
+    """(kws, body_terms, body) for one cheatsheet, cached by (mtime_ns, size)
+    so repeated retrieve() calls within a run don't re-read/re-parse every
+    file from disk every time. Returns None on any read error."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        _DOC_CACHE.pop(path, None)
+        return None
+    key = (st.st_mtime_ns, st.st_size)
+    cached = _DOC_CACHE.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError:
+        return None
+    parsed = (_doc_keywords(body), _terms(body), body)
+    _DOC_CACHE[path] = (key, parsed)
+    return parsed
+
+
 def retrieve(orch_dir, domain, query_text, max_chars=6000, top_k=3):
     """Return concatenated markdown from the top-scoring docs in ``domain``
     (or "" if none are relevant / the dir is missing)."""
@@ -130,12 +175,11 @@ def retrieve(orch_dir, domain, query_text, max_chars=6000, top_k=3):
     for fn in sorted(os.listdir(d)):
         if not fn.endswith(".md"):
             continue
-        try:
-            with open(os.path.join(d, fn), encoding="utf-8") as fh:
-                body = fh.read()
-        except OSError:
+        parsed = _load_doc(os.path.join(d, fn))
+        if parsed is None:
             continue
-        s = _score(query_terms, _doc_keywords(body), _terms(body))
+        kws, body_terms, body = parsed
+        s = _score(query_terms, kws, body_terms)
         if s > 0:
             scored.append((s, fn, body))
     if not scored:
@@ -149,6 +193,12 @@ def retrieve(orch_dir, domain, query_text, max_chars=6000, top_k=3):
         chunk = "\n\n----- %s -----\n%s" % (title, clean)
         if used + len(chunk) > max_chars:
             chunk = chunk[: max(0, max_chars - used)]
+        if not chunk:
+            # Truncated away to nothing (budget exhausted before this doc's
+            # content fit) — don't append an empty/whitespace-only chunk, or
+            # `parts` can end up non-empty while carrying zero real content,
+            # which would make retrieve() return a bare header with no body.
+            break
         parts.append(chunk)
         used += len(chunk)
         if used >= max_chars:

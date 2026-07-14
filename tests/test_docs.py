@@ -2,6 +2,46 @@ import json, os, tempfile, unittest
 import docs
 
 
+class TestJiraLabelSanitization(unittest.TestCase):
+    def test_valid_lane_id_passes_through(self):
+        self.assertEqual(docs._jira_label("primary_ui", "lane"), "primary_ui")
+
+    def test_whitespace_is_not_a_valid_jira_label(self):
+        # A lane name with whitespace (plausible free-text from an agent) must
+        # be sanitized — Jira rejects labels containing spaces.
+        label = docs._jira_label("some free text lane", "lane")
+        self.assertNotIn(" ", label)
+
+    def test_empty_or_none_falls_back_to_default(self):
+        self.assertEqual(docs._jira_label("", "lane"), "lane")
+        self.assertEqual(docs._jira_label(None, "lane"), "lane")
+        self.assertEqual(docs._jira_label("   ", "lane"), "lane")
+
+    def test_issue_from_task_label_has_no_whitespace(self):
+        task = {"id": "T-1", "title": "x", "owner_lane": "bad lane name"}
+        issue = docs._issue_from_task(task, "app", "EPIC-1")
+        for label in issue["labels"]:
+            self.assertNotIn(" ", label)
+
+
+class TestBackfillPayloadNoneVerifySummary(unittest.TestCase):
+    def test_none_verify_summary_does_not_crash(self):
+        # verify_summary=None used to crash on .upper() (missing the `or ""`
+        # guard every sibling in this file uses).
+        payload = docs.render_project_management_backfill(
+            "demo", "prompt", [("final_review", "Final Review")], {},
+            tasks=[], interfaces=[], verify_summary=None)
+        self.assertEqual(payload["notion"]["project_properties"]["Status"],
+                         "Needs review")
+
+    def test_verified_summary_still_maps_to_done(self):
+        payload = docs.render_project_management_backfill(
+            "demo", "prompt", [("final_review", "Final Review")], {},
+            tasks=[], interfaces=[], verify_summary="VERIFIED — build passed")
+        self.assertEqual(payload["notion"]["project_properties"]["Status"],
+                         "Done")
+
+
 class TestDocsRenderer(unittest.TestCase):
     def setUp(self):
         self.app_dir = tempfile.mkdtemp()

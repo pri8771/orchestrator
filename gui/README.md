@@ -1,17 +1,10 @@
 # Orchestrator GUI
 
 A native macOS SwiftUI app for driving the autonomous multi-agent
-orchestrator — a three-pane, Apple Mail-style window:
-
-```
-Projects            Phases                  Live transcript
-─────────────       ──────────────────      ─────────────────────────────
-● taskquill         ✓ initial_discussion    Round 2
-  invoice-app       ✓ next_steps_small      Cx  Codex      …
-✓ ledgerly          ● detailed_discussion   Cl  Claude     …
-⚠ notes_sync          app_features          Gm  Gemini     …
-                      …                     Co  Coordinator — CONSENSUS: YES
-```
+orchestrator — the "Native Pro" shell (see `DESIGN-NATIVE-PRO.md`): one
+window, `NavigationSplitView` sidebar (projects) + content (phases, live
+transcript, routing grid, run health) + a trailing `.inspector` (⌥⌘I), plus
+a toolbar and a ⌘K command palette for the primary actions.
 
 It watches the `agent_state.json`, `verify_results.json`, `live_log.jsonl` and
 per-phase Markdown that `orchestrator.py` writes, polling every 1.5s so the
@@ -21,14 +14,15 @@ are the approval decision files (below).
 ## Run it
 
 ```bash
-# Recommended: from the repo root. Builds release + launches, pointed at
-# /Users/pchordia/Documents/iOS-App-Factory via ORCH_ROOT and at this engine via ORCH_DIR.
-bash run-orchestrator.sh
+# Recommended: from the repo root. Builds release + launches, pointed at the
+# workspace via ORCH_ROOT (default ~/Documents/iOS-App-Factory) and at this
+# engine via ORCH_DIR.
+bash gui/run_gui.sh
 
 # Build / test this package directly:
-cd orchestrator-v2-source/gui
+cd gui
 swift build -c release
-swift test                    # 37 unit tests (Tests/OrchestratorGUITests)
+swift test                    # GUI unit tests (Tests/OrchestratorGUITests)
 
 # Package a double-clickable app (bundles the Python engine inside):
 bash build_app.sh             # -> dist/Orchestrator.app
@@ -38,9 +32,9 @@ bash make_dmg.sh              # -> dist/Orchestrator.dmg  (or: make app / make d
 Requires the Swift toolchain (Xcode or Command Line Tools). No external Swift
 packages — SwiftUI/AppKit/Combine only.
 
-Note: `gui/run_gui.sh` and `run-orchestrator.sh` both export `ORCH_ROOT` to
-`/Users/pchordia/Documents/iOS-App-Factory`, so either source launcher reads and
-writes the same project folders.
+Note: `gui/run_gui.sh` exports `ORCH_ROOT` (default
+`~/Documents/iOS-App-Factory`); set that env var to point the app and the CLI at
+the same project folders.
 
 ## How the app finds the engine
 
@@ -126,18 +120,18 @@ and per-project reset/fork/build-history.
 
 ## Tests
 
-`Tests/OrchestratorGUITests/EngineLogicTests.swift` — 37 XCTest cases over the
+`Tests/OrchestratorGUITests/EngineLogicTests.swift` — XCTest coverage of the
 pure GUI↔engine bridge logic in `EngineLogic.swift`: `verify_results.json`
 parsing, the approval decision-file contract, `blocked_conflict` parsing, the
 doctor `local_models` block, shipped workflow coverage, and the engine-dir
 resolution precedence.
 
 ```bash
-cd orchestrator-v2-source/gui && swift test
+cd gui && swift test   # from the repo root
 ```
 
 ## Seeding demo data
 
 ```bash
-cd orchestrator-v2-source && python3 seed_demo.py   # writes demo projects into the workspace
+python3 seed_demo.py   # from the repo root; writes demo projects into the workspace
 ```
