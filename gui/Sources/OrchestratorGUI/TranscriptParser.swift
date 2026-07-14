@@ -18,7 +18,15 @@ import Foundation
 enum TranscriptParser {
 
     // A whole-line header like **Codex — Round 1** (bold spans the entire line).
-    private static let headerRegex = try! NSRegularExpression(
+    // The pattern is a compile-time constant, so this never actually fails in
+    // practice — but a crash-on-failure here is inconsistent with the rest of
+    // this codebase's fail-open philosophy (every reader degrades instead of
+    // taking the app down). `try?` + a nil-safe isHeader(): if compilation
+    // somehow failed, no line is ever recognized as a speaker header, so
+    // parsing degrades to "no messages extracted" rather than crashing at
+    // launch (transcript files never bring the app down, per the module's
+    // own header comment for the rest of this parser).
+    private static let headerRegex = try? NSRegularExpression(
         pattern: #"^\*\*\s*(Codex|Claude|Gemini|Coordinator|Integrator|Repair|You|Human)\b.*\*\*$"#)
 
     static func parse(_ text: String) -> PhaseTranscript {
@@ -79,6 +87,7 @@ enum TranscriptParser {
     // MARK: helpers
 
     private static func isHeader(_ line: String) -> Bool {
+        guard let headerRegex else { return false }
         let range = NSRange(line.startIndex..<line.endIndex, in: line)
         return headerRegex.firstMatch(in: line, range: range) != nil
     }

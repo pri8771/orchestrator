@@ -896,6 +896,23 @@ def run_ollama(cfg, prompt, timeout):
     if not model:
         raise AgentError("Local (Ollama) has no model selected — set models.ollama "
                          "in config.yaml (see local_models.json for the curated list).")
+    # models.ollama_reasoning IS honored on the HTTP path (run_local, used by
+    # dynamic local:<model> agents) as Ollama's /api/generate "think" field —
+    # but this function shells out to the plain `ollama run <model>` CLI with
+    # the prompt on stdin, which exposes no equivalent think-mode flag as
+    # invoked here. Accepted but ignored on this path; warn once per phase so
+    # a routing edit that only works for the other path doesn't look silently
+    # broken.
+    if cget(cfg, "models.ollama_reasoning", ""):
+        _memo = "_noted_ollama_reasoning_noop_cli_%s" % cfg.get("_phase_key")
+        if not cfg.get(_memo):
+            cfg[_memo] = True
+            emit("Phase '%s': routing sets ollama_reasoning, but the roster "
+                 "'ollama' agent runs via the `ollama run` CLI, which this "
+                 "engine invokes with no think-mode flag — accepted but "
+                 "ignored on this path. (The HTTP local:<model> path, "
+                 "run_local, does honor it as Ollama's 'think' field.)"
+                 % cfg.get("_phase_key"))
     cmd = ["ollama", "run", model]
     cwd, ephemeral = _agent_cwd(cfg)
     try:
@@ -916,7 +933,17 @@ def run_local(cfg, prompt, timeout, model=None):
     model = (model or cget(cfg, "models.local_default", "")
              or cget(cfg, "models.ollama", "") or "llama3.1:8b")
     url = "http://127.0.0.1:11434/api/generate"
-    payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    body = {"model": model, "prompt": prompt, "stream": False}
+    # Real Ollama capability (verified against /api/generate's documented
+    # request schema, not invented): reasoning-capable models (deepseek-r1,
+    # qwen3, ...) accept a boolean "think" field. Effort levels below
+    # "medium" map to omitting it (== today's behavior, no chain-of-thought
+    # overhead on cheap/fast turns); "medium" and above turn it on. Models
+    # that don't support thinking silently ignore the field per Ollama's API.
+    _effort = str(cget(cfg, "models.ollama_reasoning", "") or "").strip().lower()
+    if _effort and _effort != "low":
+        body["think"] = True
+    payload = json.dumps(body).encode("utf-8")
     cmd = "ollama:generate model=%s" % model
     try:
         req = urllib.request.Request(url, data=payload,
@@ -4048,12 +4075,21 @@ def _apply_phase_routing(cfg, key):
         # Same one-knob rule for claude's --effort (see run_claude).
         models["claude_reasoning"] = ov["claude_reasoning"]
         models["claude_build_reasoning"] = ov["claude_reasoning"]
-    # gemini/ollama effort parity is accepted-but-noop (evidence-based): the
-    # gemini CLI is invoked as `gemini -p ...` and ollama as `ollama run` /
-    # /api/generate — neither invocation exposes an effort/thinking control,
-    # so the field is honored in the schema but ignored here, loudly (once).
+    if ov.get("ollama_reasoning"):
+        # Real capability (not invented): Ollama's /api/generate accepts a
+        # boolean "think" field for reasoning-capable models (deepseek-r1,
+        # qwen3, ...). run_local (the HTTP path used by dynamic local:<model>
+        # agents) maps this effort level onto that flag — see run_local. The
+        # roster "ollama" agent instead shells out to `ollama run <model>`
+        # (run_ollama), which this engine invokes with no equivalent CLI flag,
+        # so that path stays accepted-but-noop (warned there, once).
+        models["ollama_reasoning"] = ov["ollama_reasoning"]
+    # gemini effort parity is accepted-but-noop (evidence-based): the gemini
+    # CLI is invoked as `gemini -p ...`, which exposes no effort/thinking
+    # control, so the field is honored in the schema but ignored here, loudly
+    # (once).
     _roles_ov = ov.get("roles") if isinstance(ov.get("roles"), dict) else {}
-    for _noop_field in ("gemini_reasoning", "ollama_reasoning"):
+    for _noop_field in ("gemini_reasoning",):
         _vals = [ov.get(_noop_field)] + [r.get(_noop_field)
                                          for r in _roles_ov.values()]
         if any(_vals):
@@ -4134,8 +4170,12 @@ def _apply_role_routing(rcfg, role):
         resolved["gemini_model"] = rov["gemini"]
     if rov.get("ollama"):
         models["ollama"] = resolved["ollama_model"] = rov["ollama"]
-    # gemini_reasoning/ollama_reasoning: accepted-but-noop (warned once at
-    # phase-routing time; those CLIs expose no effort control as invoked here).
+    if rov.get("ollama_reasoning"):
+        # See _apply_phase_routing: honored by run_local's HTTP "think" flag,
+        # noop on the CLI "ollama run" roster path.
+        models["ollama_reasoning"] = rov["ollama_reasoning"]
+    # gemini_reasoning: accepted-but-noop (warned once at phase-routing time;
+    # the gemini CLI exposes no effort control as invoked here).
     rcfg["models"], rcfg["_resolved"] = models, resolved
     return rcfg
 
@@ -6119,8 +6159,13 @@ def main():
     if args.postmortem:
         if not target_app:
             ap.error("--postmortem requires --app/--project <name>")
+        # Opt-in cost estimation (§ config.yaml cost.pricing): absent/empty by
+        # default, so build_postmortem's pricing=None keeps output identical
+        # to before this feature existed.
+        _pricing = cget(cfg, "cost.pricing", None)
         rep = pmlib.build_postmortem(os.path.join(cfg["root"], target_app),
-                                     app=target_app)
+                                     app=target_app,
+                                     pricing=_pricing if isinstance(_pricing, dict) else None)
         if args.json:
             # Same contract as --doctor --json: stdout is ONLY the JSON blob
             # (_QUIET was set above so no emit() line can precede it).

@@ -16,7 +16,11 @@ into ONE report so the operator stops hand-joining timestamps:
     * the mistakes-ledger aggregation for this app (mistakes.jsonl)
     * per-phase / per-agent turn telemetry measured from turn_completed
       events (turn count, total/mean dur, total output chars, fallback
-      count) — measured quantities only, no token/cost estimation
+      count) — measured quantities only, no token estimation, ever. Dollar
+      cost is OPT-IN and OFF by default (config.yaml cost.pricing, empty by
+      default): when an operator supplies per-model output_per_1k_chars
+      rates, matching buckets additionally gain "est_cost_usd", computed
+      from measured output chars — never a token count
     * the final state error, if any
 
 Pure disk reads, surfacing only — never invokes an agent turn, never mutates
@@ -147,15 +151,31 @@ def _failure_entry(evt):
     return entry
 
 
-def _telemetry(events):
+def _telemetry(events, pricing=None):
     """Per-phase and per-agent rollup of measured turn quantities from
     turn_completed events: turn count, total/mean dur (seconds), total output
     chars, plus fallback outcomes from agent_fallback events. Missing
     dur/output_len fields count as 0 toward totals (failed turns often carry
-    no output_len). Measured only — no token or cost estimation."""
+    no output_len). Measured only — no token estimation, ever (this engine
+    has no tokenizer).
+
+    ``pricing`` is the OPTIONAL, opt-in cost.pricing config dict (see
+    config.yaml): {"model_id": {"output_per_1k_chars": rate, ...}}. When
+    falsy (the default — absent/empty config), this function's output is
+    byte-for-byte identical to the pre-cost-estimation version: no bucket
+    gains any new key. When non-empty, each phase/agent bucket whose turns
+    were produced by at least one priced model id gains "est_cost_usd",
+    computed ONLY from that bucket's output chars attributable to priced
+    models (unpriced models in the same bucket contribute 0, silently — this
+    is a partial/best-effort estimate, not a full run cost). Only
+    output_per_1k_chars is used: this engine tracks output length only (no
+    input/prompt char counts anywhere), so an operator-supplied
+    input_per_1k_chars rate is accepted by the schema for forward
+    compatibility but never contributes to the estimate."""
     def _fresh():
         return {"turns": 0, "failed_turns": 0, "total_dur": 0.0,
-                "mean_dur": 0.0, "total_output_chars": 0, "fallbacks": 0}
+                "mean_dur": 0.0, "total_output_chars": 0, "fallbacks": 0,
+                "_chars_by_model": {}}
 
     by_phase, by_agent = {}, {}
 
@@ -180,12 +200,16 @@ def _telemetry(events):
                 chars = int(evt.get("output_len") or 0)
             except (TypeError, ValueError):
                 chars = 0
+            model_used = str(evt.get("model_used") or evt.get("model_requested") or "")
             for b in _buckets(evt):
                 b["turns"] += 1
                 if evt.get("ok") is False:
                     b["failed_turns"] += 1
                 b["total_dur"] += dur
                 b["total_output_chars"] += chars
+                if pricing and model_used and chars:
+                    b["_chars_by_model"][model_used] = \
+                        b["_chars_by_model"].get(model_used, 0) + chars
         elif kind == "agent_fallback" and evt.get("status") in _FALLBACK_OUTCOMES:
             for b in _buckets(evt):
                 b["fallbacks"] += 1
@@ -193,7 +217,29 @@ def _telemetry(events):
         for b in buckets.values():
             b["total_dur"] = round(b["total_dur"], 1)
             b["mean_dur"] = round(b["total_dur"] / b["turns"], 1) if b["turns"] else 0.0
-    return {"by_phase": by_phase, "by_agent": by_agent}
+            chars_by_model = b.pop("_chars_by_model")
+            if pricing:
+                cost = 0.0
+                priced = False
+                for model, chars in chars_by_model.items():
+                    rate = (pricing.get(model) or {}).get("output_per_1k_chars")
+                    if rate is None:
+                        continue
+                    try:
+                        cost += (chars / 1000.0) * float(rate)
+                        priced = True
+                    except (TypeError, ValueError):
+                        continue
+                if priced:
+                    b["est_cost_usd"] = round(cost, 4)
+    result = {"by_phase": by_phase, "by_agent": by_agent}
+    if pricing:
+        result["cost_note"] = ("est_cost_usd is estimated from operator-supplied "
+                                "per-1k-OUTPUT-char rates (config.yaml cost.pricing) "
+                                "for models with a configured rate only — never a "
+                                "token count, and never includes input/prompt chars "
+                                "(not tracked by this engine).")
+    return result
 
 
 def _mistakes_rollup(app_dir):
@@ -221,10 +267,12 @@ def _verify_attempts(app_dir):
             if isinstance(r, dict)]
 
 
-def build_postmortem(app_dir, app=None):
+def build_postmortem(app_dir, app=None, pricing=None):
     """Assemble the full postmortem dict for one app dir. Pure reads; every
     section degrades to empty on missing/corrupt input; JSON-serializable
-    (the `--postmortem --json` payload)."""
+    (the `--postmortem --json` payload). ``pricing`` is the optional, opt-in
+    cost.pricing config dict (see _telemetry) — omit/pass falsy for the
+    default, cost-estimate-free behavior."""
     state = _load_state(app_dir)
     events = evlib.read_events(app_dir)
     chain = []
@@ -253,7 +301,7 @@ def build_postmortem(app_dir, app=None):
         "failure_chain": chain,
         "verify_attempts": _verify_attempts(app_dir),
         "mistakes": _mistakes_rollup(app_dir),
-        "telemetry": _telemetry(events),
+        "telemetry": _telemetry(events, pricing=pricing),
         "events_total": len(events),
     }
 
@@ -339,9 +387,14 @@ def render_postmortem(rep):
         if not rows:
             lines.append("  (no turns recorded)")
         for name, b in sorted(rows.items()):
-            lines.append("  %-26s turns=%d (failed=%d)  dur total=%.1fs "
-                         "mean=%.1fs  output=%d chars  fallbacks=%d"
-                         % (name, b["turns"], b["failed_turns"], b["total_dur"],
-                            b["mean_dur"], b["total_output_chars"], b["fallbacks"]))
+            row = ("  %-26s turns=%d (failed=%d)  dur total=%.1fs "
+                  "mean=%.1fs  output=%d chars  fallbacks=%d"
+                  % (name, b["turns"], b["failed_turns"], b["total_dur"],
+                     b["mean_dur"], b["total_output_chars"], b["fallbacks"]))
+            if "est_cost_usd" in b:
+                row += "  est_cost=$%.4f" % b["est_cost_usd"]
+            lines.append(row)
+    if tel.get("cost_note"):
+        lines.append("  (%s)" % tel["cost_note"])
     lines.append("=== POSTMORTEM complete ===")
     return "\n".join(lines)

@@ -54,6 +54,11 @@ def _conn(db_path):
         conn.execute("ALTER TABLE worker_slots ADD COLUMN claim_uuid TEXT")
     except sqlite3.OperationalError:
         pass
+    # _reap does "SELECT DISTINCT pid FROM worker_slots" on every claim; without
+    # an index that's a full scan of the table each time. Cheap to add, IF NOT
+    # EXISTS makes it a no-op after the first connect.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_worker_slots_pid "
+                 "ON worker_slots(pid)")
     return conn
 
 

@@ -158,6 +158,15 @@ class TestAbortedRun(unittest.TestCase):
         self.assertEqual(bc["fallbacks"], 1)
         self.assertEqual(tel["by_phase"]["tech_specs"]["total_output_chars"], 1000)
 
+    def test_no_pricing_no_cost_fields(self):
+        # Default (pricing=None, same as build_postmortem's default arg): no
+        # cost field anywhere, no cost_note — byte-for-byte the pre-cost-
+        # estimation shape.
+        tel = self.rep["telemetry"]
+        for bucket in list(tel["by_phase"].values()) + list(tel["by_agent"].values()):
+            self.assertNotIn("est_cost_usd", bucket)
+        self.assertNotIn("cost_note", tel)
+
     def test_json_serializable(self):
         json.dumps(self.rep)
 
@@ -168,6 +177,93 @@ class TestAbortedRun(unittest.TestCase):
                        "Turn telemetry", "build_coordination",
                        "fallbacks=1", "Codex timed out after 600s"):
             self.assertIn(needle, text)
+
+
+class TestCostEstimation(unittest.TestCase):
+    """cost.pricing is opt-in: build_postmortem(pricing=...) only. No config
+    file involved here — orchestrator.py's CLI wiring reads cost.pricing and
+    passes it through, tested separately (this exercises postmortem.py's own
+    contract)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.app_dir = os.path.join(self._tmp.name, "demo")
+        os.makedirs(self.app_dir)
+        _write_state(self.app_dir, {"workflow": "app_build", "done": True,
+                                    "status": "done"})
+        ev.emit_event(self.app_dir, "turn_completed", project="demo",
+                      phase="tech_specs", round=1, agent="claude", ok=True,
+                      exit=0, model_used="claude-sonnet-5",
+                      output_len=2000, dur=5.0)
+        ev.emit_event(self.app_dir, "turn_completed", project="demo",
+                      phase="build_coordination", round=1, agent="codex",
+                      ok=True, exit=0, model_used="gpt-5.3-codex-spark",
+                      output_len=3000, dur=8.0)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_no_pricing_arg_no_cost_fields(self):
+        rep = pm.build_postmortem(self.app_dir, app="demo")
+        tel = rep["telemetry"]
+        self.assertNotIn("est_cost_usd", tel["by_agent"]["claude"])
+        self.assertNotIn("est_cost_usd", tel["by_agent"]["codex"])
+        self.assertNotIn("cost_note", tel)
+
+    def test_pricing_for_one_model_only_that_models_telemetry_gains_cost(self):
+        pricing = {"claude-sonnet-5": {"output_per_1k_chars": 0.01}}
+        rep = pm.build_postmortem(self.app_dir, app="demo", pricing=pricing)
+        tel = rep["telemetry"]
+        # claude turn: 2000 chars * 0.01/1000 = 0.02
+        self.assertAlmostEqual(tel["by_agent"]["claude"]["est_cost_usd"], 0.02)
+        self.assertAlmostEqual(tel["by_phase"]["tech_specs"]["est_cost_usd"], 0.02)
+        # codex's model has no configured rate — no cost field at all.
+        self.assertNotIn("est_cost_usd", tel["by_agent"]["codex"])
+        self.assertNotIn("est_cost_usd", tel["by_phase"]["build_coordination"])
+        self.assertIn("cost_note", tel)
+        self.assertIn("OUTPUT", tel["cost_note"])
+
+    def test_input_per_1k_chars_accepted_but_unused(self):
+        # Configuring an input rate must not raise and must not change the
+        # output-only cost estimate (this engine tracks no input chars).
+        pricing = {"claude-sonnet-5": {"output_per_1k_chars": 0.01,
+                                       "input_per_1k_chars": 999.0}}
+        rep = pm.build_postmortem(self.app_dir, app="demo", pricing=pricing)
+        self.assertAlmostEqual(
+            rep["telemetry"]["by_agent"]["claude"]["est_cost_usd"], 0.02)
+
+    def test_render_text_includes_cost_when_priced(self):
+        pricing = {"claude-sonnet-5": {"output_per_1k_chars": 0.01}}
+        rep = pm.build_postmortem(self.app_dir, app="demo", pricing=pricing)
+        text = pm.render_postmortem(rep)
+        self.assertIn("est_cost=$0.0200", text)
+        self.assertIn("estimated from operator-supplied", text)
+
+    def test_render_text_omits_cost_when_not_priced(self):
+        rep = pm.build_postmortem(self.app_dir, app="demo")
+        text = pm.render_postmortem(rep)
+        self.assertNotIn("est_cost", text)
+
+
+class TestCliPricingWiring(unittest.TestCase):
+    """orchestrator.py's --postmortem reads cget(cfg, 'cost.pricing') and
+    passes it through; the default config.yaml ships an empty pricing dict
+    so a real run's --postmortem stays cost-field-free."""
+
+    def test_empty_dict_pricing_yields_no_cost_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            app_dir = os.path.join(d, "demo")
+            os.makedirs(app_dir)
+            _write_state(app_dir, {"workflow": "app_build", "done": True})
+            ev.emit_event(app_dir, "turn_completed", project="demo",
+                         phase="p", round=1, agent="claude", ok=True, exit=0,
+                         model_used="claude-sonnet-5", output_len=100, dur=1.0)
+            # cget(cfg, "cost.pricing", None) on the real config.yaml returns
+            # {} (empty dict, not None) — build_postmortem must treat that as
+            # "no pricing" too (falsy), not attempt lookups against it.
+            rep = pm.build_postmortem(app_dir, app="demo", pricing={})
+            self.assertNotIn("est_cost_usd", rep["telemetry"]["by_agent"]["claude"])
+            self.assertNotIn("cost_note", rep["telemetry"])
 
 
 class TestCleanRun(unittest.TestCase):

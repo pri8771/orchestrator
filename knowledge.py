@@ -193,6 +193,12 @@ def retrieve(orch_dir, domain, query_text, max_chars=6000, top_k=3):
         chunk = "\n\n----- %s -----\n%s" % (title, clean)
         if used + len(chunk) > max_chars:
             chunk = chunk[: max(0, max_chars - used)]
+        if not chunk:
+            # Truncated away to nothing (budget exhausted before this doc's
+            # content fit) — don't append an empty/whitespace-only chunk, or
+            # `parts` can end up non-empty while carrying zero real content,
+            # which would make retrieve() return a bare header with no body.
+            break
         parts.append(chunk)
         used += len(chunk)
         if used >= max_chars:

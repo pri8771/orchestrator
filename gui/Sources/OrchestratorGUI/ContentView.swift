@@ -344,7 +344,11 @@ struct CommandPaletteView: View {
     // Fuzzy subsequence match ("bri" → Brinekeeper): every query character
     // appears in order, case-insensitively. Prefix beats substring beats
     // scattered subsequence. nil = no match.
-    static func fuzzyScore(_ query: String, _ candidate: String) -> Int? {
+    // `nonisolated`: touches no actor state (pure String matching), and is
+    // called synchronously from XCTest — without this it would inherit
+    // CommandPaletteView's @MainActor isolation (View conformance) and the
+    // test call wouldn't compile/run outside the main actor.
+    nonisolated static func fuzzyScore(_ query: String, _ candidate: String) -> Int? {
         let q = query.lowercased(), c = candidate.lowercased()
         if q.isEmpty { return 0 }
         if c.hasPrefix(q) { return 3 }

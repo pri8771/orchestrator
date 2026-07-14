@@ -30,7 +30,12 @@ class TestNewPhaseFields(unittest.TestCase):
         self.assertEqual(ov["gemini_reasoning"], "low")
         self.assertEqual(ov["ollama_reasoning"], "high")
 
-    def test_noop_fields_warn_once_and_do_not_change_models(self):
+    def test_gemini_reasoning_warns_once_and_does_not_change_models(self):
+        # gemini_reasoning has no equivalent CLI flag as invoked here — noop,
+        # warned once. ollama_reasoning is NOT noop anymore at the phase-
+        # routing level: it's honored on the HTTP local:<model> path (see
+        # TestOllamaReasoningHttpPath below), so it lands in models{} like
+        # codex_reasoning/claude_reasoning and does not warn here.
         cfg = {"models": {}, "_resolved": {"gemini_model": "", "ollama_model": ""},
                "_routing": {"enabled": True, "fallback": {},
                             "phases": {"tech_specs": {"gemini_reasoning": "low",
@@ -40,14 +45,81 @@ class TestNewPhaseFields(unittest.TestCase):
             c = orch._apply_phase_routing(cfg, "tech_specs")
             orch._apply_phase_routing(cfg, "tech_specs")   # second pass: no re-warn
         warns = [m for m in msgs if "accepted but ignored" in m]
-        self.assertEqual(len(warns), 2)   # one per field, once total
+        self.assertEqual(len(warns), 1)   # gemini_reasoning only, once total
         self.assertTrue(any("gemini_reasoning" in m for m in warns))
-        self.assertTrue(any("ollama_reasoning" in m for m in warns))
-        # No invented flag/model mutation from the noop fields.
+        # No invented flag/model mutation from the gemini noop field.
         self.assertEqual(c["_resolved"]["gemini_model"], "")
-        self.assertEqual(c["_resolved"]["ollama_model"], "")
         self.assertNotIn("gemini_reasoning", c["models"])
-        self.assertNotIn("ollama_reasoning", c["models"])
+        # ollama_reasoning DID get applied to models{} (real capability).
+        self.assertEqual(c["models"]["ollama_reasoning"], "high")
+
+
+class TestOllamaReasoningHttpPath(unittest.TestCase):
+    """ollama_reasoning maps onto Ollama's documented /api/generate "think"
+    boolean, but only on the HTTP path (run_local) — not the CLI roster path
+    (run_ollama), which still warns-and-ignores."""
+
+    def test_high_effort_sets_think_true_on_http_path(self):
+        cfg = {"models": {"ollama_reasoning": "high"}, "_resolved": {}}
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"response": "ok"}).encode("utf-8")
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeResp()
+
+        with unittest.mock.patch.object(orch.urllib.request, "urlopen", fake_urlopen):
+            out, err, code, _cmd = orch.run_local(cfg, "hi", 10, model="qwen3")
+        self.assertEqual(code, 0)
+        self.assertIs(captured["body"]["think"], True)
+
+    def test_low_or_unset_effort_omits_think(self):
+        cfg = {"models": {}, "_resolved": {}}
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"response": "ok"}).encode("utf-8")
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeResp()
+
+        with unittest.mock.patch.object(orch.urllib.request, "urlopen", fake_urlopen):
+            orch.run_local(cfg, "hi", 10, model="qwen3")
+        self.assertNotIn("think", captured["body"])
+
+        cfg["models"]["ollama_reasoning"] = "low"
+        with unittest.mock.patch.object(orch.urllib.request, "urlopen", fake_urlopen):
+            orch.run_local(cfg, "hi", 10, model="qwen3")
+        self.assertNotIn("think", captured["body"])
+
+    def test_cli_roster_path_still_warns_and_ignores(self):
+        cfg = {"models": {"ollama": "qwen3", "ollama_reasoning": "high"},
+               "_resolved": {}, "_phase_key": "tech_specs"}
+        msgs = []
+        with unittest.mock.patch.object(orch, "emit", msgs.append), \
+             unittest.mock.patch.object(orch, "_run_subprocess",
+                                        return_value=("ok", "", 0)), \
+             unittest.mock.patch.object(orch, "_agent_cwd",
+                                        return_value=(".", False)):
+            orch.run_ollama(cfg, "hi", 10)
+        self.assertTrue(any("ollama_reasoning" in m and "ignored" in m for m in msgs))
 
 
 class TestRolesParsing(unittest.TestCase):

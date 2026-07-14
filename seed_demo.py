@@ -91,7 +91,7 @@ def sha256_text(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def agent_message(agent, phase_title, rnd, others):
+def agent_message(agent, phase_title, others):
     # Deterministic critic pick: builtin hash() is per-process salted for str
     # (PYTHONHASHSEED), which would break the "deterministic/idempotent" contract
     # — a re-run must reproduce the same demo transcript.
@@ -107,7 +107,7 @@ def agent_message(agent, phase_title, rnd, others):
     )
 
 
-def coordinator_message(phase_title, rnd, final_text):
+def coordinator_message(phase_title, final_text):
     return (
         "Okay, I think we've actually landed here. Everyone's circling the same "
         "answer for the %s stage now and that earlier disagreement got resolved in "
@@ -148,11 +148,11 @@ def render_phase_md(app, phasedef, original_prompt, rounds, complete):
         for agent in order:
             others = [a for a in order if a != agent]
             block = "**%s — Round %d**\n\n%s\n" % (
-                DISPLAY[agent], rnd, agent_message(agent, title, rnd, others))
+                DISPLAY[agent], rnd, agent_message(agent, title, others))
             out.append("\n" + block)
         # Coordinator turn (Gemini). Declares consensus on the final round only.
         last = (rnd == rounds) and complete
-        cresp = (coordinator_message(title, rnd, final) if last
+        cresp = (coordinator_message(title, final) if last
                  else "Good progress this round, but we're not fully agreed yet — a "
                       "couple of things still to hash out before we lock it in.\n\n"
                       "CONSENSUS: NO")

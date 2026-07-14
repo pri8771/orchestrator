@@ -239,6 +239,7 @@ struct RoutingGridView: View {
     @State private var selection: Set<GridCellID> = []
     @State private var anchor: GridCellID?
     @State private var editingCell: GridCellID?
+    @State private var editingRoles: String?    // phaseKey with the roles popover open
     @State private var clipboard: CellClipboard?
     @State private var selectedPreset = "balanced"
     @FocusState private var gridFocused: Bool
@@ -486,7 +487,33 @@ struct RoutingGridView: View {
             Button("Paste row") { pasteRow(phase.key) }
                 .disabled(rowClipboard == nil)
             Button("Apply row to all phases below") { applyRowBelow(phase.key) }
+            Divider()
+            Button("Role overrides…") { editingRoles = phase.key }
         }
+        .popover(isPresented: Binding(
+            get: { editingRoles == phase.key },
+            set: { if !$0 { editingRoles = nil } }
+        ), arrowEdge: .trailing) {
+            RolePopover(phaseTitle: phase.title,
+                        roles: rolesBinding(phase.key),
+                        modelOptions: modelOptions)
+                .environmentObject(store)
+        }
+    }
+
+    // Round-trips PhaseRoute.roles through the draft matrix — nil collapses
+    // back to "no roles key" the same way isEmpty does for the top-level cell.
+    private func rolesBinding(_ phaseKey: String) -> Binding<RoleOverrides> {
+        Binding(
+            get: { matrix?.draft.phases[phaseKey]?.roles ?? RoleOverrides() },
+            set: { newValue in
+                edit { m in
+                    var r = m.draft.phases[phaseKey] ?? PhaseRoute()
+                    r.roles = newValue.isEmpty ? nil : newValue
+                    m.draft.phases[phaseKey] = r.isEmpty ? nil : r
+                }
+            }
+        )
     }
 
     private var agentHeaderRow: some View {
@@ -1096,6 +1123,85 @@ private struct CellEditorPopover: View {
     private func isSmallLocal(_ id: String) -> Bool {
         guard cellID.agent == "ollama" else { return false }
         return RoutingConsequences.parameterBillions(id).map { $0 < 7 } ?? false
+    }
+}
+
+// MARK: - Role overrides popover (worker/integrator split within one phase)
+//
+// model_routing.json phases.<key>.roles.{worker,integrator} — patches every
+// parallel build lane vs. only the integrator's turn (_apply_role_routing in
+// orchestrator.py). Two disclosure sections, same model/effort picker
+// vocabulary as the top-level phase editor (PhaseRouteRow, ModelLibrary.swift).
+
+private struct RolePopover: View {
+    @EnvironmentObject var store: OrchestratorStore
+    let phaseTitle: String
+    @Binding var roles: RoleOverrides
+    let modelOptions: (String) -> [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.s) {
+            Text("Role overrides · \(phaseTitle)").font(DS.font.callout)
+            Text("Patch worker lanes and the integrator's turn separately — the cheap-workers/expensive-integrator split.")
+                .font(DS.font.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("Worker overrides") {
+                roleFieldsEditor($roles.worker)
+            }
+            .font(DS.font.callout)
+            DisclosureGroup("Integrator overrides") {
+                roleFieldsEditor($roles.integrator)
+            }
+            .font(DS.font.callout)
+        }
+        .padding(DS.space.s)
+        .frame(width: 300)
+    }
+
+    @ViewBuilder
+    private func roleFieldsEditor(_ fields: Binding<RoleFields>) -> some View {
+        VStack(alignment: .leading, spacing: DS.space.xs) {
+            HStack(spacing: DS.space.xs) {
+                labeledPicker("Claude", selection: fields.claude, options: modelOptions("claude"))
+                labeledPicker("Codex", selection: fields.codex, options: modelOptions("codex"))
+            }
+            HStack(spacing: DS.space.xs) {
+                labeledPicker("Gemini", selection: fields.gemini, options: modelOptions("gemini"))
+                labeledPicker("Ollama", selection: fields.ollama, options: modelOptions("ollama"))
+            }
+            EffortPicker(level: Binding(
+                get: { EffortLevel(configValue: fields.wrappedValue.claudeReasoning) },
+                set: { fields.wrappedValue.claudeReasoning = $0.map(configValue) ?? "" }
+            ), agent: "claude", showFootnote: false)
+            EffortPicker(level: Binding(
+                get: { EffortLevel(configValue: fields.wrappedValue.codexReasoning) },
+                set: { fields.wrappedValue.codexReasoning = $0.map(configValue) ?? "" }
+            ), agent: "codex", showFootnote: false)
+        }
+        .padding(.top, DS.space.xxs)
+    }
+
+    private func configValue(_ level: EffortLevel) -> String {
+        switch level {
+        case .low: return "low"
+        case .medium: return "medium"
+        case .high: return "high"
+        }
+    }
+
+    @ViewBuilder
+    private func labeledPicker(_ label: String, selection: Binding<String>,
+                               options: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(DS.font.caption2).foregroundStyle(.secondary)
+            Picker("", selection: selection) {
+                Text("default").tag("")
+                ForEach(options, id: \.self) { Text($0).font(DS.font.monoInline).tag($0) }
+            }
+            .labelsHidden().pickerStyle(.menu).font(DS.font.caption)
+            .accessibilityLabel("\(label) override")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

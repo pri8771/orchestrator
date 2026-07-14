@@ -113,6 +113,18 @@ class TestWorkerBroker(unittest.TestCase):
         gr.release("cli_remote", token, pid=os.getpid(), db_path=self.db)
         self.assertEqual(gr.active_count("cli_remote", db_path=self.db), 0)
 
+    def test_pid_index_created(self):
+        # _reap does SELECT DISTINCT pid FROM worker_slots on every claim; an
+        # index backs that scan. Confirm _conn actually creates it (and that
+        # doing so twice, i.e. reconnecting, is a harmless no-op).
+        conn = gr._conn(self.db)
+        conn2 = gr._conn(self.db)
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+        self.assertIn("idx_worker_slots_pid", names)
+        conn.close()
+        conn2.close()
+
     def test_stale_slot_reaped_by_age_even_if_pid_alive(self):
         # A live PID (our own) that has held a slot longer than the max age is a
         # leak (crashed process, PID recycled). Age-based reaping frees it so the

@@ -161,3 +161,30 @@ Already specified in DESIGN-NATIVE-PRO §2.2 and correct; the refresh changes
 - Structured-argument palette verbs ("Set lanes to…", "Apply preset…").
 - ⌥-drag fill-paint on the routing grid (the documented fast-follow).
 - Menu-bar extra restyle on the status-dot grammar.
+
+## 8. Testing scope (deliberate, not a gap)
+
+`gui/Tests/OrchestratorGUITests/` deliberately does NOT contain SwiftUI view
+snapshot or rendering tests. That's a conscious decision, not an oversight:
+
+- **No snapshot-testing library.** This target has a zero-external-dependency
+  rule for the GUI (see the SPM manifest — no third-party packages). Every
+  credible Swift snapshot-testing tool (pointfreeco/swift-snapshot-testing,
+  etc.) is a package dependency, so adopting one would break that rule.
+- **No simulator-backed UI runner in this CI.** XCUITest needs a live
+  simulator/device session to drive real windows; the job shape this suite
+  runs in doesn't have one. Faking that out would just produce tests that
+  assert nothing real.
+
+Instead, the suite maximizes coverage of the PURE logic that feeds views:
+routing-matrix resolution math and preset math (`NativeProTests`), formatting
+and derivation helpers (`ViewLogicTests` — command-palette fuzzy scoring,
+download-count formatting, `Project.progressText`/`phaseStatus`), parsers
+(`TranscriptParserTests`), round-trip persistence (`RoutingRolesTests`), and
+the style/lint guards (`StyleGuardTests`). A View's `body` itself is never
+unit-tested directly — when a view's logic is worth testing, we pull it out
+into a plain function or computed property first (which is also just better
+code organization) rather than reach for rendering assertions we can't run
+here. If a real simulator-backed CI lane becomes available, XCUITest smoke
+tests for the top few flows (create project, run a phase, edit routing)
+would be the natural next investment — not attempted in this pass.

@@ -22,7 +22,7 @@ Shape (schema_version 1):
       "codex_reasoning": "low",            # codex -c model_reasoning_effort=...
       "claude_reasoning": "high",          # claude -p --effort ...
       "gemini_reasoning": "low",           # ACCEPTED BUT IGNORED (see below)
-      "ollama_reasoning": "low",           # ACCEPTED BUT IGNORED (see below)
+      "ollama_reasoning": "medium",        # HTTP path only (see below)
       "ollama": "qwen2.5-coder:7b",        # local model override
       "agents": "cloud",                   # participant filter, see below
       "roles": {                           # per-ROLE effort within one phase
@@ -43,14 +43,20 @@ the integrator's turn — the cheap-workers/expensive-integrator split. Inner
 keys are validated against PHASE_FIELDS; unknown role names are ignored with
 a warning.
 
-Reasoning-effort parity note (evidence-based): only the codex CLI
+Reasoning-effort parity note (evidence-based): the codex CLI
 (`-c model_reasoning_effort=...`) and claude CLI (`--effort ...`) expose an
-effort control in how this engine invokes them. The gemini CLI is invoked as
-`gemini -p ...` and ollama as `ollama run <model>` / the /api/generate HTTP
-API — neither invocation carries an effort/thinking flag, so
-"gemini_reasoning" / "ollama_reasoning" are ACCEPTED (valid schema, GUI can
-round-trip them) but IGNORED at runtime with a logged warning rather than
-inventing a flag the CLI may reject.
+effort control in how this engine invokes them; so does Ollama's
+/api/generate HTTP endpoint, via its documented boolean "think" field for
+reasoning-capable models (deepseek-r1, qwen3, ...). "ollama_reasoning" maps
+onto that field (medium/high/max -> think=true; unset/low -> omitted) but
+ONLY on the HTTP path — orchestrator.run_local, used by dynamic
+local:<model> agents. The gemini CLI (`gemini -p ...`) and the roster
+"ollama" agent's plain `ollama run <model>` CLI invocation (orchestrator.
+run_ollama) carry no effort/thinking flag as invoked here, so
+"gemini_reasoning" is ACCEPTED (valid schema, GUI can round-trip it) but
+IGNORED at runtime with a logged warning rather than inventing a flag the
+CLI may reject, and "ollama_reasoning" is honored on the HTTP path but still
+noop (also warned) on the CLI roster path.
 
 Every reader is best-effort: a missing/corrupt file or unknown phase key
 degrades to "no overrides" and can never take down a run.
@@ -64,8 +70,10 @@ import re
 ROUTING_FILENAME = "model_routing.json"
 
 # Per-phase override fields the engine honors (anything else is dropped).
-# gemini_reasoning/ollama_reasoning are accepted-but-noop: those CLIs expose no
-# effort control in how this engine invokes them (see module docstring).
+# gemini_reasoning is accepted-but-noop (the gemini CLI exposes no effort
+# control as invoked here). ollama_reasoning is honored on the HTTP
+# local:<model> path (run_local's "think" field) and noop on the CLI roster
+# path (run_ollama) — see module docstring.
 PHASE_FIELDS = ("claude", "claude_reasoning", "codex", "codex_reasoning",
                 "gemini", "gemini_reasoning", "ollama", "ollama_reasoning",
                 "agents")

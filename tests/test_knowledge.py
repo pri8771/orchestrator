@@ -82,6 +82,35 @@ class TestRetrieve(unittest.TestCase):
             self.assertIn("widgets", out1.lower())
             self.assertIn("widgets", out2.lower())
 
+    def test_zero_budget_returns_empty_not_bare_header(self):
+        # A doc scores > 0 (matches) but max_chars=0 means every chunk
+        # truncates to "" before it can be appended. retrieve() must return
+        # "" rather than a header with no content underneath it.
+        with tempfile.TemporaryDirectory() as d:
+            domain_dir = os.path.join(d, "knowledge", "general")
+            os.makedirs(domain_dir)
+            with open(os.path.join(domain_dir, "one.md"), "w", encoding="utf-8") as fh:
+                fh.write("<!-- keywords: widgets -->\nAll about widgets.\n")
+            out = k.retrieve(d, "general", "widgets", max_chars=0)
+            self.assertEqual(out, "")
+
+    def test_second_doc_truncates_to_empty_after_budget_exhausted(self):
+        # First doc consumes the whole budget exactly; the second scoring doc's
+        # chunk then truncates to "" and must be skipped, not appended as an
+        # empty entry that would otherwise still let parts be non-empty (it
+        # already is here) but must not corrupt/duplicate output.
+        with tempfile.TemporaryDirectory() as d:
+            domain_dir = os.path.join(d, "knowledge", "general")
+            os.makedirs(domain_dir)
+            with open(os.path.join(domain_dir, "a.md"), "w", encoding="utf-8") as fh:
+                fh.write("<!-- keywords: widgets -->\n" + "x" * 50 + "\n")
+            with open(os.path.join(domain_dir, "b.md"), "w", encoding="utf-8") as fh:
+                fh.write("<!-- keywords: widgets -->\n" + "y" * 50 + "\n")
+            budget = len("\n\n----- A -----\n" + "x" * 50)
+            out = k.retrieve(d, "general", "widgets", max_chars=budget, top_k=2)
+            self.assertIn("xxx", out)
+            self.assertNotIn("yyy", out)
+
     def test_same_mtime_different_size_replacement_busts_cache(self):
         # A same-second file replacement used to serve a stale parse because
         # the cache key was mtime alone; keying on (mtime_ns, size) catches a

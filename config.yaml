@@ -73,6 +73,34 @@ models:
   # limit (every roster entry joins, today's behavior).
   local_active_limit: 3
 
+# Optional, OFF by default: per-model dollar-cost estimates surfaced in
+# `--postmortem`'s turn-telemetry section. This engine measures OUTPUT
+# length in CHARACTERS only (no tokenizer, no input/prompt char tracking
+# anywhere) — see postmortem.py's _telemetry docstring — so rates are named
+# and computed per 1000 output chars, never "per token", to stay honest
+# about what's actually measured.
+#
+# Leave `pricing` empty (the default) and --postmortem's output is
+# byte-for-byte identical to a build with no cost.pricing section at all —
+# this is a strictly additive, opt-in feature.
+#
+# To enable for a model, add an entry keyed by the exact model id used
+# elsewhere in this file (models.claude, models.codex, etc):
+#   cost:
+#     pricing:
+#       claude-sonnet-5:
+#         output_per_1k_chars: 0.006
+# `input_per_1k_chars` is accepted for forward-compatibility with a
+# possible future input-tracking feature but is NEVER used today.
+#
+# NOTE: this mini-YAML reader splits each line on its first ":", so a model
+# id that itself contains a colon (e.g. an Ollama tag like
+# "qwen2.5-coder:14b") cannot be used as a pricing key here — use a
+# config.json file instead (it takes precedence over config.yaml and is
+# parsed as real JSON, so colons in keys are unambiguous).
+cost:
+  pricing:
+
 agents:
   codex_enabled: true
   claude_enabled: true

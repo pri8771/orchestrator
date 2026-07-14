@@ -48,8 +48,27 @@ MAX_TEXT_CHARS = 20_000          # per fetched page, after HTML stripping
 MAX_CONTEXT_CHARS = 25_000       # total cfg["_url_context"] budget
 CACHE_FRESH_HOURS = 24
 
-# Some sites serve an empty shell (or a 403) to obvious bots; a browser-ish
-# User-Agent gets the same HTML a human would see.
+# USER_AGENT: deliberate anti-block spoof, not an accident.
+#
+# Why: many sites serve a stripped-down shell, a 403, or degraded/blocked
+# content to requests whose User-Agent identifies them as a generic HTTP
+# library (e.g. "python-urllib/3.x") or an obvious bot — even for pages that
+# are otherwise public and unauthenticated. Presenting a mainstream desktop
+# browser's UA string gets the same HTML a human visitor would see.
+#
+# This is a single static string, not a rotated/randomized pool: this module
+# is a build-time, operator-initiated content fetch (it runs once per run,
+# against URLs the operator put in their own prompt), not a scraper crawling
+# at volume or trying to evade rate limiting, so there is no rotation need
+# and no attempt to look like many different clients.
+#
+# Scope/intent boundary: this does NOT bypass authentication or paywalls. It
+# only ever fetches URLs the operator explicitly supplied in initial_prompt.md
+# — publicly documented pages they linked themselves — never anything behind
+# a login the operator hasn't already supplied credentials/cookies for (which
+# this module has no mechanism to do anyway). Spoofing the UA changes which
+# HTML a public page's server chooses to render; it does not grant access to
+# anything that wasn't already publicly reachable.
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/124.0.0.0 Safari/537.36")
