@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import QuickLook
 
 // MARK: - New App intake (DESIGN-NATIVE-PRO.md §4.5, milestone M2)
 //
