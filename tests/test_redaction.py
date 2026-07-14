@@ -53,6 +53,21 @@ class TestRedaction(unittest.TestCase):
         self.assertEqual(schemas.redact_secrets(""), "")
         self.assertIsNone(schemas.redact_secrets(None))
 
+    def test_fails_closed_not_open_on_internal_error(self):
+        # A broken redaction pass must withhold the content, never fall back
+        # to returning the raw, unredacted text — that would defeat the
+        # entire point of the function.
+        secret_bearing = "AKIAABCDEFGHIJKLMNOP should never leak"
+        real_token_re = schemas._TOKEN_RE
+        schemas._TOKEN_RE = None  # force an AttributeError inside the try
+        try:
+            out = schemas.redact_secrets(secret_bearing)
+        finally:
+            schemas._TOKEN_RE = real_token_re
+        self.assertNotEqual(out, secret_bearing)
+        self.assertNotIn("AKIAABCDEFGHIJKLMNOP", out)
+        self.assertIn("WITHHELD", out)
+
     def test_entropy_fallback_skipped_inside_json_fences(self):
         # A high-entropy-looking but legitimate identifier (a hash reference, a
         # long id) inside a ```finding-json``` block must survive intact — a

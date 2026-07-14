@@ -300,4 +300,8 @@ def redact_secrets(text):
         pieces.append(_TOKEN_RE.sub(_maybe, out[pos:]))
         return "".join(pieces)
     except Exception:
-        return text
+        # Fail CLOSED: a broken redaction pass must never fall back to the
+        # raw, unredacted text — that would defeat the whole point of this
+        # function. Withhold the content instead; callers already treat the
+        # return value as opaque display/log text.
+        return "[REDACTION FAILED — CONTENT WITHHELD (%d chars)]" % len(text)

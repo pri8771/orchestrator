@@ -808,7 +808,15 @@ final class OrchestratorStore: ObservableObject {
             let events = EventsScanner.scan(rootURL: rootURL, names: names)
             let running = Set(loaded.filter(\.running).map(\.name))
                 .union(locks.keys)
-            let failed = Set(loaded.filter { $0.status == .aborted }.map(\.name))
+            // "Done" only means the pipeline finished — it says nothing about
+            // whether the last verify_results.json record actually passed.
+            // Fold a done-but-failed-verification project into the same
+            // "failed" rollup as an aborted run so the toolbar capsule can't
+            // read "All healthy" while a project's build is known-broken.
+            let failed = Set(loaded.filter {
+                $0.status == .aborted
+                    || ($0.status == .done && $0.latestVerify?.ok == false)
+            }.map(\.name))
             let health = EventsScanner.summarize(eventsByProject: events,
                                                  runningProjects: running,
                                                  failedProjects: failed)
