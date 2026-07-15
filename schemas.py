@@ -43,6 +43,10 @@ REQUIRED_FIELDS = {
     "phase_summary": ["phase", "one_paragraph_summary"],
     "agent_identity": ["id", "provider", "kind"],
     "agent_health": ["status"],
+    # extraction-json (library_mining): a proposed reusable package + its public
+    # API, turned into a compilable SPM skeleton by swiftscaffold.
+    "extraction_package": ["package_name", "public_api"],
+    "extraction_api_item": ["kind", "name"],
 }
 
 # Controlled vocabularies used for normalization/validation.
@@ -52,6 +56,42 @@ FINDING_SOURCE = ("audit", "code_review", "secret_scan")
 FINDING_STATUS = ("open", "fixed", "wont_fix", "deferred")
 SEVERITY = ("Critical", "High", "Med", "Low")
 AGENT_STATUS = ("up", "down")
+# Swift declaration kinds a public_api item may request (each maps to an
+# always-compiling public stub in swiftscaffold).
+API_KINDS = ("protocol", "struct", "class", "enum", "func")
+
+# Swift keywords that can't appear as a bare identifier — a sanitized name that
+# lands on one gets an underscore prefix (below) so it's always usable as a type/
+# member/module name without backtick gymnastics.
+_SWIFT_KEYWORDS = frozenset({
+    "associatedtype", "class", "deinit", "enum", "extension", "fileprivate",
+    "func", "import", "init", "inout", "internal", "let", "open", "operator",
+    "private", "protocol", "public", "rethrows", "static", "struct", "subscript",
+    "typealias", "var", "break", "case", "continue", "default", "defer", "do",
+    "else", "fallthrough", "for", "guard", "if", "in", "repeat", "return",
+    "switch", "where", "while", "as", "catch", "false", "is", "nil", "self",
+    "Self", "super", "throw", "throws", "true", "try", "Any", "Type", "Protocol",
+})
+
+
+def sanitize_swift_identifier(name):
+    """Turn an arbitrary (LLM-authored) name into a valid, non-keyword Swift
+    identifier — "Network Kit!" -> "NetworkKit", "123abc" -> "_123abc",
+    "class" -> "_class". Returns None when nothing usable remains (empty /
+    pure-punctuation), so callers reject rather than emit a broken name. This is
+    the single sanitization point: parse_extraction_blocks stores the sanitized
+    result, so scaffolding never sees a raw name (no redeclaration collisions,
+    no path traversal, no reserved-word compile errors)."""
+    if not isinstance(name, str):
+        return None
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "", name)   # drops spaces/punct: "Network Kit!" -> "NetworkKit"
+    if not cleaned:
+        return None
+    if cleaned[0].isdigit():
+        cleaned = "_" + cleaned
+    if cleaned in _SWIFT_KEYWORDS:
+        cleaned = "_" + cleaned
+    return cleaned
 
 
 def validate_required_fields(obj, required_fields):

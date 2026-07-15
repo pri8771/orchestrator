@@ -176,6 +176,33 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   identity, the git-restore deletion gap, reversibility round-trip, the dirty/
   untracked/unknown-sha/no-change guards, ignored-artifact preservation, and
   the lane/merge-commit exclusion.
+- **library_mining package build** (was #3 below): the `library_mining`
+  workflow used to stop at `report/LIBRARY_REPORT.md`. Now the
+  `extraction_candidates` coordinator is asked (a new `extraction-json`
+  machine contract, gated to this workflow) to name its top candidate and its
+  public API, and a post-phase hook scaffolds that into a REAL, compilable
+  Swift Package skeleton under `app_build/<Name>/` (Package.swift +
+  `Sources/<Name>/<Name>.swift`), then runs `swift build` to prove it holds
+  together. Honesty boundary held exactly where the adversarial review drew
+  it: agents PLAN, the tool SCAFFOLDS deterministic always-compiling stubs
+  (each public API entry → an empty protocol / struct-with-init /
+  enum-with-placeholder / no-arg func, the proposed signature preserved as a
+  `///` doc comment, never as live code), and `swift build` PROVES it — real
+  cross-repo code extraction stays out of scope (it needs live agents). All
+  the review's must-fixes are in: the whole hook is exception-isolated (a
+  scaffold/verify hiccup can't fail the read-only phase); the contract is
+  gated on `_workflow_target == "library_mining"`, not the phase key alone;
+  ALL line terminators (`\n \r U+2028 U+2029`) are stripped from a signature
+  before it's embedded in a comment so it can't inject Swift; identifiers are
+  sanitized at a single point (parser) AND re-sanitized defensively in the
+  scaffolder, with Swift reserved words underscore-prefixed so `class`/`func`/
+  `default` don't hard-fail the compile; the dest path is composed only from a
+  sanitized identifier (no traversal); and there's no `Tests/` target —
+  `swift build` doesn't compile test targets, so shipping one would be
+  unverified surface. New module `swiftscaffold.py` (pure, stdlib-only, never
+  raises), `parse_extraction_blocks`, `schemas.sanitize_swift_identifier`. 27
+  tests incl. swift-gated compile checks over all five API kinds, reserved
+  words, empty API, and comment-injection safety.
 
 ## Genuinely next (in rough priority order)
 
@@ -195,8 +222,6 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-3. **library_mining scaffold phase** — today it produces the extraction
-   plan/report; building the package is a follow-on.
 
 ## Launch / test
 

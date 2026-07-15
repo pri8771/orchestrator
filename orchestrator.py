@@ -58,6 +58,7 @@ import mistakes as mistklib
 import phase_rules as phaseruleslib
 import portfolio as portfoliolib
 import postmortem as pmlib
+import swiftscaffold as swiftscaffoldlib
 import urlfetch as urlfetchlib
 import verify as verifylib
 import visualqa as vqalib
@@ -2214,6 +2215,19 @@ _INTERFACES_JSON_INSTRUCTION = (
     "the shared type/signature contract every parallel build worker codes "
     "against, so include every cross-lane type, API and function.\n"
 )
+_EXTRACTION_JSON_INSTRUCTION = (
+    "MACHINE CONTRACT (optional but recommended): for your TOP extraction "
+    "candidate, ALSO emit ONE fenced ```extraction-json``` block of the form "
+    '{"package_name": "NetworkKit", "platforms": [], "products": [], '
+    '"public_api": [{"kind": "protocol|struct|class|enum|func", "name": '
+    '"APIClient", "signature": "func send(_ r: Request) async throws -> '
+    'Response"}], "adopting_repos": ["repo-a", "repo-b"]}. The orchestrator '
+    "scaffolds this into a real, COMPILABLE Swift Package skeleton (the public "
+    "API becomes buildable stubs, your signature preserved as documentation) "
+    "and runs `swift build` to prove it holds together — so name the package "
+    "and its public surface precisely. One package (your single best "
+    "candidate); implementations are left as stubs for a human to fill in.\n"
+)
 
 
 _DECISIONS_JSON_INSTRUCTION = (
@@ -2269,6 +2283,11 @@ def _phase_contract(cfg, phasedef):
         parts.append(_REQUIREMENTS_JSON_INSTRUCTION)
     if key == "tech_specs":
         parts.append(_INTERFACES_JSON_INSTRUCTION)
+    # Gated on the workflow target, NOT the phase key alone: _phase_contract
+    # runs for every workflow's wrap-up, so an unrelated workflow that ever
+    # named a phase "extraction_candidates" must not inherit this contract.
+    if key == "extraction_candidates" and (cfg or {}).get("_workflow_target") == "library_mining":
+        parts.append(_EXTRACTION_JSON_INSTRUCTION)
     if _decisions_contract_requested(cfg, phasedef):
         parts.append(_DECISIONS_JSON_INSTRUCTION)
     # Every phase (not just decision-bearing ones) gets the phase-summary
@@ -2734,6 +2753,63 @@ def parse_tasks_blocks(text):
             if str(d) not in known_ids:
                 errors.append("task %r depends_on unknown id %r" % (t.get("id"), d))
     return tasks, errors
+
+
+def parse_extraction_blocks(text):
+    """Extract the library_mining ```extraction-json``` package contract.
+
+    Returns (pkg | None, errors). The LAST valid block wins (mirrors
+    'last emission wins' everywhere else). All identifiers — the package name
+    and every public_api name — are sanitized HERE and stored sanitized, so the
+    downstream scaffolder never sees a raw name: this is the single point that
+    collapses reserved-word compile errors, redeclaration collisions, and path
+    traversal. A public_api item is kept only when its kind is a known Swift
+    kind AND its name sanitizes to something usable; deduped by sanitized name
+    (last wins). Never raises."""
+    errors = []
+    blocks = schemalib.extract_structured_blocks(
+        text or "", "extraction-json",
+        required_fields=schemalib.REQUIRED_FIELDS["extraction_package"],
+        on_error=errors.append)
+    if not blocks:
+        return None, errors
+    raw = blocks[-1]   # last valid block wins
+    name = schemalib.sanitize_swift_identifier(raw.get("package_name"))
+    if not name:
+        errors.append("extraction-json package_name %r is not a usable Swift identifier"
+                      % (raw.get("package_name"),))
+        return None, errors
+    api_in = raw.get("public_api")
+    if not isinstance(api_in, list):
+        errors.append("extraction-json public_api is not a list")
+        return None, errors
+    byname = {}
+    for item in api_in:
+        if not isinstance(item, dict):
+            errors.append("extraction-json public_api entry is not an object: %r" % (item,))
+            continue
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind not in schemalib.API_KINDS:
+            errors.append("extraction-json api item %r has unknown kind %r (expected one of: %s)"
+                          % (item.get("name"), item.get("kind"), ", ".join(schemalib.API_KINDS)))
+            continue
+        sane = schemalib.sanitize_swift_identifier(item.get("name"))
+        if not sane:
+            errors.append("extraction-json api item name %r is not a usable Swift identifier"
+                          % (item.get("name"),))
+            continue
+        sig = item.get("signature")
+        byname[sane] = {"kind": kind, "name": sane,
+                        "signature": sig if isinstance(sig, str) else ""}
+    pkg = {
+        "package_name": name,
+        "platforms": [],                          # kept out of the manifest by design
+        "products": [],                           # scaffolder derives from package_name
+        "public_api": list(byname.values()),
+        "adopting_repos": [r for r in (raw.get("adopting_repos") or [])
+                           if isinstance(r, str)],
+    }
+    return pkg, errors
 
 
 def parse_flows_blocks(text):
@@ -5819,6 +5895,33 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                   "%d repos by the multi-agent orchestrator._\n\n" % (app, len(cfg.get("_target_paths") or [])))
         write_md(os.path.join(rep_dir, "LIBRARY_REPORT.md"), header + (final_output or ""))
         emit("LIBRARY_MINING: wrote report/LIBRARY_REPORT.md")
+        # Follow-on (NEXT_MILESTONES): if the coordinator emitted an
+        # extraction-json contract for its top candidate, scaffold it into a
+        # real, COMPILABLE SPM package skeleton and prove it builds. The ENTIRE
+        # block is exception-isolated — a scaffold/verify hiccup must never
+        # fail the (read-only, already-complete) library_mining phase.
+        try:
+            pkg, perrs = parse_extraction_blocks(transcript + "\n" + (final_output or ""))
+            for e in perrs:
+                emit("LIBRARY_MINING extraction-json: %s" % e)
+            if pkg:
+                manifest = swiftscaffoldlib.scaffold_spm_package(
+                    pkg, os.path.join(app_dir, "app_build"))
+                if manifest.get("ok"):
+                    emit("LIBRARY_MINING: scaffolded package '%s' (%d public API stub(s)) at %s"
+                         % (pkg["package_name"], manifest["api_count"], manifest["package_dir"]))
+                    if shutil.which("swift"):
+                        res = verifylib.run_verification(manifest["package_dir"], {"type": "spm"})
+                        verifylib.persist_verify_result(
+                            app_dir, key, res, prompt_hash=state.get("prompt_hash"),
+                            workflow=cfg.get("_workflow_name"))
+                        emit("LIBRARY_MINING: swift build %s"
+                             % verifylib.verification_status(res))
+                else:
+                    for e in manifest.get("errors", []):
+                        emit("LIBRARY_MINING scaffold: %s" % e)
+        except Exception as exc:  # never let the follow-on abort the phase
+            emit("LIBRARY_MINING: package scaffold skipped (%s)" % exc)
 
     if cfg.get("_workflow_target") == "audit" and key == "report":
         blob = "\n".join(str(v) for v in state.get("phase_outputs", {}).values())
