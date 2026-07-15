@@ -86,6 +86,19 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   (not just a state marker), and the GUI's phase list now shows an amber
   warning triangle (with the reason on hover) on a phase that closed this
   way instead of reading identically to a clean done.
+- **Sandbox `http` verification** (was #3 below): the generated-server boot
+  command now runs under a macOS `sandbox-exec` (Seatbelt) profile —
+  `(allow default)` plus a deny-list on writes to credentials (`~/.ssh`,
+  `~/.aws`, `~/.orchestrator`, `~/.gnupg`, `~/.netrc`, Keychains) and the
+  engine's own source. Deliberately a deny-list, not a strict allow-list —
+  an allow-list would need to anticipate every legitimate npm/pip/etc.
+  cache path, and getting that wrong would make verification unreliable.
+  Falls back to the old unsandboxed behavior on any non-macOS host or if
+  `sandbox-exec` is missing. Also caught and fixed a genuine (if narrow)
+  file-write race while investigating this: `_await_approval`'s poll loop
+  did `os.path.exists()` then immediately read — fine against the real
+  writer (the GUI already writes atomically), but exposed a flaky CI test
+  whose own drop-helper wrote non-atomically.
 
 ## Genuinely next (in rough priority order)
 
@@ -96,20 +109,18 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-3. **Sandbox `http` verification** — `verify.py` currently boots generated
-   servers unsandboxed.
-4. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
+3. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
    GUI + .gitignore together).
-5. **Stop for externally-launched runs** — persist a PID file so the GUI can
+4. **Stop for externally-launched runs** — persist a PID file so the GUI can
    signal runs it didn't spawn (today Stop is session-local).
-6. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
+5. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
    so Dynamic Type is broken app-wide (not just secondary sheets as
    previously noted here).
-7. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
+6. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
    not built).
-8. **library_mining scaffold phase** — today it produces the extraction
+7. **library_mining scaffold phase** — today it produces the extraction
    plan/report; building the package is a follow-on.
-9. **Per-phase rollback + side-by-side diff viewer** (full project
+8. **Per-phase rollback + side-by-side diff viewer** (full project
    reset/fork + build-history exist).
 
 ## Launch / test

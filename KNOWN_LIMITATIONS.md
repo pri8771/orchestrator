@@ -41,12 +41,20 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
 
 ## Engine — untested / unsandboxed paths
 
-- **`verify.py`'s `http` verification runs generated code unsandboxed.** For
+- **`verify.py`'s `http` verification boot command is macOS-sandboxed
+  (`sandbox-exec`) as of 2026-07-15, not fully unsandboxed anymore.** For
   `productionize` it boots the agent-written server via `/bin/sh -lc`
-  (`npm start` / uvicorn / Flask autodetect) with no sandbox, polls
-  `/health`, then kills it. Flask-autodetected apps are additionally never
-  told the allocated port. `xcodebuild`/`swift build` verification compiles
-  but does not execute generated app code.
+  (`npm start` / uvicorn / Flask autodetect), wrapped in a Seatbelt profile
+  that denies writes to credentials (`~/.ssh`, `~/.aws`, `~/.orchestrator`,
+  `~/.gnupg`, `~/.netrc`, Keychains) and the engine's own source, then polls
+  `/health` and kills it. Deliberately a deny-list on top of `(allow
+  default)`, not a full lockdown — an allow-list would need to anticipate
+  every legitimate npm/pip/etc. cache path, and getting that wrong would
+  make verification unreliable. No resource limits (CPU/memory/process
+  count) yet, and non-macOS hosts get no sandboxing at all (falls back to
+  plain unsandboxed, matching the old behavior). Flask-autodetected apps are
+  additionally never told the allocated port. `xcodebuild`/`swift build`
+  verification compiles but does not execute generated app code.
 - **`blocked_conflict` → manual resolution → `--resume` has not been proven in
   a live token-spending run.** The pause/persist/clear mechanics are
   unit-tested (`test_worktree*.py`, `test_resume.py`); the end-to-end human

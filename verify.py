@@ -388,6 +388,49 @@ def _free_port():
         return s.getsockname()[1]
 
 
+# Paths a generated server's boot command must never be able to write to,
+# even though it's LLM-written and running with the operator's own file
+# permissions. Deliberately a DENY-list layered on (allow default), not an
+# allow-list: an allow-list would need to anticipate every legitimate cache/
+# temp/scratch path an arbitrary npm/python/etc. server might touch, and
+# getting that wrong would make verification unreliable — worse than
+# unsandboxed. This blocks the specific things that actually matter
+# (credential theft/tampering, clobbering the engine's own source) without
+# constraining anything else.
+_SANDBOX_DENY_WRITE_SUBPATHS = (
+    "~/.ssh", "~/.aws", "~/.orchestrator", "~/.gnupg", "~/.netrc",
+    "~/Library/Keychains",
+)
+
+
+def _sandbox_wrap(cmd_str):
+    """Wrap a shell command with macOS sandbox-exec (Seatbelt) so a generated
+    server's boot command can't write to credentials or the engine's own
+    source, while leaving everything else (network, the build_dir itself,
+    language-runtime caches, /tmp) alone so legitimate servers still work.
+
+    Returns (argv, profile_path_to_clean_up_or_None). Best-effort and never
+    raises: on any non-macOS host, a missing sandbox-exec, or a profile that
+    can't be written, returns the plain unsandboxed argv unchanged — a failed
+    sandbox attempt must never be the reason verification can't run at all."""
+    plain = ["/bin/sh", "-lc", cmd_str]
+    if not shutil.which("sandbox-exec"):
+        return plain, None
+    engine_dir = os.path.dirname(os.path.abspath(__file__))
+    deny_paths = [os.path.expanduser(p) for p in _SANDBOX_DENY_WRITE_SUBPATHS] + [engine_dir]
+    profile = "\n".join(
+        ["(version 1)", "(allow default)", "(deny file-write*"]
+        + ['  (subpath "%s")' % p for p in deny_paths]
+        + [")"])
+    try:
+        fd, profile_path = tempfile.mkstemp(prefix="verify_sandbox_", suffix=".sb")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(profile)
+    except OSError:
+        return plain, None
+    return ["sandbox-exec", "-f", profile_path, "/bin/sh", "-lc", cmd_str], profile_path
+
+
 def _http_ok(url, timeout=3):
     """Return the HTTP status if the server responds at all (any status), else None."""
     try:
@@ -430,9 +473,10 @@ def _verify_http(build_dir, spec, timeout):
     # committed/shipped.
     log_fd, out_path = tempfile.mkstemp(prefix="verify_server_", suffix=".log")
     os.close(log_fd)
+    argv, sandbox_profile_path = _sandbox_wrap(start)
     try:
         outfh = open(out_path, "w", encoding="utf-8")
-        proc = subprocess.Popen(["/bin/sh", "-lc", start], cwd=cwd, env=env,
+        proc = subprocess.Popen(argv, cwd=cwd, env=env,
                                 stdout=outfh, stderr=subprocess.STDOUT,
                                 start_new_session=True)
         # Register the server's process group so a run-wide SIGTERM
@@ -448,6 +492,11 @@ def _verify_http(build_dir, spec, timeout):
             os.remove(out_path)
         except OSError:
             pass
+        if sandbox_profile_path:
+            try:
+                os.remove(sandbox_profile_path)
+            except OSError:
+                pass
         return {"ran": True, "ok": False, "tool": "http boot",
                 "summary": "could not start the server (`%s`)" % start,
                 "errors": str(exc)}
