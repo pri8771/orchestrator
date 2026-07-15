@@ -388,7 +388,8 @@ struct AppLockInfo: Equatable {
 // Workspace-level scans for the factory dashboard: per-app engine locks,
 // autorun-disabled markers, and the persisted queue-order file. Pure file
 // reads — run on the background refresh queue like the loaders above.
-private enum FactoryScanner {
+// (internal, not private: unit-tested directly via @testable import.)
+enum FactoryScanner {
     // The lock payload's started= stamp uses the engine's now_str() format.
     static let startedFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -3034,6 +3035,16 @@ final class OrchestratorStore: ObservableObject {
         let lockURL = rootURL.appendingPathComponent(".orch-locks/\(name).lock")
         manualStops[name] = Date()
         guard let pid = appLocks[name]?.pid, pid > 0 else {
+            clearLockFile(lockURL, name)
+            refresh()
+            return
+        }
+        // A lock left behind by a process that died without cleaning up (crash,
+        // SIGKILL from elsewhere) still names a pid — but that pid can since have
+        // been recycled by an unrelated OS process. Signaling a dead pid is a
+        // silent no-op; confirm liveness first so we never SIGTERM a stranger.
+        guard kill(pid, 0) == 0 else {
+            runLog += "\(name)'s lock names pid \(pid), which is no longer running — clearing the stale lock.\n"
             clearLockFile(lockURL, name)
             refresh()
             return

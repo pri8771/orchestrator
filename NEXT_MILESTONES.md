@@ -99,6 +99,15 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   did `os.path.exists()` then immediately read — fine against the real
   writer (the GUI already writes atomically), but exposed a flaky CI test
   whose own drop-helper wrote non-atomically.
+- **Stop for externally-launched runs — this was stale, not actually
+  missing** (was #3 below): `stopRun` already fell back to the per-app
+  `.orch-locks/<app>.lock` file's `pid=` when the GUI has no in-process
+  handle, which covers shepherd/terminal-launched runs — the same job a
+  dedicated PID file would do. That fallback had no test coverage and no
+  liveness check, so a stale lock (left by a crashed run, pid since
+  recycled) could have SIGTERM'd an unrelated process; added the
+  `kill(pid, 0)` guard and `FactoryScannerLockTests` for the lock-parsing
+  logic it depends on.
 - **`live_log.jsonl` moved to `.orchestrator_runtime/`** (was #3 below), per
   spec: `<project>/.orchestrator_runtime/live_log.jsonl` instead of
   `<project>/live_log.jsonl`. `.orchestrator_runtime/` already existed for
@@ -119,16 +128,14 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-3. **Stop for externally-launched runs** — persist a PID file so the GUI can
-   signal runs it didn't spawn (today Stop is session-local).
-4. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
+3. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
    so Dynamic Type is broken app-wide (not just secondary sheets as
    previously noted here).
-5. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
+4. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
    not built).
-6. **library_mining scaffold phase** — today it produces the extraction
+5. **library_mining scaffold phase** — today it produces the extraction
    plan/report; building the package is a follow-on.
-7. **Per-phase rollback + side-by-side diff viewer** (full project
+6. **Per-phase rollback + side-by-side diff viewer** (full project
    reset/fork + build-history exist).
 
 ## Launch / test

@@ -62,9 +62,15 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
 
 ## GUI
 
-- **Stop only works for runs launched from the same GUI session.** Process
-  handles aren't persisted, so after an app relaunch — or for a run started
-  from a terminal / LaunchAgent — the Stop button cannot signal the run.
+- **Stop already signals externally-launched runs, via the per-app engine
+  lock rather than a dedicated PID file.** `<root>/.orch-locks/<app>.lock`
+  (written by every run, GUI or shepherd/terminal-launched, to serialize
+  access to that app) carries `pid=`; `stopRun` falls back to reading it and
+  sending the signal directly when the GUI has no in-process handle. This
+  was previously (incorrectly) documented here as missing. Hardened
+  2026-07-15 to check liveness (`kill(pid, 0)`) before signaling, so a stale
+  lock left by a crashed run can't cause a SIGTERM to a recycled, unrelated
+  pid.
 - **Dynamic Type is broken app-wide.** Every `DS.font` token is a fixed-point
   `Font.system(size:)` (and `ComponentKit` adds raw sizes of its own), so no
   text in the app scales with the user's Dynamic Type setting — a stronger
