@@ -498,6 +498,45 @@ struct MenuCommandSpec: Identifiable {
     }
 }
 
+// One build-history commit in <project>/app_build/.git. Parsed with unit/record
+// separators (not the old "%h  %ad  %s" double-space split, which broke on any
+// subject containing a double space). File-scope so views + tests see it without
+// crossing the store's @MainActor isolation.
+struct BuildCommit: Identifiable, Hashable {
+    let sha: String
+    let shortSha: String
+    let date: String
+    let subject: String
+    let refs: String        // e.g. "tag: run-0001"
+    let phase: String?      // parsed from "orchestrator: <phase> iteration <n>", else nil
+    var id: String { sha }
+}
+
+// Outcome of a rollback attempt — a total enum so the UI can message each case
+// precisely and a test can assert on it.
+enum RollbackResult: Equatable {
+    case success(newShortSha: String)
+    case noChange           // target tree == current tree; nothing to commit
+    case dirtyWorkingTree   // uncommitted/untracked changes — refuse (would be unrecoverable)
+    case shaNotFound
+    case notARepo
+    case running            // a live build owns the repo — refuse
+    case gitFailed(String)
+}
+
+// One file's worth of a diff, its lines already classified for +/- styling.
+struct FileDiff: Identifiable, Hashable {
+    let path: String
+    let lines: [DiffLine]
+    var id: String { path }
+}
+
+struct DiffLine: Hashable {
+    enum Kind { case fileHeader, hunk, add, remove, context, meta }
+    let kind: Kind
+    let text: String
+}
+
 // Reads everything the orchestrator writes to disk and republishes it on a
 // timer so the UI updates in near-real-time. Also drives the write actions
 // (new project, run a pass, demo stream).
@@ -1984,21 +2023,242 @@ final class OrchestratorStore: ObservableObject {
         runOrQueue(project.name)
     }
 
-    // The app_build git log (one line per build-iteration/run commit) = version history.
-    // nonisolated static + sync subprocess: callers hop off the main actor
-    // (Task.detached) so a slow `git log` can never beachball the UI.
-    nonisolated static func buildHistory(buildDir build: URL) -> [String] {
-        guard FileManager.default.fileExists(atPath: build.appendingPathComponent(".git").path)
-        else { return [] }
+    // ---- app_build version history + per-phase rollback / diff (git) --------
+    // All nonisolated static + synchronous subprocess: callers hop off the main
+    // actor (Task.detached) so a slow git call can never beachball the UI. No
+    // shell — args go straight to `git` via /usr/bin/env, so a crafted subject
+    // or path can never be interpreted as a command. Mirrors the old
+    // buildHistory() pattern (now replaced by structuredBuildHistory).
+
+    nonisolated private static func runGit(_ args: [String], in build: URL,
+                                           timeout: TimeInterval = 60)
+        -> (code: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = ["git", "-C", build.path, "log",
-                       "--pretty=format:%h  %ad  %s", "--date=short", "-40"]
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
-        try? p.run(); p.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return (String(data: data, encoding: .utf8) ?? "")
-            .split(separator: "\n").map(String.init)
+        p.arguments = ["git", "-C", build.path] + args
+        let outPipe = Pipe(); let errPipe = Pipe()
+        p.standardOutput = outPipe; p.standardError = errPipe
+        do { try p.run() } catch { return (127, "", "\(error)") }
+        // Drain before wait so a big diff can't deadlock on a full pipe buffer.
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (p.terminationStatus,
+                String(data: outData, encoding: .utf8) ?? "",
+                String(data: errData, encoding: .utf8) ?? "")
+    }
+
+    nonisolated private static func isRepo(_ build: URL) -> Bool {
+        FileManager.default.fileExists(atPath: build.appendingPathComponent(".git").path)
+    }
+
+    // "orchestrator: <phase> iteration <n>" -> "<phase>"; nil for the init
+    // commit and "rolled back to …" commits (they aren't a phase build).
+    nonisolated static func phase(fromSubject subject: String) -> String? {
+        guard let m = subject.range(
+            of: #"^orchestrator: (.+) iteration [0-9]+$"#, options: .regularExpression)
+        else { return nil }
+        // Extract capture group 1 by re-matching (Swift's range API has no group
+        // accessor); strip the fixed prefix/suffix off the matched span.
+        let matched = String(subject[m])
+        let body = matched.dropFirst("orchestrator: ".count)
+        guard let iterRange = body.range(of: #" iteration [0-9]+$"#,
+                                         options: .regularExpression) else { return nil }
+        return String(body[body.startIndex..<iterRange.lowerBound])
+    }
+
+    // Only the orchestrator's own commits are coherent, rollback-safe snapshots:
+    // "orchestrator: build repo initialized", "orchestrator: <phase> iteration
+    // <n>", and "orchestrator: rolled back to <sha>". A worktree-isolation lane
+    // commit ("lane <slug>") or a "Merge branch lane-…" commit is an
+    // intermediate/partial tree that must never be a rollback or diff target.
+    nonisolated static let buildCommitSubjectPrefix = "orchestrator: "
+
+    // Structured build history. --first-parent skips the merge side of lane
+    // merges; the subject-prefix filter is the real guarantee, because the
+    // FIRST lane merge fast-forwards (the engine merges with plain
+    // `git merge --no-edit`, no --no-ff), putting that lane's "lane <slug>"
+    // commit directly on the first-parent mainline — --first-parent alone
+    // would surface it as a (partial-tree, unsafe) rollback target. Fields are
+    // split on unit (0x1f) / record (0x1e) separators so arbitrary subject text
+    // (incl. double spaces) parses safely. We over-fetch (×4) before filtering
+    // so `limit` counts orchestrator commits, not raw log entries.
+    nonisolated static func structuredBuildHistory(buildDir build: URL,
+                                                   limit: Int = 40) -> [BuildCommit] {
+        guard isRepo(build) else { return [] }
+        let fmt = "%H%x1f%h%x1f%ad%x1f%s%x1f%D%x1e"
+        let fetch = max(1, limit) * 4
+        let r = runGit(["log", "--first-parent",
+                        "--pretty=format:\(fmt)", "--date=short", "-\(fetch)"],
+                       in: build)
+        guard r.code == 0 else { return [] }
+        var out: [BuildCommit] = []
+        for record in r.out.components(separatedBy: "\u{1e}") {
+            let rec = record.trimmingCharacters(in: .whitespacesAndNewlines)
+            if rec.isEmpty { continue }
+            let f = rec.components(separatedBy: "\u{1f}")
+            guard f.count >= 5, f[3].hasPrefix(buildCommitSubjectPrefix) else { continue }
+            out.append(BuildCommit(sha: f[0], shortSha: f[1], date: f[2],
+                                   subject: f[3], refs: f[4],
+                                   phase: phase(fromSubject: f[3])))
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    // True if <sha> resolves to a commit in this repo (accepts short or full).
+    nonisolated static func shaExists(buildDir build: URL, _ sha: String) -> Bool {
+        guard isRepo(build), !sha.isEmpty else { return false }
+        return runGit(["cat-file", "-e", "\(sha)^{commit}"], in: build).code == 0
+    }
+
+    // SAFE, fully-reversible rollback: materialize <sha>'s tree as a NEW forward
+    // commit rather than `git reset --hard` (which discards history and isn't
+    // undoable). Recipe: verify clean tree -> read-tree <sha> -> checkout-index
+    // -a -f -> clean -fdq (no -x: ignored build artifacts/secrets survive) ->
+    // commit. Guards a dirty/untracked tree (the ONLY thing that makes this
+    // reversible — `git clean` would irrecoverably delete untracked non-ignored
+    // files) and a non-existent sha. The caller (rollbackProject) additionally
+    // refuses when a build is live.
+    nonisolated static func rollbackBuild(buildDir build: URL, toSha sha: String) -> RollbackResult {
+        guard isRepo(build) else { return .notARepo }
+        guard shaExists(buildDir: build, sha) else { return .shaNotFound }
+        // Dirty check INCLUDING untracked (no -uno): an untracked non-ignored
+        // file has no git backing, so `git clean` below would destroy it with no
+        // way to restore — refuse rather than lose it.
+        let porcelain = runGit(["status", "--porcelain"], in: build)
+        guard porcelain.code == 0 else { return .gitFailed(porcelain.err) }
+        guard porcelain.out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return .dirtyWorkingTree }
+
+        // Point the index at the target tree; if it equals HEAD's tree there's
+        // nothing to commit — report noChange instead of failing on an empty commit.
+        let readTree = runGit(["read-tree", sha], in: build)
+        guard readTree.code == 0 else { return .gitFailed(readTree.err) }
+        if runGit(["diff", "--cached", "--quiet"], in: build).code == 0 {
+            // Restore the index to HEAD (read-tree left it pointed at <sha>).
+            _ = runGit(["reset", "-q", "HEAD"], in: build)
+            return .noChange
+        }
+        // Materialize the target tree into the working copy, then remove any
+        // now-untracked files that existed after <sha> (all git-backed, so
+        // reversible). -x is intentionally OMITTED so ignored artifacts survive.
+        let co = runGit(["checkout-index", "-a", "-f"], in: build)
+        guard co.code == 0 else { return .gitFailed(co.err) }
+        _ = runGit(["clean", "-fdq"], in: build)
+        // Commit with an explicit identity so a repo lacking git config (created
+        // outside ensure_build_repo, or with cleared local + no global config)
+        // still succeeds instead of failing "tell me who you are".
+        let shortTarget = String(sha.prefix(7))
+        let commit = runGit(["-c", "user.name=Orchestrator",
+                             "-c", "user.email=orchestrator@local",
+                             "commit", "-q", "-m",
+                             "orchestrator: rolled back to \(shortTarget)"], in: build)
+        guard commit.code == 0 else { return .gitFailed(commit.err) }
+        // Post-assert: worktree == index == new tree, so the next
+        // commit_build_state can't re-commit a phantom diff.
+        let after = runGit(["status", "--porcelain"], in: build)
+        if !after.out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .gitFailed("worktree not clean after rollback")
+        }
+        let head = runGit(["rev-parse", "--short", "HEAD"], in: build)
+        return .success(newShortSha: head.out.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    // Unified diff between two commits, grouped per file, lines pre-classified
+    // for +/- styling. `--` terminates options so a value can never be
+    // misparsed as a flag/pathspec.
+    nonisolated static func buildDiff(buildDir build: URL, from a: String, to b: String,
+                                      maxLinesPerFile: Int = 600) -> [FileDiff] {
+        guard isRepo(build) else { return [] }
+        let r = runGit(["diff", a, b, "--"], in: build)
+        guard r.code == 0 else { return [] }
+        var files: [FileDiff] = []
+        var path = ""
+        var lines: [DiffLine] = []
+        func flush() {
+            if !path.isEmpty { files.append(FileDiff(path: path, lines: lines)) }
+            lines = []
+        }
+        for raw in r.out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            if raw.hasPrefix("diff --git ") {
+                flush()
+                // "diff --git a/<path> b/<path>" — take the b-side path.
+                if let bRange = raw.range(of: " b/") {
+                    path = String(raw[bRange.upperBound...])
+                } else {
+                    path = raw
+                }
+                lines = [DiffLine(kind: .fileHeader, text: path)]
+            } else if path.isEmpty {
+                continue    // preamble before the first file header
+            } else if lines.count - 1 >= maxLinesPerFile {
+                if lines.last?.kind != .meta || lines.last?.text != "… (diff truncated)" {
+                    lines.append(DiffLine(kind: .meta, text: "… (diff truncated)"))
+                }
+            } else if raw.hasPrefix("@@") {
+                lines.append(DiffLine(kind: .hunk, text: raw))
+            } else if raw.hasPrefix("+++") || raw.hasPrefix("---")
+                        || raw.hasPrefix("index ") || raw.hasPrefix("new file")
+                        || raw.hasPrefix("deleted file") || raw.hasPrefix("rename ")
+                        || raw.hasPrefix("similarity ") || raw.hasPrefix("Binary files") {
+                lines.append(DiffLine(kind: .meta, text: raw))
+            } else if raw.hasPrefix("+") {
+                lines.append(DiffLine(kind: .add, text: raw))
+            } else if raw.hasPrefix("-") {
+                lines.append(DiffLine(kind: .remove, text: raw))
+            } else {
+                lines.append(DiffLine(kind: .context, text: raw))
+            }
+        }
+        flush()
+        return files
+    }
+
+    // Rollback is destructive-if-racing: refuse whenever ANY live-run signal is
+    // set (the same triple AppShellView uses for isLive). project.running is a
+    // 240s-mtime heuristic, not authoritative — appLocks/canStop are the real
+    // engine-owns-the-repo signals, and workers write into app_build directly
+    // (not through git), so there's no index lock to rely on.
+    func canRollback(_ project: Project) -> Bool {
+        !(project.running || canStop(project.name) || appLocks[project.name] != nil)
+    }
+
+    // Roll the app_build repo back to a chosen historical commit. Guards the
+    // running state, then runs the git recipe off the main actor.
+    func rollbackProject(_ project: Project, toSha sha: String) {
+        guard canRollback(project) else {
+            runLog += "Can't roll back \(project.name) while it's running — stop it first.\n"
+            return
+        }
+        let build = project.dirURL.appendingPathComponent("app_build")
+        let name = project.name
+        runLog += "Rolling back \(name) to \(String(sha.prefix(7)))…\n"
+        Task { @MainActor [weak self] in
+            let result = await Task.detached {
+                OrchestratorStore.rollbackBuild(buildDir: build, toSha: sha)
+            }.value
+            guard let self else { return }
+            switch result {
+            case .success(let newShort):
+                self.runLog += "Rolled back \(name) — new build commit \(newShort) "
+                    + "(history preserved; this is undoable by rolling back again).\n"
+            case .noChange:
+                self.runLog += "\(name) is already at that build — nothing to roll back.\n"
+            case .dirtyWorkingTree:
+                self.runLog += "\(name) has uncommitted changes in app_build — "
+                    + "refusing to roll back so nothing is lost.\n"
+            case .shaNotFound:
+                self.runLog += "That commit isn't in \(name)'s build history anymore.\n"
+            case .notARepo:
+                self.runLog += "\(name) has no build history to roll back to.\n"
+            case .running:
+                self.runLog += "\(name) is running — stop it before rolling back.\n"
+            case .gitFailed(let msg):
+                self.surfaceError("Rollback of \(name) failed: \(msg)")
+            }
+            self.refresh()
+        }
     }
 
     // Write <project>/target_path.txt (one repo path per line) for audit /

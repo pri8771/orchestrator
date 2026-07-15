@@ -600,39 +600,191 @@ struct IterateSheet: View {
     }
 }
 
+// A pair of commits to diff — Identifiable so it drives .sheet(item:).
+private struct DiffPair: Identifiable {
+    let from: BuildCommit
+    let to: BuildCommit
+    var id: String { "\(from.sha)..\(to.sha)" }
+}
+
 struct BuildHistorySheet: View {
     @EnvironmentObject var store: OrchestratorStore
     @Environment(\.dismiss) private var dismiss
     let project: Project
-    @State private var lines: [String] = []
+    @State private var commits: [BuildCommit] = []
+    @State private var loaded = false
+    @State private var selection: Set<String> = []
+    @State private var rollbackTarget: BuildCommit?
+    @State private var diffPair: DiffPair?
+
+    private var buildDir: URL { project.dirURL.appendingPathComponent("app_build") }
+
+    private func load() {
+        Task {
+            let dir = buildDir
+            commits = await Task.detached {
+                OrchestratorStore.structuredBuildHistory(buildDir: dir)
+            }.value
+            loaded = true
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Build history — \(project.name)").font(.title3).fontWeight(.medium)
-            Text("Each commit is one build iteration in app_build (git).")
+            Text("Each row is one build iteration in app_build (git). Select two to compare, or roll back to any of them.")
                 .font(.caption).foregroundStyle(.secondary)
-            if lines.isEmpty {
+            if loaded && commits.isEmpty {
                 Text("No build history yet (the app hasn't been built, or git isn't available).")
                     .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 20)
             } else {
+                List(commits, selection: $selection) { c in
+                    commitRow(c)
+                        .contextMenu {
+                            Button("Roll back to this build…") { rollbackTarget = c }
+                                .disabled(!store.canRollback(project))
+                        }
+                }
+                .frame(minHeight: 220, maxHeight: 320)
+            }
+            HStack {
+                Button {
+                    let chosen = commits.filter { selection.contains($0.sha) }
+                    if chosen.count == 2,
+                       let i0 = commits.firstIndex(of: chosen[0]),
+                       let i1 = commits.firstIndex(of: chosen[1]) {
+                        // commits are newest-first, so the larger index is older.
+                        let older = i0 > i1 ? chosen[0] : chosen[1]
+                        let newer = i0 > i1 ? chosen[1] : chosen[0]
+                        diffPair = DiffPair(from: older, to: newer)
+                    }
+                } label: { Label("Compare selected", systemImage: "arrow.left.arrow.right") }
+                    .disabled(selection.count != 2)
+                if !store.canRollback(project) {
+                    Text("Stop the run to enable rollback").font(.caption).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20).frame(width: 560)
+        .task { if !loaded { load() } }
+        .confirmationDialog(
+            rollbackTarget.map { "Roll back \(project.name) to \($0.shortSha)?" } ?? "",
+            isPresented: Binding(get: { rollbackTarget != nil },
+                                 set: { if !$0 { rollbackTarget = nil } }),
+            titleVisibility: .visible) {
+            if let t = rollbackTarget {
+                Button("Roll back to this build") {
+                    store.rollbackProject(project, toSha: t.sha)
+                    rollbackTarget = nil
+                    // Reload after the rollback lands so the new commit shows and
+                    // the sheet doesn't display stale history.
+                    Task { try? await Task.sleep(nanoseconds: 400_000_000); load() }
+                }
+            }
+            Button("Cancel", role: .cancel) { rollbackTarget = nil }
+        } message: {
+            Text("Creates a new build commit that restores app_build to that point. "
+                 + "History is preserved and this is undoable. Uncommitted changes block it.")
+        }
+        .sheet(item: $diffPair) { pair in
+            DiffSheet(project: project, from: pair.from, to: pair.to)
+                .environmentObject(store)
+        }
+    }
+
+    @ViewBuilder
+    private func commitRow(_ c: BuildCommit) -> some View {
+        HStack(spacing: 8) {
+            Text(c.shortSha).font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(c.date).font(.caption).foregroundStyle(.tertiary)
+            if let phase = c.phase {
+                Text(phase).font(.caption2)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(.quaternary))
+            }
+            Text(c.subject).font(.caption).lineLimit(1)
+            if c.refs.contains("run-") {
+                Spacer(minLength: 4)
+                Text(c.refs.split(separator: ",").first { $0.contains("run-") }
+                        .map { $0.replacingOccurrences(of: "tag: ", with: "").trimmingCharacters(in: .whitespaces) } ?? "")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tint)
+            }
+        }
+        .tag(c.sha)
+    }
+}
+
+// Per-file unified diff between two build commits (+/- coloring). A true
+// two-column side-by-side would be substantial custom SwiftUI for marginal
+// benefit over the format engineers already read in PRs.
+struct DiffSheet: View {
+    @EnvironmentObject var store: OrchestratorStore
+    @Environment(\.dismiss) private var dismiss
+    let project: Project
+    let from: BuildCommit
+    let to: BuildCommit
+    @State private var files: [FileDiff] = []
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Compare builds").font(.title3).fontWeight(.medium)
+            Text("\(from.shortSha) (\(from.date)) → \(to.shortSha) (\(to.date))")
+                .font(.caption).foregroundStyle(.secondary)
+            if loaded && files.isEmpty {
+                Text("No differences between these two builds.")
+                    .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 20)
+            } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(lines, id: \.self) { line in
-                            Text(line).font(.system(.subheadline, design: .monospaced))
-                                .textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(files) { file in
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(Array(file.lines.enumerated()), id: \.offset) { _, line in
+                                    diffLineView(line)
+                                }
+                            }
+                            .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
                         }
                     }
-                }.frame(maxHeight: 300)
+                }.frame(maxHeight: 420)
             }
             HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
         }
-        .padding(20).frame(width: 460)
+        .padding(20).frame(width: 640)
         .task {
-            // git log runs off the main actor — a big app_build repo (or a git
-            // that stats a cold disk) must not beachball the whole GUI.
             let dir = project.dirURL.appendingPathComponent("app_build")
-            lines = await Task.detached { OrchestratorStore.buildHistory(buildDir: dir) }.value
+            let a = from.sha; let b = to.sha
+            files = await Task.detached {
+                OrchestratorStore.buildDiff(buildDir: dir, from: a, to: b)
+            }.value
+            loaded = true
         }
+    }
+
+    @ViewBuilder
+    private func diffLineView(_ line: DiffLine) -> some View {
+        let (bg, fg): (Color, Color) = {
+            switch line.kind {
+            case .fileHeader: return (.secondary.opacity(0.18), .primary)
+            case .hunk:       return (.blue.opacity(0.12), .secondary)
+            case .add:        return (.green.opacity(0.16), .primary)
+            case .remove:     return (.red.opacity(0.16), .primary)
+            case .meta:       return (.clear, .secondary)
+            case .context:    return (.clear, .primary)
+            }
+        }()
+        Text(line.text.isEmpty ? " " : line.text)
+            .font(.system(.caption2, design: .monospaced))
+            .fontWeight(line.kind == .fileHeader ? .semibold : .regular)
+            .foregroundStyle(fg)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(bg)
+            .textSelection(.enabled)
     }
 }
 

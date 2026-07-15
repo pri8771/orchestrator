@@ -153,6 +153,29 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   `ran=False` (unverified), NOT a release-blocking `ok=False` — a registry
   blip must not fail a build the toolchain never got to judge. Residual `npm
   install` read-exfil risk documented in KNOWN_LIMITATIONS.
+- **Per-phase rollback + diff viewer** (was #4 below): the Build-history sheet
+  now lists structured commits (short sha · date · phase badge · subject ·
+  run-tag) instead of a raw `git log` dump, and adds two capabilities against
+  the same `app_build/.git`: roll the build back to any historical commit, and
+  compare two commits. The rollback is deliberately NOT `git reset --hard` —
+  it materializes the chosen commit's tree as a NEW forward commit
+  ("orchestrator: rolled back to <sha>"), so history is preserved and the
+  action is itself undoable (roll back again). Following the adversarial
+  design review: history is filtered to the orchestrator's own commit
+  subjects (a worktree-isolation lane commit fast-forwards onto the mainline,
+  so `--first-parent` alone would surface a partial-tree lane snapshot as a
+  rollback target — the subject filter is the real guard); the dirty-tree gate
+  includes untracked files (an untracked non-ignored file has no git backing,
+  so `git clean` would destroy it — refuse rather than lose it); the rollback
+  commit passes an explicit `-c user.name/email` so it never depends on
+  ambient git config; and it hard-refuses whenever any live-run signal
+  (`running`/lock/`canStop`) is set. The diff is a per-file unified view with
+  +/- coloring (a true two-column side-by-side is a large custom-SwiftUI lift
+  for marginal gain over the format engineers already read in PRs). 22 new
+  XCTest cases against a real temp git repo cover the forward-commit tree
+  identity, the git-restore deletion gap, reversibility round-trip, the dirty/
+  untracked/unknown-sha/no-change guards, ignored-artifact preservation, and
+  the lane/merge-commit exclusion.
 
 ## Genuinely next (in rough priority order)
 
@@ -174,8 +197,6 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
    proven live).
 3. **library_mining scaffold phase** — today it produces the extraction
    plan/report; building the package is a follow-on.
-4. **Per-phase rollback + side-by-side diff viewer** (full project
-   reset/fork + build-history exist).
 
 ## Launch / test
 
