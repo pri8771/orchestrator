@@ -9,15 +9,22 @@ import AppKit
 // emits a ```run-json``` block the GUI turns into a one-click "Create run"
 // card. With no claude CLI available it degrades to the mode cards + New App.
 
-struct ConciergeMessage: Identifiable, Equatable {
-    enum Role { case user, concierge }
-    let id = UUID()
+struct ConciergeMessage: Identifiable, Equatable, Codable {
+    enum Role: String, Codable { case user, concierge }
+    let id: UUID
     let role: Role
     var text: String
     var suggestion: RunSuggestion? = nil
+
+    init(id: UUID = UUID(), role: Role, text: String, suggestion: RunSuggestion? = nil) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.suggestion = suggestion
+    }
 }
 
-struct RunSuggestion: Equatable {
+struct RunSuggestion: Equatable, Codable {
     var name: String
     var workflow: String
     var prompt: String
@@ -76,7 +83,20 @@ struct ChatHomeView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: DS.space.s) {
-                        header
+                        HStack(alignment: .top) {
+                            header
+                            Spacer()
+                            if !store.chatMessages.isEmpty {
+                                Button {
+                                    store.startNewChat()
+                                } label: {
+                                    Label("New Chat", systemImage: "square.and.pencil")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .accessibilityLabel("Start a new chat")
+                            }
+                        }
                         if store.chatMessages.isEmpty { modeCards }
                         ForEach(store.chatMessages) { m in
                             ConciergeBubble(message: m) { suggestion in

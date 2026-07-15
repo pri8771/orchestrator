@@ -579,7 +579,12 @@ final class OrchestratorStore: ObservableObject {
     // navigating to a project and back recreates ChatHomeView, and view-local
     // @State would silently wipe the conversation — including a concierge
     // reply still in flight (its Task would write into detached storage).
-    @Published var chatMessages: [ConciergeMessage] = []
+    // Persisted to disk (Application Support, not the workspace or engine dir —
+    // this is pure GUI state, not a project or a config file) so a conversation
+    // survives quitting the app, not just navigating within one session.
+    @Published var chatMessages: [ConciergeMessage] = [] {
+        didSet { saveChatHistory() }
+    }
     @Published var chatInput = ""
     @Published var chatThinking = false
     @Published var chatClaudeAvailable = true
@@ -618,6 +623,7 @@ final class OrchestratorStore: ObservableObject {
     private var timer: Timer?
     private var refreshInFlight = false
     private var refreshPending = false
+    private var refreshGeneration = 0
     private let fm = FileManager.default
 
     // TTL-cached model_routing.json reads. readModelRouting()/
@@ -726,6 +732,7 @@ final class OrchestratorStore: ObservableObject {
             queueOrder = qf.order
             buildLanes = qf.lanes
         }
+        loadChatHistory()
         refresh()
         refreshLocalModels()   // async engine-doctor probe (Ollama server/models)
         // Idempotent: the window can be closed and re-opened (Dock / menu bar)
@@ -776,6 +783,25 @@ final class OrchestratorStore: ObservableObject {
             return
         }
         refreshInFlight = true
+        refreshGeneration += 1
+        let myGeneration = refreshGeneration
+        // Watchdog: the background scan below has no timeout of its own, and if
+        // it ever stalls (a huge/locked log file, a wedged file-coordination
+        // call), refreshInFlight would stay true forever — every future 1.5s
+        // tick becomes a silent no-op and every tab stops updating. Recover
+        // after a generous window instead. The generation check makes a LATE
+        // completion from the abandoned attempt a safe no-op rather than
+        // clobbering fresher state gathered by a refresh that started after
+        // this recovery.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            guard let self, self.refreshInFlight, self.refreshGeneration == myGeneration else { return }
+            self.refreshInFlight = false
+            self.runLog += "WARN: a background refresh didn't finish within 20s — recovering so live updates don't stall.\n"
+            if self.refreshPending {
+                self.refreshPending = false
+                self.refresh()
+            }
+        }
         let rootURL = self.rootURL
         let logsDirURL = self.logsDirURL
         let workflowsDirURL = self.workflowsDirURL
@@ -830,7 +856,10 @@ final class OrchestratorStore: ObservableObject {
                                                  runningProjects: running,
                                                  failedProjects: failed)
             DispatchQueue.main.async {
-                guard let self else { return }
+                // A stale generation means the watchdog already recovered from
+                // this attempt hanging — a fresher refresh may already be in
+                // flight or applied, so this late result must not overwrite it.
+                guard let self, self.refreshGeneration == myGeneration else { return }
                 self.refreshInFlight = false
                 self.apply(snap)
                 self.orchestratorRunning = loaded.contains { $0.running }
@@ -2624,6 +2653,42 @@ final class OrchestratorStore: ObservableObject {
         } catch {
             runLog += "Couldn't save \(url.lastPathComponent): \(error.localizedDescription)\n"
         }
+    }
+
+    // Chat Home history: lives in Application Support (not orchDirURL, which can
+    // resolve to a from-source repo checkout — this must never land as a stray
+    // file in a git working tree) and not rootURL (the project workspace, not
+    // GUI state). Sibling to the bundled-engine-copy destination.
+    var chatHistoryURL: URL {
+        fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Orchestrator/chat_history.json")
+    }
+
+    private func saveChatHistory() {
+        do {
+            let data = try JSONEncoder().encode(chatMessages)
+            try fm.createDirectory(at: chatHistoryURL.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            try data.write(to: chatHistoryURL)
+        } catch {
+            runLog += "Couldn't save chat history: \(error.localizedDescription)\n"
+        }
+    }
+
+    private func loadChatHistory() {
+        guard let data = try? Data(contentsOf: chatHistoryURL),
+              let messages = try? JSONDecoder().decode([ConciergeMessage].self, from: data)
+        else { return }
+        chatMessages = messages
+    }
+
+    // The only way back to a blank conversation: chatMessages has no other
+    // reset path anywhere, so once it's non-empty the mode-card picker (gated
+    // on chatMessages.isEmpty) is gone for good without this.
+    func startNewChat() {
+        chatMessages = []
+        chatInput = ""
+        chatThinking = false
     }
 
     // nonisolated: pure string transform, exercised synchronously by

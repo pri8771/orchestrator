@@ -57,3 +57,38 @@ final class RunSuggestionTests: XCTestCase {
         XCTAssertEqual(s?.prompt, "Build a tip splitter")
     }
 }
+
+/// ConciergeMessage/RunSuggestion round-trip through Codable — this is what
+/// chat-history persistence to disk (OrchestratorStore.saveChatHistory /
+/// loadChatHistory) actually relies on; a decode failure here would silently
+/// drop saved chat history on next launch.
+final class ConciergeMessageCodableTests: XCTestCase {
+    func testRoundTripsWithSuggestion() throws {
+        let original = [
+            ConciergeMessage(role: .user, text: "Build me a habit tracker"),
+            ConciergeMessage(role: .concierge, text: "Here's a plan.",
+                             suggestion: RunSuggestion(name: "Habit Tracker",
+                                                       workflow: "app_build",
+                                                       prompt: "Build a habit tracker")),
+        ]
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode([ConciergeMessage].self, from: data)
+        XCTAssertEqual(decoded, original)
+        XCTAssertEqual(decoded[0].id, original[0].id)
+        XCTAssertEqual(decoded[1].suggestion?.name, "Habit Tracker")
+    }
+
+    func testRoundTripsWithoutSuggestion() throws {
+        let original = [ConciergeMessage(role: .concierge, text: "Just chatting, no run yet.")]
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode([ConciergeMessage].self, from: data)
+        XCTAssertEqual(decoded, original)
+        XCTAssertNil(decoded[0].suggestion)
+    }
+
+    func testEmptyArrayRoundTrips() throws {
+        let data = try JSONEncoder().encode([ConciergeMessage]())
+        let decoded = try JSONDecoder().decode([ConciergeMessage].self, from: data)
+        XCTAssertTrue(decoded.isEmpty)
+    }
+}
