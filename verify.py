@@ -42,12 +42,12 @@ except ImportError:  # non-Unix; the cross-process lock degrades to best-effort
     fcntl = None
 
 
-def _run(cmd, cwd, timeout):
+def _run(cmd, cwd, timeout, env=None):
     # Routed through procutil: xcodebuild spawns build-service daemons that
     # inherit our pipes, so plain subprocess.run(timeout).communicate() can hang
     # the reap forever on a timeout. run_capture kills the whole process group.
     try:
-        out, err, code = procutil.run_capture(cmd, cwd=cwd, timeout=timeout)
+        out, err, code = procutil.run_capture(cmd, cwd=cwd, timeout=timeout, env=env)
         return code, out, err
     except subprocess.TimeoutExpired:
         return 124, "", "verification timed out after %ss" % timeout
@@ -298,13 +298,15 @@ def _verify_shell(build_dir, command, timeout):
         kind = detect_project(build_dir)
         if kind == "spm":
             return _verify_spm(build_dir, timeout)
-        if kind == "node" and shutil.which("npm"):
-            # The auto-detected command runs `npm`, so that's the binary to
-            # gate on — checking only `node` let a node-without-npm install
-            # (rare but possible, e.g. a minimal node runtime) through to a
-            # command-not-found shell failure instead of the clean "skip" path.
-            command = "npm run build --if-present || node -e \"process.exit(0)\""
-        elif kind == "python" and shutil.which("python3"):
+        if kind == "node":
+            # Route to the real install-then-build verifier rather than the old
+            # `npm run build --if-present || node -e exit(0)` one-liner, which
+            # never installed deps and whose `||` masked build failures as
+            # ok=True. _verify_web itself skips cleanly (ran=False) when npm is
+            # absent. This entry is reached both here and from _verify_http's
+            # "couldn't detect how to boot" fallback.
+            return _verify_web(build_dir, {}, timeout)
+        if kind == "python" and shutil.which("python3"):
             # compileall is syntax-only and would bless code with unresolved
             # imports as "verified". If the project ships tests, run them too —
             # they exercise real imports/behavior — otherwise keep the syntax check.
@@ -403,11 +405,20 @@ _SANDBOX_DENY_WRITE_SUBPATHS = (
 )
 
 
-def _sandbox_wrap(cmd_str):
+def _sandbox_wrap(cmd_str, write_root=None):
     """Wrap a shell command with macOS sandbox-exec (Seatbelt) so a generated
-    server's boot command can't write to credentials or the engine's own
-    source, while leaving everything else (network, the build_dir itself,
-    language-runtime caches, /tmp) alone so legitimate servers still work.
+    server's boot command (or `npm install`/`npm run build`) can't write to
+    credentials or the engine's own source, while leaving everything else
+    (network, the build_dir itself, language-runtime caches, /tmp) alone so
+    legitimate commands still work.
+
+    ``write_root`` — when the thing being verified lives *under* the engine
+    directory (e.g. an operator who set the workspace root inside this repo, or
+    the sample-run layout), the blanket deny on engine_dir would block a
+    legitimate `npm install` writing into build_dir/node_modules. Passing the
+    build_dir as write_root appends an explicit write-allow for it *after* the
+    deny block (Seatbelt: last matching rule wins), so the project being built
+    is always writable while credentials/engine-source stay denied.
 
     Returns (argv, profile_path_to_clean_up_or_None). Best-effort and never
     raises: on any non-macOS host, a missing sandbox-exec, or a profile that
@@ -418,10 +429,14 @@ def _sandbox_wrap(cmd_str):
         return plain, None
     engine_dir = os.path.dirname(os.path.abspath(__file__))
     deny_paths = [os.path.expanduser(p) for p in _SANDBOX_DENY_WRITE_SUBPATHS] + [engine_dir]
-    profile = "\n".join(
-        ["(version 1)", "(allow default)", "(deny file-write*"]
-        + ['  (subpath "%s")' % p for p in deny_paths]
-        + [")"])
+    lines = (["(version 1)", "(allow default)", "(deny file-write*"]
+             + ['  (subpath "%s")' % p for p in deny_paths]
+             + [")"])
+    if write_root:
+        # Re-allow writes under the project being verified — wins over the deny
+        # above because Seatbelt applies the last matching rule.
+        lines.append('(allow file-write* (subpath "%s"))' % os.path.abspath(write_root))
+    profile = "\n".join(lines)
     try:
         fd, profile_path = tempfile.mkstemp(prefix="verify_sandbox_", suffix=".sb")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -559,6 +574,149 @@ def _verify_http(build_dir, spec, timeout):
             "errors": log_tail}
 
 
+# ---------------------------------------------------------------------------
+# Web / npm build verification (install-then-build). The one thing no path
+# above does is actually INSTALL dependencies before building: detect_project
+# returns "node" for any package.json, but the old auto route (_verify_shell)
+# ran `npm run build --if-present || node -e "process.exit(0)"` with NO install
+# — so a deps-having app either couldn't build (node_modules missing) or, worse,
+# the `||` swallowed the failure and falsely reported ok=True. This installs,
+# then builds, and reports honestly.
+#
+# Deliberately v1 = install + build only (no Playwright/browser tests): running
+# a headless browser suite means a multi-hundred-MB browser download and a much
+# larger, flakier surface — a separate follow-on, not the compile-gate this is.
+# ---------------------------------------------------------------------------
+
+# Env var names (and name fragments) whose values are secrets an npm install's
+# postinstall scripts have no business reading. `npm install` runs arbitrary
+# LLM-chosen dependency code; scrubbing these from the child env means a
+# malicious/curious postinstall can't read our provider keys straight out of
+# the environment. (Reads of ~/.ssh etc. are a separate, documented residual
+# risk — see KNOWN_LIMITATIONS; this closes the cheap, high-value hole.)
+_SECRET_ENV_FRAGMENTS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD",
+                         "CREDENTIAL", "PRIVATE_KEY", "SESSION")
+_SECRET_ENV_PREFIXES = ("AWS_", "ANTHROPIC_", "OPENAI_", "GEMINI_", "GOOGLE_",
+                        "GITHUB_", "GH_", "NPM_", "SLACK_", "STRIPE_")
+
+
+def _is_secret_env(name):
+    up = name.upper()
+    if any(up.startswith(p) for p in _SECRET_ENV_PREFIXES):
+        return True
+    return any(frag in up for frag in _SECRET_ENV_FRAGMENTS)
+
+
+def _npm_env(cache_dir):
+    """A hardened environment for `npm`: our own process env MINUS anything
+    secret-shaped, PLUS npm quiet/non-interactive flags and a per-verify cache
+    dir (so a poisoned package can't persist into the shared ~/.npm across
+    runs). Browser-download opt-outs are set defensively even though v1 runs no
+    browser tests — a dependency's postinstall must never trigger a huge
+    download inside a verification."""
+    env = {k: v for k, v in os.environ.items() if not _is_secret_env(k)}
+    env["CI"] = "1"
+    env["npm_config_cache"] = cache_dir
+    env["npm_config_fund"] = "false"
+    env["npm_config_audit"] = "false"
+    env["npm_config_progress"] = "false"
+    env["NO_UPDATE_NOTIFIER"] = "1"
+    env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"] = "1"
+    env["PUPPETEER_SKIP_DOWNLOAD"] = "1"
+    env["PUPPETEER_SKIP_CHROMIUM_DOWNLOAD"] = "true"
+    return env
+
+
+# stderr signatures of an ENVIRONMENTAL install failure (registry unreachable,
+# private-registry auth, rate limit) — as opposed to a genuine manifest/
+# dependency error in what the agents wrote. Environmental failures are
+# ran=False ("unverified"), never a release-blocking ok=False: a network blip
+# must not fail a build the toolchain never got to actually judge, exactly as a
+# missing toolchain returns ran=False everywhere else in this module.
+_NPM_ENV_FAILURE_RE = re.compile(
+    r"ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENETUNREACH|"
+    r"network|getaddrinfo|socket hang up|registry|rate.?limit|"
+    r"\b401\b|\b403\b|\b429\b|E401|E403|E429|ERR_SOCKET|"
+    r"request to .* failed", re.IGNORECASE)
+
+
+def _run_sandboxed(cmd_str, cwd, timeout, env, write_root):
+    """_run under _sandbox_wrap, cleaning up the generated Seatbelt profile
+    afterward (like _verify_http does for the boot command)."""
+    argv, profile_path = _sandbox_wrap(cmd_str, write_root=write_root)
+    try:
+        return _run(argv, cwd, timeout, env=env)
+    finally:
+        if profile_path:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+
+
+def _nearest_package_json(build_dir):
+    hits = _find(build_dir, "package.json")   # shallowest-first, skips node_modules
+    return hits[0] if hits else None
+
+
+def _verify_web(build_dir, spec, timeout):
+    """Install deps, then build, for a web/npm project. ran=False (unverified)
+    only when npm is absent, there's no package.json, or the install failed for
+    an environmental reason (network/auth/timeout). A real dependency/manifest
+    error or a failing build script is ran=True/ok=False."""
+    spec = spec or {}
+    if not shutil.which("npm"):
+        return {"ran": False, "ok": False, "tool": "npm",
+                "summary": "npm not found — skipping.", "errors": ""}
+    pkg = _nearest_package_json(build_dir)
+    if not pkg:
+        return {"ran": False, "ok": False, "tool": "npm",
+                "summary": "no package.json — nothing to build.", "errors": ""}
+    cwd = os.path.dirname(pkg)
+    try:
+        with open(pkg, encoding="utf-8") as fh:
+            scripts = (json.load(fh).get("scripts") or {})
+    except (OSError, ValueError):
+        scripts = {}
+
+    cache_dir = tempfile.mkdtemp(prefix="verify_npm_cache_")
+    env = _npm_env(cache_dir)
+    try:
+        # --- install (plain `npm install`: handles lockfile-present and
+        # lockfile-absent alike, and — unlike `npm ci` with a fallback — runs
+        # each dependency's postinstall exactly once, not twice). ---
+        # Split the budget so a slow install can't starve the build.
+        install_timeout = max(60, int(timeout * 0.7))
+        code, out, err = _run_sandboxed("npm install", cwd, install_timeout,
+                                        env=env, write_root=build_dir)
+        if code != 0:
+            blob = out + "\n" + err
+            if code == 124 or _NPM_ENV_FAILURE_RE.search(blob):
+                # Environmental — unverified, not a build failure.
+                return {"ran": False, "ok": False, "tool": "npm install",
+                        "summary": "npm install could not complete (network/"
+                                   "registry/auth/timeout) — unverified.",
+                        "errors": _errors_tail(blob)}
+            return {"ran": True, "ok": False, "tool": "npm install",
+                    "summary": "npm install FAILED (dependency/manifest error)",
+                    "errors": _errors_tail(blob)}
+
+        # --- build ---
+        if "build" not in scripts:
+            return {"ran": True, "ok": True, "tool": "npm install",
+                    "summary": "dependencies installed cleanly (no build script "
+                               "to run)", "errors": ""}
+        build_timeout = max(60, timeout - install_timeout)
+        code, out, err = _run_sandboxed("npm run build", cwd, build_timeout,
+                                        env=env, write_root=build_dir)
+        ok = (code == 0)
+        return {"ran": True, "ok": ok, "tool": "npm build",
+                "summary": "npm run build succeeded" if ok else "npm run build FAILED",
+                "errors": "" if ok else _errors_tail(out + "\n" + err)}
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
 def run_verification(build_dir, spec, timeout=1200):
     """Run the verification described by ``spec`` ({type, command?}).
 
@@ -578,6 +736,8 @@ def run_verification(build_dir, spec, timeout=1200):
             return _verify_spm(build_dir, timeout)
         if vtype in ("http", "server", "boot"):
             return _verify_http(build_dir, spec, timeout)
+        if vtype in ("web", "npm", "node"):
+            return _verify_web(build_dir, spec, timeout)
         if vtype == "shell":
             return _verify_shell(build_dir, spec.get("command"), timeout)
         # auto
@@ -586,6 +746,8 @@ def run_verification(build_dir, spec, timeout=1200):
             return _verify_xcode(build_dir, timeout)
         if kind == "spm":
             return _verify_spm(build_dir, timeout)
+        if kind == "node":
+            return _verify_web(build_dir, spec, timeout)
         return _verify_shell(build_dir, spec.get("command"), timeout)
     except Exception as exc:  # defensive: verification must never abort a run
         return {"ran": False, "ok": False, "tool": vtype,

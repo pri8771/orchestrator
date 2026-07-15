@@ -51,6 +51,26 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
   plain unsandboxed, matching the old behavior). Flask-autodetected apps are
   additionally never told the allocated port. `xcodebuild`/`swift build`
   verification compiles but does not execute generated app code.
+- **`verify.py`'s `web`/`node` verification runs `npm install`, which executes
+  arbitrary dependency code (2026-07-15).** `_verify_web` installs deps then
+  runs the build script — the honest "does this web app build" gate the old
+  no-install node path never provided. But `npm install` runs each
+  (LLM-chosen) dependency's `postinstall` as the user. Mitigations in place:
+  the child env is scrubbed of secret-shaped vars (`*_API_KEY`, `*_TOKEN`,
+  `AWS_*`, provider prefixes, …) so a postinstall can't read our provider
+  keys from the environment; the npm cache is redirected to a per-verify temp
+  dir (no cross-run persistence vector); and on macOS the whole thing runs
+  under the same Seatbelt deny-write profile as the http path (with the
+  build_dir carved back in so the install can still write `node_modules`).
+  **Residual risk, unmitigated:** the Seatbelt profile is deny-*write* only,
+  so a postinstall can still *read* `~/.ssh`/`~/.aws`/`~/.netrc` and exfiltrate
+  over the network; and on non-macOS (CI Linux) there is no sandbox at all.
+  This is the same trust boundary the engine already crosses running agent
+  CLIs and `xcodebuild`/`npm run build` scripts, but `npm install` widens it
+  to the arbitrary transitive-dependency graph. Playwright/browser tests are
+  deliberately **not** run (a separate multi-hundred-MB, flakier surface).
+  Network/registry/auth/timeout install failures are reported as `ran=False`
+  (unverified), never a release-blocking `ok=False`.
 - **`blocked_conflict` → manual resolution → `--resume` has not been proven in
   a live token-spending run.** The pause/persist/clear mechanics are
   unit-tested (`test_worktree*.py`, `test_resume.py`); the end-to-end human

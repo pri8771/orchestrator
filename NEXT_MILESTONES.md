@@ -138,21 +138,43 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   opt-out pins and code review, not an actual screenshot at
   `.accessibility3` or similar. Worth a real look next time this machine
   has an interactive session.
+- **Web build targets** (was #3 below): `verify.py` now has a real
+  `_verify_web` install-then-build branch — closing the gap the old node
+  path left open (it ran `npm run build --if-present || node -e exit(0)`
+  with NO install, so a deps-having app couldn't build and the `||` masked
+  failures as `ok=True`). Now `npm install` → `npm run build`, routed to
+  from both the explicit `type: web|npm|node` spec and the auto `node`
+  detection. Shipped the security-hardened v1 an adversarial design review
+  converged on: install+build only (Playwright cut — a separate heavy/flaky
+  surface); the child env is scrubbed of secret-shaped vars and given a
+  per-verify npm cache; macOS-sandboxed with the build_dir carved back into
+  the write-allow (so a workspace-inside-the-repo layout doesn't hard-fail);
+  and network/registry/auth/timeout install failures classified as
+  `ran=False` (unverified), NOT a release-blocking `ok=False` — a registry
+  blip must not fail a build the toolchain never got to judge. Residual `npm
+  install` read-exfil risk documented in KNOWN_LIMITATIONS.
 
 ## Genuinely next (in rough priority order)
 
-1. **Gemini session deltas** — verify `--session-id`/`--resume` actually
-   compose with `--yolo` (the build-phase write flag) and preserve context
-   across a resume, the same way it was verified for codex; wire in if so.
+1. **Gemini session deltas — mechanism verified 2026-07-15, wiring not yet
+   shipped.** With a real key: `--session-id` + `--yolo` create a persisted,
+   resumable session, and `--resume` reloads it and replays the full prior
+   conversation (confirmed by inspecting the stored session JSONL — a
+   resume-turn was appended to the same session that still held the earlier
+   context). So the flags compose and context survives, same as codex. Not
+   yet wired into the concurrent orchestrator: gemini's `--resume` addresses
+   sessions by `latest`/index, not by UUID, so parallel gemini lanes in one
+   project dir need `--session-file <path>` (id-addressable) to avoid a
+   "latest" collision — that concurrency wiring wants a live multi-lane run
+   to validate, and the free-tier quota (20 req/day/model) caps how much can
+   be exercised per day.
 2. **Live validation of the conflict loop** — a real token-spending run with
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-3. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
-   not built).
-4. **library_mining scaffold phase** — today it produces the extraction
+3. **library_mining scaffold phase** — today it produces the extraction
    plan/report; building the package is a follow-on.
-5. **Per-phase rollback + side-by-side diff viewer** (full project
+4. **Per-phase rollback + side-by-side diff viewer** (full project
    reset/fork + build-history exist).
 
 ## Launch / test
