@@ -131,6 +131,53 @@ class TestFleetLearn(unittest.TestCase):
         names = {os.path.basename(os.path.dirname(w)) for w in written}
         self.assertEqual(names, {"design_handoff", "app_features"})
 
+    def test_load_phase_exemplar_is_empty_when_none_exported(self):
+        old_here = orch.HERE
+        orch.HERE = tempfile.mkdtemp()
+        try:
+            self.assertEqual(orch._load_phase_exemplar("app_features"), "")
+        finally:
+            orch.HERE = old_here
+
+    def test_load_phase_exemplar_reads_back_what_export_writes(self):
+        # The actual --save-exemplar -> phase-prompt round trip: write via
+        # fleetlearn.export_exemplars, read back via
+        # orchestrator._load_phase_exemplar, same `here` root both sides.
+        here = tempfile.mkdtemp()
+        with open(os.path.join(self.app_dir, "agent_state.json"), "w") as fh:
+            json.dump({"phase_outputs": {
+                "app_features": "A really good feature list." * 20}}, fh)
+        fllib.export_exemplars(self.app_dir, here, "demo")
+        old_here = orch.HERE
+        orch.HERE = here
+        try:
+            out = orch._load_phase_exemplar("app_features")
+        finally:
+            orch.HERE = old_here
+        self.assertIn("EXEMPLAR", out)
+        self.assertIn("A really good feature list.", out)
+
+    def test_load_phase_exemplar_picks_newest_file(self):
+        here = tempfile.mkdtemp()
+        d = os.path.join(here, "knowledge", "exemplars", "app_features")
+        os.makedirs(d)
+        old_path = os.path.join(d, "old.md")
+        new_path = os.path.join(d, "new.md")
+        with open(old_path, "w") as fh:
+            fh.write("OLD EXEMPLAR")
+        with open(new_path, "w") as fh:
+            fh.write("NEW EXEMPLAR")
+        os.utime(old_path, (1000, 1000))
+        os.utime(new_path, (2000, 2000))
+        old_here = orch.HERE
+        orch.HERE = here
+        try:
+            out = orch._load_phase_exemplar("app_features")
+        finally:
+            orch.HERE = old_here
+        self.assertIn("NEW EXEMPLAR", out)
+        self.assertNotIn("OLD EXEMPLAR", out)
+
     def test_ledger_written_from_incidents(self):
         root = tempfile.mkdtemp()
         here = tempfile.mkdtemp()

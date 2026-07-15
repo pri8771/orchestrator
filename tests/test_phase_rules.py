@@ -125,6 +125,24 @@ class TestPhaseRules(unittest.TestCase):
         self.assertIn("PHASE PLAYBOOK", ctx)
         self.assertIn("Pick SwiftUI", ctx)
 
+    def test_build_context_injects_phase_exemplar(self):
+        # process_phase sets cfg["_phase_exemplar"] from
+        # orch._load_phase_exemplar(key) before build_context runs — this is
+        # the actual splice point _load_phase_exemplar's output reaches.
+        phase = wf.Phase("app_features", "app_features", "app_features.md", "list features")
+        cfg = {"_phase_exemplar": "\n===== EXEMPLAR — a previous run's output "
+                                  "=====\nPrioritized feature list goes here.",
+               "_workflow_target": "app"}
+        ctx = orch.build_context(cfg, "demo", phase, "Build an iOS app", [], "")
+        self.assertIn("EXEMPLAR", ctx)
+        self.assertIn("Prioritized feature list goes here.", ctx)
+
+    def test_build_context_omits_exemplar_block_when_none_loaded(self):
+        phase = wf.Phase("app_features", "app_features", "app_features.md", "list features")
+        cfg = {"_workflow_target": "app"}
+        ctx = orch.build_context(cfg, "demo", phase, "Build an iOS app", [], "")
+        self.assertNotIn("EXEMPLAR", ctx)
+
     def test_app_build_has_quality_gate_spine(self):
         phases = [p.key for p in wf.load_workflow("app_build").phases]
         self.assertEqual(phases[0], "prompt_contract")

@@ -61,38 +61,43 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   `model_routing.json` now ships real (not just illustrative) entries
   raising `codex_reasoning`/`claude_reasoning` to `"high"` on `tech_specs`
   and `design_handoff`.
+- **Exemplar injection — this was stale, not actually missing**: turned out
+  `_load_phase_exemplar`/the `cfg["_phase_exemplar"]` splice in
+  `build_context` were already added 2026-07-12, three days before this was
+  written down as still-open. The feature was real; only its test coverage
+  wasn't — `export_exemplars` (write) had a test, `_load_phase_exemplar`
+  (read) and the round-trip between them didn't. Added that coverage rather
+  than re-implementing something that already worked.
 
 ## Genuinely next (in rough priority order)
 
 1. **Gemini session deltas** — verify `--session-id`/`--resume` actually
    compose with `--yolo` (the build-phase write flag) and preserve context
    across a resume, the same way it was verified for codex; wire in if so.
-2. **Exemplar injection** — feed `--save-exemplar` output back into phase
-   prompts (currently written, never read).
-3. **§19 task claiming** — engine-assigned claim/release over `tasks.json`
+2. **§19 task claiming** — engine-assigned claim/release over `tasks.json`
    (claimed_by/claimed_at, stale-claim reversion) so lanes pull work instead
    of being statically sliced.
-4. **UNRESOLVED phase state** — surfaced in docs + GUI when a phase closes on
+3. **UNRESOLVED phase state** — surfaced in docs + GUI when a phase closes on
    a failing quality gate, failed tally, or missing contract
    (`state.phase_resolutions` already records the quality-gate case).
-5. **Live validation of the conflict loop** — a real token-spending run with
+4. **Live validation of the conflict loop** — a real token-spending run with
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-6. **Sandbox `http` verification** — `verify.py` currently boots generated
+5. **Sandbox `http` verification** — `verify.py` currently boots generated
    servers unsandboxed.
-7. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
+6. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
    GUI + .gitignore together).
-8. **Stop for externally-launched runs** — persist a PID file so the GUI can
+7. **Stop for externally-launched runs** — persist a PID file so the GUI can
    signal runs it didn't spawn (today Stop is session-local).
-9. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
+8. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
    so Dynamic Type is broken app-wide (not just secondary sheets as
    previously noted here).
-10. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
-    not built).
-11. **library_mining scaffold phase** — today it produces the extraction
+9. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
+   not built).
+10. **library_mining scaffold phase** — today it produces the extraction
     plan/report; building the package is a follow-on.
-12. **Per-phase rollback + side-by-side diff viewer** (full project
+11. **Per-phase rollback + side-by-side diff viewer** (full project
     reset/fork + build-history exist).
 
 ## Launch / test
