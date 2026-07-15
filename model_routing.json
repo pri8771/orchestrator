@@ -26,5 +26,14 @@
     "local_model": "",
     "chains": {}
   },
-  "phases": {}
+  "phases": {
+    "tech_specs": {
+      "codex_reasoning": "high",
+      "claude_reasoning": "high"
+    },
+    "design_handoff": {
+      "codex_reasoning": "high",
+      "claude_reasoning": "high"
+    }
+  }
 }

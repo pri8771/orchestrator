@@ -253,6 +253,20 @@ class TestApplyPhaseRouting(unittest.TestCase):
         self.assertEqual(c["models"]["claude_reasoning"], "high")
         self.assertEqual(c["models"]["claude_build_reasoning"], "high")
 
+    def test_shipped_routing_raises_effort_on_tech_specs_and_design_handoff(self):
+        # NEXT_MILESTONES: fleet model_routing.json ships real (not just
+        # illustrative) effort overrides for these two phases — verified via
+        # the real shipped file, not a hand-built routing dict.
+        routing = mr.load_routing(HERE)
+        cfg = self.cfg()
+        cfg["_routing"] = routing
+        for phase in ("tech_specs", "design_handoff"):
+            c = orch._apply_phase_routing(dict(cfg), phase)
+            self.assertEqual(c["models"]["codex_reasoning"], "high")
+            self.assertEqual(c["models"]["codex_build_reasoning"], "high")
+            self.assertEqual(c["models"]["claude_reasoning"], "high")
+            self.assertEqual(c["models"]["claude_build_reasoning"], "high")
+
     def test_claude_reasoning_survives_load_routing_end_to_end(self):
         # The knob as it actually arrives: through mr.load_routing (validating
         # the raw JSON shape), not a hand-built _routing dict.
