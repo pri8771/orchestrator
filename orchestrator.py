@@ -5611,9 +5611,10 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # the transcript + final output (last emission of an id/name wins, so the
     # coordinator's final revision beats any draft). Cycles are an error recorded
     # in tasks.json — never a crash.
-    _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
-                            record_decisions=_decisions_contract_requested(
-                                cfg, phasedef))
+    transcript = _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
+                                         coord=coord, active=active, md_path=md_path,
+                                         record_decisions=_decisions_contract_requested(
+                                             cfg, phasedef))
     # Flows/requirements contracts: not part of _record_phase_contracts (that
     # covers tasks.json/interfaces.json/decisions.json/phase_summaries.json)
     # since these feed the UI-crawl and adherence gates specifically.
@@ -5720,7 +5721,45 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     return final_output.strip()
 
 
+def _prompt_contract_repair(kind, errors, instruction):
+    """Ask an agent to re-emit a corrected machine-contract block after the
+    first attempt came back malformed/incomplete. Quotes the parser's exact
+    errors so the fix is targeted, not a guess, and repeats the schema
+    reminder since the agent won't otherwise re-read its earlier instructions."""
+    err_list = "\n".join("- %s" % e for e in errors[:15])
+    return (
+        "Your last ```%s-json``` block had %d problem(s) the parser rejected:\n%s\n\n"
+        "Re-emit a SINGLE corrected ```%s-json``` fenced block that fixes every "
+        "one of these — the whole block, not a diff or a partial patch.\n"
+        % (kind, len(errors), err_list, kind)
+        + instruction
+    )
+
+
+def _repair_contract(cfg, app, app_dir, key, coord, active, md_path, transcript,
+                     kind, errors):
+    """One bounded repair turn for a malformed tasks-json/interfaces-json block:
+    ask the best-available coordinator candidate to re-emit a corrected block,
+    append the exchange to the transcript. Never raises — an agent that can't
+    run this turn just leaves the errors as they were (resp=None signals that
+    to the caller, which stops retrying rather than looping on a dead agent)."""
+    instruction = _TASKS_JSON_INSTRUCTION if kind == "tasks" else _INTERFACES_JSON_INSTRUCTION
+    prompt = _prompt_contract_repair(kind, errors, instruction)
+    for cand in _coordinator_candidates(cfg, active, preferred=coord):
+        try:
+            resp = call_agent(cfg, app, key, "contract-repair", cand, prompt)
+        except AgentError as exc:
+            emit("%s could not repair the %s-json contract: %s" % (DISPLAY[cand], kind, exc))
+            continue
+        block = "**%s — %s-json repair**\n\n%s\n" % (DISPLAY[cand], kind, resp)
+        append_md(md_path, "\n" + block)
+        transcript += "\n" + block
+        return transcript, resp
+    return transcript, None
+
+
 def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
+                            coord=None, active=None, md_path=None,
                             record_decisions=False):
     """Post-phase contract recording: tasks.json / interfaces.json (§19/§20)
     and, when the phase requested it, the decisions-json log (decisions.json).
@@ -5769,6 +5808,8 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
             live_log(app_dir, key, "orchestrator", "decisions_recorded",
                      "%d decision(s) merged into decisions.json; %d error(s)"
                      % (len(decisions), len(derrs)))
+    contract_repair_limit = int(cget(cfg, "runtime.contract_repair_limit", 2) or 0)
+    can_repair = bool(coord and active and md_path is not None)
     if key == "task_assignments":
         blob = transcript + "\n" + (final_output or "")
         tasks, terrs = parse_tasks_blocks(blob)
@@ -5776,14 +5817,35 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
             terrs.append("dependency cycle: %s" % c)
         for e in terrs:
             emit("TASKS: ERROR %s" % e)
+        attempts = 0
+        while terrs and can_repair and attempts < contract_repair_limit:
+            attempts += 1
+            emit("CONTRACT: tasks.json has %d error(s) — repair attempt %d/%d."
+                 % (len(terrs), attempts, contract_repair_limit))
+            transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
+                                                md_path, transcript, "tasks", terrs)
+            if resp is None:
+                emit("CONTRACT: no agent could attempt the tasks.json repair.")
+                break
+            # Parse ONLY this repair turn's response, not the whole accumulated
+            # transcript: the repair prompt asks for the complete corrected
+            # block (not a diff), so the response is self-contained, and
+            # re-scanning the full blob would keep re-finding the ORIGINAL
+            # bad block alongside the fix — errors accumulate per block seen,
+            # they don't get superseded just because a later block is clean.
+            tasks, terrs = parse_tasks_blocks(resp)
+            for c in find_task_cycles(tasks):
+                terrs.append("dependency cycle: %s" % c)
         if terrs:
             emit("WARN CONTRACT: %d error(s) in tasks.json (malformed blocks / "
-                 "unknown lanes / dependency cycles) — the build proceeds, but "
-                 "review tasks.json 'errors' and the mistakes ledger." % len(terrs))
+                 "unknown lanes / dependency cycles) after %d repair attempt(s) — "
+                 "the build proceeds, but review tasks.json 'errors' and the "
+                 "mistakes ledger." % (len(terrs), attempts))
             mistklib.append_mistake(app_dir, {
                 "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
                 "cls": "contract_error",
-                "summary": "%d tasks.json contract error(s)" % len(terrs),
+                "summary": "%d tasks.json contract error(s) (%d repair attempt(s))"
+                          % (len(terrs), attempts),
                 "detail": {"errors": terrs[:10]}})
         persist_tasks(app_dir, tasks, terrs)
         emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
@@ -5795,14 +5857,28 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
         ifaces, ierrs = parse_interface_blocks(blob)
         for e in ierrs:
             emit("INTERFACES: ERROR %s" % e)
+        attempts = 0
+        while ierrs and can_repair and attempts < contract_repair_limit:
+            attempts += 1
+            emit("CONTRACT: interfaces.json has %d error(s) — repair attempt %d/%d."
+                 % (len(ierrs), attempts, contract_repair_limit))
+            transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
+                                                md_path, transcript, "interfaces", ierrs)
+            if resp is None:
+                emit("CONTRACT: no agent could attempt the interfaces.json repair.")
+                break
+            # See the matching comment in the tasks-json loop above: parse only
+            # this attempt's response, not the ever-growing transcript.
+            ifaces, ierrs = parse_interface_blocks(resp)
         if ierrs:
-            emit("WARN CONTRACT: %d error(s) in interfaces.json — the build "
-                 "proceeds, but review interfaces.json 'errors' and the "
-                 "mistakes ledger." % len(ierrs))
+            emit("WARN CONTRACT: %d error(s) in interfaces.json after %d repair "
+                 "attempt(s) — the build proceeds, but review interfaces.json "
+                 "'errors' and the mistakes ledger." % (len(ierrs), attempts))
             mistklib.append_mistake(app_dir, {
                 "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
                 "cls": "contract_error",
-                "summary": "%d interfaces.json contract error(s)" % len(ierrs),
+                "summary": "%d interfaces.json contract error(s) (%d repair attempt(s))"
+                          % (len(ierrs), attempts),
                 "detail": {"errors": ierrs[:10]}})
         persist_interfaces(app_dir, ifaces, ierrs)
         emit("INTERFACES: %d interface(s) -> interfaces.json (%d error(s))."
@@ -5810,6 +5886,7 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
         live_log(app_dir, key, "orchestrator", "interfaces_recorded",
                  "%d interface(s) persisted to interfaces.json; %d error(s)"
                  % (len(ifaces), len(ierrs)))
+    return transcript
 
 
 # ---------------------------------------------------------------------------

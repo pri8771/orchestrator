@@ -329,6 +329,13 @@ runtime:
   phase_independent_first_round_enabled: true
   phase_quality_gates_enabled: true
   phase_quality_repair_rounds: 2
+  # A malformed/missing tasks-json (task_assignments phase) or interfaces-json
+  # (tech_specs phase) block used to just log a WARN CONTRACT line and move
+  # on — the build proceeded on a broken or incomplete contract. Now it gets
+  # up to this many targeted repair turns (quote the parser's exact errors,
+  # ask for a corrected block) before falling back to the old warn-and-
+  # proceed behavior. 0 disables repair and restores the old behavior exactly.
+  contract_repair_limit: 2
   # Adaptive escalation: failure-triggered, not static-always-on (contrast
   # with models.claude_integrator above, which is a static per-role override
   # applied on EVERY integration turn). Only the verify/repair loop
