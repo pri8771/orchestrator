@@ -71,10 +71,19 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
   2026-07-15 to check liveness (`kill(pid, 0)`) before signaling, so a stale
   lock left by a crashed run can't cause a SIGTERM to a recycled, unrelated
   pid.
-- **Dynamic Type is broken app-wide.** Every `DS.font` token is a fixed-point
-  `Font.system(size:)` (and `ComponentKit` adds raw sizes of its own), so no
-  text in the app scales with the user's Dynamic Type setting — a stronger
-  statement than the earlier "secondary sheets" note.
+- **Dynamic Type now scales (2026-07-15), unverified visually.** The seven
+  text tokens `DS.font` documents as mapping to Dynamic Type styles scale
+  via `Font.custom(".AppleSystemUIFont", size:, relativeTo:)`; the display/
+  machine-output tokens and the two geometry-load-bearing views (routing
+  grid, phase timeline) stay pinned, per spec. `ComponentKit` carries no raw
+  sizes of its own (the earlier note here was stale — `ci_style_check.sh`
+  already enforces zero hardcoded sizes outside `ThemeTokens.swift` and
+  passes clean). What's unverified: an actual screenshot of the app at a
+  non-default text size — `swift run`'s unbundled debug binary has no `.app`
+  bundle for this environment's computer-use tooling to grant, so this
+  shipped on build success + the unit suite + code review of the spec's own
+  mapping table, not a human/visual check. Confirm on a real interactive
+  session before trusting the "dense rows don't reflow" claim fully.
 - **Packaged app / source-launch workspace split is possible.** Source launchers
   point at `~/Documents/iOS-App-Factory`; a packaged app launched
   without `ORCH_ROOT` uses its saved Settings value or the same default path.

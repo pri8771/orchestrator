@@ -49,6 +49,11 @@ struct PhaseTimelineView: View {
             }
         }
         .frame(height: compact ? 28 : 64)
+        // §2.3 documented opt-out: this is a fixed-height (64pt / 28pt
+        // compact) horizontal capsule chain — geometry is load-bearing, so it
+        // stays pinned to the system default text size. Compensated by the
+        // per-segment accessibilityLabel below.
+        .dynamicTypeSize(.large)
     }
 
     @ViewBuilder

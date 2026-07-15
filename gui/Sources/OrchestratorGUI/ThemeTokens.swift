@@ -91,33 +91,53 @@ enum DS {
     // in-window weight.)
 
     enum font {
+        // §2.3: "SF Pro; maps to Dynamic Type styles" — every text token below
+        // scales with the user's text-size setting via `Font.custom(_:size:
+        // relativeTo:)`, which (unlike `Font.system(size:)`) keeps our exact
+        // base pixel size at the system default but grows/shrinks it with the
+        // given text style, same as the rest of macOS. ".AppleSystemUIFont" is
+        // the standard way to route that scaling API through the real system
+        // font (San Francisco) instead of a named custom font.
+        //
+        // Two documented opt-outs (routing-grid cells, phase timeline —
+        // geometry is load-bearing) pin their subtree back to the unscaled
+        // size with `.dynamicTypeSize(.large)` and compensate with full
+        // VoiceOver labels; see RoutingGridView.gridCard and
+        // PhaseTimelineView.
+        private static func scalable(_ size: CGFloat, relativeTo style: Font.TextStyle) -> Font {
+            Font.custom(".AppleSystemUIFont", size: size, relativeTo: style)
+        }
+
         /// 26 semibold — empty states only.
-        static let largeTitle = Font.system(size: 26, weight: .semibold)
+        static let largeTitle = scalable(26, relativeTo: .largeTitle).weight(.semibold)
         /// 20 semibold — sheet/screen titles.
-        static let title = Font.system(size: 20, weight: .semibold)
+        static let title = scalable(20, relativeTo: .title2).weight(.semibold)
         /// 15 semibold — card titles, project names.
-        static let headline = Font.system(size: 15, weight: .semibold)
+        static let headline = scalable(15, relativeTo: .headline).weight(.semibold)
         /// 13 regular — the workhorse.
-        static let body = Font.system(size: 13)
+        static let body = scalable(13, relativeTo: .body)
         /// 12 medium — chip labels, cell model names.
-        static let callout = Font.system(size: 12, weight: .medium)
+        static let callout = scalable(12, relativeTo: .callout).weight(.medium)
         /// 11 regular — metadata, footnotes, timestamps.
-        static let caption = Font.system(size: 11)
+        static let caption = scalable(11, relativeTo: .caption)
         /// 10 medium — micro-badges and rank numerals in dense rows. The
         /// sanctioned floor: nothing in the app renders below 10pt.
-        static let caption2 = Font.system(size: 10, weight: .medium)
+        static let caption2 = scalable(10, relativeTo: .caption2).weight(.medium)
         /// 28 SF Pro Rounded semibold — Overview stat tiles. Pair with
-        /// `.monospacedDigit()` on every live numeral.
+        /// `.monospacedDigit()` on every live numeral. Fixed (§2.3 table):
+        /// stat tiles are a display, not body text.
         static let stat = Font.system(size: 28, weight: .semibold, design: .rounded)
         /// 11.5 SF Mono regular — log/transcript wells (1.45 line height via
-        /// `.lineSpacing(DS.font.monoWellLineSpacing)`).
+        /// `.lineSpacing(DS.font.monoWellLineSpacing)`). Fixed — machine
+        /// output, per §2.3's SF Mono rule, is a documented opt-out.
         static let monoWell = Font.system(size: 11.5, design: .monospaced)
         static let monoWellLineSpacing: CGFloat = 11.5 * 0.45
-        /// 12 SF Mono medium — model IDs, paths, timers (tabular digits).
+        /// 12 SF Mono medium — model IDs, paths, timers (tabular digits). Fixed.
         static let monoInline = Font.system(size: 12, weight: .medium, design: .monospaced)
-        /// 10.5 SF Mono — model IDs inside dense chips (fallback-ladder rungs).
+        /// 10.5 SF Mono — model IDs inside dense chips (fallback-ladder rungs). Fixed.
         static let monoCaption = Font.system(size: 10.5, design: .monospaced)
-        /// 48pt symbol for centered empty states (§4.1).
+        /// 48pt symbol for centered empty states (§4.1). Fixed — an SF Symbol
+        /// glyph, not text.
         static let emptyStateIcon = Font.system(size: 48)
     }
 

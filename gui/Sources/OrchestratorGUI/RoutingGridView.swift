@@ -446,6 +446,12 @@ struct RoutingGridView: View {
         }
         .onPasteCommand(of: [UTType.plainText]) { _ in pasteClipboardToAll() }
         .accessibilityLabel("Routing grid: \(workflow.title), \(phases.count) phases by \(RoutingMatrix.agents.count) agents")
+        // §2.3 documented opt-out: cell geometry (fixed column widths, dense
+        // row heights) is load-bearing, so this subtree stays pinned to the
+        // system default text size regardless of the user's Dynamic Type
+        // setting. Compensated by the accessibilityLabel above plus the
+        // per-cell labels inside (AssignmentChip, agentHeaderRow).
+        .dynamicTypeSize(.large)
     }
 
     private var phaseGutter: some View {

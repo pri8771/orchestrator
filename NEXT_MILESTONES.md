@@ -118,6 +118,26 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   `_ensure_build_gitignore`, called once per run) so `run.sh`'s `git add -A`
   can't stage `.orchestrator_runtime/`'s scratch/log content into a
   workspace's git history.
+- **Dynamic Type sweep** (was #3 below): the seven text tokens `DS.font`
+  documents as "maps to Dynamic Type styles" (§2.3's own table — largeTitle,
+  title, headline, body, callout, caption, caption2) now actually scale,
+  via `Font.custom(".AppleSystemUIFont", size:, relativeTo:)` — the
+  standard way to keep a custom base pixel size while still tracking a
+  Dynamic Type text style, since `Font.system(size:)` never scales. The
+  four SF Mono / display tokens (`stat`, `monoWell`, `monoInline`,
+  `monoCaption`) and the icon token stay fixed, matching the same table's
+  "fixed" column. The two geometry-load-bearing opt-outs the spec already
+  named — routing-grid cells, phase timeline — are pinned back to the
+  system default via `.dynamicTypeSize(.large)` on their container view;
+  both already carry full VoiceOver labels, satisfying the spec's stated
+  compensation. Verified by build + the full GUI unit suite; **not**
+  verified visually against a running app with a non-default text size —
+  `swift run`'s unbundled binary isn't addressable by this environment's
+  screenshot tooling (no `.app` bundle for the OS permission model to
+  grant), so the layout claim (dense rows/chips don't reflow) rests on the
+  opt-out pins and code review, not an actual screenshot at
+  `.accessibility3` or similar. Worth a real look next time this machine
+  has an interactive session.
 
 ## Genuinely next (in rough priority order)
 
@@ -128,14 +148,11 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-3. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
-   so Dynamic Type is broken app-wide (not just secondary sheets as
-   previously noted here).
-4. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
+3. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
    not built).
-5. **library_mining scaffold phase** — today it produces the extraction
+4. **library_mining scaffold phase** — today it produces the extraction
    plan/report; building the package is a follow-on.
-6. **Per-phase rollback + side-by-side diff viewer** (full project
+5. **Per-phase rollback + side-by-side diff viewer** (full project
    reset/fork + build-history exist).
 
 ## Launch / test
