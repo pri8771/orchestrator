@@ -28,44 +28,61 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   conversation survives navigation, and tests can no longer mutate the repo
   (CI clean-tree guard).
 
+## Landed since the previous snapshot (2026-07-15, later same day)
+
+- **Final-round consensus fix**: the coordinator's final-round prompt no
+  longer forces `CONSENSUS: YES` regardless of real disagreement — that was
+  making the just-shipped deterministic vote-tally system effectively
+  unreachable. Honest `CONSENSUS: NO` now correctly falls through to the
+  weighted vote.
+- **4 more audit findings**: Gemini prompts go over stdin, not argv;
+  `commit_and_push` now defaults to `false`; `roles.json` no longer ships
+  hardcoded agent-role pins; `events.py` redaction recurses into nested
+  dict/list fields.
+- **GUI**: ChatHome has a "New Chat" reset; chat history persists to disk
+  (Application Support) instead of being lost on quit; the background
+  refresh loop has a watchdog so a stalled scan can't freeze every tab
+  forever.
+- **Contract enforcement as gate failures** (was #1 below): a malformed/
+  missing tasks-json or interfaces-json block gets up to
+  `runtime.contract_repair_limit` (default 2) targeted repair turns before
+  falling back to the old warn-and-proceed behavior.
+
 ## Genuinely next (in rough priority order)
 
-1. **Contract enforcement as gate failures** — a missing/malformed
-   tasks-json/requirements-json block should trigger a targeted repair round,
-   not just a `WARN CONTRACT` line.
-2. **Requirements-coverage check** — every core requirement ID covered by ≥1
+1. **Requirements-coverage check** — every core requirement ID covered by ≥1
    task before build starts; uncovered IDs listed verbatim in a repair round.
-3. **Codex/Gemini session deltas or transcript windowing** — only Claude gets
+2. **Codex/Gemini session deltas or transcript windowing** — only Claude gets
    delta prompts today; full-transcript resend is the biggest token/latency
    waste in long discussions.
-4. **Effort-by-phase routing defaults** — ship a fleet `model_routing.json`
+3. **Effort-by-phase routing defaults** — ship a fleet `model_routing.json`
    raising reasoning effort on tech_specs/design_handoff.
-5. **Exemplar injection** — feed `--save-exemplar` output back into phase
+4. **Exemplar injection** — feed `--save-exemplar` output back into phase
    prompts (currently written, never read).
-6. **§19 task claiming** — engine-assigned claim/release over `tasks.json`
+5. **§19 task claiming** — engine-assigned claim/release over `tasks.json`
    (claimed_by/claimed_at, stale-claim reversion) so lanes pull work instead
    of being statically sliced.
-7. **UNRESOLVED phase state** — surfaced in docs + GUI when a phase closes on
+6. **UNRESOLVED phase state** — surfaced in docs + GUI when a phase closes on
    a failing quality gate, failed tally, or missing contract
    (`state.phase_resolutions` already records the quality-gate case).
-8. **Live validation of the conflict loop** — a real token-spending run with
+7. **Live validation of the conflict loop** — a real token-spending run with
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-9. **Sandbox `http` verification** — `verify.py` currently boots generated
+8. **Sandbox `http` verification** — `verify.py` currently boots generated
    servers unsandboxed.
-10. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
-    GUI + .gitignore together).
-11. **Stop for externally-launched runs** — persist a PID file so the GUI can
+9. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
+   GUI + .gitignore together).
+10. **Stop for externally-launched runs** — persist a PID file so the GUI can
     signal runs it didn't spawn (today Stop is session-local).
-12. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
+11. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
     so Dynamic Type is broken app-wide (not just secondary sheets as
     previously noted here).
-13. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
+12. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
     not built).
-14. **library_mining scaffold phase** — today it produces the extraction
+13. **library_mining scaffold phase** — today it produces the extraction
     plan/report; building the package is a follow-on.
-15. **Per-phase rollback + side-by-side diff viewer** (full project
+14. **Per-phase rollback + side-by-side diff viewer** (full project
     reset/fork + build-history exist).
 
 ## Launch / test

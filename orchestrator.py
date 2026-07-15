@@ -2139,10 +2139,13 @@ _TASKS_JSON_INSTRUCTION = (
     "fenced ```tasks-json``` block containing a single JSON object of the form "
     '{"tasks": [{"id": "T-001", "title": ..., "owner_lane": ..., '
     '"files": [...], "depends_on": [], "acceptance_criteria": [...], '
-    '"status": "pending"}]}. owner_lane must be one of: data_domain, primary_ui, '
-    "services_utilities, polish_resilience. depends_on lists task ids and the "
-    "graph must be acyclic. The build workers are assigned their lane's tasks "
-    "from this block, so make it complete.\n"
+    '"requirement_ids": ["R-001"], "status": "pending"}]}. owner_lane must be '
+    "one of: data_domain, primary_ui, services_utilities, polish_resilience. "
+    "depends_on lists task ids and the graph must be acyclic. requirement_ids "
+    "lists the id(s) from requirements.json this task fulfills — every CORE "
+    "requirement needs at least one task naming it, or the build is missing "
+    "part of what was promised. The build workers are assigned their lane's "
+    "tasks from this block, so make it complete.\n"
 )
 _REQUIREMENTS_JSON_INSTRUCTION = (
     "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit "
@@ -2669,6 +2672,7 @@ def parse_tasks_blocks(text):
                 continue
             t.setdefault("depends_on", [])
             t.setdefault("acceptance_criteria", [])
+            t.setdefault("requirement_ids", [])
             status = str(t.get("status", "pending")).strip().lower()
             t["status"] = status if status in schemalib.TASK_STATUS else "pending"
             byid[str(t["id"])] = t
@@ -5736,15 +5740,46 @@ def _prompt_contract_repair(kind, errors, instruction):
     )
 
 
+def _prompt_requirements_coverage_repair(gaps, instruction):
+    """Ask an agent to extend the tasks-json backlog so every CORE requirement
+    is covered by at least one task's requirement_ids. A coverage gap isn't a
+    parse error — the block is well-formed, it just doesn't fully cover the
+    product's core promises yet."""
+    gap_list = "\n".join("- %s: %s" % (rid, txt) for rid, txt in gaps[:15])
+    return (
+        "These CORE requirements have no task covering them yet (a task "
+        "covers a requirement by listing its id in requirement_ids):\n"
+        + gap_list + "\n\n"
+        "Re-emit a SINGLE corrected ```tasks-json``` fenced block — the "
+        "whole backlog, not a diff — that adds or updates tasks (via "
+        "requirement_ids) so every one of these is covered by at least one "
+        "task.\n"
+        + instruction
+    )
+
+
+def _uncovered_core_requirements(tasks, requirements):
+    """Core requirement ids not referenced by any task's requirement_ids.
+    Returns [(id, text), ...] in requirements order. Purely mechanical: the
+    agents are expected to tie every task to the requirement(s) it fulfills,
+    so an untagged task simply doesn't count toward coverage — no LLM judgment
+    call about whether a task "really" satisfies a requirement."""
+    covered = set()
+    for t in tasks:
+        for rid in t.get("requirement_ids") or []:
+            covered.add(str(rid))
+    return [(str(r["id"]), r.get("text", "")) for r in requirements
+            if r.get("core", True) and str(r.get("id")) not in covered]
+
+
 def _repair_contract(cfg, app, app_dir, key, coord, active, md_path, transcript,
-                     kind, errors):
-    """One bounded repair turn for a malformed tasks-json/interfaces-json block:
-    ask the best-available coordinator candidate to re-emit a corrected block,
-    append the exchange to the transcript. Never raises — an agent that can't
-    run this turn just leaves the errors as they were (resp=None signals that
-    to the caller, which stops retrying rather than looping on a dead agent)."""
-    instruction = _TASKS_JSON_INSTRUCTION if kind == "tasks" else _INTERFACES_JSON_INSTRUCTION
-    prompt = _prompt_contract_repair(kind, errors, instruction)
+                     kind, prompt):
+    """One bounded repair turn for a machine-contract problem (a malformed
+    block or a requirements-coverage gap): ask the best-available coordinator
+    candidate to respond per `prompt`, append the exchange to the transcript.
+    Never raises — an agent that can't run this turn just leaves things as
+    they were (resp=None signals that to the caller, which stops retrying
+    rather than looping on a dead agent)."""
     for cand in _coordinator_candidates(cfg, active, preferred=coord):
         try:
             resp = call_agent(cfg, app, key, "contract-repair", cand, prompt)
@@ -5822,8 +5857,9 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
             attempts += 1
             emit("CONTRACT: tasks.json has %d error(s) — repair attempt %d/%d."
                  % (len(terrs), attempts, contract_repair_limit))
+            prompt = _prompt_contract_repair("tasks", terrs, _TASKS_JSON_INSTRUCTION)
             transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
-                                                md_path, transcript, "tasks", terrs)
+                                                md_path, transcript, "tasks", prompt)
             if resp is None:
                 emit("CONTRACT: no agent could attempt the tasks.json repair.")
                 break
@@ -5847,6 +5883,49 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
                 "summary": "%d tasks.json contract error(s) (%d repair attempt(s))"
                           % (len(terrs), attempts),
                 "detail": {"errors": terrs[:10]}})
+        # Requirements-coverage check (NEXT_MILESTONES #2): every CORE
+        # requirement from requirements.json (app_features) needs ≥1 task
+        # naming it in requirement_ids. Checked mechanically, and skipped if
+        # the backlog itself is still malformed — no point covering a parse
+        # that's about to be discarded.
+        if not terrs:
+            requirements = load_requirements(app_dir)
+            gaps = _uncovered_core_requirements(tasks, requirements)
+            cov_attempts = 0
+            while gaps and can_repair and cov_attempts < contract_repair_limit:
+                cov_attempts += 1
+                emit("CONTRACT: %d core requirement(s) uncovered by any task — "
+                     "coverage repair attempt %d/%d: %s"
+                     % (len(gaps), cov_attempts, contract_repair_limit,
+                        ", ".join(g[0] for g in gaps)))
+                prompt = _prompt_requirements_coverage_repair(gaps, _TASKS_JSON_INSTRUCTION)
+                transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
+                                                    md_path, transcript, "tasks", prompt)
+                if resp is None:
+                    emit("CONTRACT: no agent could attempt the requirements-coverage repair.")
+                    break
+                new_tasks, new_terrs = parse_tasks_blocks(resp)
+                for c in find_task_cycles(new_tasks):
+                    new_terrs.append("dependency cycle: %s" % c)
+                if new_terrs:
+                    # A broken re-emission must not silently replace a working
+                    # backlog — surface it like any other malformed contract.
+                    emit("CONTRACT: coverage repair produced %d malformed block "
+                         "error(s) — keeping the prior backlog." % len(new_terrs))
+                    break
+                tasks = new_tasks
+                gaps = _uncovered_core_requirements(tasks, requirements)
+            if gaps:
+                emit("WARN CONTRACT: %d core requirement(s) still uncovered after "
+                     "%d coverage repair attempt(s): %s"
+                     % (len(gaps), cov_attempts, ", ".join(g[0] for g in gaps)))
+                mistklib.append_mistake(app_dir, {
+                    "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                    "cls": "requirements_coverage_gap",
+                    "summary": "%d core requirement(s) uncovered by any task"
+                              % len(gaps),
+                    "detail": {"uncovered": [{"id": rid, "text": txt}
+                                             for rid, txt in gaps]}})
         persist_tasks(app_dir, tasks, terrs)
         emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
         live_log(app_dir, key, "orchestrator", "tasks_recorded",
@@ -5862,8 +5941,9 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
             attempts += 1
             emit("CONTRACT: interfaces.json has %d error(s) — repair attempt %d/%d."
                  % (len(ierrs), attempts, contract_repair_limit))
+            prompt = _prompt_contract_repair("interfaces", ierrs, _INTERFACES_JSON_INSTRUCTION)
             transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
-                                                md_path, transcript, "interfaces", ierrs)
+                                                md_path, transcript, "interfaces", prompt)
             if resp is None:
                 emit("CONTRACT: no agent could attempt the interfaces.json repair.")
                 break

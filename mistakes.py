@@ -13,6 +13,8 @@ Mistake classes appended by orchestrator.py:
     quality_gate_fail     (phase closed despite a failing quality evaluation)
     agent_fallback        (a cloud turn was rescued/lost to the fallback ladder)
     contract_error        (tasks.json/interfaces.json parse or cycle errors)
+    requirements_coverage_gap (a CORE requirement has no task naming it after
+                           repair is exhausted)
     consensus_unverified  (integrator declared consensus while the verifier said NO)
     escalation_triggered  (adaptive escalation bumped effort/model after N
                            repeated failures on the SAME repair/quality-gate loop)
@@ -47,8 +49,8 @@ MISTAKES_FILENAME = "mistakes.jsonl"
 # The class vocabulary above, exported so tests/tooling can validate against it.
 CLASSES = (
     "verify_failure", "repair_queued", "quality_gate_fail",
-    "agent_fallback", "contract_error", "consensus_unverified",
-    "escalation_triggered",
+    "agent_fallback", "contract_error", "requirements_coverage_gap",
+    "consensus_unverified", "escalation_triggered",
 )
 
 _MAX_FIELD_CHARS = 500
