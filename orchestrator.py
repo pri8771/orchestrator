@@ -1928,12 +1928,16 @@ def prompt_coordinate(cfg, agent, ctx, phasedef, rnd, is_build=False, final_roun
             )
     elif final_round:
         goal = (
-            "This is the FINAL round for this phase, so a decision has to be made "
-            "now. In plain English, make the call: pick the single best answer from "
-            "the discussion (even if it wasn't unanimous) and say briefly why. Then "
-            "write the line `CONSENSUS: YES` on its own, and under `## Final Output` "
-            "write the clear, concrete decision for this phase so the next phase can "
-            "build on it."
+            "This is the FINAL round for this phase. If the group has genuinely "
+            "converged, make the call: state the single best answer from the "
+            "discussion in plain English and say briefly why. Write the line "
+            "`CONSENSUS: YES` on its own, then under `## Final Output` write the "
+            "clear, concrete decision so the next phase can build on it.\n"
+            "If real disagreement is still open, don't manufacture agreement that "
+            "isn't there — write `CONSENSUS: NO` and summarize the competing "
+            "positions under `## Final Output` instead; the orchestrator will "
+            "settle it with a weighted vote across the group rather than leaving "
+            "the call to you alone."
         )
     else:
         goal = (

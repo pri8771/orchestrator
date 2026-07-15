@@ -100,6 +100,32 @@ class TestTallyVotes(unittest.TestCase):
         self.assertEqual(weights, {})
 
 
+class TestFinalRoundPromptIsHonest(unittest.TestCase):
+    """Regression: the final round must not force CONSENSUS: YES regardless of
+    real disagreement. That's what made the forced-vote path above
+    unreachable in practice — the coordinator always self-reported agreement
+    on the last round, so `process_phase` never saw `consensus=False` at the
+    point the vote check runs."""
+
+    def _phase(self):
+        return wf.Phase("app_features", "app_features", "app_features.md",
+                        "Prioritize features.", rounds=1)
+
+    def test_final_round_permits_an_honest_no(self):
+        cfg = {"_workflow_target": "app"}
+        prompt = orch.prompt_coordinate(cfg, "claude", "ctx", self._phase(), 1,
+                                        final_round=True)
+        self.assertNotIn("even if it wasn't unanimous", prompt)
+        self.assertIn("CONSENSUS: NO", prompt)
+        self.assertIn("weighted vote", prompt)
+
+    def test_non_final_round_still_asks_for_an_honest_read(self):
+        cfg = {"_workflow_target": "app"}
+        prompt = orch.prompt_coordinate(cfg, "claude", "ctx", self._phase(), 1,
+                                        final_round=False)
+        self.assertIn("Don't invent agreement", prompt)
+
+
 class TestForcedVoteEndToEnd(unittest.TestCase):
     """Drive process_phase to the forced vote with fake agents."""
 
