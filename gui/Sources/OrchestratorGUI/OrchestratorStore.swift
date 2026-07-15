@@ -574,6 +574,15 @@ final class OrchestratorStore: ObservableObject {
     @Published var appLocks: [String: AppLockInfo] = [:]
     @Published var autorunDisabled: Set<String> = []
     @Published var queueOrder: [String] = []
+
+    // Chat Home conversation state lives on the store, NOT in the view:
+    // navigating to a project and back recreates ChatHomeView, and view-local
+    // @State would silently wipe the conversation — including a concierge
+    // reply still in flight (its Task would write into detached storage).
+    @Published var chatMessages: [ConciergeMessage] = []
+    @Published var chatInput = ""
+    @Published var chatThinking = false
+    @Published var chatClaudeAvailable = true
     @Published var buildLanes = 3
     @Published var shepherdActive = false
     // True while the queued list is mid-drag: skip re-reading the queue file so

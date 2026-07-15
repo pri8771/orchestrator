@@ -260,7 +260,16 @@ def _summarize_with_local_model(clusters, model, timeout=120):
 
 def build_ledger(root, here, model=""):
     """Cluster incidents + bad ratings fleet-wide and write
-    knowledge/anti_patterns.md. Returns (path, cluster_count)."""
+    knowledge/anti_patterns.md. Returns (path, cluster_count).
+
+    ORCH_LEDGER_DIR redirects a write aimed at THIS engine checkout (the
+    directory holding this file) somewhere else. The test suite exports it
+    (tests/__init__.py) so no test — in-process or via a spawned engine
+    subprocess — can ever rewrite the repo's own tracked ledger file. A
+    caller passing any other ``here`` (tests use tmp dirs) is untouched."""
+    override = os.environ.get("ORCH_LEDGER_DIR")
+    if override and os.path.abspath(here) == os.path.dirname(os.path.abspath(__file__)):
+        here = override
     counts = {}
     try:
         names = sorted(os.listdir(root))

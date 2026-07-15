@@ -1,5 +1,11 @@
 # TEST_RESULTS.md
 
+> **Historical snapshot (2026-07-05).** Kept as a dated record; counts and
+> paths reflect that day, not the current tree. The live gate is CI plus
+> `python3 -W error::ResourceWarning -m unittest discover -s tests` (870+
+> tests as of 2026-07-15).
+
+
 Every command below was actually run on this Mac on **2026-07-05**, from
 `/Users/pchordia/Documents/core_apps/ios-app-factory`. Results are stated
 verbatim, not summarized optimistically.

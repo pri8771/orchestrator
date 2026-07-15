@@ -1,5 +1,10 @@
 # PREFLIGHT_RESULTS.md — Orchestrator V2
 
+> **Historical snapshot (2026-07-05).** A dated preflight record from the
+> owner's machine; paths and versions reflect that day. Re-run
+> `python3 orchestrator.py --doctor --json` for current status.
+
+
 _Local run on the owner's Mac from
 `/Users/pchordia/Documents/core_apps/ios-app-factory`. Re-verified 2026-07-05
 via `python3 orchestrator.py --doctor --json`._

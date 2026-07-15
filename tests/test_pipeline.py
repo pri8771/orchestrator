@@ -83,7 +83,11 @@ class TestAppPipelineEndToEnd(unittest.TestCase):
                         "verify_build_enabled": False,
                         "build_code_changes_enabled": True,
                         "build_parallel_workers": 2,
-                        "default_workflow": "app_build"},
+                        "default_workflow": "app_build",
+                        # The ledger lives in the ENGINE checkout — a test run
+                        # must not rewrite this repo's own tracked
+                        # knowledge/anti_patterns.md.
+                        "fleet_ledger_enabled": False},
             "ios": {"enforce_signing": False},
         }
 

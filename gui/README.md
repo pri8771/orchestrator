@@ -40,7 +40,7 @@ the same project folders.
 
 Resolution precedence (`OrchestratorStore` + `EngineDirResolver`, unit-tested):
 
-1. **`ORCH_DIR` env var** — set by `run-orchestrator.sh` for from-source runs.
+1. **`ORCH_DIR` env var** — set by `gui/run_gui.sh` for from-source runs.
 2. **Bundled engine** — a packaged `Orchestrator.app` carries the Python engine
    in its Resources; on first launch it is copied to
    `~/Library/Application Support/Orchestrator/engine` (it must be writable for

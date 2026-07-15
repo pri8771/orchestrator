@@ -44,8 +44,9 @@ date: `make verify` = engine unittest suite **166 tests** (up from 81 at the
 start of the pass; also clean under `-W error::ResourceWarning`) + GUI
 `swift build -c release` clean + GUI XCTest **22 tests** (up from 0) + doctor.
 
-- **Portable root paths.** `config.yaml` ships `root: "./workspace"`, resolved
-  against the repo (parent of `./`); `--root PATH` and
+- **Portable root paths.** `config.yaml` ships `root: "~/Documents/iOS-App-Factory"`
+  (`~` expanded at load; an earlier draft of this entry said `"./workspace"`,
+  which was never what shipped); `--root PATH` and
   `ORCH_ROOT` override it. `run.sh` and `install_launch_agent.sh` derive the
   engine + workspace from their own location and pass `--root`; the retired
   hardcoded home-directory install layout is gone from every script and doc.
@@ -151,3 +152,41 @@ All verified: 467 engine tests pass, GUI + crawler runner build clean, fleet rep
 - **Multi-screen visual grading**: the UI crawl's per-screen screenshots now go through the same local vision panel (warn-only; verdicts recorded as screen_grades in docs/ui_crawl.json) — visual coverage extends past the main screen for free.
 - **Learning loop closed tighter**: the anti-pattern ledger auto-refreshes after every finished run, and a 👍 rating in the GUI auto-exports that project's phase outputs as exemplars (engine --save-exemplar).
 - Pulled gemma3:12b as a sharper third judge for the vision panel (auto-joins VISION_CANDIDATES).
+
+## 2026-07-15 — Decision-layer honesty + repo hygiene (Batch 1)
+
+- **Machine-tallied forced votes**: each voter now casts a fenced `vote-json`
+  ballot ({choice, confidence 1-5, reason}); the orchestrator parses and
+  tallies them in Python — confidence-weighted, self-votes invalid (the
+  "can't pick your own idea" rule is now enforced, not requested),
+  deterministic tie-breaks. The winning agent's last substantive post becomes
+  the phase decision. The old LLM tally turn survives only as a fallback when
+  fewer than two ballots parse. Ballots are cast concurrently (round-barrier
+  pattern), so vote wall-clock is the slowest voter, not the sum. The
+  previously-untested vote path now has 13 dedicated tests
+  (tests/test_vote_tally.py).
+- **Independent quality-gate evaluator**: the agent that wrote a phase's
+  wrap-up no longer grades it. pick_quality_evaluator() routes the evaluator
+  turn to another healthy participant (falling back to the coordinator only
+  in single-agent runs), and adaptive escalation now targets the grader.
+  A phase that closes on a failing gate records
+  `state.phase_resolutions[phase] = "quality_gate_warning"`.
+- **Release-gate timing telemetry**: design lint / visual QA / UI crawl /
+  adherence each emit a `release_gate_timing` event with wall-clock seconds —
+  the measurement that decides whether gate parallelization is worth it.
+- **ChatHome conversation survives navigation**: chat state (messages, input
+  draft, thinking flag) moved from view-local `@State` to OrchestratorStore,
+  so opening a project mid-reply no longer wipes the conversation; the
+  in-flight reply lands on the store. RunSuggestion.parse gained its first
+  unit tests.
+- **Tests can no longer mutate the repo**: the fleet-ledger refresh is
+  sandboxed when tests run against the real engine root
+  (tests/__init__.py), and CI's test job now fails on any dirty tree
+  (`git diff --exit-code`).
+- Docs refreshed to the current tree: README test count, NEXT_MILESTONES
+  rewritten against what actually landed, KNOWN_LIMITATIONS updated (contract
+  enforcement gaps, app-wide Dynamic Type, CI reality), historical-snapshot
+  headers on TEST_RESULTS/PREFLIGHT_RESULTS, gui/README launcher reference,
+  the "./workspace" root claim above corrected, and a post-spec addendum in
+  orchestrator-v2-master-spec.md listing where the shipped system exceeds the
+  spec.

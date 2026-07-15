@@ -51,6 +51,10 @@ KINDS = (
     "agent_fallback", "agent_disabled", "verify_result",
     "url_fetched", "url_fetch_failed",
     "phase_completed", "run_finished",
+    # Wall-clock spent inside each release gate (design_lint / visual_qa /
+    # ui_crawl / adherence): the measurement that decides whether gate
+    # parallelization is worth its complexity.
+    "release_gate_timing",
 )
 
 _MAX_FIELD_CHARS = 500

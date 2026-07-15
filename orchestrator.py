@@ -2040,6 +2040,14 @@ def prompt_vote(cfg, agent, ctx, phasedef, candidates):
         + "make your best case for it. You can't pick your own idea — get behind "
         + "whichever of the OTHERS' ideas you genuinely think is strongest, and "
         + "explain why it beats the rest.\n"
+        + "Then, at the VERY END of your message, cast your ballot as EXACTLY ONE "
+        + "fenced block labeled vote-json (the orchestrator tallies these "
+        + "mechanically — a missing or malformed ballot means your vote may not "
+        + "count):\n"
+        + "```vote-json\n"
+        + '{"choice": "<name of the agent whose proposal you back — NOT yourself>", '
+        + '"confidence": <integer 1-5>, "reason": "<one line>"}\n'
+        + "```\n"
     )
 
 
@@ -2079,17 +2087,33 @@ def _quality_passed(text):
         QUALITY_FAIL_RE.search(text or ""))
 
 
+def pick_quality_evaluator(cfg, active, acting_coord):
+    """The agent that grades a coordinator wrap-up. Never the coordinator
+    itself while another healthy participant exists — an agent must not judge
+    its own synthesis (the whole point of the gate is an independent check).
+    Falls back to the coordinator only in effectively single-agent runs."""
+    for cand in _coordinator_candidates(cfg, active, require_healthy=True):
+        if cand != acting_coord:
+            return cand
+    for cand in ordered_agents(active):
+        if cand != acting_coord and _agent_available(cand, cfg):
+            return cand
+    return acting_coord
+
+
 def run_phase_quality_gate(cfg, app, app_dir, phasedef, rnd, coord, ctx,
-                           coordinator_output, md_path, transcript):
+                           coordinator_output, md_path, transcript,
+                           evaluator=None):
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
-    qprompt = prompt_quality_check(cfg, coord, ctx, phasedef, rnd, coordinator_output)
-    qresp = call_agent(cfg, app, key, "quality-%s" % rnd, coord, qprompt)
+    grader = evaluator or coord
+    qprompt = prompt_quality_check(cfg, grader, ctx, phasedef, rnd, coordinator_output)
+    qresp = call_agent(cfg, app, key, "quality-%s" % rnd, grader, qprompt)
     passed = _quality_passed(qresp)
     qblock = "**Quality Gate (%s) — after round %d**\n\n%s\n" % (
-        DISPLAY[coord], rnd, qresp)
+        DISPLAY[grader], rnd, qresp)
     append_md(md_path, "\n" + qblock)
     transcript += "\n" + qblock
-    live_log(app_dir, key, coord, "phase_quality_%s" % ("passed" if passed else "failed"),
+    live_log(app_dir, key, grader, "phase_quality_%s" % ("passed" if passed else "failed"),
              qresp)
     return passed, qresp, transcript
 
@@ -3169,6 +3193,80 @@ CONSENSUS_RE = re.compile(r"CONSENSUS:\s*YES", re.IGNORECASE)
 VOTE_RE = re.compile(r"VOTE_DECISION:\s*YES", re.IGNORECASE)
 QUALITY_PASS_RE = re.compile(r"QUALITY:\s*PASS", re.IGNORECASE)
 QUALITY_FAIL_RE = re.compile(r"QUALITY:\s*FAIL", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Forced-vote ballots: machine-tallied vote-json blocks (deterministic tally in
+# Python; the legacy LLM tally survives only as a fallback when fewer than two
+# ballots parse). Voter self-votes are invalid — the vote prompt's "you can't
+# pick your own idea" rule is enforced here, not just requested.
+# ---------------------------------------------------------------------------
+
+def _normalize_vote_choice(raw, voters):
+    """Map a ballot's free-text choice ("Codex", "codex", "local:glm4:9b")
+    onto a participant id from ``voters``. None when it matches nobody."""
+    text = str(raw or "").strip().strip("\"'").lower()
+    if not text:
+        return None
+    for a in voters:
+        if text == a.lower() or text == DISPLAY.get(a, a).lower():
+            return a
+    return None
+
+
+def parse_vote_ballots(responses, voters, on_error=None):
+    """``responses`` is {voter: reply_text}. Returns a list of valid ballots:
+    {voter, choice, confidence, reason}. Invalid ballots (missing block, bad
+    JSON, unknown choice, self-vote, bad confidence) are reported through
+    ``on_error`` and skipped — never silently counted."""
+    if on_error is None:
+        on_error = lambda _msg: None
+    ballots = []
+    for voter, text in responses.items():
+        blocks = schemalib.extract_structured_blocks(
+            text, "vote-json", required_fields=["choice", "confidence"],
+            on_error=lambda msg, v=voter: on_error("%s: %s" % (v, msg)))
+        if not blocks:
+            on_error("%s: no parseable vote-json ballot" % voter)
+            continue
+        b = blocks[-1]   # models sometimes restate; the final block is the ballot
+        choice = _normalize_vote_choice(b.get("choice"), voters)
+        if choice is None:
+            on_error("%s: ballot names no known participant (%r)"
+                     % (voter, b.get("choice")))
+            continue
+        if choice == voter:
+            on_error("%s: self-vote is invalid" % voter)
+            continue
+        try:
+            conf = int(b.get("confidence"))
+        except (TypeError, ValueError):
+            on_error("%s: confidence %r is not an integer" % (voter, b.get("confidence")))
+            continue
+        conf = max(1, min(5, conf))
+        ballots.append({"voter": voter, "choice": choice, "confidence": conf,
+                        "reason": str(b.get("reason") or "")[:400]})
+    return ballots
+
+
+def tally_votes(ballots, voters):
+    """Confidence-weighted deterministic tally. Returns (winner, weights) —
+    winner is None when there are no ballots. Ties break by total confidence,
+    then coordinator preference, then roster order: same inputs, same winner,
+    every time."""
+    weights = {}
+    for b in ballots:
+        weights[b["choice"]] = weights.get(b["choice"], 0) + b["confidence"]
+    if not weights:
+        return None, {}
+
+    def _rank(agent):
+        pref = (COORDINATOR_PREFERENCE.index(agent)
+                if agent in COORDINATOR_PREFERENCE else len(COORDINATOR_PREFERENCE))
+        roster = voters.index(agent) if agent in voters else len(voters)
+        return (-weights[agent], pref, roster, agent)
+
+    return sorted(weights, key=_rank)[0], weights
 
 # ---------------------------------------------------------------------------
 # Audit findings: parse agent-emitted finding-json blocks, dedupe, rank, render.
@@ -5098,6 +5196,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     any_agent_output = resuming
     empty_round_streak = 0   # consecutive rounds where NO agent spoke
     _seen_chars = {}   # per-agent transcript offset for session delta prompts
+    last_substantive = {}   # per-agent newest non-PASS post (vote-tally source)
     for rnd in rounds_iter:
         # Sprint watchdog: if this phase's time slice is spent, finalize with the
         # best output so far instead of starting another round.
@@ -5185,6 +5284,9 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             else:
                 round_produced += 1
                 any_agent_output = True
+                # Each agent's newest substantive (non-PASS) post is what a
+                # deterministic vote tally adopts as the winning proposal.
+                last_substantive[agent] = resp
                 block = "**%s%s — %s %d**\n\n%s\n" % (DISPLAY[agent], hat,
                                                     "Iteration" if is_build else "Round", rnd, resp)
                 live_log(app_dir, key, agent, "agent_turn_completed", resp)
@@ -5277,14 +5379,23 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                     # phase (N = runtime.escalate_repair_after_attempt), the
                     # evaluator turn gets a stronger reasoning effort. `cfg`
                     # itself is untouched, so this never leaks past the phase.
+                    # Independent grader: whoever ACTUALLY coordinated this
+                    # round must not grade their own wrap-up. Escalation (a
+                    # stronger reasoning effort on repeated failures) targets
+                    # the grader, since that's who makes the repeated call.
+                    _grader = pick_quality_evaluator(cfg, active, acting_coord)
+                    if _grader != acting_coord and not cfg.get("_noted_indep_grader"):
+                        cfg["_noted_indep_grader"] = True
+                        emit("Quality gate: %s grades the coordinator's wrap-up "
+                             "(independent of %s)." % (DISPLAY[_grader], DISPLAY[acting_coord]))
                     qcfg, _quality_escalation_logged = _maybe_escalate(
-                        cfg, app, app_dir, key, coord,
+                        cfg, app, app_dir, key, _grader,
                         quality_failures + 1, _quality_escalation_logged)
                     qctx = build_context(qcfg, app, phasedef, original_prompt,
                                          prior_outputs, transcript)
                     qpass, qresp, transcript = run_phase_quality_gate(
                         qcfg, app, app_dir, phasedef, rnd, coord, qctx,
-                        cresp, md_path, transcript)
+                        cresp, md_path, transcript, evaluator=_grader)
                 except AgentError as exc:
                     emit("Quality gate unavailable in phase '%s': %s — accepting coordinator decision."
                          % (key, exc))
@@ -5312,6 +5423,11 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                 )
                 emit("Quality gate warning recorded for phase '%s'; closing under current limits."
                      % key)
+                # Honest metadata: this phase closed WITHOUT a passing quality
+                # gate. Downstream consumers (docs, GUI) can surface it instead
+                # of the close reading as a clean consensus.
+                state.setdefault("phase_resolutions", {})[key] = "quality_gate_warning"
+                save_state(app_dir, state)
                 mistklib.append_mistake(app_dir, {
                     "app": app, "workflow": cfg.get("_workflow_name"),
                     "phase": key, "agent": coord, "cls": "quality_gate_fail",
@@ -5333,38 +5449,85 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         emit("No consensus by max %s in phase '%s' — forcing a weighted vote." % (unit, key))
         append_md(md_path, "\n### Forced Vote (max %ss reached)\n\n" % unit)
         candidates = "the proposals advanced by " + ", ".join(DISPLAY[a] for a in available_active)
-        for agent in ordered_agents(available_active):
-            state["next_agent"] = agent
-            save_state(app_dir, state)
-            ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
-            vprompt = prompt_vote(cfg, agent, ctx, phasedef, candidates)
-            try:
-                vresp = call_agent(cfg, app, key, "vote", agent, vprompt)
-            except AgentError as exc:
-                emit("%s could not vote: %s" % (DISPLAY[agent], exc))
-                continue
-            vblock = "**%s — vote**\n\n%s\n" % (DISPLAY[agent], vresp)
-            append_md(md_path, "\n" + vblock)
-            transcript += "\n" + vblock
-            emit("Appended %s vote to %s/%s" % (DISPLAY[agent], folder, fname))
-        ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
-        # Tally with the same failover as the decision turn: any working
-        # participant may count the votes rather than losing the phase result.
-        for cand in [coord] + [a for a in ordered_agents(available_active) if a != coord]:
-            try:
-                tresp = call_agent(cfg, app, key, "tally", cand,
-                                   prompt_tally(cfg, cand, ctx, phasedef))
-                append_md(md_path, "\n**Coordinator (%s) — vote tally & decision**\n\n%s\n"
-                          % (DISPLAY[cand], tresp))
-                final_output = tresp
-                vote = {"decided": bool(VOTE_RE.search(tresp)), "by": cand}
-                emit("Vote tally complete for phase '%s' (VOTE_DECISION: %s)."
-                     % (key, "YES" if vote["decided"] else "UNCLEAR"))
-                break
-            except AgentError as exc:
-                emit("%s could not tally the vote: %s" % (DISPLAY[cand], exc))
+        voters = ordered_agents(available_active)
+        state["next_agent"] = "+".join(voters)
+        save_state(app_dir, state)
+        # Ballots are independent — cast them concurrently (same round-barrier
+        # pattern as discussion turns; wall-clock = slowest voter, not the sum).
+        vote_ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
+
+        def _vote_turn(agent):
+            acfg = dict(cfg)   # per-thread copy: session/health flags must not race
+            acfg["_health_key"] = agent
+            return call_agent(acfg, app, key, "vote", agent,
+                              prompt_vote(acfg, agent, vote_ctx, phasedef, candidates))
+
+        vote_responses = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(voters)) as ex:
+            futs = {ex.submit(_vote_turn, a): a for a in voters}
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    vote_responses[futs[fut]] = fut.result()
+                except AgentError as exc:
+                    emit("%s could not vote: %s" % (DISPLAY[futs[fut]], exc))
+                except Exception as exc:  # noqa: BLE001 - one ballot must not kill the phase
+                    emit("%s vote failed unexpectedly: %s" % (DISPLAY[futs[fut]], exc))
+        for agent in voters:   # transcript stays deterministic: roster order
+            if agent in vote_responses:
+                vblock = "**%s — vote**\n\n%s\n" % (DISPLAY[agent], vote_responses[agent])
+                append_md(md_path, "\n" + vblock)
+                transcript += "\n" + vblock
+                emit("Appended %s vote to %s/%s" % (DISPLAY[agent], folder, fname))
+
+        # Deterministic tally: parse the vote-json ballots and count them in
+        # Python. The legacy LLM tally turn survives only as a fallback when
+        # fewer than two ballots parse — a tally must never hinge on one
+        # model's reading of prose.
+        ballots = parse_vote_ballots(
+            vote_responses, voters,
+            on_error=lambda msg: emit("WARN BALLOT %s (phase '%s')" % (msg, key)))
+        if len(ballots) >= 2:
+            winner, weights = tally_votes(ballots, voters)
+            weight_line = ", ".join("%s: %d" % (DISPLAY[a], w)
+                                    for a, w in sorted(weights.items(),
+                                                       key=lambda kv: -kv[1]))
+            tally_md = (
+                "The orchestrator tallied %d valid ballot(s) (confidence-weighted): %s.\n\n"
+                "**Decision: the group commits to %s's proposal.**\n\n"
+                "## Final Output\n\n%s\n\nVOTE_DECISION: YES\n"
+                % (len(ballots), weight_line, DISPLAY[winner],
+                   (last_substantive.get(winner) or
+                    "See %s's final position in the transcript above." % DISPLAY[winner])))
+            append_md(md_path, "\n**Deterministic vote tally**\n\n" + tally_md)
+            final_output = tally_md
+            vote = {"decided": True, "by": "ballot-tally", "winner": winner,
+                    "method": "ballots",
+                    "ballots": [{k: b[k] for k in ("voter", "choice", "confidence")}
+                                for b in ballots]}
+            emit("Vote tally complete for phase '%s' (deterministic; winner: %s; %s)."
+                 % (key, DISPLAY[winner], weight_line))
         else:
-            emit("No agent could tally the vote in phase '%s' — keeping last recap." % key)
+            emit("Only %d parseable ballot(s) in phase '%s' — falling back to an "
+                 "LLM tally." % (len(ballots), key))
+            ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
+            # Tally with the same failover as the decision turn: any working
+            # participant may count the votes rather than losing the phase result.
+            for cand in [coord] + [a for a in voters if a != coord]:
+                try:
+                    tresp = call_agent(cfg, app, key, "tally", cand,
+                                       prompt_tally(cfg, cand, ctx, phasedef))
+                    append_md(md_path, "\n**Coordinator (%s) — vote tally & decision**\n\n%s\n"
+                              % (DISPLAY[cand], tresp))
+                    final_output = tresp
+                    vote = {"decided": bool(VOTE_RE.search(tresp)), "by": cand,
+                            "method": "llm-fallback"}
+                    emit("Vote tally complete for phase '%s' (VOTE_DECISION: %s)."
+                         % (key, "YES" if vote["decided"] else "UNCLEAR"))
+                    break
+                except AgentError as exc:
+                    emit("%s could not tally the vote: %s" % (DISPLAY[cand], exc))
+            else:
+                emit("No agent could tally the vote in phase '%s' — keeping last recap." % key)
     elif not consensus and is_build:
         # Build ran out of iterations; keep the coordinator's last recap as the
         # result (final_output already holds it) and close the phase out.
@@ -5909,6 +6072,21 @@ _PORTFOLIO_DELEGATED_PHASES = {
     "build_verification", "human_qa_checklist", "app_store_readiness",
     "final_review",
 }
+
+
+def _run_timed_gate(app_dir, gate, fn):
+    """Run one release gate, recording its wall-clock as a
+    release_gate_timing event — the ground truth for deciding whether gates
+    are worth parallelizing. Never interferes with the gate's own result."""
+    t0 = time.time()
+    try:
+        return fn()
+    finally:
+        try:
+            evlib.emit_event(app_dir, "release_gate_timing", gate=gate,
+                             seconds=round(time.time() - t0, 1))
+        except Exception:  # noqa: BLE001 - telemetry must never fail a gate
+            pass
 
 
 def _release_gate_failure(app_dir, phases, state, prompt, cfg=None):
@@ -6745,8 +6923,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             return
         if workflow.target == "app":
             # Free and deterministic first: token/dependency lint.
-            lint_reason = dlintlib.run_design_lint(cfg, cget, emit, app,
-                                                   app_dir, HERE)
+            lint_reason = _run_timed_gate(
+                app_dir, "design_lint",
+                lambda: dlintlib.run_design_lint(cfg, cget, emit, app,
+                                                 app_dir, HERE))
             if lint_reason:
                 _queue_release_gate_repair(
                     app, app_dir, state, "design lint: " + lint_reason,
@@ -6760,8 +6940,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 return
             # Compiles ≠ looks finished: boot the simulator, screenshot the
             # app in light+dark, grade with the LOCAL vision panel (free).
-            vqa_reason = vqalib.run_visual_qa(cfg, cget, emit, app, app_dir,
-                                              state, prompt)
+            vqa_reason = _run_timed_gate(
+                app_dir, "visual_qa",
+                lambda: vqalib.run_visual_qa(cfg, cget, emit, app, app_dir,
+                                             state, prompt))
             if vqa_reason:
                 _queue_release_gate_repair(
                     app, app_dir, state, vqa_reason,
@@ -6777,8 +6959,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             # Compiles + looks right ≠ behaves right: crawl every screen, tap
             # everything, replay declared user journeys. Crashes learn back
             # into flows.json as permanent regression flows.
-            crawl_reason = uicrawllib.run_ui_crawl(cfg, cget, emit, app,
-                                                   app_dir, state, prompt)
+            crawl_reason = _run_timed_gate(
+                app_dir, "ui_crawl",
+                lambda: uicrawllib.run_ui_crawl(cfg, cget, emit, app,
+                                                app_dir, state, prompt))
             if crawl_reason:
                 _gate = "ui_crawl_crash" if "crash" in crawl_reason \
                     else "ui_crawl_flow"
@@ -6796,8 +6980,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         # Compiles ≠ does what was asked: grade the build against the original
         # prompt's requirements; unmet core requirements route into the same
         # bounded iterate-repair loop instead of a hollow "done".
-        adh_reason = _adherence_gate(cfg, app, app_dir, phases, state, prompt,
-                                     workflow)
+        adh_reason = _run_timed_gate(
+            app_dir, "adherence",
+            lambda: _adherence_gate(cfg, app, app_dir, phases, state, prompt,
+                                    workflow))
         if adh_reason:
             _queue_release_gate_repair(app, app_dir, state,
                                        "prompt adherence: " + adh_reason,
@@ -6840,13 +7026,18 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         emit("App '%s': ALL phases complete. Marked done." % app)
         # Fleet learning: refresh the anti-pattern ledger after every
         # finished run (deterministic text only — no model call).
-        try:
-            _lpath, _lclusters = fllib.build_ledger(
-                os.path.dirname(os.path.abspath(app_dir)), HERE)
-            if _lpath:
-                emit("Anti-pattern ledger refreshed (%d cluster(s))." % _lclusters)
-        except Exception:  # noqa: BLE001 - learning must never fail a run
-            pass
+        # runtime.fleet_ledger_enabled=false opts a run out — used by tests
+        # (the ledger lives in the ENGINE checkout, so an opted-in test run
+        # would rewrite this repo's own tracked knowledge/anti_patterns.md)
+        # and useful for throwaway/demo roots that shouldn't teach the fleet.
+        if bool(cget(cfg, "runtime.fleet_ledger_enabled", True)):
+            try:
+                _lpath, _lclusters = fllib.build_ledger(
+                    os.path.dirname(os.path.abspath(app_dir)), HERE)
+                if _lpath:
+                    emit("Anti-pattern ledger refreshed (%d cluster(s))." % _lclusters)
+            except Exception:  # noqa: BLE001 - learning must never fail a run
+                pass
         evlib.emit_event(app_dir, "run_finished", project=app, status="done",
                          verification=state.get("verification"))
     except AgentError as exc:

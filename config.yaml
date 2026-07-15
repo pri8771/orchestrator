@@ -334,6 +334,12 @@ runtime:
   # and safe: it fires only on paths that would otherwise burn identical,
   # already-failing attempts at the same (weaker) settings.
   adaptive_escalation_enabled: true
+  # After every finished run, cluster the fleet's incidents/bad ratings into
+  # knowledge/anti_patterns.md (the ledger future runs learn from). Turn off
+  # for throwaway/demo roots whose failures shouldn't teach the fleet — the
+  # test suite also opts out so a test run can't rewrite the engine repo's
+  # own tracked ledger file.
+  fleet_ledger_enabled: true
   # Attempt/call number (1-based) at which escalation kicks in for THAT and
   # every later attempt in the same repair/quality-gate loop. With the default
   # verify_repair_iterations=3, a value of 2 means the 1st retry runs

@@ -1255,3 +1255,28 @@ TEST_RESULTS.md
 Do not ask a clarification question unless blocked. Choose the safer local-first, single-user, no-cloud, no-auto-publish option. Preserve current behavior over a speculative rewrite. Prefer honest `UNVERIFIED` over optimistic claims. Prefer a working narrow milestone over a broad half-working rewrite.
 
 This spec is intentionally scoped so Fable can build a real V2 MVP from one document.
+---
+
+## Post-spec addendum (2026-07-15) — where the shipped system exceeds this document
+
+This spec is preserved as written (it is the document V2 was built from).
+The shipped system has since grown beyond it in ways this spec either
+excluded or never anticipated; the authoritative record is CHANGELOG_V2.md.
+
+- **§3 scope exclusions drifted:** portfolio orchestration and the
+  `library_mining` workflow shipped despite being listed as "do not implement
+  in the first build".
+- **Release gates beyond §15's verification:** design lint, visual QA
+  (simulator screenshots graded by a local vision panel), UI crawl
+  (XCUITest-driven screen graph + declared user journeys), and a
+  prompt-adherence gate with Definition-of-Done tiers.
+- **Fleet learning:** per-project incidents feed a cross-project
+  anti-pattern ledger; rated-good phase outputs export as exemplars; an eval
+  harness (`--eval-report`) scores finished projects on a composite.
+- **Decision layer:** forced votes are machine-tallied `vote-json` ballots
+  (deterministic, confidence-weighted, self-votes invalid) with the LLM tally
+  as fallback; the phase quality gate is graded by an agent independent of
+  the acting coordinator.
+- **Model management beyond §12:** per-phase model routing with reasoning
+  overrides, provider pacing, RAM-aware local-model gating, and a
+  multi-model local roster with explicit `local:<model>` identities.

@@ -83,6 +83,38 @@ class TestPhaseQualityGate(unittest.TestCase):
         self.assertIn("Quality Gate", transcript)
         self.assertIn("requested another round", transcript)
 
+        # Independence: with codex+claude both live, the coordinator (claude)
+        # must NOT grade its own wrap-up — the evaluator turn goes to codex.
+        quality_agents = {agent for (_ph, rnd, agent, p) in prompts
+                          if "PHASE QUALITY EVALUATOR" in p}
+        self.assertEqual(quality_agents, {"codex"})
+
+
+class TestPickQualityEvaluator(unittest.TestCase):
+    """pick_quality_evaluator: never the acting coordinator while another
+    healthy participant exists; honest fallback when there's no one else."""
+
+    def test_prefers_another_agent_over_the_acting_coordinator(self):
+        self.assertEqual(
+            orch.pick_quality_evaluator({}, ["codex", "claude", "gemini"], "claude"),
+            "codex")
+        self.assertEqual(
+            orch.pick_quality_evaluator({}, ["codex", "claude"], "codex"),
+            "claude")
+
+    def test_solo_run_falls_back_to_the_coordinator(self):
+        self.assertEqual(orch.pick_quality_evaluator({}, ["claude"], "claude"),
+                         "claude")
+
+    def test_skips_an_agent_in_cooldown(self):
+        cfg = {}
+        health = orch._agent_health(cfg, "codex")
+        health["status"] = "down"
+        health["retry_after"] = orch.time.time() + 300
+        self.assertEqual(
+            orch.pick_quality_evaluator(cfg, ["codex", "claude", "gemini"], "claude"),
+            "gemini")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -354,7 +354,7 @@ orchestrator/             # repo root (engine at top level)
 ├── events.py / mistakes.py / postmortem.py  # events.jsonl + mistakes.jsonl writers, --postmortem report
 ├── AUDIT_HISTORY.md       # consolidated index of the five audit rounds (TASKS*.md)
 ├── MISTAKES.md            # live failure-mode taxonomy + mistakes-ledger docs
-├── tests/                 # unittest suite (700+ tests)
+├── tests/                 # unittest suite (870+ tests)
 ├── gui/                   # native SwiftUI front-end (SwiftPM, zero deps) — see gui/README.md
 └── logs/                  # event log + per-call JSON records (gitignored)
 ```

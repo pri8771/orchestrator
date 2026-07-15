@@ -70,10 +70,6 @@ struct ChatHomeView: View {
     let onOpenProject: (String) -> Void
     let onNewApp: () -> Void
 
-    @State private var messages: [ConciergeMessage] = []
-    @State private var input = ""
-    @State private var thinking = false
-    @State private var claudeAvailable = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -81,14 +77,14 @@ struct ChatHomeView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: DS.space.s) {
                         header
-                        if messages.isEmpty { modeCards }
-                        ForEach(messages) { m in
+                        if store.chatMessages.isEmpty { modeCards }
+                        ForEach(store.chatMessages) { m in
                             ConciergeBubble(message: m) { suggestion in
                                 createRun(from: suggestion)
                             }
                             .id(m.id)
                         }
-                        if thinking {
+                        if store.chatThinking {
                             HStack(spacing: DS.space.xxs) {
                                 ProgressView().controlSize(.small)
                                 Text("Thinking…").font(DS.font.caption)
@@ -100,8 +96,8 @@ struct ChatHomeView: View {
                     .frame(maxWidth: 760, alignment: .leading)
                     .frame(maxWidth: .infinity)
                 }
-                .onChange(of: messages.count) { _, _ in
-                    if let last = messages.last?.id {
+                .onChange(of: store.chatMessages.count) { _, _ in
+                    if let last = store.chatMessages.last?.id {
                         withAnimation { proxy.scrollTo(last, anchor: .bottom) }
                     }
                 }
@@ -114,7 +110,7 @@ struct ChatHomeView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("What do you want to make?").font(DS.font.title)
-            Text(claudeAvailable
+            Text(store.chatClaudeAvailable
                  ? "Describe an idea, ask a question, or pick a mode. I'll shape it into a run — you approve before anything starts."
                  : "The claude CLI isn't available for chat right now — pick a mode below or press ⌘N to create a run directly.")
                 .font(DS.font.caption).foregroundStyle(.secondary)
@@ -126,7 +122,6 @@ struct ChatHomeView: View {
                   spacing: DS.space.xs) {
             ForEach(ChatMode.all) { mode in
                 Button {
-                    input = input.isEmpty ? "" : input
                     send(seed: mode)
                 } label: {
                     VStack(alignment: .leading, spacing: DS.space.xxs) {
@@ -156,18 +151,18 @@ struct ChatHomeView: View {
 
     private var inputBar: some View {
         HStack(spacing: DS.space.xs) {
-            TextField("Describe an idea, ask a question…", text: $input, axis: .vertical)
+            TextField("Describe an idea, ask a question…", text: $store.chatInput, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .onSubmit { send() }
             Button { send() } label: {
                 Image(systemName: "paperplane.fill")
-                    .foregroundStyle(input.trimmingCharacters(in: .whitespaces).isEmpty
+                    .foregroundStyle(store.chatInput.trimmingCharacters(in: .whitespaces).isEmpty
                                      ? AnyShapeStyle(.tertiary)
                                      : AnyShapeStyle(DS.accent.color))
             }
             .buttonStyle(.plain)
-            .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || thinking)
+            .disabled(store.chatInput.trimmingCharacters(in: .whitespaces).isEmpty || store.chatThinking)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityLabel("Send")
         }
@@ -178,33 +173,36 @@ struct ChatHomeView: View {
     // When a mode card is clicked with an empty box, ask the concierge to
     // explain that mode + prompt for the input it needs.
     private func send(seed mode: ChatMode? = nil) {
-        var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = store.chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         if let mode {
             text = text.isEmpty
                 ? "I want to use \(mode.label) mode (workflow \(mode.key)). What do you need from me?"
                 : "[\(mode.label) mode — workflow \(mode.key)] " + text
         }
-        guard !text.isEmpty, !thinking else { return }
-        input = ""
-        messages.append(ConciergeMessage(role: .user, text: text))
-        thinking = true
-        let history = messages
+        guard !text.isEmpty, !store.chatThinking else { return }
+        store.chatInput = ""
+        store.chatMessages.append(ConciergeMessage(role: .user, text: text))
+        store.chatThinking = true
+        let history = store.chatMessages
         let workflows = store.workflows.map { "\($0.name): \($0.title)" }
+        // The reply lands on the store, so it survives the user navigating
+        // away from Home while the concierge is still thinking.
+        let store = self.store
         Task {
             let reply = await OrchestratorStore.conciergeAsk(
                 history: history.map { ($0.role == .user ? "USER" : "ASSISTANT", $0.text) },
                 workflowList: workflows)
             await MainActor.run {
-                thinking = false
+                store.chatThinking = false
                 guard let reply else {
-                    claudeAvailable = false
-                    messages.append(ConciergeMessage(
+                    store.chatClaudeAvailable = false
+                    store.chatMessages.append(ConciergeMessage(
                         role: .concierge,
                         text: "I couldn't reach the claude CLI (is it installed and logged in?). You can still create a run directly with ⌘N — pick a workflow that matches what you're after."))
                     return
                 }
                 let (clean, suggestion) = RunSuggestion.parse(from: reply)
-                messages.append(ConciergeMessage(role: .concierge,
+                store.chatMessages.append(ConciergeMessage(role: .concierge,
                                                  text: clean,
                                                  suggestion: suggestion))
             }
@@ -223,7 +221,7 @@ struct ChatHomeView: View {
         guard store.createFactoryApp(slug: candidate, idea: s.prompt,
                                      workflow: s.workflow, docs: [],
                                      backfillFromDocs: false) else { return }
-        messages.append(ConciergeMessage(
+        store.chatMessages.append(ConciergeMessage(
             role: .concierge,
             text: "Created **\(candidate)** with the \(s.workflow) workflow and added it to the queue. You can tune per-phase models, rounds, and instructions in its Plan tab before it runs."))
         onOpenProject(candidate)
