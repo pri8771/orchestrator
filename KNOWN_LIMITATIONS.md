@@ -17,10 +17,6 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
   workflow has that phase; `interfaces.json` is extracted from the
   `tech_specs` coordinator wrap-up (a ` ```interfaces-json``` ` machine-contract
   block) instead. Same artifact, different phase.
-- **`live_log.jsonl` location deviates from the spec.** The spec places it at
-  `<project>/.orchestrator_runtime/live_log.jsonl`; the engine writes
-  `<project>/live_log.jsonl` (project root). The GUI and `.gitignore` follow
-  the engine.
 - **Completeness profiles are keyed to the shipped workflows' phase keys**, not
   the spec's aspirational 17–25-phase workflow (which is not implemented).
   Profiles and stop targets resolve correctly against the real `app_build`

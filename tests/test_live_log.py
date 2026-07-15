@@ -6,7 +6,10 @@ import schemas
 class TestLiveLog(unittest.TestCase):
     def setUp(self):
         self.app_dir = tempfile.mkdtemp()
-        self.path = os.path.join(self.app_dir, "live_log.jsonl")
+        # Moved 2026-07-15: <app_dir>/live_log.jsonl -> spec's
+        # <app_dir>/.orchestrator_runtime/live_log.jsonl (keeps a noisy
+        # per-turn log out of a workspace/generated-app git history).
+        self.path = os.path.join(self.app_dir, ".orchestrator_runtime", "live_log.jsonl")
 
     def _lines(self):
         with open(self.path, encoding="utf-8") as fh:
@@ -40,10 +43,23 @@ class TestLiveLog(unittest.TestCase):
         orch.live_log(self.app_dir, "l", "a", "k", "multi\nline\n\tsummary")
         self.assertEqual(self._lines()[0]["summary"], "multi line summary")
 
+    def test_creates_the_runtime_dir_if_missing(self):
+        # os.makedirs(..., exist_ok=True) means a missing/incomplete app_dir
+        # tree self-heals rather than silently dropping the entry.
+        nested = os.path.join(self.app_dir, "not", "yet", "created")
+        orch.live_log(nested, "l", "a", "k", "s")
+        with open(os.path.join(nested, ".orchestrator_runtime", "live_log.jsonl"),
+                  encoding="utf-8") as fh:
+            self.assertIn("\"summary\": \"s\"", fh.read())
+
     def test_best_effort_never_raises(self):
-        # Missing directory -> open fails -> swallowed, run keeps going.
-        orch.live_log(os.path.join(self.app_dir, "no", "such", "dir"),
-                      "l", "a", "k", "s")
+        # A FILE sitting where .orchestrator_runtime needs to be a directory
+        # makes os.makedirs itself fail — genuinely unwritable, unlike a
+        # merely-missing parent (which now self-heals, see above).
+        blocked = tempfile.mkdtemp()
+        with open(os.path.join(blocked, ".orchestrator_runtime"), "w") as fh:
+            fh.write("not a directory")
+        orch.live_log(blocked, "l", "a", "k", "s")
         # Non-string junk is coerced, not fatal.
         orch.live_log(self.app_dir, None, None, None, {"weird": object()})
         self.assertTrue(True)

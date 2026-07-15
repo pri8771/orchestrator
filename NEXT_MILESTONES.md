@@ -99,6 +99,16 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   did `os.path.exists()` then immediately read — fine against the real
   writer (the GUI already writes atomically), but exposed a flaky CI test
   whose own drop-helper wrote non-atomically.
+- **`live_log.jsonl` moved to `.orchestrator_runtime/`** (was #3 below), per
+  spec: `<project>/.orchestrator_runtime/live_log.jsonl` instead of
+  `<project>/live_log.jsonl`. `.orchestrator_runtime/` already existed for
+  worktree isolation, so this just made live_log consistent with it — both
+  now share `_orchestrator_runtime_dir(app_dir)`. It has no reader anywhere
+  (engine or GUI) today, so this was a pure write-side move. Added
+  `_ensure_workspace_gitignore(root)` (engine-owned, mirrors
+  `_ensure_build_gitignore`, called once per run) so `run.sh`'s `git add -A`
+  can't stage `.orchestrator_runtime/`'s scratch/log content into a
+  workspace's git history.
 
 ## Genuinely next (in rough priority order)
 
@@ -109,18 +119,16 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-3. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
-   GUI + .gitignore together).
-4. **Stop for externally-launched runs** — persist a PID file so the GUI can
+3. **Stop for externally-launched runs** — persist a PID file so the GUI can
    signal runs it didn't spawn (today Stop is session-local).
-5. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
+4. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
    so Dynamic Type is broken app-wide (not just secondary sheets as
    previously noted here).
-6. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
+5. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
    not built).
-7. **library_mining scaffold phase** — today it produces the extraction
+6. **library_mining scaffold phase** — today it produces the extraction
    plan/report; building the package is a follow-on.
-8. **Per-phase rollback + side-by-side diff viewer** (full project
+7. **Per-phase rollback + side-by-side diff viewer** (full project
    reset/fork + build-history exist).
 
 ## Launch / test

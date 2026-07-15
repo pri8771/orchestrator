@@ -71,6 +71,44 @@ class TestGitBackedBuild(unittest.TestCase):
         self.assertIn("*.key", body)
 
 
+class TestEnsureWorkspaceGitignore(unittest.TestCase):
+    """<root>/.gitignore for run.sh's `git add -A` — .orchestrator_runtime/
+    (worktrees + live_log.jsonl, pure scratch/log content) must never be
+    stageable, without clobbering anything the user already put there."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+
+    def test_creates_gitignore_when_missing(self):
+        orch._ensure_workspace_gitignore(self.root)
+        gi = os.path.join(self.root, ".gitignore")
+        self.assertTrue(os.path.exists(gi))
+        with open(gi, encoding="utf-8") as fh:
+            self.assertIn(".orchestrator_runtime/", fh.read())
+
+    def test_appends_missing_rule_preserving_existing_content(self):
+        gi = os.path.join(self.root, ".gitignore")
+        with open(gi, "w", encoding="utf-8") as fh:
+            fh.write("**/app_build/.git\n*.log\n")
+        orch._ensure_workspace_gitignore(self.root)
+        with open(gi, encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("**/app_build/.git", body)   # user/prior content kept
+        self.assertIn("*.log", body)
+        self.assertIn(".orchestrator_runtime/", body)   # newly added
+
+    def test_idempotent_does_not_duplicate_rule(self):
+        orch._ensure_workspace_gitignore(self.root)
+        orch._ensure_workspace_gitignore(self.root)
+        with open(os.path.join(self.root, ".gitignore"), encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertEqual(body.count(".orchestrator_runtime/"), 1)
+
+    def test_never_raises_on_unwritable_root(self):
+        orch._ensure_workspace_gitignore(os.path.join(self.root, "no", "such", "dir"))
+        self.assertTrue(True)
+
+
 class TestParseMinYamlComments(unittest.TestCase):
     def test_inline_comment_stripped(self):
         cfg = orch.parse_min_yaml('models:\n  claude: "x"  # a note\n  n: 5 # count\n')

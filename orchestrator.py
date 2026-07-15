@@ -2663,10 +2663,13 @@ def sha256_text(text):
 # coordinator writes this file — never the agents.
 # ---------------------------------------------------------------------------
 def live_log(app_dir, lane, agent, kind, summary):
-    """Append one event line to <app_dir>/live_log.jsonl matching
-    REQUIRED_FIELDS["live_log_entry"] (ts, lane, agent, kind, summary). Summaries
-    are whitespace-collapsed, redacted (§17) and capped at 280 chars. Best-effort:
-    a broken disk/path must never take a run down, so this never raises."""
+    """Append one event line to <app_dir>/.orchestrator_runtime/live_log.jsonl
+    (spec §5 location — moved 2026-07-15 from <app_dir>/live_log.jsonl, which
+    put a noisy per-turn log directly in a workspace/generated-app git
+    history) matching REQUIRED_FIELDS["live_log_entry"] (ts, lane, agent,
+    kind, summary). Summaries are whitespace-collapsed, redacted (§17) and
+    capped at 280 chars. Best-effort: a broken disk/path must never take a
+    run down, so this never raises."""
     try:
         entry = {
             "schema_version": schemalib.SCHEMA_VERSION,
@@ -2677,8 +2680,10 @@ def live_log(app_dir, lane, agent, kind, summary):
             "kind": str(kind or ""),
             "summary": schemalib.redact_secrets(" ".join(str(summary or "").split()))[:280],
         }
+        runtime_dir = _orchestrator_runtime_dir(app_dir)
         with _LOG_LOCK:
-            with open(os.path.join(app_dir, "live_log.jsonl"), "a", encoding="utf-8") as fh:
+            os.makedirs(runtime_dir, exist_ok=True)
+            with open(os.path.join(runtime_dir, "live_log.jsonl"), "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry) + "\n")
     except Exception:  # noqa: BLE001 - logging must never raise
         pass
@@ -4123,6 +4128,35 @@ def _ensure_build_gitignore(build_dir):
         pass
 
 
+_WORKSPACE_GITIGNORE_RULES = [".orchestrator_runtime/"]
+
+
+def _ensure_workspace_gitignore(root):
+    """Write/restore <root>/.gitignore (the factory workspace `run.sh` may
+    `git add -A` + commit) so .orchestrator_runtime/ — worktrees and
+    live_log.jsonl, pure scratch/log content — never lands in that history.
+    Same preserve-extra-rules, append-only-missing idiom as
+    _ensure_build_gitignore; best-effort, never raises."""
+    gi = os.path.join(root, ".gitignore")
+    try:
+        existing = ""
+        if os.path.exists(gi):
+            with open(gi, encoding="utf-8") as fh:
+                existing = fh.read()
+        have = set(existing.splitlines())
+        missing = [r for r in _WORKSPACE_GITIGNORE_RULES if r not in have]
+        if not existing:
+            with open(gi, "w", encoding="utf-8") as fh:
+                fh.write("# Managed by the orchestrator — runtime scratch/log content.\n")
+                fh.write("\n".join(_WORKSPACE_GITIGNORE_RULES) + "\n")
+        elif missing:
+            sep = "" if existing.endswith("\n") else "\n"
+            with open(gi, "a", encoding="utf-8") as fh:
+                fh.write(sep + "\n".join(missing) + "\n")
+    except OSError:
+        pass
+
+
 def ensure_build_repo(build_dir):
     """Initialize app_build as a git repo once (idempotent). Adds a .gitignore for
     build artifacts and an empty initial commit so later commits always have a
@@ -4172,8 +4206,15 @@ def tag_build_run(build_dir, tag):
 # files. Gated by runtime.worktree_isolation; ANY failure returns {} so the caller
 # transparently falls back to the proven direct-write build.
 # ---------------------------------------------------------------------------
+def _orchestrator_runtime_dir(app_dir):
+    """<app_dir>/.orchestrator_runtime — the spec's scratch/log location
+    (worktrees, live_log.jsonl), kept out of any git history the workspace
+    or a generated app might have (see _ensure_workspace_gitignore)."""
+    return os.path.join(app_dir, ".orchestrator_runtime")
+
+
 def _worktree_root(build_dir):
-    return os.path.join(os.path.dirname(build_dir), ".orchestrator_runtime", "worktrees")
+    return os.path.join(_orchestrator_runtime_dir(os.path.dirname(build_dir)), "worktrees")
 
 
 def setup_lane_worktrees(build_dir, roster):
@@ -7828,6 +7869,8 @@ def main():
     # V2 spec §27: --root overrides config.yaml's workspace root (relative config
     # roots resolve against this repo); --project is an alias for --app.
     cfg["root"] = resolve_root(cfg, args.root)
+    if cfg["root"]:
+        _ensure_workspace_gitignore(cfg["root"])
     # Per-app locks live IN THE WORKSPACE, not next to the engine: the repo
     # checkout and the GUI's Application Support copy of the engine both target
     # the same root, and engine-local locks let them run one app twice.

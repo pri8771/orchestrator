@@ -147,7 +147,8 @@ class TestAppPipelineEndToEnd(unittest.TestCase):
             os.path.join(self.app_dir, "app_build", "App.swift")))
 
         # -- live_log.jsonl (§21): valid JSONL, required fields, expected kinds --
-        with open(os.path.join(self.app_dir, "live_log.jsonl"), encoding="utf-8") as fh:
+        with open(os.path.join(self.app_dir, ".orchestrator_runtime", "live_log.jsonl"),
+                  encoding="utf-8") as fh:
             entries = [json.loads(l) for l in fh.read().splitlines() if l.strip()]
         self.assertGreater(len(entries), len(expected_keys) * 2)
         kinds = {e["kind"] for e in entries}

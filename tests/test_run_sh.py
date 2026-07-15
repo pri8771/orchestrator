@@ -108,6 +108,15 @@ class TestRunShGitBehavior(unittest.TestCase):
 
     def test_nothing_to_commit_is_reported_cleanly(self):
         self._enable_commit_and_push()
+        # A real repo reaches "nothing to commit" only after the workspace
+        # .gitignore has already been seeded (orchestrator.py writes it once
+        # per root, unconditionally) — pre-seed it here so this run doesn't
+        # have that one genuinely-new file to commit.
+        with open(os.path.join(self.root, ".gitignore"), "w") as fh:
+            fh.write(".orchestrator_runtime/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed gitignore"],
+                       cwd=self.root, check=True)
         proc = self._run()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("Nothing to commit", proc.stdout)
