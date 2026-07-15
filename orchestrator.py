@@ -5734,10 +5734,12 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # the transcript + final output (last emission of an id/name wins, so the
     # coordinator's final revision beats any draft). Cycles are an error recorded
     # in tasks.json — never a crash.
-    transcript = _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
-                                         coord=coord, active=active, md_path=md_path,
-                                         record_decisions=_decisions_contract_requested(
-                                             cfg, phasedef))
+    transcript, _unresolved_contract = _record_phase_contracts(
+        cfg, app, app_dir, key, transcript, final_output,
+        coord=coord, active=active, md_path=md_path,
+        record_decisions=_decisions_contract_requested(cfg, phasedef))
+    if _unresolved_contract:
+        state.setdefault("phase_resolutions", {})[key] = _unresolved_contract
     # Flows/requirements contracts: not part of _record_phase_contracts (that
     # covers tasks.json/interfaces.json/decisions.json/phase_summaries.json)
     # since these feed the UI-crawl and adherence gates specifically.
@@ -5821,6 +5823,16 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     state["consensus_status"][key] = bool(consensus)
     if vote:
         state["vote_results"][key] = vote
+        # UNRESOLVED phase state: a forced vote that never actually decided
+        # (no quorum of parseable ballots, no agent could tally) is exactly
+        # as unresolved as a failing quality gate or a broken contract — a
+        # phase closing on it must not read as a clean, ordinary close.
+        if not vote.get("decided"):
+            state.setdefault("phase_resolutions", {})[key] = "vote_undecided"
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "vote_undecided",
+                "summary": "forced vote closed phase '%s' without deciding" % key})
     state["phase_outputs"][key] = final_output.strip()
     if key not in state["completed_phases"]:
         state["completed_phases"].append(key)
@@ -5964,6 +5976,9 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
                      % (len(decisions), len(derrs)))
     contract_repair_limit = int(cget(cfg, "runtime.contract_repair_limit", 2) or 0)
     can_repair = bool(coord and active and md_path is not None)
+    unresolved = None   # NEXT_MILESTONES "UNRESOLVED phase state": the caller
+    # records this on state.phase_resolutions[key] so a phase that closed on
+    # an unrepaired contract problem isn't indistinguishable from a clean one.
     if key == "task_assignments":
         blob = transcript + "\n" + (final_output or "")
         tasks, terrs = parse_tasks_blocks(blob)
@@ -6002,6 +6017,7 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
                 "summary": "%d tasks.json contract error(s) (%d repair attempt(s))"
                           % (len(terrs), attempts),
                 "detail": {"errors": terrs[:10]}})
+            unresolved = "contract_error"
         # Requirements-coverage check (NEXT_MILESTONES #2): every CORE
         # requirement from requirements.json (app_features) needs ≥1 task
         # naming it in requirement_ids. Checked mechanically, and skipped if
@@ -6045,6 +6061,7 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
                               % len(gaps),
                     "detail": {"uncovered": [{"id": rid, "text": txt}
                                              for rid, txt in gaps]}})
+                unresolved = "requirements_coverage_gap"
         persist_tasks(app_dir, tasks, terrs)
         emit("TASKS: %d task(s) -> tasks.json (%d error(s))." % (len(tasks), len(terrs)))
         live_log(app_dir, key, "orchestrator", "tasks_recorded",
@@ -6079,13 +6096,14 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
                 "summary": "%d interfaces.json contract error(s) (%d repair attempt(s))"
                           % (len(ierrs), attempts),
                 "detail": {"errors": ierrs[:10]}})
+            unresolved = "contract_error"
         persist_interfaces(app_dir, ifaces, ierrs)
         emit("INTERFACES: %d interface(s) -> interfaces.json (%d error(s))."
              % (len(ifaces), len(ierrs)))
         live_log(app_dir, key, "orchestrator", "interfaces_recorded",
                  "%d interface(s) persisted to interfaces.json; %d error(s)"
                  % (len(ifaces), len(ierrs)))
-    return transcript
+    return transcript, unresolved
 
 
 # ---------------------------------------------------------------------------

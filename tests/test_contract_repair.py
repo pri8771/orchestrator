@@ -64,11 +64,12 @@ class TestTaskContractRepair(_RepairTestBase):
             return _tasks_block(GOOD_TASK)
 
         orch.call_agent = fake_call_agent
-        transcript = orch._record_phase_contracts(
+        transcript, unresolved = orch._record_phase_contracts(
             self._cfg(), "demo", self.app_dir, "task_assignments",
             _tasks_block(BAD_TASK), "",
             coord="codex", active=["codex"], md_path=self.md_path)
 
+        self.assertIsNone(unresolved)
         tasks = _read_json(os.path.join(self.app_dir, "tasks.json"))
         self.assertEqual(tasks["errors"], [])
         self.assertEqual(tasks["tasks"][0]["owner_lane"], "primary_ui")
@@ -83,11 +84,12 @@ class TestTaskContractRepair(_RepairTestBase):
             return _tasks_block(BAD_TASK)   # never actually fixes it
 
         orch.call_agent = fake_call_agent
-        orch._record_phase_contracts(
+        _transcript, unresolved = orch._record_phase_contracts(
             self._cfg(limit=2), "demo", self.app_dir, "task_assignments",
             _tasks_block(BAD_TASK), "",
             coord="codex", active=["codex"], md_path=self.md_path)
 
+        self.assertEqual(unresolved, "contract_error")
         tasks = _read_json(os.path.join(self.app_dir, "tasks.json"))
         self.assertEqual(len(tasks["errors"]), 1)
         mistakes = _read_text(os.path.join(self.app_dir, "mistakes.jsonl"))
@@ -135,11 +137,12 @@ class TestInterfaceContractRepair(_RepairTestBase):
 
     def test_exhausts_and_warns(self):
         orch.call_agent = lambda *a, **k: _interfaces_block(BAD_IFACE)
-        orch._record_phase_contracts(
+        _transcript, unresolved = orch._record_phase_contracts(
             self._cfg(limit=1), "demo", self.app_dir, "tech_specs",
             _interfaces_block(BAD_IFACE), "",
             coord="claude", active=["claude"], md_path=self.md_path)
 
+        self.assertEqual(unresolved, "contract_error")
         ifaces = _read_json(os.path.join(self.app_dir, "interfaces.json"))
         self.assertEqual(len(ifaces["errors"]), 1)
         self.assertIn("1 repair attempt(s)",
@@ -210,11 +213,12 @@ class TestRequirementsCoverageRepair(_RepairTestBase):
         # Every repair attempt re-emits the SAME under-covering backlog.
         orch.call_agent = lambda *a, **k: _tasks_block(covers_only_r1)
 
-        orch._record_phase_contracts(
+        _transcript, unresolved = orch._record_phase_contracts(
             self._cfg(limit=2), "demo", self.app_dir, "task_assignments",
             _tasks_block(covers_only_r1), "",
             coord="codex", active=["codex"], md_path=self.md_path)
 
+        self.assertEqual(unresolved, "requirements_coverage_gap")
         mistakes = _read_text(os.path.join(self.app_dir, "mistakes.jsonl"))
         self.assertIn("requirements_coverage_gap", mistakes)
         self.assertIn("R-2", mistakes)
@@ -259,12 +263,13 @@ class TestUnrelatedPhaseUnaffected(_RepairTestBase):
         # md_path must be harmless no-ops there (existing behavior preserved).
         called = []
         orch.call_agent = lambda *a, **k: called.append(1) or "unused"
-        transcript = orch._record_phase_contracts(
+        transcript, unresolved = orch._record_phase_contracts(
             self._cfg(), "demo", self.app_dir, "design_discussion",
             "some transcript", "final output",
             coord="codex", active=["codex"], md_path=self.md_path)
         self.assertEqual(called, [])
         self.assertIn("some transcript", transcript)
+        self.assertIsNone(unresolved)
 
 
 if __name__ == "__main__":

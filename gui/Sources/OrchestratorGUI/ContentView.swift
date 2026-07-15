@@ -648,6 +648,7 @@ struct PhaseListView: View {
             Section {
                 ForEach(store.phases(for: project)) { def in
                     let st = project.phaseStatus(def.key)
+                    let resolutionWarning = project.phaseResolutionWarning(def.key)
                     HStack(spacing: 9) {
                         Image(systemName: def.writes ? "hammer" : st.symbol)
                             .foregroundStyle(st.tint)
@@ -656,6 +657,14 @@ struct PhaseListView: View {
                             .font(.body)
                             .fontWeight(st == .active ? .medium : .regular)
                             .foregroundStyle(st == .pending ? .secondary : .primary)
+                        if let resolutionWarning {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(DS.status.warning.color)
+                                .help(resolutionWarning)
+                                .accessibilityLabel("Closed without a clean resolution")
+                                .accessibilityHint(resolutionWarning)
+                        }
                         Spacer()
                         if st == .active && project.status == .inProgress {
                             Text("r\(project.currentRound)")

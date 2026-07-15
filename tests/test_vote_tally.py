@@ -1,6 +1,7 @@
 """Forced-vote ballots: vote-json parsing, the deterministic Python tally,
 and the end-to-end forced-vote path through process_phase (previously the
 largest untested engine branch)."""
+import os
 import tempfile
 import unittest
 
@@ -179,6 +180,34 @@ class TestForcedVoteEndToEnd(unittest.TestCase):
         self.assertIn("commits to Claude's proposal", out)
         # No LLM tally turn ran — the tally was counted in Python.
         self.assertFalse(any("calls it" in p for (_r, _a, p) in prompts))
+
+    def test_undecided_vote_marks_phase_resolutions(self):
+        # NEXT_MILESTONES "UNRESOLVED phase state": malformed ballots force
+        # the LLM-tally fallback, and if THAT never actually decides either
+        # (no VOTE_DECISION: YES), the phase closes anyway but must record
+        # that it isn't a clean resolution.
+        app_dir = tempfile.mkdtemp()
+        phase = wf.Phase("app_features", "app_features", "app_features.md",
+                         "Prioritize features.", rounds=1)
+
+        def fake_call_agent(_cfg, _app, _phase, rnd, agent, prompt):
+            if "TIME TO DECIDE" in prompt:
+                return "I like Claude's plan best, no ballot though."
+            if "calls it" in prompt:
+                return "Still torn, no clear winner."   # no VOTE_DECISION: YES
+            if "YOUR TURN" in prompt:
+                return "%s_PROPOSAL_TEXT" % agent.upper()
+            return "CONSENSUS: NO\nStill split."
+
+        orch.call_agent = fake_call_agent
+        orch.process_phase(self._cfg(), "demo", app_dir, phase,
+                           "Build a useful iOS app.", [],
+                           orch.load_state(app_dir), phase_index=0)
+        state = orch.load_state(app_dir)
+        self.assertFalse(state["vote_results"]["app_features"]["decided"])
+        self.assertEqual(state["phase_resolutions"]["app_features"], "vote_undecided")
+        with open(os.path.join(app_dir, "mistakes.jsonl"), encoding="utf-8") as fh:
+            self.assertIn("vote_undecided", fh.read())
 
     def test_malformed_ballots_fall_back_to_llm_tally(self):
         out, prompts = self._run(

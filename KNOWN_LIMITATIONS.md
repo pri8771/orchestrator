@@ -5,11 +5,14 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
 
 ## Engine — spec deviations
 
-- **§19 advisory-lock task claiming is not implemented.** `tasks.json` is
-  written and validated (backlog, lanes, acyclic `depends_on`), and build
-  workers are prompted with their lane's task slice — but there is no
-  claim/release protocol (`claimed_by`/`claimed_at` stay null), no OS advisory
-  locking around read-modify-write, and no stale-claim reversion.
+- **§19 task claiming has no OS-level advisory lock, by design, not by gap.**
+  `tasks.json` now carries a real `claimed_by`/`claimed_at` protocol with
+  stale-claim reversion (`_claim_tasks_for_iteration`), but claims are
+  computed once, single-threaded, immediately before each iteration's worker
+  fan-out — there is never a concurrent writer to lock against, since the
+  parallel build lanes are threads inside one process, not separate OS
+  processes racing on the file. An OS advisory lock would only matter if that
+  ever changed.
 - **§20's dedicated `interface_contract` phase does not exist.** No shipped
   workflow has that phase; `interfaces.json` is extracted from the
   `tech_specs` coordinator wrap-up (a ` ```interfaces-json``` ` machine-contract
@@ -29,15 +32,6 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
 
 ## Engine — enforcement gaps (documented behavior, weaker than it looks)
 
-- **Machine contracts are requested, not enforced.** A phase whose wrap-up
-  omits or mangles its required tasks-json/requirements-json/flows-json block
-  closes anyway with a `WARN CONTRACT` line and a mistakes-ledger entry — no
-  repair round is triggered. (Top of NEXT_MILESTONES.md.)
-- **No requirements-coverage check.** Nothing verifies that every core
-  requirement ID in `requirements.json` is covered by a task before build.
-- **A phase can close on a failing quality gate.** When repair rounds are
-  exhausted, the phase closes with a warning appended to its output and a
-  `phase_resolutions` marker in state; the GUI does not yet surface it.
 - **`designlint`'s `todo_marker` is a soft signal only.** Despite the DoD v1
   tier listing "no TODO/FIXME markers", strict mode promotes only
   `unlisted_package` to an error.

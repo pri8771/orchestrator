@@ -118,4 +118,25 @@ final class ViewLogicTests: XCTestCase {
         let p = makeProject(status: .inProgress, currentPhase: "spec")
         XCTAssertEqual(p.phaseStatus("build"), .pending)
     }
+
+    func testPhaseResolutionWarningNilWhenNoneRecorded() {
+        let p = makeProject(status: .done, completedPhases: ["spec"])
+        XCTAssertNil(p.phaseResolutionWarning("spec"))
+    }
+
+    func testPhaseResolutionWarningPresentForKnownReasons() {
+        var p = makeProject(status: .done, completedPhases: ["spec", "build"])
+        p.phaseResolutions = ["spec": "vote_undecided", "build": "contract_error"]
+        XCTAssertEqual(p.phaseResolutionWarning("spec"),
+                       "The forced vote never actually decided — no clear winner.")
+        XCTAssertEqual(p.phaseResolutionWarning("build"),
+                       "Closed with a still-malformed tasks.json/interfaces.json contract.")
+    }
+
+    func testPhaseResolutionWarningFallsBackForUnknownReason() {
+        var p = makeProject(status: .done, completedPhases: ["spec"])
+        p.phaseResolutions = ["spec": "some_future_reason"]
+        XCTAssertEqual(p.phaseResolutionWarning("spec"),
+                       "Closed without a clean resolution (some_future_reason).")
+    }
 }

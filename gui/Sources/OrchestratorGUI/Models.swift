@@ -207,6 +207,13 @@ struct Project: Identifiable, Equatable {
     // active sections and invisible to engine scans (find_apps skips it), but
     // kept on disk so Restore can bring it back.
     var archived: Bool = false
+    // agent_state.json's phase_resolutions: {phase_key: reason} for a phase
+    // that closed WITHOUT a clean resolution — a failing quality gate that
+    // exhausted repair, a forced vote nobody actually decided, or a
+    // tasks.json/interfaces.json contract repair that stayed broken. A
+    // completed phase isn't necessarily a CLEAN one; this is how the GUI
+    // tells the difference instead of reading every phase as equally done.
+    var phaseResolutions: [String: String] = [:]
 
     var id: String { name }
 
@@ -231,6 +238,27 @@ struct Project: Identifiable, Equatable {
         if completedPhases.contains(key) { return .done }
         if currentPhase == key { return status == .aborted ? .aborted : .active }
         return .pending
+    }
+
+    // A phase can be .done and still not be a CLEAN close — a failing
+    // quality gate that exhausted repair, a forced vote nobody actually
+    // decided, or a tasks/interfaces contract repair that stayed broken.
+    // Views overlay this on top of phaseStatus's checkmark rather than
+    // replacing it — the phase genuinely did finish, just not cleanly.
+    func phaseResolutionWarning(_ key: String) -> String? {
+        guard let reason = phaseResolutions[key] else { return nil }
+        switch reason {
+        case "quality_gate_warning":
+            return "Closed despite a failing quality gate — repair rounds were exhausted."
+        case "vote_undecided":
+            return "The forced vote never actually decided — no clear winner."
+        case "contract_error":
+            return "Closed with a still-malformed tasks.json/interfaces.json contract."
+        case "requirements_coverage_gap":
+            return "A core requirement has no task covering it."
+        default:
+            return "Closed without a clean resolution (\(reason))."
+        }
     }
 }
 

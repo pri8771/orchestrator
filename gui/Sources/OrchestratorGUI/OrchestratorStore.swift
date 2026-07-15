@@ -64,6 +64,7 @@ private enum BackgroundProjectLoader {
         var workflowName: String? = nil
         var awaiting: String? = nil
         var blocked: BlockedConflict? = nil
+        var resolutions: [String: String] = [:]
 
         if let data = try? Data(contentsOf: stateURL),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -77,6 +78,7 @@ private enum BackgroundProjectLoader {
             workflowName = obj["workflow"] as? String
             awaiting = obj["awaiting_approval"] as? String
             blocked = BlockedConflict.parse(fromStateObject: obj)
+            resolutions = (obj["phase_resolutions"] as? [String: String]) ?? [:]
             let done = (obj["done"] as? Bool) ?? false
             if let e = error, !e.isEmpty {
                 status = .aborted
@@ -123,6 +125,7 @@ private enum BackgroundProjectLoader {
         proj.manuallyStopped = stopped
         proj.archived = fm.fileExists(
             atPath: dir.appendingPathComponent(".orch_archived").path)
+        proj.phaseResolutions = resolutions
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
         proj.latestVerify = VerifyResultsParser.latest(verifyRecords)
@@ -2159,6 +2162,7 @@ final class OrchestratorStore: ObservableObject {
         var workflowName: String? = nil
         var awaiting: String? = nil
         var blocked: BlockedConflict? = nil
+        var resolutions: [String: String] = [:]
 
         if let data = try? Data(contentsOf: stateURL),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -2172,6 +2176,7 @@ final class OrchestratorStore: ObservableObject {
             workflowName = obj["workflow"] as? String
             awaiting = obj["awaiting_approval"] as? String
             blocked = BlockedConflict.parse(fromStateObject: obj)
+            resolutions = (obj["phase_resolutions"] as? [String: String]) ?? [:]
             let done = (obj["done"] as? Bool) ?? false
             if let e = error, !e.isEmpty {
                 status = .aborted
@@ -2223,6 +2228,7 @@ final class OrchestratorStore: ObservableObject {
         proj.manuallyStopped = stopped
         proj.archived = fm.fileExists(
             atPath: dir.appendingPathComponent(".orch_archived").path)
+        proj.phaseResolutions = resolutions
         // Latest verification outcome (defensive parse; [] on any problem).
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
