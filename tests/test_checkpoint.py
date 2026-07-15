@@ -37,9 +37,22 @@ class TestAwaitApproval(unittest.TestCase):
         time.sleep(0.3)
         self.assertEqual(state.get("awaiting_approval"), phase)  # paused
         if drop_name:
-            os.makedirs(os.path.join(d, "approvals"), exist_ok=True)
-            with open(os.path.join(d, "approvals", drop_name), "w") as fh:
+            # Atomic write (temp file + rename), matching the real writer
+            # (the GUI's ApprovalFiles.write uses String.write(atomically:
+            # true)): _await_approval's poll loop does os.path.exists() then
+            # immediately reads. A plain open(path, "w") lets the poll
+            # thread — running every 0.1s here, vs. the engine's real 2s
+            # default — observe the file the instant it's CREATED, before
+            # fh.write() lands any content, and read back "" instead of
+            # drop_body. Not a production bug (the real writer already
+            # doesn't do this); just this test's own drop-helper needed to.
+            appr_dir = os.path.join(d, "approvals")
+            os.makedirs(appr_dir, exist_ok=True)
+            dest = os.path.join(appr_dir, drop_name)
+            tmp = dest + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
                 fh.write(drop_body)
+            os.replace(tmp, dest)
         t.join(timeout=5)
         self.assertIsNone(state.get("awaiting_approval"))  # cleared
         return result
