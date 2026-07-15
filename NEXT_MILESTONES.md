@@ -68,35 +68,40 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   wasn't — `export_exemplars` (write) had a test, `_load_phase_exemplar`
   (read) and the round-trip between them didn't. Added that coverage rather
   than re-implementing something that already worked.
+- **§19 task claiming** (was #2 below): `_claim_tasks_for_iteration` replaces
+  the old "every worker just filters tasks.json by owner_lane == its
+  lane_id" slice with real `claimed_by`/`claimed_at` — sticky across
+  iterations (worker session-reuse continuity), reverted the moment a
+  claiming worker leaves the roster, and any lane-mismatched/orphaned/
+  overflow task round-robined across the whole roster instead of silently
+  never being built. Computed single-threaded before each iteration's
+  worker fan-out, so there's no concurrent-writer race to lock against.
 
 ## Genuinely next (in rough priority order)
 
 1. **Gemini session deltas** — verify `--session-id`/`--resume` actually
    compose with `--yolo` (the build-phase write flag) and preserve context
    across a resume, the same way it was verified for codex; wire in if so.
-2. **§19 task claiming** — engine-assigned claim/release over `tasks.json`
-   (claimed_by/claimed_at, stale-claim reversion) so lanes pull work instead
-   of being statically sliced.
-3. **UNRESOLVED phase state** — surfaced in docs + GUI when a phase closes on
+2. **UNRESOLVED phase state** — surfaced in docs + GUI when a phase closes on
    a failing quality gate, failed tally, or missing contract
    (`state.phase_resolutions` already records the quality-gate case).
-4. **Live validation of the conflict loop** — a real token-spending run with
+3. **Live validation of the conflict loop** — a real token-spending run with
    `worktree_isolation: true` that hits a conflict, is resolved manually, and
    finishes via `--resume` (mechanics are unit-tested; the human loop isn't
    proven live).
-5. **Sandbox `http` verification** — `verify.py` currently boots generated
+4. **Sandbox `http` verification** — `verify.py` currently boots generated
    servers unsandboxed.
-6. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
+5. **Move `live_log.jsonl` to `.orchestrator_runtime/`** per spec (engine +
    GUI + .gitignore together).
-7. **Stop for externally-launched runs** — persist a PID file so the GUI can
+6. **Stop for externally-launched runs** — persist a PID file so the GUI can
    signal runs it didn't spawn (today Stop is session-local).
-8. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
+7. **Dynamic Type sweep** — the `DS.font` token layer itself is fixed-point,
    so Dynamic Type is broken app-wide (not just secondary sheets as
    previously noted here).
-9. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
+8. **Web build targets** — a `verify.py` branch for npm/Playwright (designed,
    not built).
-10. **library_mining scaffold phase** — today it produces the extraction
-    plan/report; building the package is a follow-on.
+9. **library_mining scaffold phase** — today it produces the extraction
+   plan/report; building the package is a follow-on.
 11. **Per-phase rollback + side-by-side diff viewer** (full project
     reset/fork + build-history exist).
 

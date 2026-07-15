@@ -143,27 +143,101 @@ class TestInterfacesJsonParsing(unittest.TestCase):
 
 
 class TestWorkerContractBlock(unittest.TestCase):
-    def test_worker_sees_own_lane_tasks_and_all_interfaces(self):
-        worker = {"agent": "codex", "label": "Codex", "slug": "codex",
-                  "lane": "the core data model", "lane_id": "data_domain"}
-        backlog = [_task("T-001", "data_domain"), _task("T-002", "primary_ui")]
-        block = orch._worker_contract_block(worker, backlog, [_iface()])
+    """_worker_contract_block just RENDERS whatever it's given — task
+    selection is _claim_tasks_for_iteration's job now (see
+    TestClaimTasksForIteration below)."""
+
+    def test_claimed_tasks_and_interfaces_both_render(self):
+        block = orch._worker_contract_block(
+            [_task("T-001")], [_task("T-001")], [_iface()])
         self.assertIn("T-001", block)
-        self.assertNotIn("T-002", block)
         self.assertIn("HabitStore", block)
 
-    def test_unknown_lane_names_show_full_backlog(self):
-        worker = {"agent": "codex", "label": "Codex", "slug": "codex",
-                  "lane": "x", "lane_id": "data_domain"}
-        backlog = [_task("T-001", "made_up_lane"), _task("T-002", "another_lane")]
-        block = orch._worker_contract_block(worker, backlog, [])
-        self.assertIn("T-001", block)
-        self.assertIn("T-002", block)
+    def test_backlog_present_but_nothing_claimed_says_so(self):
+        block = orch._worker_contract_block([_task("T-001")], [], [])
+        self.assertIn("nothing claimed for you", block)
 
     def test_empty_contract_is_empty_string(self):
-        worker = {"agent": "codex", "label": "Codex", "slug": "codex",
-                  "lane": "x", "lane_id": "data_domain"}
-        self.assertEqual(orch._worker_contract_block(worker, [], []), "")
+        self.assertEqual(orch._worker_contract_block([], [], []), "")
+
+
+def _roster(*lane_ids, agent="codex"):
+    return [{"agent": agent, "label": "%s %d" % (agent, i), "slug": "%s-%d" % (agent, i),
+            "lane": lid, "lane_id": lid} for i, lid in enumerate(lane_ids)]
+
+
+class TestClaimTasksForIteration(unittest.TestCase):
+    """§19 dynamic task claiming — replaces the old static
+    owner_lane == lane_id slice with claimed_by/claimed_at + redistribution
+    of anything a lane-matched worker can't take."""
+
+    def test_own_lane_match_claims_to_that_worker(self):
+        roster = _roster("data_domain", "primary_ui")
+        backlog = [_task("T-001", "data_domain"), _task("T-002", "primary_ui")]
+        claims = orch._claim_tasks_for_iteration(roster, backlog, 1)
+        self.assertEqual([t["id"] for t in claims["codex-0"]], ["T-001"])
+        self.assertEqual([t["id"] for t in claims["codex-1"]], ["T-002"])
+        self.assertEqual(backlog[0]["claimed_by"], "codex-0")
+        self.assertEqual(backlog[0]["claimed_at"], 1)
+
+    def test_unknown_lane_label_is_redistributed_not_dropped(self):
+        roster = _roster("data_domain", "primary_ui")
+        backlog = [_task("T-001", "made_up_lane"), _task("T-002", "another_lane")]
+        claims = orch._claim_tasks_for_iteration(roster, backlog, 1)
+        claimed_ids = {t["id"] for v in claims.values() for t in v}
+        self.assertEqual(claimed_ids, {"T-001", "T-002"})
+        self.assertTrue(all(t.get("claimed_by") for t in backlog))
+
+    def test_multiple_workers_sharing_a_lane_split_not_duplicate(self):
+        # Two workers both own data_domain (e.g. roster bigger than 4 real
+        # lanes) — 3 tasks should split across them, never both claiming #1.
+        roster = _roster("data_domain", "data_domain")
+        backlog = [_task("T-%03d" % i, "data_domain") for i in range(1, 4)]
+        claims = orch._claim_tasks_for_iteration(roster, backlog, 1)
+        all_claimed = [t["id"] for v in claims.values() for t in v]
+        self.assertEqual(sorted(all_claimed), ["T-001", "T-002", "T-003"])
+        self.assertTrue(claims["codex-0"])
+        self.assertTrue(claims["codex-1"])
+
+    def test_lane_with_no_worker_this_iteration_overflows_to_roster(self):
+        # Only data_domain has a worker; a primary_ui task must still get
+        # claimed by someone rather than left to sit unbuilt.
+        roster = _roster("data_domain")
+        backlog = [_task("T-001", "primary_ui")]
+        claims = orch._claim_tasks_for_iteration(roster, backlog, 1)
+        self.assertEqual([t["id"] for t in claims["codex-0"]], ["T-001"])
+
+    def test_claims_are_sticky_across_iterations(self):
+        roster = _roster("data_domain", "primary_ui")
+        backlog = [_task("T-001", "data_domain")]
+        orch._claim_tasks_for_iteration(roster, backlog, 1)
+        self.assertEqual(backlog[0]["claimed_by"], "codex-0")
+        # Second call, same roster: the existing claim must not move even
+        # though nothing marks the task "done" between iterations.
+        claims2 = orch._claim_tasks_for_iteration(roster, backlog, 2)
+        self.assertEqual(backlog[0]["claimed_at"], 1)   # unchanged
+        self.assertEqual([t["id"] for t in claims2["codex-0"]], ["T-001"])
+
+    def test_done_tasks_are_never_reclaimed(self):
+        roster = _roster("data_domain")
+        backlog = [_task("T-001", "data_domain")]
+        backlog[0]["status"] = "done"
+        claims = orch._claim_tasks_for_iteration(roster, backlog, 1)
+        self.assertEqual(claims["codex-0"], [])
+        self.assertIsNone(backlog[0].get("claimed_by"))
+
+    def test_stale_claim_reverts_when_worker_leaves_roster(self):
+        backlog = [_task("T-001", "data_domain")]
+        backlog[0]["claimed_by"] = "codex-0"
+        backlog[0]["claimed_at"] = 1
+        # codex-0 is gone this iteration — its claim must revert and be
+        # picked up by whoever's actually here now.
+        roster = _roster("data_domain")   # slug is "codex-0" too (same helper)
+        roster[0]["slug"] = "claude-0"
+        claims = orch._claim_tasks_for_iteration(roster, backlog, 2)
+        self.assertEqual(backlog[0]["claimed_by"], "claude-0")
+        self.assertEqual(backlog[0]["claimed_at"], 2)
+        self.assertEqual([t["id"] for t in claims["claude-0"]], ["T-001"])
 
 
 class TestPromptInstructions(unittest.TestCase):

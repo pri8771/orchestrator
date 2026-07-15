@@ -3754,27 +3754,96 @@ def _task_waves(backlog):
     return waves if len(waves) > 1 else []
 
 
-def _worker_contract_block(worker, backlog, interfaces, wave_note=""):
-    """The per-lane slice of tasks.json plus the full interfaces.json contract,
-    rendered for one build-worker prompt (§19/§20). '' when neither exists."""
+def _claim_tasks_for_iteration(roster, backlog, rnd):
+    """§19 dynamic task claiming: assign this iteration's still-open
+    tasks.json items to workers, replacing the old static "every worker just
+    filters backlog by owner_lane == its lane_id" slice.
+
+    Sticky across iterations (a claim persists once made) so a worker keeps
+    building the same tasks call to call — that continuity is what the
+    codex/claude session-reuse machinery depends on. Stale-claim reversion:
+    a claim is cleared the moment its worker is no longer in THIS iteration's
+    roster, so a dropped-out worker's tasks don't sit permanently orphaned
+    (today's roster is fixed for the whole build phase, so this is a no-op
+    in practice — it's a correctness net for whenever roster composition
+    becomes dynamic, not dead code by design).
+
+    New/reverted tasks are handed out preferring a worker whose lane_id
+    matches the task's owner_lane (same grouping the old static filter used,
+    just now split — not duplicated — across every worker that shares a
+    lane), then round-robined across the WHOLE roster for anything left
+    over: an orphaned/unknown lane label, or a lane with no worker this
+    iteration. That's the actual fix for "statically sliced" — a lane with
+    nothing of its own no longer leaves its worker idle while another lane
+    backs up.
+
+    Mutates claimed_by/claimed_at on backlog's task dicts in place (the
+    caller persists them); returns {worker_slug: [claimed task dicts]}."""
+    roster_slugs = {w["slug"] for w in roster}
+    reverted = 0
+    for t in backlog:
+        cb = t.get("claimed_by")
+        if cb and cb not in roster_slugs:
+            t["claimed_by"] = None
+            t["claimed_at"] = None
+            reverted += 1
+    if reverted:
+        emit("CLAIM: reverted %d stale claim(s) — claiming worker no longer "
+             "in the roster." % reverted)
+
+    claims = {w["slug"]: [] for w in roster}
+    for t in backlog:
+        cb = t.get("claimed_by")
+        if cb in roster_slugs:
+            claims[cb].append(t)
+
+    open_tasks = [t for t in backlog if not t.get("claimed_by")
+                 and str(t.get("status", "")).lower() != "done"]
+    by_lane = {}
+    for t in open_tasks:
+        by_lane.setdefault(str(t.get("owner_lane")), []).append(t)
+    leftover = []
+    for lane_id in BUILD_LANE_IDS:
+        workers = [w for w in roster if w.get("lane_id") == lane_id]
+        lane_tasks = by_lane.pop(lane_id, [])
+        if not workers:
+            leftover.extend(lane_tasks)
+            continue
+        for i, t in enumerate(lane_tasks):
+            w = workers[i % len(workers)]
+            t["claimed_by"] = w["slug"]
+            t["claimed_at"] = rnd
+            claims[w["slug"]].append(t)
+    for lane_tasks in by_lane.values():   # unknown/missing owner_lane labels
+        leftover.extend(lane_tasks)
+    if leftover:
+        emit("CLAIM: %d task(s) redistributed across the roster (unmatched "
+             "or overflow lane)." % len(leftover))
+    for i, t in enumerate(leftover):
+        w = roster[i % len(roster)]
+        t["claimed_by"] = w["slug"]
+        t["claimed_at"] = rnd
+        claims[w["slug"]].append(t)
+    return claims
+
+
+def _worker_contract_block(backlog, claimed, interfaces, wave_note=""):
+    """This worker's CLAIMED tasks (see _claim_tasks_for_iteration) plus the
+    full interfaces.json contract, rendered for one build-worker prompt
+    (§19/§20). backlog is only consulted to decide whether the project has
+    a task backlog at all; '' when there's neither a backlog nor interfaces."""
     parts = []
     if wave_note:
         parts.append("===== BUILD WAVE =====\n" + wave_note)
     if backlog:
-        lane_id = worker.get("lane_id")
-        mine = [t for t in backlog if str(t.get("owner_lane")) == lane_id]
-        # If the planner used lane names we don't know, don't hide the backlog —
-        # every worker sees all of it and self-selects.
-        known = any(str(t.get("owner_lane")) in BUILD_LANE_IDS for t in backlog)
-        show = mine if known else backlog
-        if show:
-            parts.append("===== YOUR ASSIGNED TASKS (from tasks.json) =====\n"
+        if claimed:
+            parts.append("===== YOUR CLAIMED TASKS (from tasks.json) =====\n"
                          "Work these tasks (respect depends_on order; meet the "
-                         "acceptance criteria):\n" + json.dumps(show, indent=2))
+                         "acceptance criteria):\n" + json.dumps(claimed, indent=2))
         else:
-            parts.append("===== YOUR ASSIGNED TASKS (from tasks.json) =====\n"
-                         "(no tasks assigned to your lane — support the other "
-                         "lanes and the integrator)")
+            parts.append("===== YOUR CLAIMED TASKS (from tasks.json) =====\n"
+                         "(nothing claimed for you this iteration — support "
+                         "the other lanes and the integrator)")
     if interfaces:
         parts.append("===== SHARED INTERFACE CONTRACT (interfaces.json) =====\n"
                      "Code against these EXACT names/signatures; if one must "
@@ -4368,28 +4437,37 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
             if worktrees:
                 emit("Worktree isolation: %d lane(s) in separate worktrees." % len(worktrees))
 
+        # Same for every worker this iteration — compute once, not per-thread.
+        _wave_backlog, _wave_note = backlog, ""
+        if len(waves) > 1:
+            _widx = min(rnd - 1, len(waves) - 1)
+            _wave_backlog = waves[_widx]
+            _done_n = sum(len(wv) for wv in waves[:_widx])
+            _wave_note = ("VERTICAL SLICE — iteration %d works WAVE %d/%d "
+                          "ONLY (%d task(s); %d task(s) from earlier waves "
+                          "are already built — extend, don't rewrite). "
+                          "Finish this wave's tasks end-to-end (UI + logic "
+                          "+ states) before touching anything else."
+                          % (rnd, _widx + 1, len(waves),
+                             len(_wave_backlog), _done_n))
+        # §19 dynamic task claiming: decide who builds what BEFORE fan-out,
+        # single-threaded (no concurrent writers to race on tasks.json), then
+        # persist so the assignment is visible outside this run too.
+        claims = _claim_tasks_for_iteration(roster, _wave_backlog, rnd) \
+            if _wave_backlog else {w["slug"]: [] for w in roster}
+        if backlog:
+            persist_tasks(app_dir, backlog, [])
+
         # ---- fan out: every worker builds its lane concurrently ----
         def _run_worker(pair):
             idx, w = pair
             pers = roleslib.persona_preamble((personas or {}).get(w["agent"]))
-            _wave_backlog, _wave_note = backlog, ""
-            if len(waves) > 1:
-                _widx = min(rnd - 1, len(waves) - 1)
-                _wave_backlog = waves[_widx]
-                _done_n = sum(len(wv) for wv in waves[:_widx])
-                _wave_note = ("VERTICAL SLICE — iteration %d works WAVE %d/%d "
-                              "ONLY (%d task(s); %d task(s) from earlier waves "
-                              "are already built — extend, don't rewrite). "
-                              "Finish this wave's tasks end-to-end (UI + logic "
-                              "+ states) before touching anything else."
-                              % (rnd, _widx + 1, len(waves),
-                                 len(_wave_backlog), _done_n))
             prompt = prompt_build_worker(cfg, w, base_ctx, rnd, tree, roster_desc,
                                          DISPLAY.get(coord, coord), extra=extra,
                                          persona=pers,
                                          contract=_worker_contract_block(
-                                             w, _wave_backlog, interfaces,
-                                             wave_note=_wave_note))
+                                             _wave_backlog, claims.get(w["slug"], []),
+                                             interfaces, wave_note=_wave_note))
             # Per-worker cfg: a shallow copy that (a) points an isolated lane at
             # its OWN worktree and (b) keys circuit-breaker health by the worker
             # slug so concurrent threads of the SAME agent never race on one
