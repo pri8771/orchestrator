@@ -68,6 +68,18 @@ class TestEmitEvent(unittest.TestCase):
         self.assertNotIn("1234567890abcd", evt["detail"])
         self.assertLessEqual(len(evt["big"]), 500)
 
+    def test_nested_dict_and_list_fields_are_also_redacted(self):
+        evlib.emit_event(self.dir, "turn_completed",
+                         payload={"note": "api_key=sk_livekey_1234567890abcd",
+                                  "nested": {"inner": "token=sk_livekey_abcdefghijk"}},
+                         items=["api_key=sk_livekey_1234567890abcd", "plain text"])
+        evt = evlib.read_events(self.dir)[0]
+        self.assertIn("[REDACTED", evt["payload"]["note"])
+        self.assertIn("[REDACTED", evt["payload"]["nested"]["inner"])
+        self.assertNotIn("1234567890abcd", json.dumps(evt))
+        self.assertIn("[REDACTED", evt["items"][0])
+        self.assertEqual(evt["items"][1], "plain text")
+
     def test_read_events_skips_corrupt_lines_and_filters(self):
         evlib.emit_event(self.dir, "run_started", project="x")
         with open(evlib.events_path(self.dir), "a", encoding="utf-8") as fh:

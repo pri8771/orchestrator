@@ -47,6 +47,13 @@ class TestAgentIdentity(unittest.TestCase):
         self.assertEqual(roleslib.load_agent_role_overrides(d),
                          {"codex": "frontend", "ollama": "qa"})
 
+    def test_shipped_roles_json_has_no_pinned_overrides(self):
+        # agent_role_overrides is a deliberate per-agent admin choice (GUI
+        # "Configure -> Sub-agents" or hand-edited), not something that should
+        # ship pre-pinned — a factory default here silently denies every fresh
+        # project the role rotation roles.json's own comment promises.
+        self.assertEqual(roleslib.load_agent_role_overrides(orch.HERE), {})
+
 
 if __name__ == "__main__":
     unittest.main()

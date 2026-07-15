@@ -809,8 +809,12 @@ def run_gemini(cfg, prompt, timeout):
         env.pop("GOOGLE_GENAI_USE_GCA", None)   # force API-key auth, not OAuth
         model = cfg["_resolved"]["gemini_model"]
         # --skip-trust: agents run in temp/app_build dirs the CLI treats as
-        # untrusted; we've already sandboxed the cwd ourselves.
-        cmd = ["gemini", "--skip-trust", "-p", prompt]
+        # untrusted; we've already sandboxed the cwd ourselves. Prompt goes
+        # over stdin, not argv: on argv the full prompt (and any secret
+        # spliced into it) is visible to every local user via `ps`/`/proc/
+        # <pid>/cmdline`. Omitting -p makes gemini read stdin as the whole
+        # prompt (combining -p with piped stdin is unreliable upstream).
+        cmd = ["gemini", "--skip-trust"]
         if model:
             cmd += ["-m", model]
         if cfg.get("_allow_writes"):
@@ -818,12 +822,13 @@ def run_gemini(cfg, prompt, timeout):
         cwd, ephemeral = _agent_cwd(cfg)
         try:
             out, err, code = _run_subprocess(cmd, cwd, timeout, env=env,
-                                             heartbeat=_agent_heartbeat(cfg))
+                                             heartbeat=_agent_heartbeat(cfg),
+                                             input_text=prompt)
         finally:
             if ephemeral:
                 shutil.rmtree(cwd, ignore_errors=True)
         if out.strip() and not _looks_like_gemini_error(out):
-            return out, err, code, _display_cmd(cmd)
+            return out, err, code, _display_cmd(cmd + ["<prompt on stdin>"])
         detail = (err.strip() or out.strip())[:100] if (out.strip() or err.strip()) else "empty"
         notes.append("gemini(key) -> %s" % detail)
 
@@ -859,19 +864,21 @@ def run_gemini(cfg, prompt, timeout):
              % "; ".join(notes))
     if which("gemini"):
         model = cfg["_resolved"]["gemini_model"]
-        cmd = ["gemini", "-p", prompt]
+        # Prompt over stdin, not argv — see the API-key path above for why.
+        cmd = ["gemini"]
         if model:
             cmd += ["-m", model]
         if cfg.get("_allow_writes"):
             cmd += ["--yolo"]   # let Gemini act/write during the build phase
         cwd, ephemeral = _agent_cwd(cfg)
         try:
-            out, err, code = _run_subprocess(cmd, cwd, timeout, heartbeat=_agent_heartbeat(cfg))
+            out, err, code = _run_subprocess(cmd, cwd, timeout, heartbeat=_agent_heartbeat(cfg),
+                                             input_text=prompt)
         finally:
             if ephemeral:
                 shutil.rmtree(cwd, ignore_errors=True)
         if out.strip() and not _looks_like_gemini_error(out):
-            return out, err, code, _display_cmd(cmd)
+            return out, err, code, _display_cmd(cmd + ["<prompt on stdin>"])
         notes.append("gemini CLI -> %s"
                      % ("auth/tier error" if out.strip() or err.strip() else "empty"))
     # Nothing produced a real answer — let call_agent skip this agent cleanly.

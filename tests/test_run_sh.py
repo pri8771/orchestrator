@@ -50,7 +50,19 @@ class TestRunShGitBehavior(unittest.TestCase):
                              capture_output=True, text=True, check=True)
         return out.stdout
 
+    def _enable_commit_and_push(self):
+        # commit_and_push now defaults to false (no auto-push without opt-in);
+        # these tests exercise the commit/secret-refusal mechanics themselves,
+        # so they opt back in explicitly via the same config.json override
+        # mechanism run.sh actually reads.
+        cfg_json = os.path.join(REPO_ROOT, "config.json")
+        self.assertFalse(os.path.exists(cfg_json), "unexpected pre-existing config.json")
+        with open(cfg_json, "w") as fh:
+            fh.write('{"runtime": {"commit_and_push": true}}\n')
+        self.addCleanup(lambda: os.path.exists(cfg_json) and os.remove(cfg_json))
+
     def test_secret_shaped_file_is_refused_not_committed(self):
+        self._enable_commit_and_push()
         with open(os.path.join(self.root, ".env"), "w") as fh:
             fh.write("SECRET_KEY=abc123\n")
         with open(os.path.join(self.root, "normal.md"), "w") as fh:
@@ -70,6 +82,7 @@ class TestRunShGitBehavior(unittest.TestCase):
                                      capture_output=True, text=True).stdout)
 
     def test_various_secret_shapes_all_refused(self):
+        self._enable_commit_and_push()
         names = ["gemini_api_key", "config.json", ".env.local",
                 "creds.pem", "id.key", "cert.p12"]
         for name in names:
@@ -82,6 +95,7 @@ class TestRunShGitBehavior(unittest.TestCase):
             self.assertIn("?? %s" % name, self._status(), "not unstaged: %s" % name)
 
     def test_normal_files_are_committed_when_no_secrets_present(self):
+        self._enable_commit_and_push()
         with open(os.path.join(self.root, "notes.md"), "w") as fh:
             fh.write("just notes\n")
         proc = self._run()
@@ -93,6 +107,7 @@ class TestRunShGitBehavior(unittest.TestCase):
             capture_output=True, text=True).stdout)
 
     def test_nothing_to_commit_is_reported_cleanly(self):
+        self._enable_commit_and_push()
         proc = self._run()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("Nothing to commit", proc.stdout)
@@ -126,6 +141,20 @@ class TestRunShGitBehavior(unittest.TestCase):
         finally:
             if os.path.exists(cfg_json):
                 os.remove(cfg_json)
+
+    def test_shipped_default_skips_git_step_with_no_config_override(self):
+        # Regression: commit_and_push must default to false in the shipped
+        # config.yaml — auto-pushing unreviewed, LLM-generated code to a real
+        # remote shouldn't happen without an explicit opt-in.
+        cfg_json = os.path.join(REPO_ROOT, "config.json")
+        self.assertFalse(os.path.exists(cfg_json), "unexpected pre-existing config.json")
+        with open(os.path.join(self.root, "notes.md"), "w") as fh:
+            fh.write("hi\n")
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("commit_and_push=false", proc.stdout)
+        self.assertIn("skipping git", proc.stdout)
+        self.assertNotIn("Committed", proc.stdout)
 
 
 if __name__ == "__main__":

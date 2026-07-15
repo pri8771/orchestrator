@@ -148,6 +148,70 @@ class TestCodexInvocationUsesStdin(unittest.TestCase):
         self.assertEqual(captured["cmd"][0:2], ["codex", "exec"])
 
 
+class TestGeminiInvocationUsesStdin(unittest.TestCase):
+    """Gemini must receive prompts over stdin, not argv: argv is visible to
+    every local user via `ps`/`/proc/<pid>/cmdline`, and gemini-cli silently
+    prefers -p over piped stdin when both are given, so -p must be omitted
+    entirely rather than just adding stdin alongside it."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._old_run_subprocess = orch._run_subprocess
+        self._old_agent_cwd = orch._agent_cwd
+        self._old_which = orch.which
+        self._old_api_key = orch._gemini_api_key
+
+    def tearDown(self):
+        orch._run_subprocess = self._old_run_subprocess
+        orch._agent_cwd = self._old_agent_cwd
+        orch.which = self._old_which
+        orch._gemini_api_key = self._old_api_key
+
+    def _capture(self):
+        captured = {}
+
+        def fake_run_subprocess(cmd, cwd, timeout, env=None, heartbeat=None, input_text=None):
+            captured["cmd"] = list(cmd)
+            captured["input_text"] = input_text
+            return "reply", "", 0
+
+        orch._run_subprocess = fake_run_subprocess
+        orch._agent_cwd = lambda _cfg: (self.tmp, False)
+        return captured
+
+    def test_api_key_path_passes_prompt_on_stdin(self):
+        captured = self._capture()
+        orch.which = lambda name: "/usr/bin/gemini" if name == "gemini" else None
+        orch._gemini_api_key = lambda cfg: "test-key"
+        cfg = {"_resolved": {"gemini_model": "gemini-2.5-pro"}, "_allow_writes": False}
+
+        out, err, code, displayed = orch.run_gemini(cfg, "hello", timeout=17)
+
+        self.assertEqual(out, "reply")
+        self.assertIn("<prompt on stdin>", displayed)
+        self.assertEqual(captured["input_text"], "hello")
+        self.assertNotIn("-p", captured["cmd"])
+        self.assertNotIn("hello", captured["cmd"])
+        self.assertEqual(captured["cmd"][0], "gemini")
+
+    def test_keyless_fallback_passes_prompt_on_stdin(self):
+        captured = self._capture()
+        orch.which = lambda name: "/usr/bin/gemini" if name == "gemini" else None
+        orch._gemini_api_key = lambda cfg: None
+        cfg = {"_resolved": {"gemini_model": "gemini-2.5-pro"}, "_allow_writes": False,
+               "runtime": {"gemini_use_agy": False}}
+
+        out, err, code, displayed = orch.run_gemini(cfg, "hello", timeout=17)
+
+        self.assertEqual(out, "reply")
+        self.assertIn("<prompt on stdin>", displayed)
+        self.assertEqual(captured["input_text"], "hello")
+        self.assertNotIn("-p", captured["cmd"])
+        self.assertNotIn("hello", captured["cmd"])
+        self.assertEqual(captured["cmd"][0], "gemini")
+
+
 class TestPerWorkerHealthKey(unittest.TestCase):
     """Parallel-build workers pass _health_key so replicated lanes of one agent
     never share (and race on) a single circuit-breaker dict."""

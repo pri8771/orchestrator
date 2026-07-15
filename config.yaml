@@ -178,9 +178,13 @@ runtime:
   # When false, engine log lines are written ONLY to logs/orchestrator.log (no
   # terminal echo). Keep true for GUI runs — the live run-log panel reads stdout.
   stream_terminal_output: true
-  # Honored by run.sh: when false, its post-run git add/commit/push step is
-  # skipped entirely. (Engine code never commits the workspace itself.)
-  commit_and_push: true
+  # Honored by run.sh: when true, its post-run step runs `git add -A`, commits,
+  # and — if an `origin` remote is already configured — pushes, with no
+  # per-run confirmation. (Engine code never commits the workspace itself.)
+  # Defaults to false: auto-pushing unreviewed, LLM-generated code to a real
+  # remote shouldn't happen without an explicit opt-in. Set true to restore
+  # the old always-commit-and-push-if-possible behavior.
+  commit_and_push: false
   # When true, the engine warns at the start of a run if the workspace root is
   # not a git repo (run.sh's commit/push step would silently no-op).
   require_git_repo: true

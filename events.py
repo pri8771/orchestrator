@@ -68,7 +68,9 @@ def events_path(app_dir):
 
 
 def _clean(value):
-    """Redact + cap string field values; pass everything else through."""
+    """Redact + cap string field values, recursing into dicts/lists so a
+    secret nested inside a structured field can't skip redaction; pass
+    everything else through."""
     if isinstance(value, str):
         v = value
         if _schemalib is not None:
@@ -77,6 +79,10 @@ def _clean(value):
             except Exception:  # noqa: BLE001 - redaction is defense in depth
                 pass
         return v[:_MAX_FIELD_CHARS]
+    if isinstance(value, dict):
+        return {str(k): _clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean(v) for v in value]
     return value
 
 
