@@ -301,6 +301,13 @@ runtime:
   # the agent stops losing continuity. Any resume failure falls back to a
   # stateless full-prompt call automatically.
   claude_session_reuse: true
+  # Same idea, for codex, but build phases only: `codex exec resume` has no
+  # --sandbox flag and always runs workspace-write regardless of the
+  # original session's setting, so it's only safe to resume where
+  # workspace-write was already going to be requested anyway. Discussion-
+  # phase codex turns stay stateless (full prompt every round) regardless
+  # of this flag.
+  codex_session_reuse: true
   # Quality: before each integration pass, lanes cross-check each other's
   # output against the shared contracts (parallel, read-only, cheap via
   # resumed sessions).

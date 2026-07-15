@@ -620,6 +620,9 @@ def _agent_cwd(cfg):
     return cfg["root"], False
 
 
+_CODEX_SESSION_ID_RE = re.compile(r"^session id:\s*([0-9a-fA-F-]{36})\s*$", re.MULTILINE)
+
+
 def run_codex(cfg, prompt, timeout):
     model = cfg["_resolved"]["codex_model"]
     # Allow file writes only during an enabled build phase; otherwise read-only.
@@ -629,7 +632,18 @@ def run_codex(cfg, prompt, timeout):
     # reasoning that takes many minutes per message.
     effort = (cget(cfg, "models.codex_build_reasoning", "medium") if cfg.get("_allow_writes")
               else cget(cfg, "models.codex_reasoning", "low"))
-    cmd = ["codex", "exec", "--sandbox", sandbox, "--skip-git-repo-check"]
+    sess = cfg.get("_session")
+    if sess and sess.get("resume") and sess.get("id"):
+        # `codex exec resume` is a distinct subcommand with its own flag set —
+        # notably NO --sandbox: resuming always runs workspace-write
+        # regardless of what the original session used. call_agent_sessioned
+        # only resumes codex sessions when _allow_writes is already true
+        # (build phases), where workspace-write is exactly what would have
+        # been requested anyway — see the comment there for why a read-only
+        # discussion session is never resumed this way.
+        cmd = ["codex", "exec", "resume", sess["id"], "--skip-git-repo-check"]
+    else:
+        cmd = ["codex", "exec", "--sandbox", sandbox, "--skip-git-repo-check"]
     if effort:
         cmd += ["-c", "model_reasoning_effort=%s" % effort]
     if model:
@@ -646,6 +660,14 @@ def run_codex(cfg, prompt, timeout):
     finally:
         if ephemeral:
             shutil.rmtree(cwd, ignore_errors=True)
+    # Unlike claude/gemini, codex assigns its OWN session id — there's no
+    # --session-id flag to pre-assign one on the creating call — so it has to
+    # be scraped from the banner it prints. call_agent_sessioned reads this
+    # back to learn what to store for the next resume.
+    if sess is not None and not sess.get("resume"):
+        m = _CODEX_SESSION_ID_RE.search(out or "")
+        if m:
+            cfg["_new_session_id"] = m.group(1)
     return out, err, code, _display_cmd(cmd + ["<prompt on stdin>"])
 
 
@@ -1507,33 +1529,49 @@ def ensure_signature(text, agent):
 
 def call_agent_sessioned(cfg, app, phase, rnd, agent, full_prompt,
                          delta_prompt=None, session_key=None):
-    """call_agent with claude CLI-session reuse.
+    """call_agent with CLI-session reuse: claude everywhere, codex in
+    write-enabled (build) phases only.
 
     First turn per session_key creates a session (full prompt); later turns
     resume it sending only delta_prompt — the agent already holds the phase
     context, so the cold-start cost (re-reading tens of KB of prompt and
-    re-exploring the repo) is paid once per phase instead of every call. Only
-    claude supports this headless; other agents pass straight through. ANY
+    re-exploring the repo) is paid once per phase instead of every call. ANY
     failure of a resumed call falls back to one stateless full-prompt call, so
     a lost/expired session can never produce a worse result than before.
+
+    Codex is scoped to _allow_writes phases: `codex exec resume` has no
+    --sandbox flag and always runs workspace-write regardless of what the
+    original session used (verified against a real install — this isn't a
+    guess), so resuming a read-only discussion session would silently
+    upgrade its sandbox. Discussion-phase codex turns stay stateless.
+    Gemini isn't wired up yet — its --session-id/--resume flags exist, but
+    verifying they compose correctly with --yolo (the build-phase write
+    flag) needs a live check this session's Gemini quota couldn't cover;
+    left for a follow-up rather than shipped unverified.
 
     `cfg` must be a per-call copy (dict(cfg)) when used from threads — the
     session flag rides on it. The shared session map lives on the ORIGINAL cfg
     and is visible through shallow copies."""
-    reuse = agent == "claude" and session_key and delta_prompt is not None \
-        and bool(cget(cfg, "runtime.claude_session_reuse", True))
+    sessionable = agent == "claude" or (agent == "codex" and bool(cfg.get("_allow_writes")))
+    reuse = sessionable and session_key and delta_prompt is not None \
+        and bool(cget(cfg, "runtime.%s_session_reuse" % agent, True))
     if not reuse:
         return call_agent(cfg, app, phase, rnd, agent, full_prompt)
-    sessions = cfg.setdefault("_claude_sessions", {})
+    sessions = cfg.setdefault("_%s_sessions" % agent, {})
     sid = sessions.get(session_key)
     try:
         if sid:
             cfg["_session"] = {"id": sid, "resume": True}
             return call_agent(cfg, app, phase, rnd, agent, delta_prompt)
-        sid = str(uuid.uuid4())
-        cfg["_session"] = {"id": sid, "resume": False}
+        # claude/gemini let a caller pick the session id up front; codex
+        # assigns its own and must be scraped from the first call's output
+        # (run_codex sets cfg["_new_session_id"] when it finds one).
+        cfg["_session"] = {"id": None if agent == "codex" else str(uuid.uuid4()),
+                           "resume": False}
         out = call_agent(cfg, app, phase, rnd, agent, full_prompt)
-        sessions[session_key] = sid
+        new_sid = cfg.pop("_new_session_id", None) if agent == "codex" else cfg["_session"]["id"]
+        if new_sid:
+            sessions[session_key] = new_sid
         return out
     except AgentError:
         if sessions.get(session_key) is None:
@@ -1543,6 +1581,7 @@ def call_agent_sessioned(cfg, app, phase, rnd, agent, full_prompt,
         return call_agent(cfg, app, phase, rnd, agent, full_prompt)
     finally:
         cfg["_session"] = None
+        cfg.pop("_new_session_id", None)
 
 
 def _delta_discuss_prompt(cfg, agent, new_transcript, rnd, extra="", persona=""):
@@ -4750,6 +4789,7 @@ def _apply_phase_routing(cfg, key):
     # written here and never read, so cooldowns didn't actually survive the copy.
     cfg.setdefault("_agent_health", {})
     cfg.setdefault("_claude_sessions", {})
+    cfg.setdefault("_codex_sessions", {})
     c = dict(cfg)
     c["_phase_key"] = key
     ov = mrlib.overrides_for(routing, key)
@@ -5073,6 +5113,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # Session map must exist on the ORIGINAL cfg before any per-thread shallow
     # copies are taken, or each copy would grow its own map and lose sessions.
     cfg.setdefault("_claude_sessions", {})
+    cfg.setdefault("_codex_sessions", {})
     # Stable per-app cwd for resumed claude sessions (sessions are keyed by cwd,
     # so the default ephemeral temp dir would orphan them each turn). Discussion
     # phases stay read-only regardless — acceptEdits is only granted in builds.
