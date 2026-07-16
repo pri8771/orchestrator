@@ -14,6 +14,8 @@ Hard rules (errors — the same rules phase_rules.json mandates):
 Soft signals (warnings):
   * missing_design_system   >= 3 Swift files but no DesignSystem*.swift
   * todo_marker              TODO/FIXME left in source
+  * empty_action            a control with an empty action closure — the
+                             Rulebook §16 "fake feature" (decorative control)
   * unlisted_package         a third-party SPM dependency not in "allowed"
                              (strict mode promotes this to an error)
 
@@ -33,6 +35,14 @@ TECH_STACK_FILENAME = "tech_stack.json"
 _INLINE_COLOR = re.compile(r"Color\s*\(\s*red\s*:|UIColor\s*\(\s*red\s*:|#colorLiteral\s*\(")
 _RAW_FONT = re.compile(r"\.font\s*\(\s*\.system\s*\(\s*size\s*:")
 _TODO = re.compile(r"//\s*(TODO|FIXME)\b", re.IGNORECASE)
+# Rulebook §16 (fake-feature prohibition): a control whose action is an empty
+# closure is decorative masquerading as functional. Two single-line shapes:
+# an empty `action: {}` argument, or a Button with an empty trailing `{ }` body.
+# Soft signal (warning) — an intentional placeholder should be *visibly
+# disabled with a reason*, which this flags rather than silently allows.
+_EMPTY_ACTION = re.compile(
+    r"action\s*:\s*\{\s*\}"
+    r"|Button\s*\([^{}]*\)\s*\{\s*\}")
 _SPM_URL = re.compile(r"\.package\s*\(\s*url\s*:\s*\"([^\"]+)\"")
 _SPM_NAME = re.compile(r"\.package\s*\(\s*name\s*:\s*\"([^\"]+)\"")
 
@@ -125,6 +135,12 @@ def scan(build_dir, here):
             if _TODO.search(line):
                 warnings.append({"rule": "todo_marker", "file": rel,
                                  "line": i, "detail": line.strip()[:100]})
+            if not test_file and _EMPTY_ACTION.search(line):
+                warnings.append({"rule": "empty_action", "file": rel,
+                                 "line": i,
+                                 "detail": "control with an empty action — "
+                                           "implement it or visibly disable it "
+                                           "with a reason (%s)" % line.strip()[:60]})
 
     if len(files) >= 3 and not has_ds:
         warnings.append({"rule": "missing_design_system", "file": "app_build/",

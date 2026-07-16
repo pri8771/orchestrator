@@ -2219,6 +2219,34 @@ _INTERFACES_JSON_INSTRUCTION = (
     "the shared type/signature contract every parallel build worker codes "
     "against, so include every cross-lane type, API and function.\n"
 )
+_QUALITY_RULES_INSTRUCTION = (
+    "PRODUCT-QUALITY RULES (a feature is NOT done just because the screen exists "
+    "and compiles — build for real use, not the demo path):\n"
+    "- Build REAL behavior, never a screenshot-only mockup. Every control does "
+    "its real job or is visibly disabled with a reason. No empty button actions, "
+    "no toggle that only flips its own look, no search that filters hardcoded data.\n"
+    "- The UI must never lie: show 'Saved'/'Deleted'/'Sent'/'Synced'/'Unlocked' "
+    "ONLY after it truly happened — never before, never unconditionally, never a "
+    "success animation regardless of the real result.\n"
+    "- No sample/placeholder data shown as if it were the user's real data. When "
+    "there's no real data yet, show an honest empty state, not fabricated stats.\n"
+    "- Give every data-driven screen an EXPLICIT state model (an enum like idle/"
+    "loading/loaded/empty/failed) — not a pile of loose isLoading/hasError/"
+    "showEmpty booleans that can form impossible combinations.\n"
+    "- Adaptive layout: reflow, wrap, or scroll — never clip. No hardcoded "
+    "screen-level frames. Set a sensible minimum window size on macOS. Honor "
+    "Dynamic Type and dark mode (test long text and large text).\n"
+    "- Persist real data (must survive relaunch) and preserve the user's input "
+    "across failures — a failed save must not wipe the form.\n"
+    "- Prevent duplicate submissions (disable the trigger while it's in flight). "
+    "Treat user cancellation as a normal outcome, NOT an error.\n"
+    "- Accessibility is part of the build, not a cleanup pass: accessible labels "
+    "on icon-only buttons, status conveyed by more than color, keyboard-navigable.\n"
+    "- Validate real and adversarial input; never surface raw internal errors, "
+    "stack traces, file paths, or tokens to the user.\n"
+    "- In your wrap-up, HONESTLY name anything left as a placeholder, mock, or "
+    "unfinished path — never claim a feature is done on the basis of it compiling.\n"
+)
 _EXTRACTION_JSON_INSTRUCTION = (
     "MACHINE CONTRACT (optional but recommended): for your TOP extraction "
     "candidate, ALSO emit ONE fenced ```extraction-json``` block of the form "
@@ -2420,6 +2448,7 @@ def phase_extra(cfg, key):
                 "with no team, never disable code signing to make the simulator "
                 "happy). Use a real reverse-DNS bundle id.\n"
                 % (str(cget(cfg, "ios.development_team", "") or "your Team ID"))
+                + "\n" + _QUALITY_RULES_INSTRUCTION
             )
         return (
             "Coordinate the build in plain English: what you'd build next, what "
