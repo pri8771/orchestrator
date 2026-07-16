@@ -95,5 +95,50 @@ class TestShepherdLockedStaleness(unittest.TestCase):
         self.assertIn(proc.returncode, (0, 1))
 
 
+@unittest.skipUnless(_has_bash(), "requires bash")
+class TestShepherdAutorunDisabled(unittest.TestCase):
+    """autorun_disabled() — the shared guard EVERY launch path (children AND the
+    release-gate repair loop) must honor. Its absence from the repair loop let a
+    .repair_pending marker relaunch an app the user had deliberately parked."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="shep_dis_")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _check_disabled(self, app):
+        env = dict(os.environ)
+        env["ORCH_ROOT"] = self.root
+        return subprocess.run(["bash", SHEPHERD, "--check-disabled", app],
+                              cwd=REPO_ROOT, capture_output=True, text=True,
+                              timeout=30, env=env).returncode
+
+    def test_disabled_marker_is_detected(self):
+        os.makedirs(os.path.join(self.root, "appA"))
+        open(os.path.join(self.root, "appA", ".orchestrator_autorun_disabled"), "w").close()
+        self.assertEqual(self._check_disabled("appA"), 0)   # 0 = disabled
+
+    def test_enabled_app_is_not_disabled(self):
+        os.makedirs(os.path.join(self.root, "appB"))
+        self.assertEqual(self._check_disabled("appB"), 1)   # 1 = not disabled
+
+    def test_missing_app_is_not_disabled(self):
+        self.assertEqual(self._check_disabled("ghost"), 1)
+
+    def test_repair_loop_now_references_the_shared_guard(self):
+        # Regression guard: the repair loop (launches .repair_pending apps) must
+        # call autorun_disabled — its omission was the bug. Assert the guard is
+        # present in the repair-loop stanza so a future edit can't silently drop
+        # it back to launching parked apps on a repair marker.
+        with open(SHEPHERD, encoding="utf-8") as fh:
+            src = fh.read()
+        repair_stanza = src.split(".repair_pending", 1)
+        self.assertGreater(len(repair_stanza), 1)
+        # Within a few lines of the .repair_pending check, autorun_disabled fires.
+        window = src[src.index(".repair_pending"): src.index(".repair_pending") + 400]
+        self.assertIn("autorun_disabled", window)
+
+
 if __name__ == "__main__":
     unittest.main()

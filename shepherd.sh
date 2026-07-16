@@ -40,13 +40,19 @@ locked(){
   pid=$(grep -oE 'pid=[0-9]+' "$f" 2>/dev/null | head -1 | cut -d= -f2)
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
+# A user (or the GUI) disables autorun by dropping this marker in the app dir.
+# EVERY launch path must honor it — including the repair path: a release-gate
+# repair writes a .repair_pending marker, and the repair loop below used to
+# launch on that alone, relaunching a disabled app the user had deliberately
+# parked (and consuming a build lane). Shared helper so no launch path forgets.
+autorun_disabled(){ [ -f "$ROOT/$1/.orchestrator_autorun_disabled" ]; }
 launch(){ log "launching $1"; nohup bash run.sh --app "$1" >> "$1-run.log" 2>&1 & disown; }
 retry_ok(){ local f="$ROOT/$1/.shepherd_retries" n=0; [ -f "$f" ] && n=$(cat "$f"); if [ "$n" -ge 3 ]; then return 1; fi; echo $((n+1)) > "$f"; log "$1 aborted earlier — retry $((n+1))/3"; }
 
-# Diagnostic/test hook: `shepherd.sh --check-lock <app>` reports locked()'s
-# verdict via exit status (0 = a live run holds it, 1 = free/stale) WITHOUT
-# entering the fleet loop, so the real function can be exercised in a test.
+# Diagnostic/test hooks: report a guard's verdict via exit status WITHOUT
+# entering the fleet loop, so the real functions can be exercised in a test.
 if [ "${1:-}" = "--check-lock" ]; then locked "${2:-}"; exit $?; fi
+if [ "${1:-}" = "--check-disabled" ]; then autorun_disabled "${2:-}"; exit $?; fi
 
 while true; do
   _l=$(queue_lanes); [ -n "$_l" ] && MAX_BUILDS=$_l
@@ -65,6 +71,7 @@ while true; do
     [ "$builds_running" -ge "$MAX_BUILDS" ] && break
     a=$(basename "$d")
     [ -f "$d/.repair_pending" ] || continue
+    autorun_disabled "$a" && continue   # a parked app stays parked, even for repair
     locked "$a" && continue
     rm -f "$d/.repair_pending"
     launch "$a"; builds_running=$((builds_running+1)); sleep 3
@@ -82,7 +89,7 @@ while true; do
     a=$(basename "$d")
     [ -f "$d/initial_prompt/initial_prompt.md" ] || continue
     is_parent "$a" && continue
-    [ -f "$d/.orchestrator_autorun_disabled" ] && continue
+    autorun_disabled "$a" && continue
     locked "$a" && continue
     is_done "$a" && continue
     if has_error "$a"; then retry_ok "$a" || continue; fi
@@ -152,7 +159,7 @@ PY
       a=$(basename "$d")
       [ -f "$d/initial_prompt/initial_prompt.md" ] || continue
       is_parent "$a" && continue
-      [ -f "$d/.orchestrator_autorun_disabled" ] && continue
+      autorun_disabled "$a" && continue
       # A hollow build (done but a queued repair) still counts as pending, so
       # the shepherd can't declare completion before the repair actually runs.
       if ! is_done "$a"; then pending=$((pending+1))
