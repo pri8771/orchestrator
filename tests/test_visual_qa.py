@@ -8,6 +8,7 @@ import os
 import plistlib
 import tempfile
 import unittest
+import unittest.mock
 
 import visualqa as vqa
 
@@ -40,6 +41,37 @@ class TestOkBadParsing(unittest.TestCase):
         self.assertIsNone(vqa.parse_ok_bad(""))
         # Word-boundary: OK inside another word must not match.
         self.assertIsNone(vqa.parse_ok_bad("The tokens are broken here"))
+
+
+class TestCaptureGrantsPermissions(unittest.TestCase):
+    """capture_screens pre-grants privacy permissions before screenshotting, so
+    a first-launch permission dialog can't cover the app and cause a false BAD."""
+
+    def test_grant_all_issued_before_any_screenshot(self):
+        calls = []
+
+        def fake_run(cmd, cwd=None, timeout=120):
+            calls.append(cmd)
+            # simctl launch prints a pid; screenshot writes the file.
+            if "screenshot" in cmd:
+                # create the target file so it's collected
+                open(cmd[-1], "w").close()
+            return 0, "", ""
+
+        with unittest.mock.patch.object(vqa, "_install_with_rescue", return_value=""), \
+             unittest.mock.patch.object(vqa, "_run", side_effect=fake_run):
+            shots, note = vqa.capture_screens("UDID", "/tmp/App.app", "com.x.app",
+                                              tempfile.mkdtemp())
+        self.assertEqual(note, "")
+        grant_idx = next((i for i, c in enumerate(calls)
+                          if "privacy" in c and "grant" in c and "all" in c), None)
+        self.assertIsNotNone(grant_idx, "no `simctl privacy grant all` call issued")
+        first_shot = next((i for i, c in enumerate(calls) if "screenshot" in c), None)
+        self.assertIsNotNone(first_shot)
+        # The grant must happen BEFORE the first screenshot.
+        self.assertLess(grant_idx, first_shot)
+        # It targets the app's bundle id.
+        self.assertIn("com.x.app", calls[grant_idx])
 
 
 class TestGradeAggregation(unittest.TestCase):

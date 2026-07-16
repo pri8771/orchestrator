@@ -189,6 +189,14 @@ def capture_screens(udid, app_path, bid, shots_dir):
     note = _install_with_rescue(udid, app_path)
     if note:
         return [], note
+    # Pre-grant privacy permissions so a first-launch system permission dialog
+    # (location, photos, camera, notifications, …) doesn't cover the app in the
+    # screenshot — the grader would score that covered screen BAD even though
+    # the app is fine. This is a false-failure the gate used to hit for any app
+    # that asks for a permission on launch (e.g. a location app). Best-effort:
+    # `grant all` isn't supported for every service on every OS, so ignore its
+    # exit — a screen that still shows a legit dialog just grades as it looks.
+    _run(["xcrun", "simctl", "privacy", udid, "grant", "all", bid], timeout=30)
     shots = []
     import time
     for mode in ("light", "dark"):
