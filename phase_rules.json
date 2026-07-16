@@ -5,6 +5,8 @@
     "Every generated app must have real user-visible behavior, not only placeholder screens.",
     "For iOS apps, default to SwiftUI, deterministic local state first, Apple system frameworks, and no third-party package unless it materially reduces risk.",
     "Every screen needs empty, loading, success, and error states when the workflow can reach those states.",
+    "No two text or control elements may visually overlap, collide, or clip each other. Labels never sit on top of values; values never stack into each other. When elements are positioned by a data value (times on a timeline, points on an axis), enforce a minimum gap and de-clutter (offset, group, collapse, or drop a colliding label) — overlapping text is a broken screen.",
+    "The interface must never claim an outcome that has not happened: show Saved/Deleted/Sent/Synced/Unlocked only after it is truly confirmed, never a success state shown unconditionally. No sample or placeholder data shown as if it were the user's real data.",
     "Implement the design spec's tokens as one SwiftUI theme file (e.g. Theme.swift with type, spacing, and color definitions) and reference it everywhere; never scatter font/size/color literals through views.",
     "Every generated app must fully support dark mode: semantic color roles with explicit light and dark values, verified in both appearances.",
     "Empty states are designed content (icon + one-line explanation + the action that fills the screen), never a blank view or bare 'No data' text.",

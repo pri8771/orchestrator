@@ -6,12 +6,16 @@ The rulebook's own thesis is "don't trust a self-report that something is done �
 verify it", so the highest-leverage rules are the ones turned into a mechanical
 gate rather than prose. Both surfaces are covered here.
 """
+import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 import orchestrator as orch
 import designlint
+import knowledge as knowlib
+import visualqa
 
 
 class TestQualityRulesInBuildPrompt(unittest.TestCase):
@@ -88,6 +92,67 @@ class TestEmptyActionLint(unittest.TestCase):
         # until it's proven low-false-positive enough to promote to an error.
         e, _w = self._scan("V.swift", 'Button("x") { }\n')
         self.assertFalse(any(x["rule"] == "empty_action" for x in e))
+
+
+class TestOverlapRuleEverywhere(unittest.TestCase):
+    """The layout-collision rule (from the observed Gloam text-overlap defect)
+    must live in every place that shapes or grades a build — the build prompt,
+    the machine rules, the visual-QA gate, and the retrievable mistake log —
+    so the same 'silly mistake' can't be reintroduced in a future round."""
+
+    def test_build_prompt_forbids_overlap(self):
+        cfg = {"runtime": {"build_code_changes_enabled": True}, "ios": {}}
+        extra = orch.phase_extra(cfg, "build_coordination")
+        self.assertIn("OVERLAP", extra)
+        self.assertIn("minimum gap", extra)
+
+    def test_phase_rules_json_forbids_overlap(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "phase_rules.json"), encoding="utf-8") as fh:
+            rules = json.load(fh)["global_app_rules"]
+        blob = " ".join(rules).lower()
+        self.assertIn("overlap", blob)
+        # and the interface-must-not-lie rule landed too
+        self.assertTrue(any("never claim an outcome" in r.lower() for r in rules))
+
+    def test_visual_qa_rubric_flags_overlap_as_bad(self):
+        # _ask_one builds the grader prompt and POSTs it; capture the request
+        # body and assert the rubric now tells the model overlap = BAD.
+        captured = {}
+
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return json.dumps({"response": "OK looks fine"}).encode()
+
+        def fake_urlopen(req, timeout=0):
+            captured["body"] = req.data.decode("utf-8")
+            return _Resp()
+
+        with unittest.mock.patch.object(visualqa.urllib.request, "urlopen",
+                                        side_effect=fake_urlopen):
+            visualqa._ask_one("m", "b64", "light", "a solar day app")
+        prompt = json.loads(captured["body"])["prompt"].lower()
+        self.assertIn("overlap", prompt)
+        self.assertIn("bad", prompt)
+
+    def test_observed_mistakes_log_is_retrievable_for_ios_builds(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        res = knowlib.retrieve(
+            here, "ios",
+            "SwiftUI layout placing event times on a timeline, overlapping text, design",
+            max_chars=8000, top_k=4)
+        self.assertTrue("Observed Mistakes" in res or "M-001" in res,
+                        "the curated mistake log did not surface for an iOS layout query")
+
+    def test_mistake_log_file_exists_with_the_overlap_entry(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        p = os.path.join(here, "knowledge", "ios", "observed-mistakes.md")
+        self.assertTrue(os.path.exists(p))
+        with open(p, encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("M-001", body)
+        self.assertIn("overlap", body.lower())
 
 
 if __name__ == "__main__":

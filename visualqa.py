@@ -224,12 +224,18 @@ def _ask_one(model, image_b64, mode, purpose, timeout=240):
     ask = (
         "This is a screenshot of an iOS app (%s mode). The app is supposed "
         "to be: %s\n\n"
-        "Is this a real, working, styled app screen?\n"
+        "Is this a real, working, styled app screen with a CLEAN, READABLE "
+        "layout?\n"
         "Answer with exactly one word first — OK or BAD — then one short "
         "sentence saying what you actually see.\n"
-        "OK = a designed app screen with visible, readable content.\n"
+        "OK = a designed app screen with visible, readable content whose text "
+        "and controls are cleanly laid out (nothing overlapping).\n"
         "BAD = a blank or nearly-blank screen, placeholder text only, the "
-        "iOS home screen instead of the app, or a crash/error dialog.%s"
+        "iOS home screen instead of the app, a crash/error dialog, OR a broken "
+        "layout: text or controls that OVERLAP / collide / are stacked on top "
+        "of each other, a label sitting over a value, or text clipped or cut "
+        "off at an edge. Look carefully for overlapping text — it is the most "
+        "common defect and it is always BAD.%s"
         % (mode, purpose[:200] or "an iOS app", dark_extra))
     body = json.dumps({"model": model, "prompt": ask, "images": [image_b64],
                        "stream": False}).encode("utf-8")

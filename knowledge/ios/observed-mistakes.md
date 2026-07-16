@@ -1,0 +1,68 @@
+<!-- keywords: observed mistakes, real build defects, overlapping text, layout collision, text overlaps values, labels over numbers, cluttered layout, data-positioned layout collision, timeline label collision, screenshot defects, fake completeness, interface lies, sample data as real, generic anti-patterns from shipped builds -->
+
+# Observed Mistakes — Real Defects Caught in Shipped Builds
+
+This is a curated, growing log of **actual defects observed in apps this factory
+built**, each generalized into a rule so the same class of mistake is not
+reproduced in a future round. These are not hypothetical — every entry was seen
+in a real generated app, screenshotted or reported. Read this before building
+UI: if your screen could exhibit any of these, fix it before you finish.
+
+Each entry is: **what was seen → the generic rule → how to avoid it.**
+
+---
+
+## M-001 · Overlapping text (labels and values drawn on top of each other)
+
+**What was seen (Gloam, a solar "day ribbon" app):** the screen positioned each
+event's label + time by the sun's actual time-of-day along a vertical gradient.
+At a high-latitude location (Reykjavík) where sunrise (3:55 AM) and golden hour
+(5:18 AM) fall close together, the two blocks were placed so close that
+"GOLDEN HOUR" rendered directly ON TOP of the "3:55 AM" numerals, and at the
+bottom three time cards ("4:44 PM", "19h 15m of daylight", "9:47 PM") collided
+into an unreadable stack. The app compiled and ran; it was simply broken to look
+at.
+
+**Generic rule:** **Text and controls must never overlap, collide, or clip.** A
+label must never sit on top of a value; two values must never stack into each
+other.
+
+**How to avoid it — especially for DATA-POSITIONED layouts** (anything placed by
+a data value: event times on a timeline, points on an axis/chart, markers on a
+gradient or map):
+
+- Never place two elements at raw computed positions without a **collision
+  check**. Compute positions, then enforce a **minimum gap** between adjacent
+  elements.
+- When two elements would collide (values close together; a dense/edge-case
+  dataset like a high-latitude day, a busy hour, many records at once),
+  **de-clutter deterministically**: offset one, group them into a single
+  combined chip, collapse to a count ("+2"), or drop the lower-priority label —
+  but NEVER draw one over another.
+- Test the layout with the **worst realistic data**, not the tidy demo case:
+  events bunched together, the longest label, the largest Dynamic Type size,
+  the smallest supported window. "Looks right in the mock" is not the bar.
+- Prefer a real layout container (VStack/HStack/Grid/Layout with spacing) over
+  absolute `.position`/`.offset` for anything that carries text. If you must
+  position by value, wrap it in logic that guarantees separation.
+
+**A screen where text overlaps is a broken screen — it fails visual QA and must
+not ship.**
+
+---
+
+## M-002 · Claiming an outcome that did not happen / sample data shown as real
+
+**Rule (from the quality rulebook, reinforced here because it is easy to fake):**
+show "Saved" / "Deleted" / "Sent" / "Synced" / "Unlocked" only AFTER the real
+operation is confirmed — never unconditionally, never a success animation played
+regardless of the result. When there is no real user data yet, show an honest
+empty state ("No sessions yet — complete your first to see your history"), never
+fabricated stats presented as the user's own. A control that does nothing, or a
+toggle that only flips its own appearance, is a defect, not a placeholder —
+implement it or visibly disable it with a reason.
+
+---
+
+_Append new entries as real defects are observed. Keep each one concrete
+(what was seen) plus a GENERIC rule, so it transfers to unrelated apps._
