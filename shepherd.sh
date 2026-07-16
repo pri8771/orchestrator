@@ -103,6 +103,7 @@ while true; do
     for p in "${PARENTS[@]}"; do
       [ "$parents_running" -ge "$MAX_PARENTS" ] && break
       [ -d "$ROOT/$p" ] || continue
+      autorun_disabled "$p" && continue   # a parked parent stays parked (like children)
       locked "$p" && continue
       is_done "$p" && continue
       if [ -f "$ROOT/$p/agent_state.json" ] && has_error "$p"; then retry_ok "$p" || continue; fi

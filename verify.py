@@ -488,7 +488,12 @@ def _verify_http(build_dir, spec, timeout):
     # committed/shipped.
     log_fd, out_path = tempfile.mkstemp(prefix="verify_server_", suffix=".log")
     os.close(log_fd)
-    argv, sandbox_profile_path = _sandbox_wrap(start)
+    # write_root=build_dir carves the project being verified back out of the
+    # engine-dir write-deny (same fix as _verify_web): a legit server that
+    # writes inside its own dir at startup (a socket file, a cache, sqlite)
+    # must not be denied and misreported as "did not respond" just because the
+    # workspace happens to sit under the engine repo.
+    argv, sandbox_profile_path = _sandbox_wrap(start, write_root=build_dir)
     try:
         outfh = open(out_path, "w", encoding="utf-8")
         proc = subprocess.Popen(argv, cwd=cwd, env=env,

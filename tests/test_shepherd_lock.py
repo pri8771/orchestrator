@@ -139,6 +139,23 @@ class TestShepherdAutorunDisabled(unittest.TestCase):
         window = src[src.index(".repair_pending"): src.index(".repair_pending") + 400]
         self.assertIn("autorun_disabled", window)
 
+    def test_every_launch_loop_guards_on_autorun_disabled(self):
+        # Regression guard for ALL launch paths — children, repair, AND parents.
+        # The parents loop was found (post-audit) to still relaunch a parked
+        # portfolio-parent forever. Every `launch "$..."` call must be preceded
+        # (within its loop body) by an autorun_disabled guard.
+        with open(SHEPHERD, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        launch_lines = [i for i, ln in enumerate(lines)
+                        if ln.strip().startswith("launch \"$")]
+        self.assertTrue(launch_lines, "no launch calls found — test is stale")
+        for i in launch_lines:
+            # Look back up to 12 lines for the guard within the same loop body.
+            window = "".join(lines[max(0, i - 12):i])
+            self.assertIn("autorun_disabled", window,
+                          "a launch call near line %d has no autorun_disabled "
+                          "guard before it: %s" % (i + 1, lines[i].strip()))
+
 
 if __name__ == "__main__":
     unittest.main()

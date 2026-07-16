@@ -2691,6 +2691,30 @@ def derive_verification(app_dir, state):
 _STATE_LOCK = threading.RLock()
 
 
+def reset_state_for_new_prompt(state, phash):
+    """A new/changed prompt is a fresh build: clear the pipeline progress AND
+    the per-run FAILURE bookkeeping, in place. Mutates and returns ``state``.
+
+    The failure keys are the subtle part — they leak across unrelated runs if
+    not cleared: a stale ``release_gate_repairs`` budget makes the very first
+    release-gate failure on the NEW prompt report "repair budget exhausted"
+    without ever attempting a single repair, and stale ``phase_resolutions``
+    surface an old amber "closed without resolution" warning on phases the new
+    run hasn't reached yet."""
+    state.update({
+        "prompt_hash": phash,
+        "completed_phases": [],
+        "phase_outputs": {},
+        "consensus_status": {},
+        "vote_results": {},
+        "done": False,
+        "error": None,
+        "release_gate_repairs": 0,
+        "phase_resolutions": {},
+    })
+    return state
+
+
 def save_state(app_dir, state):
     with _STATE_LOCK:
         state["runner_pid"] = os.getpid()
@@ -7167,15 +7191,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
 
     if state.get("prompt_hash") != phash:
         emit("App '%s': new/updated input detected — (re)starting pipeline." % app)
-        state.update({
-            "prompt_hash": phash,
-            "completed_phases": [],
-            "phase_outputs": {},
-            "consensus_status": {},
-            "vote_results": {},
-            "done": False,
-            "error": None,
-        })
+        reset_state_for_new_prompt(state, phash)
         save_state(app_dir, state)
     elif state.get("done"):
         emit("App '%s': unchanged and already done — skipping." % app)
