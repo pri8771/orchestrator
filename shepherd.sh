@@ -27,9 +27,26 @@ log(){ echo "[$(date '+%F %T')] $*"; }
 is_parent(){ case " ${PARENTS[*]:-} " in *" $1 "*) return 0;; *) return 1;; esac; }
 is_done(){ python3 -c "import json;print(1 if json.load(open('$ROOT/$1/agent_state.json')).get('done') else 0)" 2>/dev/null | grep -q 1; }
 has_error(){ python3 -c "import json;s=json.load(open('$ROOT/$1/agent_state.json'));print(1 if (s.get('error') and not s.get('done')) else 0)" 2>/dev/null | grep -q 1; }
-locked(){ [ -f "$ROOT/.orch-locks/$1.lock" ]; }
+# Locked = a LIVE process still holds the app's lock. A stale lock (its pid is
+# dead — a crashed/killed run that never cleaned up on SIGTERM) must NOT count as
+# running: the old `[ -f lock ]` file-existence check made a crashed build look
+# forever-running, so shepherd never relaunched it and the fleet looped
+# "N child app(s) still pending" indefinitely. This mirrors the engine's own
+# _pid_alive reclaim check (acquire_app_lock), which steals the orphaned lock on
+# the relaunch this unblocks — so a redundant launch still dedups safely.
+locked(){
+  local f="$ROOT/.orch-locks/$1.lock" pid
+  [ -f "$f" ] || return 1
+  pid=$(grep -oE 'pid=[0-9]+' "$f" 2>/dev/null | head -1 | cut -d= -f2)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
 launch(){ log "launching $1"; nohup bash run.sh --app "$1" >> "$1-run.log" 2>&1 & disown; }
 retry_ok(){ local f="$ROOT/$1/.shepherd_retries" n=0; [ -f "$f" ] && n=$(cat "$f"); if [ "$n" -ge 3 ]; then return 1; fi; echo $((n+1)) > "$f"; log "$1 aborted earlier — retry $((n+1))/3"; }
+
+# Diagnostic/test hook: `shepherd.sh --check-lock <app>` reports locked()'s
+# verdict via exit status (0 = a live run holds it, 1 = free/stale) WITHOUT
+# entering the fleet loop, so the real function can be exercised in a test.
+if [ "${1:-}" = "--check-lock" ]; then locked "${2:-}"; exit $?; fi
 
 while true; do
   _l=$(queue_lanes); [ -n "$_l" ] && MAX_BUILDS=$_l
