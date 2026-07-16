@@ -159,6 +159,55 @@ def run_crawler(xctestrun, udid, bundle_id, report_dir, flows_path="",
     return report, ""
 
 
+def _discovered_controls(report, limit=40):
+    """Every interactive label/id the crawl actually saw in the built app,
+    deduped, in discovery order. Used to enrich a failed-flow gate message: the
+    declared flow (frozen from the planning phase) often names labels the build
+    never used — 'Play' when the app shipped 'Start today's chain' — and the
+    repair loop can't converge without knowing the app's REAL vocabulary. A
+    defensive recursive walk (the crawl report's nested shape — screens, edges,
+    tap paths — varies and comes from an external runner, so collect any
+    id/label string wherever it appears rather than depending on one schema)."""
+    found = []
+    seen = set()
+
+    def walk(o, depth=0):
+        if depth > 8 or len(found) >= limit:
+            return
+        if isinstance(o, dict):
+            for key in ("id", "label"):
+                v = o.get(key)
+                if isinstance(v, str) and v.strip() and v not in seen:
+                    seen.add(v)
+                    found.append(v.strip())
+            for v in o.values():
+                walk(v, depth + 1)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v, depth + 1)
+
+    walk(report or {})
+    return found[:limit]
+
+
+def _failed_flow_message(f, failed_flows, report):
+    """The gate reason for a failed declared flow, enriched with the app's
+    actual controls so the release-gate repair prompt can name what the flow
+    should have targeted. Pure/testable; never raises."""
+    more = "" if len(failed_flows) == 1 \
+        else " (+%d more)" % (len(failed_flows) - 1)
+    controls = _discovered_controls(report)
+    hint = ""
+    if controls:
+        hint = (" — the app's ACTUAL interactive controls are: %s. The declared "
+                "flow may name labels the build never used; make the app expose "
+                "the exact control the flow taps (add the affordance / set its "
+                "accessibilityIdentifier), rather than leaving the promised "
+                "journey unreachable." % ", ".join(controls))
+    return "declared user flow '%s' failed: %s%s%s" % (
+        f.get("name", "?"), f.get("failure", ""), more, hint)
+
+
 def append_regression_flows(app_dir, crashes):
     """Self-learning: a crash's recorded tap path becomes a PERMANENT
     regression flow in <app>/flows.json — future runs replay the exact edge
@@ -367,11 +416,7 @@ def run_ui_crawl(cfg, cget, emit, app, app_dir, state, prompt):
             return ("app crashed during UI crawl (tapped %s; repro saved to "
                     "flows.json)" % (via.get("id") or via.get("label") or "?"))
         if failed_flows:
-            f = failed_flows[0]
-            more = "" if len(failed_flows) == 1 \
-                else " (+%d more)" % (len(failed_flows) - 1)
-            return "declared user flow '%s' failed: %s%s" % (
-                f.get("name", "?"), f.get("failure", ""), more)
+            return _failed_flow_message(failed_flows[0], failed_flows, report)
         if dead and bool(cget(cfg, "runtime.ui_crawl_fail_on_dead_buttons",
                               False)):
             d = dead[0].get("tapped") or {}

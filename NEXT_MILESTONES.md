@@ -204,6 +204,22 @@ macOS `swift build`); `make verify` remains the full local gate on macOS._
   tests incl. swift-gated compile checks over all five API kinds, reserved
   words, empty API, and comment-injection safety.
 
+- **UI-crawl flow-drift repair convergence** (found while live-testing
+  driftwords): a real run kept abort-looping on the UI-crawl release gate —
+  the declared flow tapped "Play" but the built app coherently used "Start
+  today’s chain" (`play.wordField` etc.), and the release-gate repair had no
+  way to converge: it only got the terse "expected ‘Play’" reason with no hint
+  of the app's real vocabulary, and `iterate` can't regenerate the frozen
+  `flows.json`. Fixed the information-starvation half safely (no gate
+  weakening, no test-gaming): the failed-flow reason now appends the app's
+  ACTUAL discovered controls (`uicrawl._failed_flow_message` +
+  `_discovered_controls`, a defensive walk over the crawl report), which flows
+  through the existing `_queue_release_gate_repair` prompt so the repairing
+  agents can reconcile; and the `flows-json` contract now prefers stable
+  `accessibilityIdentifier`s to prevent the drift at the source. The residual
+  (repair can't rewrite a genuinely mis-declared flow) is documented in
+  KNOWN_LIMITATIONS.
+
 ## Genuinely next (in rough priority order)
 
 1. **Gemini session deltas — mechanism verified 2026-07-15, wiring not yet

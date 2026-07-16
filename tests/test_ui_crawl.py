@@ -30,7 +30,8 @@ class TestRegressionLearning(unittest.TestCase):
                     "tapped": {"kind": "cell", "id": "dish_row", "label": "Roast"}}]
         added = uc.append_regression_flows(self.app_dir, crashes)
         self.assertEqual(len(added), 1)
-        flows = json.load(open(os.path.join(self.app_dir, "flows.json")))["flows"]
+        with open(os.path.join(self.app_dir, "flows.json")) as fh:
+            flows = json.load(fh)["flows"]
         self.assertEqual(flows[0]["origin"], "ui_crawl_crash")
         self.assertEqual(flows[0]["steps"],
                          [{"tap": "Get Started"}, {"tap": "dish_row"}])
@@ -66,7 +67,8 @@ class TestGatePolicy(unittest.TestCase):
         def fake_run(xctestrun, udid, bid, report_dir, flows_path="",
                      max_screens=25, max_seconds=300, only=None, clean=True):
             if only == "flows":
-                one = json.load(open(flows_path))["flows"][0]
+                with open(flows_path) as fh:
+                    one = json.load(fh)["flows"][0]
                 name = one.get("name", "?")
                 fail = failures.get(name)
                 return {"flows": [{"name": name, "passed": fail is None,
@@ -116,6 +118,21 @@ class TestGatePolicy(unittest.TestCase):
         self.assertIn("add dish", reason)
         self.assertIn("no element", reason)
 
+    def test_failed_flow_reason_lists_actual_controls_for_repair(self):
+        # The repair loop can't converge on flow/app label drift without knowing
+        # the app's REAL vocabulary — the reason must surface it.
+        report = {"screens": [{"id": "play.screen",
+                               "elements": [{"label": "Start today’s chain"},
+                                            {"id": "play.wordField"}]}],
+                  "edges": [], "dead_taps": [], "back_violations": [], "crashes": []}
+        reason = self._gate(
+            report,
+            declared=[{"name": "daily chain", "steps": [{"tap": "Play"}]}],
+            flow_failures={"daily chain": "step 1: expected ‘Play’"})
+        self.assertIn("daily chain", reason)
+        self.assertIn("Start today’s chain", reason)   # the app's real control
+        self.assertIn("play.wordField", reason)
+
     def test_all_flows_passing_is_clean(self):
         report = {"screens": [{"sig": "a"}], "edges": [], "dead_taps": [],
                   "back_violations": [], "crashes": []}
@@ -135,7 +152,49 @@ class TestGatePolicy(unittest.TestCase):
         self.assertIn("Restore Purchases", reason)
 
 
+class TestDiscoveredControls(unittest.TestCase):
+    """_discovered_controls: pull the app's real interactive vocabulary out of
+    the crawl report (defensive recursive walk over its varying shape)."""
+
+    def test_collects_ids_and_labels_deduped_in_order(self):
+        report = {"screens": [{"id": "play.screen",
+                               "elements": [{"label": "Start"}, {"id": "wordField"}]}],
+                  "dead_taps": [{"tapped": {"label": "Archive"}}],
+                  "edges": [{"via": {"id": "wordField", "label": "Add"}}]}  # wordField dup
+        got = uc._discovered_controls(report)
+        self.assertEqual(got, ["play.screen", "Start", "wordField", "Archive", "Add"])
+
+    def test_empty_report_yields_empty(self):
+        self.assertEqual(uc._discovered_controls({}), [])
+        self.assertEqual(uc._discovered_controls(None), [])
+
+    def test_bounded_by_limit(self):
+        report = {"items": [{"id": "c%d" % i} for i in range(100)]}
+        self.assertEqual(len(uc._discovered_controls(report, limit=10)), 10)
+
+    def test_ignores_non_string_and_blank(self):
+        report = {"a": {"id": 5, "label": ""}, "b": {"label": "  Real  "}}
+        self.assertEqual(uc._discovered_controls(report), ["Real"])
+
+    def test_failed_flow_message_without_controls_is_plain(self):
+        f = {"name": "j", "failure": "step 1: expected ‘X’"}
+        msg = uc._failed_flow_message(f, [f], {})
+        self.assertIn("declared user flow 'j' failed", msg)
+        self.assertNotIn("ACTUAL interactive controls", msg)
+
+    def test_failed_flow_message_counts_additional_failures(self):
+        f = {"name": "j", "failure": "boom"}
+        msg = uc._failed_flow_message(f, [f, f, f], {})
+        self.assertIn("(+2 more)", msg)
+
+
 class TestFlowsContract(unittest.TestCase):
+    def test_flows_instruction_prefers_stable_identifiers(self):
+        # Prevention side of the drift fix: the contract nudges toward
+        # accessibilityIdentifiers so declared labels don't drift from the build.
+        self.assertIn("accessibilityIdentifier", orch._FLOWS_JSON_INSTRUCTION)
+        self.assertIn("PREFER", orch._FLOWS_JSON_INSTRUCTION)
+
     def test_parse_flows_blocks(self):
         text = ("Prose...\n```flows-json\n"
                 + json.dumps({"flows": [

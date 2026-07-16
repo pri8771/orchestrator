@@ -34,6 +34,18 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
 - **UI crawl's virgin-install guarantee has an escape hatch.** An
   internally-inconsistent `_sim_ctx` (udid/bundle set, empty `app_path`)
   silently skips the fresh-install step.
+- **A UI-crawl declared-flow failure can still be hard to converge when the
+  flow declaration itself is wrong.** `flows.json` is written in
+  `task_assignments` (planning) and frozen through the `iterate` repair
+  workflow, so if a step names a label the build never used ("Play" when the
+  app shipped "Start today’s chain"), the release-gate repair can only make the
+  APP match the (possibly mis-declared) flow — it can't correct the flow.
+  Mitigated 2026-07-15: the failure reason now lists the app's ACTUAL
+  discovered controls so the repairing agents can reconcile instead of guessing
+  (`uicrawl._failed_flow_message`), and the flows contract now pushes for stable
+  `accessibilityIdentifier`s over drift-prone visible labels — but the repair
+  still cannot rewrite a genuinely-wrong flow, so a badly-declared journey may
+  need a full `app_build` re-run (which regenerates flows) or human edit.
 
 ## Engine — untested / unsandboxed paths
 

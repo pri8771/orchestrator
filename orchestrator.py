@@ -2201,9 +2201,13 @@ _FLOWS_JSON_INSTRUCTION = (
     '{"tap": "Get Started"}, {"type": "Sample", "into": "Name"}, '
     '{"tap": "Save"}, {"assert_exists": "Sample"}, {"back": true}]}]}. '
     "Cover EVERY primary user journey the app promises (3-8 flows). Steps "
-    "reference visible labels or accessibilityIdentifiers. These are executed "
-    "against the real built app by the UI-crawl gate — a journey you forget "
-    "to declare is a journey nobody verifies.\n"
+    "reference visible labels or accessibilityIdentifiers — PREFER stable "
+    "accessibilityIdentifiers: a visible label often changes during the build "
+    "(a 'Play' button ships as 'Start today’s chain'), but an identifier "
+    "is a contract the build MUST honor. Whatever a step names, the built app "
+    "has to expose that EXACT string on the control or the UI-crawl gate fails "
+    "the journey. These are executed against the real built app by the UI-crawl "
+    "gate — a journey you forget to declare is a journey nobody verifies.\n"
 )
 _INTERFACES_JSON_INSTRUCTION = (
     "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
