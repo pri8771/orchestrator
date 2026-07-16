@@ -1204,7 +1204,7 @@ final class OrchestratorStore: ObservableObject {
         ])
         obj["schema_version"] = obj["schema_version"] ?? 1
         obj["models"] = models
-        writeJSON(obj, to: url)
+        guard writeJSON(obj, to: url) else { return false }
         setModel("ollama", id)
         refreshLocalModels()
         return true
@@ -2345,7 +2345,10 @@ final class OrchestratorStore: ObservableObject {
         var list = presets[agent] ?? []
         if !list.contains(id) { list.append(id) }
         presets[agent] = list
-        writeJSON(["schema_version": 1, "models": presets], to: modelPresetsURL)
+        // Don't report success (and don't publish the new preset) unless the
+        // file actually saved — writeJSON surfaces the error banner on failure.
+        guard writeJSON(["schema_version": 1, "models": presets], to: modelPresetsURL)
+        else { return false }
         customModelPresets = presets
         setModel(agent, id)
         return true
@@ -2789,7 +2792,9 @@ final class OrchestratorStore: ObservableObject {
         }
         obj["roles"] = newRoles.map { ["id": $0.id, "name": $0.name, "focus": $0.focus] }
         obj["personalities"] = newPersonalities.map { ["id": $0.id, "name": $0.name, "style": $0.style] }
-        writeJSON(obj, to: rolesURL)
+        // Only publish the edits if they actually persisted — otherwise the
+        // editor's values would silently revert on the next relaunch.
+        guard writeJSON(obj, to: rolesURL) else { return }
         roles = newRoles
         personalities = newPersonalities
     }
@@ -2807,7 +2812,7 @@ final class OrchestratorStore: ObservableObject {
             overrides[agent] = roleID
         }
         obj["agent_role_overrides"] = overrides
-        writeJSON(obj, to: rolesURL)
+        guard writeJSON(obj, to: rolesURL) else { return }
         agentRoleOverrides = overrides
     }
 
@@ -2912,13 +2917,25 @@ final class OrchestratorStore: ObservableObject {
         refresh()
     }
 
-    private func writeJSON(_ obj: [String: Any], to url: URL) {
+    // Returns whether the write actually landed. A failed config write used to
+    // only whisper into runLog while callers reported success to the UI and
+    // updated published state — so a lost setting looked saved and silently
+    // reverted on relaunch. Now failure surfaces the error banner and callers
+    // that mutate state on the strength of a save MUST check the result.
+    @discardableResult
+    private func writeJSON(_ obj: [String: Any], to url: URL) -> Bool {
         do {
             let data = try JSONSerialization.data(
                 withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: url)
+            // A successful write clears a stale error banner: otherwise a red
+            // banner from an earlier transient failure lingers after the retry
+            // that fixed it (rulebook: clear errors that no longer apply).
+            if lastError != nil { lastError = nil }
+            return true
         } catch {
-            runLog += "Couldn't save \(url.lastPathComponent): \(error.localizedDescription)\n"
+            surfaceError("Couldn't save \(url.lastPathComponent): \(error.localizedDescription)")
+            return false
         }
     }
 
