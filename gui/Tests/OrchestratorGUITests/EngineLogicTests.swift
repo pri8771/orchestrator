@@ -355,8 +355,15 @@ final class WorkflowCoverageTests: XCTestCase {
                               "\(url.lastPathComponent)/\(phase.key) should write markdown")
                 XCTAssertFalse(phase.title.isEmpty,
                                "\(url.lastPathComponent)/\(phase.key) has no title")
-                XCTAssertGreaterThan(phase.rounds, 0,
+                if phase.conversational {
+                    // V3 board 1.3: conversational phases may declare rounds 0
+                    // (unlimited); the engine ignores the budget entirely.
+                    XCTAssertGreaterThanOrEqual(phase.rounds, 0,
                                      "\(url.lastPathComponent)/\(phase.key) has invalid rounds")
+                } else {
+                    XCTAssertGreaterThan(phase.rounds, 0,
+                                     "\(url.lastPathComponent)/\(phase.key) has invalid rounds")
+                }
             }
         }
 

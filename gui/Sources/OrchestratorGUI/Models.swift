@@ -18,6 +18,8 @@ struct PhaseDef: Identifiable, Hashable {
     var rounds: Int = 9
     var roles: [String] = []
     var writes: Bool = false
+    // V3 board 1.3: human-paced chat phase — rounds is ignored (0 = unbounded).
+    var conversational: Bool = false
     var id: String { key }
 }
 
@@ -98,6 +100,7 @@ struct PhaseJSON: Codable {
     var rounds: Int?
     var roles: [String]?
     var writes: Bool?
+    var conversational: Bool?
 }
 
 struct WorkflowJSON: Codable {
@@ -131,7 +134,8 @@ extension WorkflowDef {
                      purpose: p.purpose ?? "",
                      rounds: p.rounds ?? 9,
                      roles: p.roles ?? [],
-                     writes: p.writes ?? false)
+                     writes: p.writes ?? false,
+                     conversational: p.conversational ?? false)
         }
         return WorkflowDef(name: j.name,
                            title: j.title ?? j.name,
