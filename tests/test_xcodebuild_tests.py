@@ -236,5 +236,40 @@ class TestRunGeneratedTestsKillSwitch(unittest.TestCase):
         self.assertTrue(spec["run_tests"])
 
 
+class TestNoRunnableAppIsFailure(unittest.TestCase):
+    """An iOS-app build that produces no runnable app target (no
+    .xcodeproj/.xcworkspace, none generatable) is a FAILURE, not "unverified"
+    — the gap that let a Gloam rebuild ship an SPM library as done. "unverified"
+    (ran=False) stays reserved for a genuinely absent toolchain."""
+
+    def test_no_project_with_xcodebuild_present_is_failed(self):
+        with tempfile.TemporaryDirectory() as d:
+            with unittest.mock.patch("shutil.which", return_value="/usr/bin/xcodebuild"), \
+                 unittest.mock.patch.object(verifylib, "_generate_xcodeproj", return_value=""):
+                res = verifylib._verify_xcode(d, 30)
+        self.assertTrue(res["ran"])            # we COULD determine it
+        self.assertFalse(res["ok"])            # ...and it did not build a runnable app
+        self.assertEqual(verifylib.verification_status(res), "failed")
+
+    def test_spm_library_only_is_called_out_as_not_a_runnable_app(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "Package.swift"), "w") as fh:
+                fh.write("// swift-tools-version:5.9\n")
+            with unittest.mock.patch("shutil.which", return_value="/usr/bin/xcodebuild"), \
+                 unittest.mock.patch.object(verifylib, "_generate_xcodeproj", return_value=""):
+                res = verifylib._verify_xcode(d, 30)
+        self.assertFalse(res["ok"])
+        self.assertIn("SPM package", res["summary"])
+        self.assertIn("not a runnable iOS app", res["summary"])
+
+    def test_absent_xcodebuild_still_unverified_not_failed(self):
+        # The one case that must STAY unverified: no toolchain to judge with.
+        with tempfile.TemporaryDirectory() as d:
+            with unittest.mock.patch("shutil.which", return_value=None):
+                res = verifylib._verify_xcode(d, 30)
+        self.assertFalse(res["ran"])
+        self.assertEqual(verifylib.verification_status(res), "unverified")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,19 @@ class TestAppPipelineEndToEnd(unittest.TestCase):
             return "discussion input from %s" % agent
         orch.call_agent = fake
 
+        # This drives a FAKE build (writes a couple of .swift files, no real
+        # Xcode project), so it can't actually be compiled. Stub verification to
+        # "unverified" so the pipeline's build_verification / release gate stays
+        # toolchain-independent: otherwise, on a host WITH xcodebuild, the (now
+        # correct) "no runnable iOS app" failure would block the fake build's
+        # release gate, while on a host WITHOUT it the run would pass — a
+        # host-dependent test. The real _verify_xcode behavior is covered in
+        # test_xcodebuild_tests.py.
+        self._orig_verify = orch.verifylib.run_verification
+        orch.verifylib.run_verification = lambda *a, **k: {
+            "ran": False, "ok": False, "tool": "xcodebuild",
+            "summary": "fake build — not compiled in this test", "errors": ""}
+
         self.cfg = {
             "agents": {"codex_enabled": True, "claude_enabled": True,
                        "gemini_enabled": False},
@@ -93,6 +106,7 @@ class TestAppPipelineEndToEnd(unittest.TestCase):
 
     def tearDown(self):
         orch.call_agent = self._orig
+        orch.verifylib.run_verification = self._orig_verify
 
     def _run(self):
         orch._run_app_pipeline(self.cfg, "demo", self.app_dir,

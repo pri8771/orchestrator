@@ -219,8 +219,22 @@ def _verify_xcode(build_dir, timeout, run_tests=False):
     elif proj:
         target_flag, target = ["-project"], proj[0]
     else:
-        return {"ran": False, "ok": False, "tool": "xcodebuild",
-                "summary": "no .xcodeproj/.xcworkspace found%s." % gen_note,
+        # xcodebuild IS present (checked above), so this is not "can't tell" —
+        # we can affirmatively determine there is no runnable iOS app target
+        # here, and that is a FAILURE, not "unverified". "unverified" (ran=False)
+        # is reserved for a genuinely absent toolchain; an iOS-app build that
+        # produced no .xcodeproj/.xcworkspace (and none could be generated from
+        # an XcodeGen/Tuist spec) did not build a runnable app — even if it left
+        # compilable Swift or an SPM library behind. Passing that through as
+        # "unverified" is exactly how a non-app "looks done but isn't" slips the
+        # release gate.
+        spm = _find(build_dir, "Package.swift")
+        detail = (" — the build produced only an SPM package (Package.swift), "
+                  "which is a library, not a runnable iOS app target"
+                  if spm else "")
+        return {"ran": True, "ok": False, "tool": "xcodebuild",
+                "summary": "no runnable iOS app: no .xcodeproj/.xcworkspace found%s%s."
+                           % (gen_note, detail),
                 "errors": "", "tests_ran": False, "tests_ok": None}
     cwd = os.path.dirname(target)
     list_output = _xcode_list_output(target_flag, target, cwd, timeout)
