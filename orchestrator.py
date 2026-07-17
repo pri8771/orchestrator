@@ -6574,7 +6574,19 @@ def _approval_timeout(cfg):
         return 7200
 
 
-def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=2.0):
+def _read_nonblank(path):
+    """One content read of a watched inbox file: True when it holds a
+    non-blank message (same strip() test as drain_human_inbox). Split out so
+    tests can count how often the wait loop actually reads — the stat gate in
+    _await_inbox must make idle ticks read-free."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return bool(fh.read().strip())
+    except OSError:
+        return False
+
+
+def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=0.25):
     """Block a conversational phase until the human acts (V3 board 1.1).
 
     Wake sources, checked in precedence order every poll tick:
@@ -6607,6 +6619,12 @@ def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=2.0):
     emit("Conversation '%s': waiting for your next message (end the chat with "
          "approvals/%s.ok)." % (phase_key, phase_key))
     deadline = time.time() + timeout
+    # V3 board 1.2: ~250ms tick doing only cheap checks — 1 exists + 1 stat
+    # per tick; the inbox CONTENT is read only when its (st_mtime_ns, st_size)
+    # tuple changes (mtime_ns not seconds: survives coarse-mtime filesystems
+    # and same-second rewrites). () is the never-matches sentinel so a file
+    # that already exists at wait entry is read on the first tick.
+    _last_stat = ()
     try:
         while True:
             if _SHUTDOWN.is_set():
@@ -6620,11 +6638,14 @@ def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=2.0):
                     pass
                 return "end", None
             try:
-                with open(inbox, encoding="utf-8") as fh:
-                    if fh.read().strip():
-                        return "message", None
+                _s = os.stat(inbox)
+                _st = (_s.st_mtime_ns, _s.st_size)
             except OSError:
-                pass
+                _st = None   # missing file == no message; never crashes the wait
+            if _st is not None and _st != _last_stat:
+                _last_stat = _st
+                if _read_nonblank(inbox):
+                    return "message", None
             if time.time() >= deadline:
                 return "timeout", None
             time.sleep(poll)
@@ -6633,7 +6654,7 @@ def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=2.0):
         save_state(app_dir, state)
 
 
-def _await_approval(app_dir, phase_key, state, timeout=7200, poll=2.0):
+def _await_approval(app_dir, phase_key, state, timeout=7200, poll=0.25):
     """Pause after a checkpoint phase until the GUI (or a human) drops one of
     three decision files under <app>/approvals/ (V2 §3.1 approval flow), or the
     timeout elapses (then proceed rather than hang forever):

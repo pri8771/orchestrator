@@ -228,3 +228,74 @@ class TestPhaseSchemaRoundTrip(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAwaitInboxCadence(unittest.TestCase):
+    """V3 board 1.2: 250ms stat-gated tick — wake latency, idle cost, robustness."""
+
+    def setUp(self):
+        self.app_dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.app_dir, "approvals"), exist_ok=True)
+        self.state = {"completed_phases": [], "phase_outputs": {},
+                      "consensus_status": {}, "vote_results": {}}
+
+    def _wait(self, timeout):
+        return orch._await_inbox({}, "demo", self.app_dir, KEY, self.state,
+                                 timeout=timeout)
+
+    def test_message_wakes_in_under_750ms(self):
+        import threading
+        import time as _t
+
+        def writer():
+            _t.sleep(0.3)
+            _write(os.path.join(self.app_dir, "human_inbox.txt"), "hi there")
+        th = threading.Thread(target=writer)
+        th.start()
+        t0 = _t.monotonic()
+        decision, _ = self._wait(timeout=5)
+        elapsed = _t.monotonic() - t0
+        th.join()
+        self.assertEqual(decision, "message")
+        self.assertLess(elapsed, 0.75,
+                        "wake took %.2fs — the 250ms tick is not in effect" % elapsed)
+
+    def test_idle_wait_does_zero_content_reads_and_bounded_cpu(self):
+        import time as _t
+        # A pre-existing whitespace-only inbox: read once on the first tick
+        # (stat differs from the sentinel), then never again while unchanged.
+        _write(os.path.join(self.app_dir, "human_inbox.txt"), "   \n")
+        reads = []
+        orig = orch._read_nonblank
+
+        def counting(path):
+            reads.append(path)
+            return orig(path)
+        orch._read_nonblank = counting
+        try:
+            cpu0 = _t.process_time()
+            decision, _ = self._wait(timeout=1.0)
+            cpu = _t.process_time() - cpu0
+        finally:
+            orch._read_nonblank = orig
+        self.assertEqual(decision, "timeout")
+        self.assertLessEqual(len(reads), 1,
+                             "idle ticks re-read the inbox %d times" % len(reads))
+        self.assertLess(cpu, 0.05, "idle wait burned %.0fms CPU" % (cpu * 1000))
+
+    def test_missing_inbox_never_crashes_and_end_still_wakes(self):
+        import threading
+        import time as _t
+
+        def ender():
+            _t.sleep(0.3)
+            _write(os.path.join(self.app_dir, "approvals", "%s.ok" % KEY), "")
+        th = threading.Thread(target=ender)
+        th.start()
+        t0 = _t.monotonic()
+        decision, _ = self._wait(timeout=5)
+        elapsed = _t.monotonic() - t0
+        th.join()
+        self.assertEqual(decision, "end")
+        self.assertLess(elapsed, 0.75)
+        self.assertIsNone(self.state.get("awaiting_human"))
