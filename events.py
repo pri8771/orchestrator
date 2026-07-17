@@ -55,6 +55,9 @@ KINDS = (
     # ui_crawl / adherence): the measurement that decides whether gate
     # parallelization is worth its complexity.
     "release_gate_timing",
+    # V3 board 1.1 (conversational phases): a chat round opened, and the
+    # engine is blocked waiting for the human's next message / end command.
+    "conversation_round", "awaiting_human",
 )
 
 _MAX_FIELD_CHARS = 500

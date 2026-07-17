@@ -90,13 +90,16 @@ class Phase:
                  "rounds", "roles", "writes", "reads_target", "verify",
                  # V2 spec §8 additions (all default so legacy JSON still loads):
                  "checkpoint", "structurally_required", "requires_verification",
-                 "doc_sections", "test_deliverable")
+                 "doc_sections", "test_deliverable",
+                 # V3 board 1.1: human-paced chat phase — no coordinator,
+                 # consensus, or vote; rounds are ignored (unbounded).
+                 "conversational")
 
     def __init__(self, key, folder, file, purpose, title=None, rounds=6,
                  roles=None, writes=False, reads_target=False, verify=None,
                  checkpoint=False, structurally_required=False,
                  requires_verification=False, doc_sections=None,
-                 test_deliverable=None):
+                 test_deliverable=None, conversational=False):
         self.key = key
         self.folder = folder
         self.file = file
@@ -118,6 +121,7 @@ class Phase:
         self.requires_verification = _as_bool(requires_verification, False)
         self.doc_sections = _as_str_list(doc_sections)
         self.test_deliverable = test_deliverable or None
+        self.conversational = _as_bool(conversational, False)
 
     # --- legacy 4-tuple compatibility: key, folder, file, purpose ---
     def _tuple(self):
@@ -149,6 +153,7 @@ class Phase:
             "requires_verification": self.requires_verification,
             "doc_sections": self.doc_sections,
             "test_deliverable": self.test_deliverable,
+            "conversational": self.conversational,
         }
 
     @staticmethod
@@ -165,6 +170,7 @@ class Phase:
             requires_verification=d.get("requires_verification", False),
             doc_sections=d.get("doc_sections"),
             test_deliverable=d.get("test_deliverable"),
+            conversational=d.get("conversational", False),
         )
 
     def __repr__(self):

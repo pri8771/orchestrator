@@ -492,10 +492,16 @@ def render_qa_report(app, ordered_phases, phase_outputs, verify_summary=""):
 
 
 def render_known_limitations(app, ordered_phases, phase_outputs, consensus_status,
-                             verify_summary="", findings=None, blocked_conflict=None):
+                             verify_summary="", findings=None, blocked_conflict=None,
+                             conversation_end=None):
     """KNOWN_LIMITATIONS.md: the honest gaps the engine actually observed —
     phases not run, phases without consensus, verification not passed,
-    unresolved findings, and a blocked_conflict. Never inferred or invented."""
+    unresolved findings, and a blocked_conflict. Never inferred or invented.
+
+    conversation_end (V3 board 1.1): {phase_key: end_reason} for conversational
+    phases — a chat has no consensus BY DESIGN, so the "completed without
+    consensus (decided by vote or last recap)" wording would be false on both
+    counts for a user-ended conversation."""
     lines = ["# %s — Known Limitations" % app, "",
              "_Honest, non-AI list of gaps the engine recorded during the run. "
              "Nothing here is inferred or fabricated._", ""]
@@ -504,9 +510,19 @@ def render_known_limitations(app, ordered_phases, phase_outputs, consensus_statu
         if not (phase_outputs or {}).get(k, "").strip():
             items.append("Phase **%s** did not run — its decisions are missing." % title)
     for k, title in (ordered_phases or []):
-        if (phase_outputs or {}).get(k, "").strip() and not (consensus_status or {}).get(k):
-            items.append("Phase **%s** completed without consensus (decided by "
-                         "vote or last recap)." % title)
+        if not ((phase_outputs or {}).get(k, "").strip()
+                and not (consensus_status or {}).get(k)):
+            continue
+        conv_reason = (conversation_end or {}).get(k)
+        if conv_reason:
+            # A conversational phase never has consensus by design; only an
+            # unfinished close (idle timeout / shutdown / deadline) is a gap.
+            if conv_reason != "ended by user":
+                items.append("Conversation **%s** closed on %s — it may be "
+                             "unfinished." % (title, conv_reason))
+            continue
+        items.append("Phase **%s** completed without consensus (decided by "
+                     "vote or last recap)." % title)
     vs = (verify_summary or "").strip()
     if not vs:
         items.append("The build was never verified by a real tool — no structured "
@@ -532,7 +548,8 @@ def render_known_limitations(app, ordered_phases, phase_outputs, consensus_statu
 
 def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                        consensus_status=None, workflow_name="app_build",
-                       verify_summary="", findings=None, blocked_conflict=None):
+                       verify_summary="", findings=None, blocked_conflict=None,
+                       conversation_end=None):
     """Render + persist the full doc set (§24) into <app_dir>/docs/:
     PROJECT_DOCUMENTATION.md, LAUNCH_READINESS.md, phase_outputs.json, plus
     PRD.md / TECHNICAL_ARCHITECTURE.md / QA_REPORT.md when their source phases
@@ -577,7 +594,8 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                render_known_limitations(app, ordered_phases, phase_outputs,
                                         consensus_status, verify_summary,
                                         findings=findings,
-                                        blocked_conflict=blocked_conflict))
+                                        blocked_conflict=blocked_conflict,
+                                        conversation_end=conversation_end))
         written.append("docs/KNOWN_LIMITATIONS.md")
     except OSError:
         pass

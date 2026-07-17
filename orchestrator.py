@@ -1869,9 +1869,28 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
 
 
 def prompt_discuss(cfg, agent, ctx, phasedef, rnd, extra="", persona="",
-                   independent_first=False):
+                   independent_first=False, conversational=False):
     persona_block = ("\n===== YOUR HAT THIS PHASE =====\n" + persona + "\n") if persona else ""
-    if independent_first:
+    if conversational:
+        # V3 board 1.1: a chat turn, not a debate turn. The debate goal below
+        # ("argue hard… try to win the group over") makes agents fight each
+        # other instead of answering the human — keep personas/PASS, change
+        # only the goal.
+        turn_goal = (
+            "You are in an open working conversation with the human and the "
+            "other agents. Respond to the human's most recent message directly "
+            "and concretely; build on or push back on the other agents by name "
+            "where it genuinely helps. This is a conversation, not a debate to "
+            "win — do not push for a final decision or consensus.\n"
+        )
+        if rnd > 1:
+            turn_goal += (
+                "If you genuinely have NOTHING new to add this round — no "
+                "disagreement, no new risk, nothing to sharpen — reply with the "
+                "single word PASS instead of restating agreement.\n"
+            )
+        room_rules = COMMON_RULES
+    elif independent_first:
         turn_goal = (
             "Make an independent first-pass contribution for this phase. The "
             "orchestrator is intentionally hiding same-round agent messages so "
@@ -5267,6 +5286,206 @@ def _maybe_escalate(cfg, app, app_dir, key, coord, attempt_no, already_logged):
     return ecfg, already_logged
 
 
+_CONV_ROUND_RE = re.compile(r"\n### Round \d+\n")
+
+
+def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
+                              prior_outputs, state, md_path, personas, active):
+    """V3 board 1.1: human-paced chat phase — no coordinator/consensus/vote.
+
+    Round shape: drain human_inbox -> every roster agent responds (concurrent,
+    roster-order append, PASS protocol + unavailable-skip notes preserved) ->
+    block in _await_inbox until the next human message or an explicit end
+    command. Differences from the debate loop, each deliberate:
+
+    - `rounds` is IGNORED (unbounded itertools.count): Phase.rounds defaults
+      to 6 and the GUI WorkflowBuilder clamps rounds to 1..9 on save, so
+      honoring it would silently kill a chat mid-conversation. The phase ends
+      only on end command, idle timeout, shutdown, or sprint deadline.
+    - Resume is APPEND-ONLY: _resume_round_state counts a round complete only
+      when a '**Coordinator (' block follows it — a conversational transcript
+      has none, so the stock heuristic would discard EVERY round. We recover
+      the file verbatim and continue at the next round number.
+    - independent_first is forced off: round 1's context must include the
+      freshly drained human message, not a blank room.
+    - final_output is a short closure note, NOT the transcript: the shared
+      footer/state/docs plumbing would otherwise duplicate the entire chat
+      three times (Final Output section, phase_outputs, docs render).
+    - No "no enabled agent could produce output" raise: an all-unavailable
+      round appends skip notes and waits — the human sees it and can end.
+      Progress is human-gated, so there is no runaway loop to guard against.
+    """
+    key, folder, fname, _purpose = phasedef
+    extra = phase_extra(cfg, key)
+    end_file = os.path.join(app_dir, "approvals", "%s.ok" % key)
+
+    # Append-only resume or fresh start. Same resume gate as the debate path
+    # (state says THIS phase was in flight and at least one round was entered)
+    # so a stale leftover file from an unrelated run is still truncated.
+    resume_round, transcript, resuming = 1, "", False
+    if state.get("current_phase") == key and int(state.get("current_round") or 0) > 0:
+        try:
+            with open(md_path, encoding="utf-8") as fh:
+                _existing = fh.read()
+        except OSError:
+            _existing = ""
+        if _existing.strip():
+            resuming = True
+            _m = _CONV_ROUND_RE.search(_existing)
+            transcript = _existing[_m.start():] if _m else ""
+            resume_round = len(_CONV_ROUND_RE.findall(_existing)) + 1
+    if resuming:
+        emit("Conversation '%s': resuming append-only at round %d (%d char(s) "
+             "recovered; no rounds discarded)." % (key, resume_round, len(transcript)))
+    else:
+        write_md(md_path, phase_header(app, phasedef, original_prompt))
+        # A leftover end command is stale only on a FRESH start. On the resume
+        # path above it is deliberately kept: the user ended a chat the engine
+        # crashed out of, and that command must still be honored.
+        try:
+            os.remove(end_file)
+        except OSError:
+            pass
+
+    state["current_phase"] = key
+    save_state(app_dir, state)
+
+    idle_timeout = _approval_timeout(cfg)
+    end_reason = None
+    rounds_run = resume_round - 1
+    _seen_chars = {}
+    for rnd in itertools.count(resume_round):
+        if cfg.get("_phase_deadline") and time.time() >= cfg["_phase_deadline"]:
+            end_reason = "time budget reached"
+            break
+        if _SHUTDOWN.is_set():
+            end_reason = "engine shutdown"
+            break
+        state["current_round"] = rnd
+        save_state(app_dir, state)
+        unit_label = "Round %d" % rnd
+        append_md(md_path, "\n### Round %d\n\n" % rnd)
+        evlib.emit_event(app_dir, "conversation_round", project=app, phase=key,
+                         round=rnd)
+        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label)
+        round_agents = ordered_agents(active)
+        state["next_agent"] = "+".join(round_agents)
+        save_state(app_dir, state)
+
+        def _conv_turn(agent):
+            acfg = dict(cfg)   # per-thread copy: session/health flags must not race
+            acfg["_health_key"] = agent
+            ctx = build_context(acfg, app, phasedef, original_prompt,
+                                prior_outputs, transcript)
+            persona_text = roleslib.persona_preamble(personas.get(agent))
+            prompt = prompt_discuss(acfg, agent, ctx, phasedef, rnd, extra=extra,
+                                    persona=persona_text, conversational=True)
+            delta = _delta_discuss_prompt(
+                acfg, agent, transcript[_seen_chars.get(agent, 0):],
+                rnd, extra=extra, persona=persona_text) if agent == "claude" else None
+            _seen_chars[agent] = len(transcript)
+            return call_agent_sessioned(acfg, app, key, rnd, agent, prompt,
+                                        delta_prompt=delta,
+                                        session_key="%s:%s:discuss" % (key, agent))
+
+        results_by_agent = {}
+        if bool(cget(cfg, "runtime.parallel_discussion_rounds", True)) \
+                and len(round_agents) > 1:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=len(round_agents)) as ex:
+                futs = {ex.submit(_conv_turn, a): a for a in round_agents}
+                for fut in concurrent.futures.as_completed(futs):
+                    try:
+                        results_by_agent[futs[fut]] = (fut.result(), None)
+                    except AgentError as exc:
+                        results_by_agent[futs[fut]] = (None, str(exc))
+                    except Exception as exc:  # noqa: BLE001 - one turn must not kill the chat
+                        results_by_agent[futs[fut]] = (None, "unexpected turn error: %s" % exc)
+        else:
+            for agent in round_agents:
+                try:
+                    results_by_agent[agent] = (_conv_turn(agent), None)
+                except AgentError as exc:
+                    results_by_agent[agent] = (None, str(exc))
+        for agent in round_agents:
+            resp, aerr = results_by_agent.get(agent, (None, "no result"))
+            plabel = roleslib.persona_label(personas.get(agent))
+            hat = " (%s)" % plabel if plabel else ""
+            if aerr:
+                emit("%s unavailable in round %d: %s" % (DISPLAY[agent], rnd, aerr))
+                block = "**%s — Round %d (skipped: CLI unavailable)**\n\n_%s_\n" % (
+                    DISPLAY[agent], rnd, aerr)
+            elif rnd > 1 and (resp or "").strip().upper().rstrip(".!").strip() == "PASS":
+                block = "**%s%s — Round %d**\n\n_PASS — nothing new to add._\n" % (
+                    DISPLAY[agent], hat, rnd)
+                live_log(app_dir, key, agent, "agent_turn_completed", "PASS")
+                emit("%s passed in round %d (nothing new)." % (DISPLAY[agent], rnd))
+            else:
+                block = "**%s%s — Round %d**\n\n%s\n" % (DISPLAY[agent], hat, rnd, resp)
+                live_log(app_dir, key, agent, "agent_turn_completed", resp)
+                emit("Appended %s response to %s/%s" % (DISPLAY[agent], folder, fname))
+            append_md(md_path, "\n" + block)
+            transcript += "\n" + block
+        rounds_run = rnd
+
+        decision, _payload = _await_inbox(cfg, app, app_dir, key, state,
+                                          timeout=idle_timeout)
+        if decision == "message":
+            continue
+        if decision == "end":
+            # End wins over a pending message, but the message must not rot in
+            # the inbox forever (nothing drains it after the phase completes):
+            # fold it in as a closing section, then finalize.
+            transcript = drain_human_inbox(app_dir, md_path, transcript,
+                                           "closing message")
+            end_reason = "ended by user"
+        elif decision == "timeout":
+            end_reason = "conversation idle timeout"
+        elif decision == "deadline":
+            end_reason = "time budget reached"
+        else:   # shutdown
+            end_reason = "engine shutdown"
+        break
+
+    # Finalize honestly: no coordinator, no consensus, no fabricated markers.
+    closure = ("Conversation closed after %d round(s): %s. The transcript "
+               "above is the record of this chat." % (rounds_run, end_reason))
+    # The literal '## Coordinator Decision' heading is load-bearing: the GUI
+    # transcript parser terminates the message stream at it and only renders
+    # a Final Output section when it exists — so keep the heading and make
+    # its BODY honest instead of dropping it.
+    append_md(md_path, "\n## Coordinator Decision\n\n_No coordinator — "
+                       "conversational phase; %s._\n" % end_reason)
+    append_md(md_path, "\n## Final Output\n\n%s\n" % closure)
+    append_md(md_path, "\n---\n\n%s\n" % ("ENDED BY USER"
+              if end_reason == "ended by user"
+              else "CONVERSATION CLOSED: %s" % end_reason.upper()))
+
+    state["consensus_status"][key] = False
+    # Explicit end-reason state (R4): 'ended by user' is a CLEAN close and
+    # must not land in phase_resolutions (that dict means "closed without
+    # clean resolution" and drives the GUI's amber badges + docs wording);
+    # an idle timeout genuinely is an unresolved close, so it does.
+    state.setdefault("conversation_end", {})[key] = end_reason
+    if end_reason == "conversation idle timeout":
+        state.setdefault("phase_resolutions", {})[key] = "idle_timeout"
+    state["phase_outputs"][key] = closure
+    if key not in state["completed_phases"]:
+        state["completed_phases"].append(key)
+    state["current_round"] = 0
+    state["next_agent"] = None
+    save_state(app_dir, state)
+    cfg["_phase_playbook"] = ""
+    cfg["_knowledge"] = ""
+    cfg["_verify_context"] = ""
+    live_log(app_dir, key, "orchestrator", "phase_completed",
+             "conversational phase '%s' complete (%s)" % (key, end_reason))
+    evlib.emit_event(app_dir, "phase_completed", project=app, phase=key,
+                     detail="conversational: %s" % end_reason)
+    emit("Conversation '%s' complete for %s (%s)." % (key, app, end_reason))
+    return closure
+
+
 def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                   state, phase_index=0):
     key, folder, fname, _purpose = phasedef
@@ -5455,6 +5674,16 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # The actual resume point is then derived from the .md file itself, not
     # from current_round directly — see _resume_round_state's docstring for
     # why the counter alone is not trustworthy.
+    #
+    # V3 board 1.1: conversational phases branch BEFORE the resume/truncate
+    # block below — _resume_round_state's coordinator heuristic would return
+    # resume_round=1 for a coordinator-less transcript, making the else-branch
+    # write_md() TRUNCATE the entire conversation on every re-entry. The
+    # conversational runner owns its own append-only resume.
+    if bool(phasedef.get("conversational", False) if hasattr(phasedef, "get") else False):
+        return _run_conversational_phase(
+            cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
+            state, md_path, personas, active)
     resume_round, resuming = 1, False
     if not (is_build and allow_writes) and state.get("current_phase") == key \
             and int(state.get("current_round") or 0) > 0:
@@ -6321,6 +6550,12 @@ def _should_pause_after(cfg, phasedef):
     """V2 §3.1: decide if the run pauses for approval after this phase. Manual
     mode pauses after every phase; Semi-Autonomous only after checkpoint phases;
     Fully Autonomous (default / anything else) never pauses."""
+    # V3 board 1.1: a conversational phase ends on an explicit human command —
+    # that IS the human decision. A checkpoint pause here would double-ack the
+    # same file name (approvals/<key>.ok) the end command just consumed,
+    # forcing the user to "approve" a conversation they explicitly ended.
+    if bool(phasedef.get("conversational", False) if hasattr(phasedef, "get") else False):
+        return False
     autonomy = cfg.get("_autonomy") or "fully_autonomous"
     if autonomy == "manual":
         return True
@@ -6337,6 +6572,65 @@ def _approval_timeout(cfg):
         return int(cget(cfg, "runtime.approval_timeout_seconds", 7200) or 7200)
     except (TypeError, ValueError):
         return 7200
+
+
+def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=2.0):
+    """Block a conversational phase until the human acts (V3 board 1.1).
+
+    Wake sources, checked in precedence order every poll tick:
+
+      approvals/<phase_key>.ok    -> ("end", None)      explicit end command
+      human_inbox.txt (non-blank) -> ("message", None)  next human message
+
+    plus ("shutdown", None) on _SHUTDOWN, ("deadline", None) once the sprint
+    phase deadline passes, and ("timeout", None) at the idle timeout.
+
+    Deliberately UNLIKE _await_approval: the .ok file is NEVER cleared at wait
+    entry. Agent rounds take minutes; an end command written while they were
+    still talking is a real command, not a stale decision — clearing it here
+    would silently discard it and hold the chat open until idle timeout.
+    (Stale-.ok cleanup happens exactly once, at fresh conversational phase
+    start.) The inbox check mirrors drain_human_inbox's strip() test so a
+    whitespace-only write can't wake a round that would then drain nothing.
+
+    Records state['awaiting_human'] so the GUI can surface the waiting state;
+    cleared on every exit path (crash-abandoned markers are cleared by the
+    run re-entry and --resume stale-state paths).
+    """
+    appr_dir = os.path.join(app_dir, "approvals")
+    os.makedirs(appr_dir, exist_ok=True)
+    end_file = os.path.join(appr_dir, "%s.ok" % phase_key)
+    inbox = os.path.join(app_dir, "human_inbox.txt")
+    state["awaiting_human"] = phase_key
+    save_state(app_dir, state)
+    evlib.emit_event(app_dir, "awaiting_human", project=app, phase=phase_key)
+    emit("Conversation '%s': waiting for your next message (end the chat with "
+         "approvals/%s.ok)." % (phase_key, phase_key))
+    deadline = time.time() + timeout
+    try:
+        while True:
+            if _SHUTDOWN.is_set():
+                return "shutdown", None
+            if cfg.get("_phase_deadline") and time.time() >= cfg["_phase_deadline"]:
+                return "deadline", None
+            if os.path.exists(end_file):
+                try:
+                    os.remove(end_file)
+                except OSError:
+                    pass
+                return "end", None
+            try:
+                with open(inbox, encoding="utf-8") as fh:
+                    if fh.read().strip():
+                        return "message", None
+            except OSError:
+                pass
+            if time.time() >= deadline:
+                return "timeout", None
+            time.sleep(poll)
+    finally:
+        state["awaiting_human"] = None
+        save_state(app_dir, state)
 
 
 def _await_approval(app_dir, phase_key, state, timeout=7200, poll=2.0):
@@ -7206,13 +7500,18 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                  "this app explicitly (--app or --resume) to continue." % app)
             return
         pending_approval = state.get("awaiting_approval")
-        if state.get("error") or state.get("blocked_conflict") or pending_approval:
+        if state.get("error") or state.get("blocked_conflict") or pending_approval \
+                or state.get("awaiting_human"):
             # Re-entering makes the run active again: clear the previous
             # attempt's abort/conflict/approval markers so status re-derives as
             # running instead of pinning stale banners for the whole re-run.
+            # awaiting_human included: a SIGTERM mid-_await_inbox sys.exit(0)s
+            # without clearing it, and the resumed run would otherwise execute
+            # a full roster round while claiming to be waiting for the human.
             state["error"] = None
             state["blocked_conflict"] = None
             state["awaiting_approval"] = None
+            state["awaiting_human"] = None
             save_state(app_dir, state)
         if pending_approval:
             # The run died while paused at this checkpoint. The phase is already
@@ -7519,7 +7818,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 consensus_status=state.get("consensus_status", {}),
                 workflow_name=workflow.name, verify_summary=_vsum,
                 findings=load_docs_findings(app_dir),
-                blocked_conflict=state.get("blocked_conflict"))
+                blocked_conflict=state.get("blocked_conflict"),
+                conversation_end=state.get("conversation_end", {}))
             written += docslib.write_project_archive(
                 app_dir, app, phases, prompt, state,
                 workflow_name=workflow.name, verify_summary=_vsum,
@@ -7823,6 +8123,7 @@ def prepare_resume(root, slug):
         st["error"] = None
         st["blocked_conflict"] = None
         st["awaiting_approval"] = None
+        st["awaiting_human"] = None
         st["next_agent"] = None
         st["runner_pid"] = None
         save_state(app_dir, st)
