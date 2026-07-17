@@ -64,5 +64,32 @@ implement it or visibly disable it with a reason.
 
 ---
 
+## M-003 · A label and a nearby control/button overlap at a screen edge
+
+**What was seen (Gloam, rebuilt):** the ribbon's *time anchors* were correctly
+de-cluttered (M-001's fix held — sunrise/golden-hour no longer collide), but at
+the bottom of the screen the "SUNSET" label and the "SHARE" button were drawn on
+top of each other ("SUN̶S̶E̶T̶/SHARE"). The collision-avoidance had been applied to
+the one region it was designed for (the 1-D ribbon axis) and NOT to the
+separate label-plus-control cluster at the screen edge.
+
+**Generic rule:** overlap avoidance is not "solve it once for one component."
+EVERY cluster of text + controls must be checked for collisions — a label and
+its adjacent button, a caption under a value, a footer that meets a floating
+action control. Fixing overlap in the hero component does not fix it elsewhere
+on the same screen.
+
+**How to avoid it:**
+- After building a screen, audit EACH region independently for overlap, not just
+  the one you know is dense. A label sitting beneath/over a button at the safe-
+  area edge is a common blind spot.
+- Give paired label+control elements a real layout container with explicit
+  spacing (VStack/HStack with spacing, or a grid), never absolute positions that
+  can coincide.
+- Reserve space for a floating/pinned control (e.g. a Share button) so
+  scrolling or edge content can't slide under it.
+
+---
+
 _Append new entries as real defects are observed. Keep each one concrete
 (what was seen) plus a GENERIC rule, so it transfers to unrelated apps._
