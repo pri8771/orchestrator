@@ -28,6 +28,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import time
 import urllib.request
 
 import localmodels as lmlib
@@ -190,15 +191,36 @@ def capture_screens(udid, app_path, bid, shots_dir):
     if note:
         return [], note
     # Pre-grant privacy permissions so a first-launch system permission dialog
-    # (location, photos, camera, notifications, …) doesn't cover the app in the
-    # screenshot — the grader would score that covered screen BAD even though
-    # the app is fine. This is a false-failure the gate used to hit for any app
-    # that asks for a permission on launch (e.g. a location app). Best-effort:
-    # `grant all` isn't supported for every service on every OS, so ignore its
-    # exit — a screen that still shows a legit dialog just grades as it looks.
-    _run(["xcrun", "simctl", "privacy", udid, "grant", "all", bid], timeout=30)
+    # (location, photos, camera, …) doesn't cover the app in the screenshot —
+    # the grader would score that covered screen BAD even though the app is
+    # fine. This is a false-failure the gate used to hit for any app that asks
+    # for a permission on launch (e.g. a location app).
+    #
+    # ORDERING IS THE WHOLE FIX. The grant MUST land before the first launch
+    # that triggers the prompt: verified live (Xcode 26.6 / iOS 26.5) that
+    # granting before the first launch suppresses the dialog, but once the
+    # springboard alert is on screen NO simctl grant or relaunch dismisses it —
+    # only an actual tap can, and simctl has no tap primitive. So we grant, then
+    # settle, then launch. `grant all` covers the common services; the explicit
+    # location grants are belt-and-suspenders for the classic launch prompt on a
+    # toolchain where `all`'s service enumeration skips location. All best-effort
+    # — a service the app doesn't use just errors harmlessly (exit ignored).
+    #
+    # Deliberately NOT preceded by `privacy reset`: a fresh install is already
+    # "not determined" and `grant` overrides a stale "denied" on its own, so
+    # reset buys nothing while opening a window where a silently-no-op grant
+    # would ARM the exact dialog we're preventing.
+    #
+    # Residual (documented, not hidden): a dialog for an on-launch permission
+    # that `all`/location don't cover — notifications, App Tracking Transparency,
+    # which `simctl privacy` has no service for — still grades as it looks. That
+    # is rare and version-dependent; the uicrawl gate runs right after on a
+    # virgin reinstall as a second, imperfect backstop (its `app.alerts` query
+    # targets the app, so it may miss a springboard-owned alert).
+    for svc in ("all", "location", "location-always"):
+        _run(["xcrun", "simctl", "privacy", udid, "grant", svc, bid], timeout=30)
+    time.sleep(1)   # let the TCC write settle before the first launch reads it
     shots = []
-    import time
     for mode in ("light", "dark"):
         _run(["xcrun", "simctl", "ui", udid, "appearance", mode], timeout=30)
         code, _o, err = _run(["xcrun", "simctl", "launch",

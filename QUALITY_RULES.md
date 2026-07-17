@@ -90,12 +90,26 @@ relaunch/persistence probe in the crawl gate). Until then, treat a passing
 build as "compiles into a runnable app, looks clean, uses tokens, no overlap"
 — NOT as a guarantee of the behavioral rules.
 
-**Known residual gap in the visual-QA gate itself**, found live: `simctl
-privacy grant all/location` does not reliably suppress the iOS Simulator's
-first-launch location-permission dialog, so a location-using app's screenshot
-can still be graded against a dialog rather than the real screen. The gate's
-own vision models (`qwen2.5vl:3b`, `gemma3:4b`) are also documented as
-unreliable at specifically calling out overlap versus other defects (they
+**First-launch permission dialog — root-caused and fixed** (was a known
+residual gap). The earlier note said `simctl privacy grant all/location` "does
+not reliably suppress" the Simulator's first-launch location dialog. Verified
+live (Xcode 26.6 / iOS 26.5) what actually happens: granting BEFORE the first
+launch **does** suppress it, but once the springboard alert is on screen no
+`grant` or relaunch clears it — only a tap can, and `simctl` has no tap
+primitive. So the failure was an ordering/propagation race, not "grant is
+ignored". `visualqa.capture_screens` now grants the hardened trio (`all`,
+`location`, `location-always`) and settles (1s) BEFORE the first launch, and
+never `reset`s first (reset would re-arm the prompt if a grant no-ops).
+Confirmed live: the real `capture_screens` path screenshots the app's actual
+screen, not the dialog, on a worst-case clean-slate location app.
+*Residual (documented, not hidden):* an on-launch permission `simctl privacy`
+has no service for (notifications, App Tracking Transparency) can't be
+pre-granted and would still grade as-it-looks; a springboard tap-dismissal, if
+ever needed, belongs in the tap-capable uicrawl runner (its current
+`dismissAlertIfAny` queries the *target* app's `app.alerts`, so it does NOT
+reliably catch a springboard alert — not a backstop for visual QA today).
+The gate's own vision models (`qwen2.5vl:3b`, `gemma3:4b`) are also documented
+as unreliable at specifically calling out overlap versus other defects (they
 correctly flag the screen BAD but may cite the wrong reason) — the *build-time*
 prevention (prompt rule + `observed-mistakes.md`) is the real first line of
 defense; the gate is a backstop of limited precision, not the primary check.

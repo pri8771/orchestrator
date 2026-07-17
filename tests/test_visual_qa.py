@@ -44,34 +44,68 @@ class TestOkBadParsing(unittest.TestCase):
 
 
 class TestCaptureGrantsPermissions(unittest.TestCase):
-    """capture_screens pre-grants privacy permissions before screenshotting, so
-    a first-launch permission dialog can't cover the app and cause a false BAD."""
+    """capture_screens pre-grants privacy permissions BEFORE the first launch, so
+    a first-launch permission dialog can't cover the app and cause a false BAD.
+    Ordering is the whole fix: verified live that granting before the first
+    launch suppresses the springboard permission alert, but once that alert is on
+    screen no simctl grant or relaunch dismisses it (only a tap can, which simctl
+    has no primitive for)."""
 
-    def test_grant_all_issued_before_any_screenshot(self):
+    def _capture(self):
+        """Run capture_screens with subprocess + sleep faked; return the call
+        list. `time.sleep` is patched so the test doesn't actually wait (the
+        real path sleeps 1s to settle the grant + 4s per mode)."""
         calls = []
 
         def fake_run(cmd, cwd=None, timeout=120):
             calls.append(cmd)
             # simctl launch prints a pid; screenshot writes the file.
             if "screenshot" in cmd:
-                # create the target file so it's collected
-                open(cmd[-1], "w").close()
+                open(cmd[-1], "w").close()   # create the target so it's collected
             return 0, "", ""
 
         with unittest.mock.patch.object(vqa, "_install_with_rescue", return_value=""), \
+             unittest.mock.patch.object(vqa.time, "sleep"), \
              unittest.mock.patch.object(vqa, "_run", side_effect=fake_run):
             shots, note = vqa.capture_screens("UDID", "/tmp/App.app", "com.x.app",
                                               tempfile.mkdtemp())
         self.assertEqual(note, "")
-        grant_idx = next((i for i, c in enumerate(calls)
-                          if "privacy" in c and "grant" in c and "all" in c), None)
-        self.assertIsNotNone(grant_idx, "no `simctl privacy grant all` call issued")
-        first_shot = next((i for i, c in enumerate(calls) if "screenshot" in c), None)
-        self.assertIsNotNone(first_shot)
-        # The grant must happen BEFORE the first screenshot.
-        self.assertLess(grant_idx, first_shot)
-        # It targets the app's bundle id.
-        self.assertIn("com.x.app", calls[grant_idx])
+        # Light + dark screenshots are still produced.
+        self.assertEqual(len(shots), 2)
+        return calls
+
+    def test_grants_precede_first_launch(self):
+        # The real fix: EVERY grant must land before the FIRST launch (a grant
+        # after the launch that arms the dialog is useless — finding C).
+        calls = self._capture()
+        launch_idx = next((i for i, c in enumerate(calls) if "launch" in c), None)
+        self.assertIsNotNone(launch_idx, "no simctl launch issued")
+        grant_idxs = [i for i, c in enumerate(calls)
+                      if "privacy" in c and "grant" in c]
+        self.assertTrue(grant_idxs, "no `simctl privacy grant` call issued")
+        self.assertLess(max(grant_idxs), launch_idx,
+                        "a privacy grant was issued AFTER the first launch")
+
+    def test_hardened_service_set_granted_for_bundle(self):
+        # `all` is broadest; explicit location/location-always are the
+        # belt-and-suspenders for the classic launch-time prompt on a toolchain
+        # whose `all` enumeration skips location.
+        calls = self._capture()
+        grants = [c for c in calls if "privacy" in c and "grant" in c]
+        services = {c[c.index("grant") + 1] for c in grants}
+        self.assertLessEqual({"all", "location", "location-always"}, services)
+        # Every grant targets the app's bundle id.
+        for c in grants:
+            self.assertIn("com.x.app", c)
+
+    def test_never_resets_privacy(self):
+        # Deliberately NO `simctl privacy reset`: a fresh install is already
+        # "not determined" and grant overrides a stale "denied" on its own, so
+        # reset only opens a window where a silently-no-op grant re-ARMS the very
+        # dialog we're suppressing.
+        calls = self._capture()
+        self.assertFalse(any("privacy" in c and "reset" in c for c in calls),
+                         "capture_screens must never `privacy reset` (re-arms the dialog)")
 
 
 class TestGradeAggregation(unittest.TestCase):
