@@ -1,7 +1,7 @@
 {
   "name": "app_build_child",
   "title": "Build an App (portfolio child)",
-  "description": "app_build minus parent-scoped phases \u2014 for portfolio children with fully-specified briefs.",
+  "description": "app_build minus parent-scoped phases — for portfolio children with fully-specified briefs.",
   "target": "app",
   "build_phase": "build_coordination",
   "budget": null,
@@ -26,7 +26,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "initial_discussion",
@@ -47,7 +48,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "per_app_product_brief",
@@ -68,7 +70,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "detailed_discussion",
@@ -89,7 +92,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "app_features",
@@ -110,7 +114,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "design_discussion",
@@ -131,7 +136,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "design_handoff",
@@ -152,7 +158,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "ios_architecture_review",
@@ -173,7 +180,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "tech_specs",
@@ -194,7 +202,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "project_plan",
@@ -215,7 +224,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "task_assignments",
@@ -236,7 +246,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "implementation_readiness_gate",
@@ -257,7 +268,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "build_coordination",
@@ -279,7 +291,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "build_verification",
@@ -303,7 +316,8 @@
       "structurally_required": false,
       "requires_verification": true,
       "doc_sections": [],
-      "test_deliverable": "xcodebuild/test verification plus repair log"
+      "test_deliverable": "xcodebuild/test verification plus repair log",
+      "conversational": false
     },
     {
       "key": "human_qa_checklist",
@@ -324,7 +338,8 @@
       "structurally_required": false,
       "requires_verification": true,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "app_store_readiness",
@@ -345,7 +360,8 @@
       "structurally_required": false,
       "requires_verification": true,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "final_review",
@@ -366,7 +382,8 @@
       "structurally_required": false,
       "requires_verification": true,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "portfolio_audit",
@@ -387,7 +404,8 @@
       "structurally_required": false,
       "requires_verification": true,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     }
   ]
 }

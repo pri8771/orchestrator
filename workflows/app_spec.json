@@ -26,7 +26,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "product_research",
@@ -47,7 +48,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "portfolio_selection",
@@ -68,7 +70,8 @@
       "structurally_required": true,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "initial_discussion",
@@ -89,7 +92,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "per_app_product_brief",
@@ -110,7 +114,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "next_steps_small",
@@ -131,7 +136,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "detailed_discussion",
@@ -152,7 +158,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "app_features",
@@ -173,7 +180,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "design_discussion",
@@ -194,7 +202,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "design_handoff",
@@ -215,7 +224,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "ios_architecture_review",
@@ -236,7 +246,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "tech_specs",
@@ -257,7 +268,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "project_plan",
@@ -278,7 +290,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "implementation_readiness_gate",
@@ -299,7 +312,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "human_qa_checklist",
@@ -320,7 +334,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "app_store_readiness",
@@ -341,7 +356,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "final_review",
@@ -362,7 +378,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "portfolio_audit",
@@ -383,7 +400,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     }
   ]
 }

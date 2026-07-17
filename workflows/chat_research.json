@@ -1,0 +1,35 @@
+{
+  "name": "chat_research",
+  "title": "Research Chat",
+  "description": "A human-paced research conversation: ask the cast to dig into a topic, weigh evidence, and answer follow-ups. No coordinator, no consensus, no vote — the chat runs until you end it.",
+  "target": "research",
+  "build_phase": null,
+  "budget": null,
+  "overrides": {
+    "effort": "fast"
+  },
+  "phases": [
+    {
+      "key": "chat",
+      "folder": "chat",
+      "file": "chat.md",
+      "title": "Research Chat",
+      "purpose": "Investigate whatever the human asks in an open conversation: surface what is known, separate strong claims from weak ones, name the uncertainty honestly, and answer follow-up questions directly — without pushing toward a forced conclusion.",
+      "rounds": 0,
+      "roles": [
+        "product",
+        "backend",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null,
+      "conversational": true
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "name": "sprint",
   "title": "Sprint Build (under 1 hour)",
-  "description": "A time-boxed app build with a HARD wall-clock ceiling. Collapses planning to the essentials, caps build iterations, tightens per-turn timeouts, and enforces a run deadline so a working, compiling app lands in under an hour. Same parallel build + verify + iOS-signing machinery as app_build \u2014 just disciplined on time.",
+  "description": "A time-boxed app build with a HARD wall-clock ceiling. Collapses planning to the essentials, caps build iterations, tightens per-turn timeouts, and enforces a run deadline so a working, compiling app lands in under an hour. Same parallel build + verify + iOS-signing machinery as app_build — just disciplined on time.",
   "target": "app",
   "build_phase": "build_coordination",
   "budget": {
@@ -19,7 +19,7 @@
       "folder": "initial_discussion",
       "file": "initial_discussion.md",
       "title": "Initial Discussion",
-      "purpose": "Rapidly establish what this app is, who it's for, the core problem, hard scope boundaries for a <1-hour build, and the 3-5 must-have features. Be decisive and converge fast \u2014 this is a time-boxed sprint, not an open-ended debate.",
+      "purpose": "Rapidly establish what this app is, who it's for, the core problem, hard scope boundaries for a <1-hour build, and the 3-5 must-have features. Be decisive and converge fast — this is a time-boxed sprint, not an open-ended debate.",
       "rounds": 2,
       "roles": [
         "product",
@@ -33,7 +33,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "design_discussion",
@@ -54,7 +55,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "tech_specs",
@@ -75,7 +77,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "build_coordination",
@@ -100,7 +103,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "final_review",
@@ -121,7 +125,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     }
   ]
 }

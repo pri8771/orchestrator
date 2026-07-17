@@ -26,7 +26,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "answer",
@@ -46,7 +47,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     }
   ]
 }

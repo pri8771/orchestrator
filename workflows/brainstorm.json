@@ -1,7 +1,7 @@
 {
   "name": "brainstorm",
   "title": "Brainstorm",
-  "description": "A fast idea-shaping pass: lock the prompt contract, do the product research, and converge on a shared understanding of the concept. No design, build, or QA phases \u2014 effort is capped for quick turnaround.",
+  "description": "A fast idea-shaping pass: lock the prompt contract, do the product research, and converge on a shared understanding of the concept. No design, build, or QA phases — effort is capped for quick turnaround.",
   "target": "app",
   "build_phase": null,
   "budget": null,
@@ -28,7 +28,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "product_research",
@@ -49,7 +50,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     },
     {
       "key": "initial_discussion",
@@ -70,7 +72,8 @@
       "structurally_required": false,
       "requires_verification": false,
       "doc_sections": [],
-      "test_deliverable": null
+      "test_deliverable": null,
+      "conversational": false
     }
   ]
 }

@@ -18,7 +18,7 @@ WF_FIELDS = {"name", "title", "description", "target", "build_phase",
 PHASE_FIELDS = {"key", "folder", "file", "title", "purpose", "rounds", "roles",
                 "writes", "reads_target", "verify", "checkpoint",
                 "structurally_required", "requires_verification",
-                "doc_sections", "test_deliverable"}
+                "doc_sections", "test_deliverable", "conversational"}
 KNOWN_TARGETS = {"app", "app_spec", "answer", "research", "productionize",
                  "audit", "library_mining"}
 
@@ -53,7 +53,12 @@ class TestWorkflowsSchema(unittest.TestCase):
             self.assertTrue(isinstance(d["overrides"], (dict, type(None))))
             for p in d["phases"]:
                 self.assertIsInstance(p["rounds"], int)
-                self.assertGreater(p["rounds"], 0)
+                if p.get("conversational"):
+                    # V3 board 1.3: conversational phases may declare rounds 0
+                    # (unlimited); the engine ignores the budget entirely.
+                    self.assertGreaterEqual(p["rounds"], 0)
+                else:
+                    self.assertGreater(p["rounds"], 0)
                 self.assertIsInstance(p["roles"], list)
                 self.assertIsInstance(p["writes"], bool)
                 self.assertTrue(isinstance(p["verify"], (dict, type(None))))
@@ -204,3 +209,45 @@ class TestPhaseFieldCoercion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChatWorkflowSeeds(unittest.TestCase):
+    """V3 board 1.3: the two shipped conversational chat workflows."""
+
+    NAMES = ("chat_ideas", "chat_research")
+
+    def test_seeds_load_with_expected_shape(self):
+        for name in self.NAMES:
+            w = wf.load_workflow(name)
+            self.assertEqual(w.name, name)
+            self.assertEqual(len(w.phases), 1, name)
+            p = w.phases[0]
+            self.assertTrue(p.conversational, name)
+            self.assertEqual(p.rounds, 0, name)   # unlimited (and ignored)
+            # Chats must never gain write capability by accident.
+            self.assertFalse(p.writes, name)
+            self.assertIsNone(p.verify, name)
+            self.assertIsNone(w.build_phase, name)
+
+    def test_seed_roles_exist_in_roles_registry(self):
+        import roles as roleslib
+        known = {r["id"] for r in roleslib.DEFAULT_ROLES}
+        for name in self.NAMES:
+            for rid in wf.load_workflow(name).phases[0].roles:
+                self.assertIn(rid, known, "%s uses unknown role %r" % (name, rid))
+
+    def test_seeds_listed(self):
+        listed = wf.list_workflows()
+        for name in self.NAMES:
+            self.assertIn(name, listed)
+
+    def test_missing_disk_copy_degrades_to_shipped_fallback_not_app_build(self):
+        # An orch_dir with NO workflows/ JSON at all: load must come from the
+        # shipped in-memory fallback (_load_shipped_fallbacks), never silently
+        # become app_build.
+        import tempfile
+        empty = tempfile.mkdtemp()
+        for name in self.NAMES:
+            w = wf.load_workflow(name, orch_dir=empty)
+            self.assertEqual(w.name, name)
+            self.assertTrue(w.phases[0].conversational)

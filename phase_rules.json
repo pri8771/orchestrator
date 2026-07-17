@@ -27,7 +27,7 @@
         "Non-goals.",
         "Production-readiness definition.",
         "Decision rules for later phases.",
-        "A NUMBERED list of testable requirements extracted from the user's prompt \u2014 each one verifiable by using the app."
+        "A NUMBERED list of testable requirements extracted from the user's prompt — each one verifiable by using the app."
       ],
       "acceptance_checks": [
         "A later phase can tell whether it is violating the user's prompt.",
@@ -55,7 +55,7 @@
         "The next phase can use the output without repeating discovery.",
         "At least three concrete risks or unknowns are named.",
         "The research points toward a shippable first version.",
-        "No unsourced factual claims \u2014 each is cited or explicitly marked ASSUMPTION."
+        "No unsourced factual claims — each is cited or explicitly marked ASSUMPTION."
       ]
     },
     "portfolio_selection": {
@@ -217,7 +217,7 @@
       ],
       "acceptance_checks": [
         "A SwiftUI builder can write Theme.swift (fonts, spacing, colors, radii) directly from the spec with zero invented values.",
-        "Every screen has named components and defined empty/loading/error states \u2014 not just the happy path.",
+        "Every screen has named components and defined empty/loading/error states — not just the happy path.",
         "Every color role has both a light and a dark hex value.",
         "The handoff does not depend on hidden design decisions.",
         "The design direction is premium and category-specific."
@@ -325,7 +325,7 @@
         "Build real files in app_build; do not only describe the solution.",
         "Create the design spec's tokens as a single theme file (Theme.swift or equivalent) before building screens, and style every view through it; scattered font/spacing/color literals are defects.",
         "Implement the handoff's named components, per-screen empty states, and dark-mode palette as specified; a default unstyled List where the spec says otherwise is a defect.",
-        "Every interactive element (buttons, cells, fields, toggles) must set .accessibilityIdentifier \u2014 the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support.",
+        "Every interactive element (buttons, cells, fields, toggles) must set .accessibilityIdentifier — the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support.",
         "Implement screens with ALL specified states: empty, loading, error, and populated. A screen with only the happy path is incomplete.",
         "Keep changes scoped to the assigned lane and leave integration files to the integrator.",
         "Every iteration should reduce compile, runtime, or product-completeness risk.",
@@ -445,7 +445,7 @@
         "Map the target READ-ONLY before hunting; never propose edits in this phase.",
         "Identify languages/framework versions, dependency manifests, entry points, external inputs, and trust boundaries.",
         "Locate where secrets, persistence, and network I/O live, and rank the highest-risk surfaces.",
-        "Emit NO findings here \u2014 this phase only produces the shared map later phases build on."
+        "Emit NO findings here — this phase only produces the shared map later phases build on."
       ],
       "required_output": [
         "Architecture + attack-surface summary.",
@@ -502,7 +502,7 @@
       "rules": [
         "Identify outdated/abandoned deps, deprecated APIs, worthwhile modern-idiom refactors, dead code, and performance issues.",
         "Give current-vs-recommended and the migration effort/risk.",
-        "Do not propose churn for its own sake \u2014 tie each item to a concrete benefit.",
+        "Do not propose churn for its own sake — tie each item to a concrete benefit.",
         "Emit each as a finding-json block."
       ],
       "required_output": [
@@ -522,7 +522,7 @@
         "Synthesize ALL prior findings into ONE prioritized, de-duplicated report; do NOT vote findings away.",
         "Group Critical/High/Medium/Low and open with a 3-line severity-count summary.",
         "End with the top 5 fixes to do first.",
-        "The ranked list itself is assembled deterministically by the tool \u2014 keep prose honest and non-duplicative."
+        "The ranked list itself is assembled deterministically by the tool — keep prose honest and non-duplicative."
       ],
       "required_output": [
         "Severity-count summary (3 lines).",
@@ -541,7 +541,7 @@
         "Surface what's known: key facts, the sub-questions that matter, competing viewpoints, and where uncertainty lives.",
         "Separate established facts from claims that need weighing.",
         "Note the source or basis for each significant claim.",
-        "Do not conclude yet \u2014 this phase collects, the next phase judges."
+        "Do not conclude yet — this phase collects, the next phase judges."
       ],
       "required_output": [
         "Key facts.",
@@ -614,7 +614,7 @@
     "infra_and_security": {
       "rules": [
         "Decide hosting, deployment, auth, security, observability, and a rough cost model with justified trade-offs.",
-        "Name the secrets-management approach \u2014 never secrets in code or config committed to git.",
+        "Name the secrets-management approach — never secrets in code or config committed to git.",
         "Specify how you'll know it's healthy (health checks, logs, metrics) and how you'll roll back."
       ],
       "required_output": [
@@ -706,7 +706,7 @@
       "rules": [
         "Commit to the single best-supported answer and write it clearly.",
         "Note the key reasoning and any honest uncertainty.",
-        "Answer the question actually asked \u2014 no hedging into non-answers."
+        "Answer the question actually asked — no hedging into non-answers."
       ],
       "required_output": [
         "The answer, stated directly.",
@@ -723,7 +723,7 @@
       "rules": [
         "Read the target repos READ-ONLY; map each one's shape, stack, and the responsibilities they share.",
         "Identify recurring patterns and duplicated concerns across repos.",
-        "Emit no extraction proposals yet \u2014 this phase maps."
+        "Emit no extraction proposals yet — this phase maps."
       ],
       "required_output": [
         "Per-repo shape/stack summary.",
@@ -789,10 +789,10 @@
     },
     "write_tests": {
       "rules": [
-        "Write REAL XCTest unit tests against the app_build code just written \u2014 never placeholder/empty tests that only assert true.",
+        "Write REAL XCTest unit tests against the app_build code just written — never placeholder/empty tests that only assert true.",
         "Prioritize coverage of core logic and view-models (business rules, data transforms, state machines) over trivial UI snapshot tests.",
         "Add a dedicated test target/scheme if the project doesn't already have one, so xcodebuild -list can discover it (build_verification's xcodebuild test run depends on this).",
-        "Keep tests deterministic \u2014 no network calls, no real timers/sleeps, no reliance on wall-clock or external state.",
+        "Keep tests deterministic — no network calls, no real timers/sleeps, no reliance on wall-clock or external state.",
         "Do not modify production code to make a test pass; fix the test or file a note if production code looks wrong."
       ],
       "required_output": [
@@ -804,6 +804,21 @@
         "At least one real XCTestCase file exists under a discoverable test target.",
         "Tests exercise actual app_build types/functions, not stubs.",
         "No test hard-fails immediately from a missing import/target wiring mistake."
+      ]
+    },
+    "chat": {
+      "rules": [
+        "Answer the human's most recent message directly before anything else.",
+        "Build on or challenge the other agents by name only when it genuinely moves the conversation.",
+        "Never fabricate consensus, decisions, or outcomes — this phase has no coordinator and no vote.",
+        "Label uncertainty honestly instead of papering over it."
+      ],
+      "required_output": [
+        "A direct, concrete response to the human's latest message."
+      ],
+      "acceptance_checks": [
+        "The response addresses what the human actually asked, not a restated agenda.",
+        "No invented decisions or consensus claims appear."
       ]
     }
   }

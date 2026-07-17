@@ -1,0 +1,35 @@
+{
+  "name": "chat_ideas",
+  "title": "Ideas Chat",
+  "description": "An open, human-paced brainstorming conversation with the agent cast. No coordinator, no consensus, no vote — the chat runs until you end it, and anything worth keeping can be promoted to an artifact later.",
+  "target": "app",
+  "build_phase": null,
+  "budget": null,
+  "overrides": {
+    "effort": "fast"
+  },
+  "phases": [
+    {
+      "key": "chat",
+      "folder": "chat",
+      "file": "chat.md",
+      "title": "Ideas Chat",
+      "purpose": "Brainstorm ideas in an open conversation with the human. Respond to what the human actually asks, riff on and challenge each other's suggestions by name, and surface concrete, testable app ideas — without pushing toward a forced conclusion.",
+      "rounds": 0,
+      "roles": [
+        "product",
+        "design",
+        "qa"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null,
+      "conversational": true
+    }
+  ]
+}
