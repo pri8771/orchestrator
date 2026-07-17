@@ -50,3 +50,45 @@ A single format must never span both layers.
 slots) + pipeline preset + section/phase/cast overrides}. Applying a
 Situation to a project re-scopes what the Conductor considers "done"
 (sections-plan §14).
+
+## Layout (M1 interim) — binding decision, task 0.2
+
+The target nested layout `workspace/<project>/<section>/<chat-slug>/`
+(plus `workspace/<project>/artifacts/` and `…/conductor/`) is IMPLEMENTED
+in task 3.0 — not before. Until 3.0 lands, discovery is flat by design on
+both sides: the engine's `find_apps` lists direct children of the
+workspace root and requires `<dir>/initial_prompt/initial_prompt.md`,
+ignoring nested dirs (orchestrator.py:6400–6421); GUI discovery is flat
+too (`BackgroundProjectLoader.discoverApps`, used at
+OrchestratorStore.swift:866) and locks are keyed by top-level dir name.
+
+**M1 flat chat naming.** A chat is a flat project dir named
+`<project>--<section>--<chat-slug>`. Each component is INDEPENDENTLY
+slugified (OrchestratorStore.slugify semantics, OrchestratorStore.swift:
+2980–2993: lowercase ASCII alphanumerics, single dashes, ≤40 chars,
+trailing dashes stripped — consecutive dashes can never survive), then the
+three components are joined with a literal `--`. Never slugify the joined
+string: slugify collapses consecutive dashes, which would destroy the
+separator. Parsing splits on `--` and is unambiguous precisely because
+components cannot contain `--`.
+
+**Lock-collision rule (derived, not asserted).** Locks are
+`<root>/.orch-locks/<dir-name>.lock` (OrchestratorStore.swift:3312; the
+engine-local `locks/<name>.lock` is the legacy location, :3098). Lock name
+equals dir name, and dir names are filesystem-unique at the flat root —
+so lock uniqueness follows from dir uniqueness. Chat minting MUST reject
+an existing name by suffixing `-2`, `-3`, … (the ChatHome.createRun
+precedent, ChatHome.swift:236–240).
+
+**Back-compat rule (binding on task 3.0).** Any directory with
+`agent_state.json` at its root is a legacy single-chat project — forever.
+3.0's migration must never rewrite one into the nest without an explicit
+dry-run-diffed migration step.
+
+**Minted-chat checklist (what task 1.5 creates, no engine-source reading
+required).** A freshly minted chat dir must contain:
+1. `initial_prompt/initial_prompt.md` — the seed prompt (discovery
+   contract, find_apps).
+2. `workflow.txt` — naming the chat workflow (e.g. `chat_ideas`).
+Name it per the flat convention above with mint-time `-2`/`-3` suffixing
+on collision.
