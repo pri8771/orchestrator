@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "types": {
+    "finding_report": {
+      "default_status": "published",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
+    "gap": {
+      "default_status": "published",
+      "required": [
+        "title",
+        "body",
+        "impact"
+      ]
+    },
+    "idea": {
+      "default_status": "published",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
+    "opportunity_signal": {
+      "default_status": "published",
+      "required": [
+        "title",
+        "body",
+        "evidence"
+      ]
+    },
+    "reconcile": {
+      "default_status": "published",
+      "required": [
+        "title",
+        "body",
+        "parents"
+      ]
+    },
+    "research_brief": {
+      "default_status": "published",
+      "required": [
+        "title",
+        "body",
+        "sources"
+      ]
+    },
+    "spec_bundle": {
+      "default_status": "published",
+      "required": [
+        "title",
+        "body"
+      ]
+    }
+  }
+}

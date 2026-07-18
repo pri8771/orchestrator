@@ -77,6 +77,7 @@ class TestSingleSource(unittest.TestCase):
             "interfaces": "interfaces-json",
             "extraction": "extraction-json",
             "decisions": "decisions-json",
+            "artifact": "artifact-json",
             "phase_summary": "phase-summary-json"})
 
 

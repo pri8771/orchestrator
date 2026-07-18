@@ -174,8 +174,13 @@ def _banner(app_dir, section, path, error):
 
 
 def _default_section(name, orch_dir):
+    # An unknown-name fallback must FAIL CLOSED on bus capabilities: a
+    # custom section whose manifest is corrupt/missing must not inherit
+    # the ideas builtin's artifact types — a parse error would silently
+    # flip a declared-closed publication gate to open (V3 4.2).
     raw = copy.deepcopy(_BUILTINS.get(name) or dict(
         _BUILTINS["ideas"], id=name, title=name.title(),
+        artifact_types_emitted=[], artifact_types_accepted=[],
     ))
     return _from_raw(name, raw, orch_dir, path="(built-in)",
                      app_dir=None, allow_banner=False)
@@ -324,6 +329,13 @@ DEFAULT_CONTRACTS = [
         "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```decisions-json``` block containing a single JSON object of the form {\"decisions\": [{\"id\": \"DEC-<phase>-001\", \"decision\": ..., \"rationale\": ..., \"rejected_alternatives\": [...], \"constraints\": [...], \"supersedes\": null}]}. Record every decision this phase actually made, one entry each: the decision in one sentence, why it won, what was rejected, and any hard constraints later phases must respect. Set \"supersedes\" to an earlier decision id ONLY when this decision replaces it. These entries become the authoritative cross-phase DECISIONS LOG injected into every later phase, so completeness beats prose.\n",
     },
     {
+        "phase_key": "@artifact",
+        "contract": "artifact",
+        "fence_tag": "artifact-json",
+        "required_fields": "artifact_block",
+        "prompt_snippet": "MACHINE CONTRACT (when this chat produced publishable results): in your wrap-up, alongside the prose, emit ONE fenced ```artifact-json``` block PER artifact to publish to the shared bus, each a single JSON object of the form {\"type\": <one of: __TYPES__>, \"title\": \"a short human title\", \"body\": <the artifact's complete markdown content as ONE JSON string — write any triple-backtick inside it as \\u0060\\u0060\\u0060>, \"keywords\": [...], \"doc_slots\": []}. Include the type's own payload fields where they apply (e.g. \"sources\" for a research_brief, \"evidence\" for an opportunity_signal, \"impact\" for a gap, \"parents\" for a reconcile). Publish only results worth routing to another section — a wrap-up with nothing publishable emits no block at all.\n",
+    },
+    {
         "phase_key": "@summary",
         "contract": "phase_summary",
         "fence_tag": "phase-summary-json",
@@ -380,14 +392,22 @@ def load_contracts(orch_dir, section=None, app_dir=None):
 
 
 def assemble_contract(contracts, phase_key, workflow_target,
-                      include_decisions):
+                      include_decisions, artifact_types=None):
     """The wrap-up contract text: phase-matching entries in list order,
-    then @decisions when the engine's predicate asked, then @summary
-    ALWAYS — joined exactly like the historical constant assembly
-    (byte-parity pinned by tests/fixtures/contracts_frozen.json)."""
+    then @decisions when the engine's predicate asked, then @artifact
+    ONLY when the session's section declares emitted artifact types
+    (V3 4.2 — falsy means byte-identical output, so every legacy/flat
+    prompt is untouched by construction), then @summary ALWAYS — joined
+    exactly like the historical constant assembly (byte-parity pinned by
+    tests/fixtures/contracts_frozen.json)."""
     parts = []
     for e in contracts:
-        if e.get("phase_key") != phase_key:
+        ekey = e.get("phase_key")
+        # "@" keys are engine-gated pseudo-entries (@decisions/@artifact/
+        # @summary): a workflow phase LITERALLY keyed "@artifact" must not
+        # direct-match one — it would bypass the gate below and leak the
+        # snippet with its __TYPES__ placeholder unsubstituted.
+        if ekey != phase_key or (ekey or "").startswith("@"):
             continue
         gate = e.get("workflow_target")
         if gate and workflow_target != gate:
@@ -396,6 +416,11 @@ def assemble_contract(contracts, phase_key, workflow_target,
     if include_decisions:
         parts.extend(e["prompt_snippet"] for e in contracts
                      if e.get("phase_key") == "@decisions")
+    if artifact_types:
+        types_str = ", ".join(artifact_types)
+        parts.extend(e["prompt_snippet"].replace("__TYPES__", types_str)
+                     for e in contracts
+                     if e.get("phase_key") == "@artifact")
     parts.extend(e["prompt_snippet"] for e in contracts
                  if e.get("phase_key") == "@summary")
     return "\n".join(parts)

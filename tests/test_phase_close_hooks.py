@@ -55,14 +55,16 @@ class TestHookOrderPin(unittest.TestCase):
         # Deliberately a change-detector: verify before signing (device
         # settings enforced last), contracts after verify (transcript must
         # include repair rounds), audit before the verification label (audit
-        # REPLACES final_output; the label APPENDS).
+        # REPLACES final_output; the label APPENDS), artifact publication
+        # LAST (it reads the exact recorded output — mutators before
+        # readers; its events must precede phase_completed).
         self.assertEqual(
             [h.__name__ for h in orch._PHASE_CLOSE_HOOKS],
             ["_hook_sprint_verify_reserve", "_hook_verify_repair",
              "_hook_ios_signing", "_hook_secret_scan",
              "_hook_record_contracts", "_hook_flows_requirements_research",
              "_hook_library_mining", "_hook_audit_report",
-             "_hook_verification_label"])
+             "_hook_verification_label", "_hook_artifact_publish"])
 
 
 class TestHookWiring(HookBase):

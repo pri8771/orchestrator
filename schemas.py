@@ -41,6 +41,10 @@ REQUIRED_FIELDS = {
     # phase-summary-json entry (the cross-phase PHASE SUMMARIES contract —
     # replaces raw transcript injection for older completed phases).
     "phase_summary": ["phase", "one_paragraph_summary"],
+    # artifact-json block (V3 4.2 publication): the minimum to route a
+    # bus artifact; per-TYPE payload keys are enforced by the artifact
+    # type registry at publish time, not here.
+    "artifact_block": ["type", "title"],
     "agent_identity": ["id", "provider", "kind"],
     "agent_health": ["status"],
     # extraction-json (library_mining): a proposed reusable package + its public

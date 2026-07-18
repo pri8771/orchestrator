@@ -44,6 +44,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
+import artifacts as artifactslib
 import backfill as backfilllib
 import events as evlib
 import localmodels as lmlib
@@ -2452,7 +2453,20 @@ def _phase_contract(cfg, phasedef):
                                       app_dir=(cfg or {}).get("_app_dir"))
     return seclib.assemble_contract(
         contracts, key, (cfg or {}).get("_workflow_target"),
-        include_decisions=_decisions_contract_requested(cfg, phasedef))
+        include_decisions=_decisions_contract_requested(cfg, phasedef),
+        artifact_types=_artifact_types_emitted(cfg, section))
+
+
+def _artifact_types_emitted(cfg, section):
+    """The session section's declared emitted artifact types — [] for
+    flat/legacy runs and for sections that publish nothing, which keeps
+    the artifact-json snippet out of every prompt that predates the bus
+    (byte parity by construction; V3 4.2)."""
+    if not section:
+        return []
+    sec = seclib.load_section(section, HERE,
+                              app_dir=(cfg or {}).get("_app_dir"))
+    return list(sec.artifact_types_emitted or [])
 
 
 # Phase-specific extra guidance.
@@ -6424,6 +6438,71 @@ def _hook_verification_label(cfg, app, app_dir, phasedef, state, *,
     return transcript, final_output
 
 
+def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # V3 4.2: materialize ```artifact-json``` blocks from the phase's
+    # Final Output into the project artifact store, emitting one
+    # artifact_published event per landed artifact (ids+paths only,
+    # AFTER the durable publish — §13.2). This hook is LAST on purpose:
+    # it must read the exact output being recorded, including the audit
+    # replacement and the verification label, so a published body can
+    # never diverge from the phase record. It scans final_output only —
+    # a superseded draft in the transcript must not become an artifact.
+    # (Consequence: an audit run's replaced report publishes nothing;
+    # qa's finding_report artifacts arrive via 4.9's Promote.) The
+    # ENTIRE body is exception-isolated — publication must never fail a
+    # completed phase (§13.3).
+    try:
+        _project, section = _session_coords(cfg)
+        if section and artifactslib.FENCE_TAG in (final_output or ""):
+            def _warn(msg):
+                emit("ARTIFACT: WARN %s" % msg)
+            project_dir = os.path.join(cfg.get("root") or "", _project)
+            registry = artifactslib.load_registry(
+                HERE, on_error=lambda m: (
+                    _warn(m),
+                    evlib.emit_event(app_dir, "config_fallback",
+                                     section=section,
+                                     file=artifactslib.REGISTRY_BASENAME,
+                                     error=str(m)[:300])))
+            turn = ""
+            for rec in msglib.read_messages(app_dir):
+                tid = rec.get("turn_id") or ""
+                if tid.startswith(key + ":"):
+                    turn = tid
+            src = {"section": section,
+                   "session": os.path.basename(app_dir),
+                   "phase": key, "turn": turn}
+            # Crash-resume guard: a re-close of this same phase (publish
+            # landed durably, skip-on-resume state didn't) must not mint
+            # -2 duplicates of what it already published.
+            seen = set()
+            for m in artifactslib.list_artifacts(project_dir,
+                                                 on_error=_warn):
+                s = m.get("source") or {}
+                if (s.get("session") == src["session"]
+                        and s.get("phase") == key):
+                    seen.add((m.get("type"), m.get("title"),
+                              m.get("content_hash")))
+            for aid in artifactslib.publish_from_output(
+                    project_dir, final_output, src, registry,
+                    on_error=_warn, dedupe_against=seen):
+                meta = artifactslib.load_meta(project_dir, aid,
+                                              on_error=_warn) or {}
+                evlib.emit_event(app_dir, "artifact_published",
+                                 artifact_id=aid,
+                                 type=meta.get("type", ""),
+                                 version=meta.get("version", 1),
+                                 path="artifacts/%s" % aid,
+                                 phase=key, project=app)
+                emit("ARTIFACT: published '%s' (%s) to the project bus"
+                     % (aid, meta.get("type", "?")))
+    except Exception as exc:  # never let publication fail the phase
+        emit("ARTIFACT: publication skipped (%s)" % exc)
+    return transcript, final_output
+
+
 _PHASE_CLOSE_HOOKS = (
     _hook_sprint_verify_reserve,
     _hook_verify_repair,
@@ -6434,6 +6513,7 @@ _PHASE_CLOSE_HOOKS = (
     _hook_library_mining,
     _hook_audit_report,
     _hook_verification_label,
+    _hook_artifact_publish,
 )
 
 

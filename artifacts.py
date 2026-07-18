@@ -76,6 +76,12 @@ import schemas
 STATUS = ("draft", "published", "superseded", "converged")
 _PUBLISHER_STATUS = ("draft", "published")
 
+# The 4.2 publication fence. This module may import ONLY schemas, so
+# equality with sections.contract_fence("artifact") is pinned by a test
+# rather than an import — the snippet and the extractor must never drift.
+FENCE_TAG = "artifact-json"
+BLOCK_REQUIRED = ("type", "title")
+
 REGISTRY_BASENAME = "artifact_types.json"
 
 # Seed registry: "required" lists the keys a publish (or a 4.2 artifact-json
@@ -449,6 +455,60 @@ def publish(project_dir, body_text, meta, registry, on_error=None):
         finally:
             os.close(guard_fd)
     return aid
+
+
+def publish_from_output(project_dir, final_output, source, registry,
+                        on_error=None, dedupe_against=None):
+    """Extract every ```artifact-json``` block from a phase's Final
+    Output and publish each — the V3 4.2 publication seam. Returns the
+    list of published ids (possibly empty; no blocks publishes nothing).
+
+    Scans final_output ONLY, never the transcript: artifacts carry no
+    merge key, so a transcript scan would republish every superseded
+    draft from earlier rounds. Every malformed block (bad JSON, missing
+    field, unknown type, non-string body) is reported through on_error
+    and skipped — siblings still publish, and nothing ever raises
+    (§13.3). Engine provenance in ``source`` overrides anything the
+    block claims.
+
+    ``dedupe_against``: a set of (type, title, content_hash) triples for
+    artifacts already published by this same phase close — a block
+    matching one is reported and skipped, so a crash-resume re-close
+    (durable publish landed, but the phase's skip-on-resume state did
+    not) cannot duplicate every artifact under a -2 id. A CHANGED body
+    hashes differently and still publishes (genuine republish
+    semantics are 4.3's supersedes territory, untouched here)."""
+    if on_error is None:
+        on_error = lambda _msg: None
+    blocks = schemas.extract_structured_blocks(
+        final_output or "", FENCE_TAG,
+        required_fields=list(BLOCK_REQUIRED), on_error=on_error)
+    src = dict(source) if isinstance(source, dict) else {}
+    published = []
+    for block in blocks:
+        meta = dict(block)
+        body = meta.pop("body", None)
+        if body is not None and not isinstance(body, str):
+            on_error("artifact-json block %r: 'body' must be a single "
+                     "string — skipped" % (meta.get("title"),))
+            continue
+        if dedupe_against:
+            title = meta.get("title")
+            title = title if isinstance(title, str) else str(title)
+            try:
+                bhash = hashlib.sha256(
+                    (body or "").encode("utf-8")).hexdigest()
+            except UnicodeEncodeError:
+                bhash = None  # publish() will reject the block anyway
+            if bhash and (meta.get("type"), title, bhash) in dedupe_against:
+                on_error("artifact %r already published by this phase "
+                         "close — skipped (crash-resume dedupe)" % (title,))
+                continue
+        meta["source"] = src
+        aid = publish(project_dir, body, meta, registry, on_error=on_error)
+        if aid is not None:
+            published.append(aid)
+    return published
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,10 @@ import unittest
 from unittest import mock
 
 import artifacts as artlib
+import orchestrator as orch
+import schemas as schemalib
 import sections as seclib
+import workflows as wf
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -428,6 +431,233 @@ class TestReadTolerance(_Base):
                                                     type="idea",
                                                     status="draft")],
             ["b"])
+
+
+# ---------------------------------------------------------------------------
+# V3 board 4.2: publication — fenced artifact-json extraction, the last
+# phase-close hook, snippet gating on declared emitted types.
+# ---------------------------------------------------------------------------
+def _block(obj):
+    return "```artifact-json\n%s\n```" % json.dumps(obj)
+
+
+class TestPublishFromOutput(_Base):
+    def test_fence_is_single_sourced_with_the_contract_data(self):
+        # artifacts.py may import only schemas, so the pin is a TEST.
+        self.assertEqual(seclib.contract_fence("artifact"),
+                         (artlib.FENCE_TAG, "artifact_block"))
+        self.assertEqual(schemalib.REQUIRED_FIELDS["artifact_block"],
+                         list(artlib.BLOCK_REQUIRED))
+
+    def test_valid_block_publishes_with_engine_provenance(self):
+        out = "Great debate.\n%s\nWrap-up prose.\n" % _block(
+            {"type": "idea", "title": "Night Mode", "body": "# Night\n",
+             "keywords": ["ui"]})
+        src = {"section": "ideas", "session": "chat-1",
+               "phase": "brainstorm", "turn": "brainstorm:final:x:contract"}
+        ids = artlib.publish_from_output(self.project, out, src,
+                                         self.registry,
+                                         on_error=self.errors.append)
+        self.assertEqual(self.errors, [])
+        self.assertEqual(ids, ["night-mode"])
+        meta = artlib.load_meta(self.project, "night-mode")
+        self.assertEqual(meta["source"], src)
+        self.assertEqual(artlib.read_body(self.project, "night-mode"),
+                         "# Night\n")
+
+    def test_multiple_blocks_publish_in_document_order(self):
+        out = "%s\nmiddle\n%s" % (
+            _block({"type": "idea", "title": "One", "body": "1"}),
+            _block({"type": "gap", "title": "Two", "body": "2",
+                    "impact": "high"}))
+        ids = artlib.publish_from_output(self.project, out, {},
+                                         self.registry,
+                                         on_error=self.errors.append)
+        self.assertEqual(ids, ["one", "two"])
+        self.assertEqual(self.errors, [])
+
+    def test_malformed_siblings_are_skipped_not_fatal(self):
+        out = "\n".join([
+            "```artifact-json\n{broken\n```",
+            _block({"type": "idea", "title": "Survivor", "body": "ok"}),
+            _block({"type": "sonnet", "title": "Unknown", "body": "x"}),
+            _block({"type": "idea", "title": "No body at all"}),
+            _block({"type": "idea", "title": "Bad body", "body": ["l"]}),
+        ])
+        ids = artlib.publish_from_output(self.project, out, {},
+                                         self.registry,
+                                         on_error=self.errors.append)
+        self.assertEqual(ids, ["survivor"],
+                         "one good block among four bad ones publishes")
+        self.assertEqual(len(self.errors), 4, self.errors)
+
+    def test_no_blocks_publishes_nothing(self):
+        self.assertEqual(
+            artlib.publish_from_output(self.project, "plain prose", {},
+                                       self.registry,
+                                       on_error=self.errors.append),
+            [])
+        self.assertEqual(self.errors, [])
+        self.assertFalse(os.path.exists(artlib.artifacts_root(self.project)))
+
+
+class TestSnippetGating(unittest.TestCase):
+    def _contract(self, cfg):
+        return orch._phase_contract(
+            cfg, wf.Phase("brainstorm", ".", "x.md", "p", rounds=2))
+
+    def test_flat_runs_are_byte_untouched(self):
+        for cfg in ({"_workflow_target": "app"}, {},
+                    {"_workflow_target": "research"}):
+            self.assertNotIn("artifact-json", self._contract(cfg))
+
+    def test_a_phase_literally_keyed_at_artifact_cannot_leak_the_snippet(self):
+        # "@" keys are engine-gated pseudo-entries: a user workflow phase
+        # named "@artifact" must not direct-match one (it would bypass
+        # the gate and leak an unsubstituted __TYPES__ placeholder).
+        text = orch._phase_contract(
+            {"_workflow_target": "app"},
+            wf.Phase("@artifact", ".", "x.md", "p", rounds=2))
+        self.assertNotIn("artifact-json", text)
+        self.assertNotIn("__TYPES__", text)
+
+    def test_declaring_section_gets_the_snippet_with_its_types(self):
+        root = tempfile.mkdtemp(prefix="gate-root-")
+        self.addCleanup(shutil.rmtree, root, True)
+        cfg = {"root": root,
+               "_app_dir": os.path.join(root, "proj", "research", "chat-1"),
+               "_workflow_target": "research"}
+        text = self._contract(cfg)
+        self.assertIn("artifact-json", text)
+        self.assertIn("one of: research_brief, opportunity_signal", text,
+                      "__TYPES__ must be substituted from the manifest")
+        self.assertNotIn("__TYPES__", text)
+        # The snippet sits before the always-appended phase summary.
+        self.assertLess(text.index("artifact-json"),
+                        text.index("phase-summary-json"))
+
+
+class TestPublicationHook(_Base):
+    def _run_hook(self, cfg, app_dir, final_output, key="brainstorm"):
+        return orch._hook_artifact_publish(
+            cfg, "proj", app_dir, wf.Phase(key, ".", "x.md", "p"),
+            {}, key=key, md_path=os.path.join(app_dir, "x.md"),
+            transcript="t", final_output=final_output, coord=None,
+            active=[], is_build=False, is_verify_repair=False,
+            allow_writes=False, _needs_vlabel=False)
+
+    def _nested(self):
+        root = os.path.join(self.tmp, "root")
+        app_dir = os.path.join(root, "proj", "ideas", "chat-1")
+        os.makedirs(app_dir)
+        return root, app_dir
+
+    def test_end_to_end_publish_with_event(self):
+        root, app_dir = self._nested()
+        with open(os.path.join(app_dir, "messages.jsonl"), "w") as fh:
+            fh.write(json.dumps({"turn_id": "brainstorm:final:a:contract"})
+                     + "\n")
+        out = "Wrap-up.\n%s" % _block(
+            {"type": "idea", "title": "Hooked", "body": "# H\n"})
+        cfg = {"root": root, "_app_dir": app_dir}
+        t, f = self._run_hook(cfg, app_dir, out)
+        self.assertEqual((t, f), ("t", out), "the hook is a pure reader")
+        project_dir = os.path.join(root, "proj")
+        meta = artlib.load_meta(project_dir, "hooked")
+        self.assertIsNotNone(meta, "artifact must land in the PROJECT store")
+        self.assertEqual(meta["source"],
+                         {"section": "ideas", "session": "chat-1",
+                          "phase": "brainstorm",
+                          "turn": "brainstorm:final:a:contract"})
+        with open(os.path.join(app_dir, "events.jsonl"),
+                  encoding="utf-8") as fh:
+            lines = [json.loads(l) for l in fh if l.strip()]
+        pub = [e for e in lines if e.get("kind") == "artifact_published"]
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["artifact_id"], "hooked")
+        self.assertEqual(pub[0]["path"], "artifacts/hooked")
+        self.assertEqual(pub[0]["type"], "idea")
+        self.assertNotIn("# H", json.dumps(pub[0]),
+                         "events carry ids+paths, never body content")
+        self.assertLess(len(json.dumps(pub[0])), 3500)
+
+    def test_flat_runs_and_blockless_outputs_are_no_ops(self):
+        root, app_dir = self._nested()
+        flat_dir = os.path.join(root, "flatapp")
+        os.makedirs(flat_dir)
+        self._run_hook({"root": root, "_app_dir": flat_dir}, flat_dir,
+                       "%s" % _block({"type": "idea", "title": "F",
+                                      "body": "x"}))
+        self._run_hook({"root": root, "_app_dir": app_dir}, app_dir,
+                       "no artifacts here")
+        self.assertFalse(
+            os.path.exists(os.path.join(root, "proj", "artifacts")))
+        self.assertFalse(os.path.exists(os.path.join(root, "artifacts")))
+
+    def test_malformed_block_warns_but_never_fails_the_phase(self):
+        root, app_dir = self._nested()
+        out = "```artifact-json\n{torn\n```"
+        t, f = self._run_hook({"root": root, "_app_dir": app_dir},
+                              app_dir, out)
+        self.assertEqual((t, f), ("t", out),
+                         "a bad block must not raise out of the hook")
+
+    def test_re_close_does_not_duplicate_artifacts(self):
+        # Crash-resume re-runs the phase close AFTER a durable publish;
+        # identical blocks must dedupe, a changed body must republish.
+        root, app_dir = self._nested()
+        cfg = {"root": root, "_app_dir": app_dir}
+        out = _block({"type": "idea", "title": "Once", "body": "same\n"})
+        self._run_hook(cfg, app_dir, out)
+        self._run_hook(cfg, app_dir, out)
+        project_dir = os.path.join(root, "proj")
+        self.assertEqual(
+            [m["id"] for m in artlib.list_artifacts(project_dir)],
+            ["once"], "a re-close must not mint a -2 duplicate")
+        with open(os.path.join(app_dir, "events.jsonl"),
+                  encoding="utf-8") as fh:
+            pubs = [l for l in fh if '"artifact_published"' in l]
+        self.assertEqual(len(pubs), 1, "one event per DISTINCT artifact")
+        # A genuinely new body is not a resume — it publishes.
+        self._run_hook(cfg, app_dir, _block(
+            {"type": "idea", "title": "Once", "body": "changed\n"}))
+        self.assertEqual(
+            [m["id"] for m in artlib.list_artifacts(project_dir)],
+            ["once", "once-2"])
+
+    def test_corrupt_custom_section_fails_closed(self):
+        # A parse error must never flip a declared-closed publication
+        # gate to open: the unknown-name fallback clone carries NO
+        # artifact types (the shipped builtins keep their own).
+        sec = seclib.load_section("no-such-custom-section", HERE)
+        self.assertEqual(sec.artifact_types_emitted, [])
+        self.assertEqual(sec.artifact_types_accepted, [])
+        root = os.path.join(self.tmp, "gate")
+        cfg = {"root": root,
+               "_app_dir": os.path.join(root, "p", "no-such-custom-section",
+                                        "c")}
+        self.assertEqual(orch._artifact_types_emitted(
+            cfg, "no-such-custom-section"), [])
+
+    def test_transcript_drafts_are_never_published(self):
+        # Artifacts have no merge key: scanning the transcript would
+        # republish every superseded draft from earlier rounds.
+        root, app_dir = self._nested()
+        cfg = {"root": root, "_app_dir": app_dir}
+        draft = _block({"type": "idea", "title": "Draft", "body": "old"})
+        final = "final prose %s" % _block(
+            {"type": "idea", "title": "Kept", "body": "new"})
+        result = orch._hook_artifact_publish(
+            cfg, "proj", app_dir, wf.Phase("brainstorm", ".", "x.md", "p"),
+            {}, key="brainstorm", md_path=os.path.join(app_dir, "x.md"),
+            transcript=draft, final_output=final, coord=None,
+            active=[], is_build=False, is_verify_repair=False,
+            allow_writes=False, _needs_vlabel=False)
+        self.assertEqual(result, (draft, final))
+        project_dir = os.path.join(root, "proj")
+        self.assertEqual(
+            [m["id"] for m in artlib.list_artifacts(project_dir)],
+            ["kept"], "the transcript draft must NOT be materialized")
 
 
 # ---------------------------------------------------------------------------
