@@ -55,37 +55,44 @@ ALLOWED_WRITTEN_KEYS = {
     DYNAMIC_SENTINEL,
     "_agent_health", "_agent_role_overrides",
     "_app_dir", "_autonomy", "_base_models",
-    "_base_resolved", "_budget", "_build_dir",
-    "_checked_any_agent_runnable", "_claude_model_override",
+    "_base_resolved", "_budget",
+    "_checked_any_agent_runnable",
     "_claude_sessions", "_codex_sessions", "_completeness",
-    "_deadline", "_drop_prior_discussions", "_explicit_app",
-    "_gemini_disabled_reason", "_gemini_unavailable", "_health_key",
+    "_deadline", "_explicit_app",
+    "_gemini_disabled_reason", "_gemini_unavailable",
     "_installed_ollama_models", "_iter_verify_toolchain_absent",
-    "_new_session_id", "_noted_indep_grader", "_noted_local_active_limit",
+    "_noted_local_active_limit",
     "_noted_local_lane_skip", "_noted_local_ram_gate", "_noted_ollama_sprint_skip",
     "_noted_ollama_uninstalled_skip", "_original_prompt", "_personalities",
     "_phase_deadline",
-    "_phase_instructions", "_phase_key",
     "_prior_discussions",
     "_resolved", "_role_by_id",
-    "_role_routing", "_roles", "_round_multiplier",
-    "_routed_rounds", "_routed_turn_timeout", "_routing",
-    "_session", "_sim_ctx",
+    "_roles", "_round_multiplier",
+    "_routing",
+    "_sim_ctx",
     "_state", "_target_path",
     "_target_paths", "_tech_stack_block",
     "_url_context", "_warned_no_git_repo",
     "_workflow_name", "_workflow_target", "_workflow_verify_spec",
 }
 
-# Band-B keys migrated to the TurnContext view (2.3b tranche 1): raw writes
-# of these now live ONLY in turncontext.py, which is deliberately outside
-# SCANNED — the gate above catches any raw reintroduction in the engine
-# files because the keys are no longer allowlisted. _build_dir stays
-# allowlisted for its one band-C per-thread lane write.
+# Keys migrated to the TurnContext view: raw writes of these now live ONLY
+# in turncontext.py, which is deliberately outside SCANNED — the gate above
+# catches any raw reintroduction in the engine files because the keys are
+# no longer allowlisted. 2.3b tranche 1 = band B; 2.3c tranche c1 = band C
+# (thread_copy/session/model-override protocols) + band B′ (phase-routing
+# copy keys). _resolved stays allowlisted: its two band-A base-resolution
+# writes are still raw (per-call PATCHES migrated with patch_agent_model).
 TRANCHE1_MIGRATED = {
     "_turn_timeout", "_verify_context", "_phase_exemplar", "_phase_playbook",
     "_knowledge", "_allow_writes", "_session_cwd", "_prior_disc_cap",
     "_target_digest", "_read_dir",
+}
+TRANCHE_C1_MIGRATED = {
+    "_session", "_health_key", "_claude_model_override", "_new_session_id",
+    "_drop_prior_discussions", "_build_dir",
+    "_phase_key", "_routed_turn_timeout", "_routed_rounds",
+    "_phase_instructions", "_role_routing", "_noted_indep_grader",
 }
 
 

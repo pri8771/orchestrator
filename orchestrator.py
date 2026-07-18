@@ -669,7 +669,7 @@ def run_codex(cfg, prompt, timeout):
     if sess is not None and not sess.get("resume"):
         m = _CODEX_SESSION_ID_RE.search(out or "")
         if m:
-            cfg["_new_session_id"] = m.group(1)
+            tcxlib.TurnContext(cfg).stash_new_session_id(m.group(1))
     return out, err, code, _display_cmd(cmd + ["<prompt on stdin>"])
 
 
@@ -1158,15 +1158,10 @@ def _primary_model_label(cfg, agent):
 
 
 def _patch_agent_model(fcfg, agent, model):
-    """Point one provider at a different model for a single retry call."""
-    resolved = dict(fcfg.get("_resolved") or {})
-    if agent == "claude":
-        fcfg["_claude_model_override"] = model
-    elif agent == "codex":
-        resolved["codex_model"] = model
-    elif agent == "gemini":
-        resolved["gemini_model"] = model
-    fcfg["_resolved"] = resolved
+    """Point one provider at a different model for a single retry call.
+    Body lives on TurnContext (2.3c) — the copy-before-mutate discipline
+    is part of the band-C write protocol."""
+    tcxlib.TurnContext(fcfg).patch_agent_model(agent, model)
 
 
 def _bump_fallback_count(cfg, agent):
@@ -1245,21 +1240,21 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                 emit("Fallback step %s skipped — model not pulled." % step)
                 _fallback_event(step, "skipped", "model not pulled")
                 continue
-            fcfg = dict(cfg)
-            fcfg["_session"] = None       # retries are stateless
             # Include the caller's lane/slug (if any) in the fallback health
-            # key too — parallel-build lanes set cfg["_health_key"] to their
-            # worker slug (distinct from the bare agent id) before calling
-            # call_agent, and a fallback key of just "fallback:<agent>:<step>"
-            # would collide across concurrent lanes retrying the same
-            # agent+step, corrupting one lane's circuit-breaker state with
-            # another's. The bare-agent-id case (discussion-round turns,
-            # single-agent phases, or no _health_key at all) keeps the
-            # original key format unchanged.
+            # key too — parallel-build lanes key circuit-breaker health by
+            # their worker slug (distinct from the bare agent id) before
+            # calling call_agent, and a fallback key of just
+            # "fallback:<agent>:<step>" would collide across concurrent
+            # lanes retrying the same agent+step, corrupting one lane's
+            # circuit-breaker state with another's. The bare-agent-id case
+            # (discussion-round turns, single-agent phases, or no health key
+            # at all) keeps the original key format unchanged.
             _lane = cfg.get("_health_key")
-            fcfg["_health_key"] = ("fallback:%s:%s:%s" % (agent, step, _lane)
-                                   if _lane and _lane != agent
-                                   else "fallback:%s:%s" % (agent, step))
+            fcfg = tcxlib.TurnContext(cfg).thread_copy(
+                health_key=("fallback:%s:%s:%s" % (agent, step, _lane)
+                            if _lane and _lane != agent
+                            else "fallback:%s:%s" % (agent, step)),
+                stateless=True)   # retries are stateless
             to_model = "local:%s" % local_tag if local_tag else step
             try:
                 if local_tag:
@@ -1574,17 +1569,18 @@ def call_agent_sessioned(cfg, app, phase, rnd, agent, full_prompt,
         return call_agent(cfg, app, phase, rnd, agent, full_prompt)
     sessions = cfg.setdefault("_%s_sessions" % agent, {})
     sid = sessions.get(session_key)
+    tctx = tcxlib.TurnContext(cfg)
     try:
         if sid:
-            cfg["_session"] = {"id": sid, "resume": True}
+            tctx.session = {"id": sid, "resume": True}
             return call_agent(cfg, app, phase, rnd, agent, delta_prompt)
         # claude/gemini let a caller pick the session id up front; codex
         # assigns its own and must be scraped from the first call's output
-        # (run_codex sets cfg["_new_session_id"] when it finds one).
-        cfg["_session"] = {"id": None if agent == "codex" else str(uuid.uuid4()),
-                           "resume": False}
+        # (run_codex stashes it via the TurnContext return channel).
+        tctx.session = {"id": None if agent == "codex" else str(uuid.uuid4()),
+                        "resume": False}
         out = call_agent(cfg, app, phase, rnd, agent, full_prompt)
-        new_sid = cfg.pop("_new_session_id", None) if agent == "codex" else cfg["_session"]["id"]
+        new_sid = tctx.take_new_session_id() if agent == "codex" else cfg["_session"]["id"]
         if new_sid:
             sessions[session_key] = new_sid
         return out
@@ -1592,11 +1588,13 @@ def call_agent_sessioned(cfg, app, phase, rnd, agent, full_prompt,
         if sessions.get(session_key) is None:
             raise   # first (session-creating) call failed — nothing to fall back from
         sessions.pop(session_key, None)
-        cfg["_session"] = None
+        tctx.session = None
         return call_agent(cfg, app, phase, rnd, agent, full_prompt)
     finally:
-        cfg["_session"] = None
-        cfg.pop("_new_session_id", None)
+        # Exception-safety: BOTH the session clear and the unharvested-id
+        # take must stay in this finally block.
+        tctx.session = None
+        tctx.take_new_session_id()
 
 
 def _delta_discuss_prompt(cfg, agent, new_transcript, rnd, extra="", persona=""):
@@ -4708,8 +4706,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         wctx_cfg = cfg
         if str(cget(cfg, "runtime.build_context_policy", "contracts")
                or "contracts").strip().lower() != "legacy":
-            wctx_cfg = dict(cfg)
-            wctx_cfg["_drop_prior_discussions"] = True
+            wctx_cfg = tcxlib.TurnContext(cfg).thread_copy(
+                drop_prior_discussions=True)
         base_ctx = build_context(wctx_cfg, app, phasedef, original_prompt,
                                  prior_outputs, transcript)
 
@@ -4759,12 +4757,11 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
             # slug so concurrent threads of the SAME agent never race on one
             # shared health dict (the _agent_health map itself is shared, but
             # each per-slug entry is only ever touched by its own thread).
-            wcfg = dict(cfg)
-            wcfg["_health_key"] = w["slug"]
+            wcfg = tcxlib.TurnContext(cfg).thread_copy(health_key=w["slug"])
             # Per-role routing: cheap workers / expensive integrator (§4b).
             _apply_role_routing(wcfg, "worker")
             if worktrees.get(w["slug"]):
-                wcfg["_build_dir"] = worktrees[w["slug"]]
+                tcxlib.TurnContext(wcfg).build_dir = worktrees[w["slug"]]
             # Resumed lane session: the contract + full context live in the
             # session from iteration 1; later turns get only what's new plus a
             # fresh file tree (the repo changes under them every iteration).
@@ -4880,8 +4877,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                         "violations, duplicated work, or integration risks between "
                         "your lane and theirs that the integrator must handle this "
                         "iteration. If none, reply exactly: No conflicts seen.")
-                rcfg = dict(cfg)
-                rcfg["_health_key"] = w["slug"]
+                rcfg = tcxlib.TurnContext(cfg).thread_copy(
+                    health_key=w["slug"])
                 try:
                     return (i, call_agent_sessioned(
                         rcfg, app, key, "%d.review.%s" % (rnd, w["slug"]), w["agent"],
@@ -4937,7 +4934,7 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                 # integrator is the build's quality chokepoint.
                 _iov = cget(cfg, "models.claude_integrator", "") or ""
                 if _iov:
-                    icfg["_claude_model_override"] = _iov
+                    tcxlib.TurnContext(icfg).claude_model_override = _iov
                 idelta = ("===== NEW SINCE YOUR LAST INTEGRATION PASS =====\n"
                           + transcript[_lane_seen.get("__integrator__", 0):]
                           + "\n\n===== FILES IN app_build AFTER THIS ITERATION =====\n"
@@ -5155,7 +5152,8 @@ def _apply_phase_routing(cfg, key):
     cfg.setdefault("_claude_sessions", {})
     cfg.setdefault("_codex_sessions", {})
     c = dict(cfg)
-    c["_phase_key"] = key
+    tctx = tcxlib.TurnContext(c)
+    tctx.phase_key = key
     ov = mrlib.overrides_for(routing, key)
     if not ov:
         return c
@@ -5231,20 +5229,21 @@ def _apply_phase_routing(cfg, key):
                  "runtime.timeout_seconds_per_agent (%ds) — the routed timeout "
                  "wins on this phase, giving it more room than the general cap."
                  % (key, routed_timeout, hard_timeout))
-        c["_routed_turn_timeout"] = routed_timeout
+        tctx.routed_turn_timeout = routed_timeout
     if "rounds" in ov:
         # Per-phase rounds override (project routing beats the workflow's
         # value; 0 = unlimited — debate until natural consensus, no vote).
-        c["_routed_rounds"] = int(ov["rounds"])
+        tctx.routed_rounds = int(ov["rounds"])
     if ov.get("instructions"):
         # Per-phase operator instructions: spliced into every turn's context
         # by build_context, right next to the phase playbook.
-        c["_phase_instructions"] = str(ov["instructions"])
-    c["models"], c["_resolved"] = models, resolved
+        tctx.phase_instructions = str(ov["instructions"])
+    c["models"] = models
+    tctx.resolved = resolved
     # Per-role overrides (roles.worker / roles.integrator) are applied later,
     # per lane/turn, by _apply_role_routing — stash the validated sub-dict.
     if _roles_ov:
-        c["_role_routing"] = _roles_ov
+        tctx.role_routing = _roles_ov
     emit("Phase '%s': model routing active (%s)."
          % (key, ", ".join("%s=%s" % (k, v) for k, v in sorted(ov.items()))))
     return c
@@ -5283,7 +5282,8 @@ def _apply_role_routing(rcfg, role):
         models["ollama_reasoning"] = rov["ollama_reasoning"]
     # gemini_reasoning: accepted-but-noop (warned once at phase-routing time;
     # the gemini CLI exposes no effort control as invoked here).
-    rcfg["models"], rcfg["_resolved"] = models, resolved
+    rcfg["models"] = models
+    tcxlib.TurnContext(rcfg).resolved = resolved
     return rcfg
 
 
@@ -5328,7 +5328,7 @@ def _apply_adaptive_escalation(cfg, coord):
         models["claude_build_reasoning"] = new
         override = str(cget(cfg, "runtime.escalation_model_override", "") or "").strip()
         if override:
-            ecfg["_claude_model_override"] = override
+            tcxlib.TurnContext(ecfg).claude_model_override = override
     ecfg["models"] = models
     return ecfg
 
@@ -5401,8 +5401,8 @@ def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
         and len(round_agents) > 1
 
     def _roster_turn(agent):
-        acfg = dict(cfg)   # per-thread copy: session/health flags must not race
-        acfg["_health_key"] = agent
+        # Per-thread copy: session/health flags must not race.
+        acfg = tcxlib.TurnContext(cfg).thread_copy(health_key=agent)
         ctx = build_context(acfg, app, phasedef, original_prompt, prior_outputs,
                             ctx_transcript)
         persona_text = roleslib.persona_preamble(personas.get(agent))
@@ -5596,9 +5596,8 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
             if _ragent not in round_agents:
                 emit("Retry ignored — %r is not in this chat's roster." % _ragent)
             else:
-                acfg = dict(cfg)
-                acfg["_session"] = None
-                acfg["_health_key"] = _ragent
+                acfg = tcxlib.TurnContext(cfg).thread_copy(
+                    health_key=_ragent, stateless=True)
                 ident = _ragent
                 if _rmodel.startswith("local:"):
                     ident = _rmodel
@@ -5920,7 +5919,7 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
                     # the grader, since that's who makes the repeated call.
                     _grader = pick_quality_evaluator(cfg, active, acting_coord)
                     if _grader != acting_coord and not cfg.get("_noted_indep_grader"):
-                        cfg["_noted_indep_grader"] = True
+                        tcxlib.TurnContext(cfg).noted_indep_grader = True
                         emit("Quality gate: %s grades the coordinator's wrap-up "
                              "(independent of %s)." % (DISPLAY[_grader], DISPLAY[acting_coord]))
                     qcfg, _quality_escalation_logged = _maybe_escalate(
@@ -6010,8 +6009,8 @@ def _run_forced_vote(cfg, app, app_dir, phasedef, original_prompt,
     vote_ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
 
     def _vote_turn(agent):
-        acfg = dict(cfg)   # per-thread copy: session/health flags must not race
-        acfg["_health_key"] = agent
+        # Per-thread copy: session/health flags must not race.
+        acfg = tcxlib.TurnContext(cfg).thread_copy(health_key=agent)
         return call_agent(acfg, app, key, "vote", agent,
                           prompt_vote(acfg, agent, vote_ctx, phasedef, candidates))
 

@@ -15,7 +15,23 @@ import turncontext
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_cfg_key_inventory import (  # noqa: E402
-    scan, SCANNED, ALLOWED_WRITTEN_KEYS, TRANCHE1_MIGRATED, HERE)
+    scan, SCANNED, ALLOWED_WRITTEN_KEYS, TRANCHE1_MIGRATED,
+    TRANCHE_C1_MIGRATED, HERE)
+
+BAND_C_PROPS = {
+    "session": "_session",
+    "claude_model_override": "_claude_model_override",
+    "resolved": "_resolved",
+}
+
+BAND_BPRIME = {
+    "phase_key": "_phase_key",
+    "routed_turn_timeout": "_routed_turn_timeout",
+    "routed_rounds": "_routed_rounds",
+    "phase_instructions": "_phase_instructions",
+    "role_routing": "_role_routing",
+    "noted_indep_grader": "_noted_indep_grader",
+}
 
 BAND_B = {
     "turn_timeout": "_turn_timeout",
@@ -38,11 +54,17 @@ END_PHASE_CLEARED = {
 }
 
 
+ALL_PROPS = {}
+ALL_PROPS.update(BAND_B)
+ALL_PROPS.update(BAND_C_PROPS)
+ALL_PROPS.update(BAND_BPRIME)
+
+
 class TestViewSemantics(unittest.TestCase):
     def test_property_write_lands_in_dict(self):
         cfg = {}
         ctx = turncontext.TurnContext(cfg)
-        for prop, key in BAND_B.items():
+        for prop, key in ALL_PROPS.items():
             setattr(ctx, prop, "v:" + prop)
             self.assertEqual(cfg[key], "v:" + prop,
                              "property %s must write %s" % (prop, key))
@@ -50,7 +72,7 @@ class TestViewSemantics(unittest.TestCase):
     def test_dict_write_visible_through_property(self):
         cfg = {}
         ctx = turncontext.TurnContext(cfg)
-        for prop, key in BAND_B.items():
+        for prop, key in ALL_PROPS.items():
             cfg[key] = "d:" + key
             self.assertEqual(getattr(ctx, prop), "d:" + key)
 
@@ -65,9 +87,79 @@ class TestViewSemantics(unittest.TestCase):
         # and T4 (no seeding: `"_x" not in cfg` latches must not re-trigger).
         cfg = {}
         ctx = turncontext.TurnContext(cfg)
-        for prop in BAND_B:
+        for prop in ALL_PROPS:
             self.assertIsNone(getattr(ctx, prop))
         self.assertEqual(cfg, {}, "reading the view must not seed keys")
+
+    def test_resolved_getter_returns_live_object(self):
+        # Band-C patches copy-before-mutate THEMSELVES; the getter must
+        # hand back the live dict so sibling aliasing stays observable.
+        cfg = {"_resolved": {"claude_model": "x"}}
+        self.assertIs(turncontext.TurnContext(cfg).resolved,
+                      cfg["_resolved"])
+
+
+class TestThreadCopy(unittest.TestCase):
+    def test_thread_copy_contract(self):
+        shared = {"_agent_health": {}, "_claude_sessions": {},
+                  "_codex_sessions": {}}
+        cfg = dict(shared, _build_dir="/phase", plain="x")
+        c = turncontext.TurnContext(cfg).thread_copy(
+            health_key="lane1", stateless=True)
+        self.assertIsNot(c, cfg)                    # it is a copy
+        self.assertEqual(c["_health_key"], "lane1")
+        self.assertNotIn("_health_key", cfg)        # write stayed on the copy
+        self.assertIsNone(c["_session"])
+        self.assertNotIn("_session", cfg)
+        for k in shared:                            # band D: IDENTITY, not equality
+            self.assertIs(c[k], cfg[k])
+        self.assertEqual(c["_build_dir"], "/phase")  # band B inherited by value
+        turncontext.TurnContext(c).claude_model_override = "opus"
+        self.assertNotIn("_claude_model_override", cfg)
+        c2 = turncontext.TurnContext(cfg).thread_copy()   # None means ABSENT
+        self.assertNotIn("_health_key", c2)
+        self.assertNotIn("_session", c2)
+        self.assertNotIn("_drop_prior_discussions", c2)
+
+    def test_drop_prior_discussions_flag(self):
+        cfg = {}
+        c = turncontext.TurnContext(cfg).thread_copy(
+            drop_prior_discussions=True)
+        self.assertIs(c["_drop_prior_discussions"], True)
+        self.assertNotIn("_drop_prior_discussions", cfg)
+
+
+class TestSessionIdChannel(unittest.TestCase):
+    def test_stash_take_roundtrip_and_exactly_once(self):
+        cfg = {}
+        ctx = turncontext.TurnContext(cfg)
+        ctx.stash_new_session_id("sid-1")
+        self.assertEqual(cfg["_new_session_id"], "sid-1")
+        self.assertEqual(ctx.take_new_session_id(), "sid-1")
+        self.assertNotIn("_new_session_id", cfg, "take must POP, not read")
+        self.assertIsNone(ctx.take_new_session_id(),
+                          "second take finds the channel empty")
+
+
+class TestPatchAgentModel(unittest.TestCase):
+    def test_patch_is_isolated_from_parent_resolved(self):
+        # T4 pin: patching a per-call copy must never mutate the parent's
+        # _resolved object — copies alias it until the patch replaces it.
+        parent = {"_resolved": {"claude_model": "a", "codex_model": "b"}}
+        original = parent["_resolved"]
+        child = turncontext.TurnContext(parent).thread_copy()
+        turncontext.TurnContext(child).patch_agent_model("codex", "gpt-x")
+        self.assertIs(parent["_resolved"], original)
+        self.assertEqual(parent["_resolved"]["codex_model"], "b")
+        self.assertIsNot(child["_resolved"], original)
+        self.assertEqual(child["_resolved"]["codex_model"], "gpt-x")
+
+    def test_claude_patch_uses_override_key(self):
+        child = {"_resolved": {"claude_model": "a"}}
+        turncontext.TurnContext(child).patch_agent_model("claude", "opus")
+        self.assertEqual(child["_claude_model_override"], "opus")
+        self.assertEqual(child["_resolved"]["claude_model"], "a",
+                         "claude patches ride the override key, not resolved")
 
 
 class TestEndPhase(unittest.TestCase):
@@ -92,22 +184,24 @@ class TestEndPhase(unittest.TestCase):
 class TestGateRetarget(unittest.TestCase):
     def test_turncontext_is_the_only_home_for_migrated_writes(self):
         # turncontext.py exists, is intentionally NOT scanned, and the
-        # migrated keys have zero raw writes left in the engine files
-        # (_build_dir keeps exactly its one band-C lane write).
+        # migrated keys have zero raw writes left in the engine files.
+        # _resolved is NOT migrated: its two band-A base-resolution writes
+        # stay raw (only the per-call patches moved into patch_agent_model).
         self.assertTrue(os.path.exists(os.path.join(HERE, "turncontext.py")))
         self.assertNotIn("turncontext.py", SCANNED)
         inv = scan()
-        for key in sorted(TRANCHE1_MIGRATED):
+        for key in sorted(TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED):
             self.assertFalse(
                 inv.get(key, {}).get("writes"),
                 "raw write of migrated key %s reintroduced at %s"
                 % (key, inv.get(key, {}).get("writes")))
-        self.assertEqual(len(inv["_build_dir"]["writes"]), 1)
+        self.assertEqual(len(inv["_resolved"]["writes"]), 2)
 
     def test_migrated_keys_left_the_allowlist(self):
         # The monotonic gate is what catches reintroductions — that only
         # works if the migrated keys are actually gone from the allowlist.
-        self.assertFalse(TRANCHE1_MIGRATED & ALLOWED_WRITTEN_KEYS)
+        self.assertFalse(
+            (TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED) & ALLOWED_WRITTEN_KEYS)
 
 
 if __name__ == "__main__":
