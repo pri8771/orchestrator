@@ -736,12 +736,59 @@ def _verify_web(build_dir, spec, timeout):
         shutil.rmtree(cache_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# VERIFIERS — the second sanctioned plugin seam (V3 board 3.9; RUNNERS in
+# orchestrator.py is the first). Uniform signature
+# fn(build_dir, spec, timeout) -> {ran, ok, tool, summary, errors}; a new
+# verification type is a dict insertion, with zero engine-loop access and
+# zero edits to run_verification. Unknown type strings (including "auto")
+# fall through to detect_project — byte-identical to the historical
+# if/elif, and deliberately silent: verify specs are engine-authored, so
+# a miss is the auto contract, not a user-config fallback.
+# ---------------------------------------------------------------------------
+
+def _verify_xcode_spec(build_dir, spec, timeout):
+    return _verify_xcode(build_dir, timeout,
+                         run_tests=bool(spec.get("run_tests")))
+
+
+def _verify_spm_spec(build_dir, spec, timeout):
+    return _verify_spm(build_dir, timeout)
+
+
+def _verify_shell_spec(build_dir, spec, timeout):
+    return _verify_shell(build_dir, spec.get("command"), timeout)
+
+
+def _verify_http_spec(build_dir, spec, timeout):
+    return _verify_http(build_dir, spec, timeout)
+
+
+def _verify_web_spec(build_dir, spec, timeout):
+    return _verify_web(build_dir, spec, timeout)
+
+
+# Every entry is a thin adapter that resolves the underlying _verify_*
+# by module global AT CALL TIME — tests and plugins that monkeypatch
+# verify._verify_web keep working (early-bound direct references broke
+# exactly that).
+VERIFIERS = {
+    "xcodebuild": _verify_xcode_spec,
+    "swift": _verify_spm_spec, "spm": _verify_spm_spec,
+    "http": _verify_http_spec, "server": _verify_http_spec,
+    "boot": _verify_http_spec,
+    "web": _verify_web_spec, "npm": _verify_web_spec,
+    "node": _verify_web_spec,
+    "shell": _verify_shell_spec,
+}
+
+
 def run_verification(build_dir, spec, timeout=1200):
     """Run the verification described by ``spec`` ({type, command?}).
 
     Returns a dict: ran, ok, tool, summary, errors. ``ran=False`` means the
     check couldn't run (toolchain absent) and should be treated as "unverified",
-    not "failed". Never raises.
+    not "failed". Never raises. Dispatch rides the VERIFIERS registry.
     """
     spec = spec or {}
     vtype = (spec.get("type") or "auto").lower()
@@ -749,25 +796,20 @@ def run_verification(build_dir, spec, timeout=1200):
         if not build_dir or not os.path.isdir(build_dir):
             return {"ran": False, "ok": False, "tool": vtype,
                     "summary": "no build directory to verify.", "errors": ""}
-        if vtype == "xcodebuild":
-            return _verify_xcode(build_dir, timeout, run_tests=bool(spec.get("run_tests")))
-        if vtype in ("swift", "spm"):
-            return _verify_spm(build_dir, timeout)
-        if vtype in ("http", "server", "boot"):
-            return _verify_http(build_dir, spec, timeout)
-        if vtype in ("web", "npm", "node"):
-            return _verify_web(build_dir, spec, timeout)
-        if vtype == "shell":
-            return _verify_shell(build_dir, spec.get("command"), timeout)
-        # auto
+        fn = VERIFIERS.get(vtype)
+        if fn is not None:
+            return fn(build_dir, spec, timeout)
+        # auto — and any unknown type, exactly as before. The xcode branch
+        # stays a DIRECT call: the auto path has never honored run_tests
+        # (parity), unlike the explicit "xcodebuild" adapter.
         kind = detect_project(build_dir)
         if kind == "xcode":
             return _verify_xcode(build_dir, timeout)
         if kind == "spm":
-            return _verify_spm(build_dir, timeout)
+            return VERIFIERS["spm"](build_dir, spec, timeout)
         if kind == "node":
-            return _verify_web(build_dir, spec, timeout)
-        return _verify_shell(build_dir, spec.get("command"), timeout)
+            return VERIFIERS["node"](build_dir, spec, timeout)
+        return VERIFIERS["shell"](build_dir, spec, timeout)
     except Exception as exc:  # defensive: verification must never abort a run
         return {"ran": False, "ok": False, "tool": vtype,
                 "summary": "verification errored: %s" % exc, "errors": ""}
