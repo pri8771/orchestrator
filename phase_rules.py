@@ -71,13 +71,69 @@ def load_rules(orch_dir):
     return copy.deepcopy(data)
 
 
+def _load_layer(path, on_fallback=None):
+    """One OVERLAY rules file (V3 board 3.2): a section's rules.json or a
+    project's phase_rules.json. ABSENT is silent None (absence is normal,
+    not a fallback); PRESENT-but-corrupt is None + one on_fallback(path,
+    error) call per fresh parse — the failure is cached on (mtime_ns,
+    size) like a success, so per-turn renders neither re-parse nor
+    re-banner until the file changes. global_app_rules in an overlay is
+    deliberately never read (global-only; the 3.7 linter warns on it)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        _CACHE.pop(path, None)
+        return None
+    key = (st.st_mtime_ns, st.st_size)
+    cached = _CACHE.get(path)
+    if cached is not None and cached[0] == key:
+        return copy.deepcopy(cached[1]) if cached[1] is not None else None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or \
+                not isinstance(data.get("phases"), dict):
+            raise ValueError("rules file must be an object with a "
+                             "'phases' object")
+    except (OSError, ValueError) as exc:
+        _CACHE[path] = (key, None)
+        if on_fallback is not None:
+            on_fallback(path, exc)
+        return None
+    layer = {"phases": {k: _clean_phase(v)
+                        for k, v in data["phases"].items()}}
+    _CACHE[path] = (key, layer)
+    return copy.deepcopy(layer)
+
+
+def load_rules_layered(orch_dir, layers=None, on_fallback=None):
+    """The layered rules view: section -> project-override -> global, with
+    WHOLE-phase-entry precedence — the most specific layer containing a
+    phase key supplies the entire entry, no cross-layer field merging.
+    `layers` is ordered most-specific-first; global_app_rules always comes
+    from the global file alone. With no layers this IS load_rules —
+    flat/legacy runs behave byte-identically."""
+    rules = load_rules(orch_dir)
+    live = [p for p in (layers or []) if p]
+    if not live:
+        return rules
+    phases = dict(rules.get("phases", {}))
+    for path in reversed(live):          # least specific first; later wins
+        layer = _load_layer(path, on_fallback)
+        if layer:
+            phases.update(layer["phases"])
+    rules["phases"] = phases
+    return rules
+
+
 def _bullets(items):
     return "\n".join("- %s" % str(i).strip() for i in items if str(i).strip())
 
 
-def render_phase_playbook(orch_dir, workflow_target, phase_key):
+def render_phase_playbook(orch_dir, workflow_target, phase_key,
+                          layers=None, on_fallback=None):
     """Markdown snippet injected into every turn for ``phase_key``."""
-    rules = load_rules(orch_dir)
+    rules = load_rules_layered(orch_dir, layers, on_fallback)
     phase = rules.get("phases", {}).get(phase_key, {})
     if not isinstance(phase, dict):
         phase = {}
@@ -99,14 +155,15 @@ def render_phase_playbook(orch_dir, workflow_target, phase_key):
             + "\n\n".join(parts))
 
 
-def render_phase_quality_rubric(orch_dir, workflow_target, phase_key):
+def render_phase_quality_rubric(orch_dir, workflow_target, phase_key,
+                                layers=None, on_fallback=None):
     """Markdown rubric used by the phase quality gate.
 
     This intentionally mirrors the editable playbook, but phrases it as an
     evaluator checklist. Missing rule files stay best-effort: the fixed gate can
     still check for a useful, concrete phase artifact.
     """
-    rules = load_rules(orch_dir)
+    rules = load_rules_layered(orch_dir, layers, on_fallback)
     phase = rules.get("phases", {}).get(phase_key, {})
     if not isinstance(phase, dict):
         phase = {}

@@ -2138,10 +2138,46 @@ def prompt_coordinate(cfg, agent, ctx, phasedef, rnd, is_build=False, final_roun
     )
 
 
+def _phase_rule_layers(cfg):
+    """Overlay rule files for the running session (V3 board 3.2), most
+    specific first: the session's section rules
+    (sections/<section>/rules.json) then the project override
+    (<root>/<project>/phase_rules.json). Flat/legacy runs get [] and
+    behave byte-identically — two sections naming the same phase key stop
+    colliding on the one global entry."""
+    app_dir = cfg.get("_app_dir") or ""
+    root = cfg.get("root") or ""
+    if not app_dir or not root:
+        return []
+    rel = os.path.relpath(app_dir, root)
+    parts = rel.split(os.sep)
+    if len(parts) != 3 or rel.startswith(".."):
+        return []
+    project, section = parts[0], parts[1]
+    return [os.path.join(HERE, "sections", section, "rules.json"),
+            os.path.join(root, project, phaseruleslib.RULES_FILENAME)]
+
+
+def _rules_fallback_banner(cfg):
+    """config_fallback banner callback for corrupt overlay rule files
+    (ground rule 4: a PRESENT-but-broken layer surfaces; absence is
+    normal and silent)."""
+    app_dir = cfg.get("_app_dir")
+
+    def _cb(path, error):
+        evlib.emit_event(app_dir, "config_fallback",
+                         section=os.path.basename(os.path.dirname(path)),
+                         file=os.path.basename(path),
+                         error=str(error)[:400])
+    return _cb
+
+
 def prompt_quality_check(cfg, agent, ctx, phasedef, rnd, coordinator_output):
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
     rubric = phaseruleslib.render_phase_quality_rubric(
-        HERE, cfg.get("_workflow_target", "app"), key)
+        HERE, cfg.get("_workflow_target", "app"), key,
+        layers=_phase_rule_layers(cfg),
+        on_fallback=_rules_fallback_banner(cfg))
     contract = _phase_contract(cfg, phasedef)
     rubric_block = rubric or (
         "No editable phase rubric was found. Still require a concrete, useful "
@@ -6539,7 +6575,9 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # THIS phase key, if one has been exported to knowledge/exemplars/.
     tctx.phase_exemplar = _load_phase_exemplar(key)
     tctx.phase_playbook = phaseruleslib.render_phase_playbook(
-        HERE, cfg.get("_workflow_target", "app"), key)
+        HERE, cfg.get("_workflow_target", "app"), key,
+        layers=_phase_rule_layers(cfg),
+        on_fallback=_rules_fallback_banner(cfg))
     if cfg["_phase_playbook"]:
         emit("Injected phase playbook into phase '%s'." % key)
     tctx.knowledge = ""

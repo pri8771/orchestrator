@@ -166,3 +166,124 @@ class TestPhaseRules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLayeredRules(unittest.TestCase):
+    """V3 board 3.2: section -> project-override -> global, whole-entry
+    precedence, silent-absence, corrupt-layer banner, per-layer cache."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.d = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+        self._write(os.path.join(self.d, pr.RULES_FILENAME), {
+            "schema_version": 1,
+            "global_app_rules": ["global bar"],
+            "phases": {"report": {"rules": ["global report rule"]},
+                       "only_global": {"rules": ["untouched"]}}})
+
+    def _write(self, path, obj):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            if isinstance(obj, str):
+                fh.write(obj)
+            else:
+                json.dump(obj, fh)
+        # distinct mtime_ns per write on coarse filesystems
+        st = os.stat(path)
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+
+    def _layer(self, name, phases):
+        path = os.path.join(self.d, "layers", name)
+        self._write(path, {"schema_version": 1, "phases": phases})
+        return path
+
+    def test_collision_two_sections_each_resolve_their_own(self):
+        research = self._layer("research.json",
+                               {"report": {"rules": ["research style"]}})
+        audit = self._layer("audit.json",
+                            {"report": {"rules": ["audit style"]}})
+        a = pr.render_phase_playbook(self.d, "app", "report", layers=[research])
+        b = pr.render_phase_playbook(self.d, "app", "report", layers=[audit])
+        self.assertIn("research style", a)
+        self.assertNotIn("audit style", a)
+        self.assertIn("audit style", b)
+
+    def test_three_layer_precedence_whole_entry(self):
+        section = self._layer("section.json",
+                              {"report": {"rules": ["section wins"]}})
+        project = self._layer("project.json",
+                              {"report": {"rules": ["project wins"],
+                                          "required_output": ["proj out"]},
+                               "other": {"rules": ["project other"]}})
+        rules = pr.load_rules_layered(self.d, [section, project])
+        # section supplies the WHOLE report entry — project's
+        # required_output must NOT merge in.
+        self.assertEqual(rules["phases"]["report"],
+                         {"rules": ["section wins"]})
+        self.assertEqual(rules["phases"]["other"]["rules"], ["project other"])
+        self.assertEqual(rules["phases"]["only_global"]["rules"], ["untouched"])
+        # project beats global when no section layer has the key
+        rules2 = pr.load_rules_layered(self.d, [project])
+        self.assertEqual(rules2["phases"]["report"]["rules"],
+                         ["project wins"])
+
+    def test_global_app_rules_never_read_from_a_layer(self):
+        path = os.path.join(self.d, "layers", "s.json")
+        self._write(path, {"schema_version": 1,
+                           "global_app_rules": ["layer global MUST NOT APPLY"],
+                           "phases": {"report": {"rules": ["x"]}}})
+        out = pr.render_phase_playbook(self.d, "app", "report", layers=[path])
+        self.assertIn("global bar", out)
+        self.assertNotIn("MUST NOT APPLY", out)
+
+    def test_absent_layer_is_silent_corrupt_layer_banners_once(self):
+        events = []
+        missing = os.path.join(self.d, "layers", "nope.json")
+        pr.render_phase_playbook(self.d, "app", "report", layers=[missing],
+                                 on_fallback=lambda p, e: events.append(p))
+        self.assertEqual(events, [], "absence is normal, never a banner")
+        corrupt = os.path.join(self.d, "layers", "bad.json")
+        self._write(corrupt, "{broken")
+        out = pr.render_phase_playbook(self.d, "app", "report",
+                                       layers=[corrupt],
+                                       on_fallback=lambda p, e: events.append(p))
+        self.assertEqual(events, [corrupt], "corrupt banners exactly once")
+        self.assertIn("global report rule", out, "falls through to global")
+        # cached failure: a second render neither re-parses nor re-banners
+        pr.render_phase_playbook(self.d, "app", "report", layers=[corrupt],
+                                 on_fallback=lambda p, e: events.append(p))
+        self.assertEqual(len(events), 1)
+
+    def test_cache_busts_on_layer_edit(self):
+        layer = self._layer("live.json", {"report": {"rules": ["v1"]}})
+        self.assertIn("v1", pr.render_phase_playbook(
+            self.d, "app", "report", layers=[layer]))
+        self._write(layer, {"schema_version": 1,
+                            "phases": {"report": {"rules": ["v2"]}}})
+        self.assertIn("v2", pr.render_phase_playbook(
+            self.d, "app", "report", layers=[layer]))
+
+    def test_flat_run_parity_no_layers(self):
+        # Byte parity: with no layers the rendered text is IDENTICAL to
+        # the pre-3.2 path (asserted, not claimed).
+        self.assertEqual(
+            pr.render_phase_playbook(self.d, "app", "report"),
+            pr.render_phase_playbook(self.d, "app", "report", layers=[]))
+        self.assertEqual(
+            pr.render_phase_quality_rubric(self.d, "app", "report"),
+            pr.render_phase_quality_rubric(self.d, "app", "report",
+                                           layers=None))
+
+    def test_orchestrator_layer_derivation(self):
+        cfg = {"_app_dir": os.path.join(self.d, "proj", "ideas", "chat"),
+               "root": self.d}
+        layers = orch._phase_rule_layers(cfg)
+        self.assertEqual(len(layers), 2)
+        self.assertTrue(layers[0].endswith(
+            os.path.join("sections", "ideas", "rules.json")))
+        self.assertTrue(layers[1].endswith(
+            os.path.join("proj", pr.RULES_FILENAME)))
+        flat = {"_app_dir": os.path.join(self.d, "proj"), "root": self.d}
+        self.assertEqual(orch._phase_rule_layers(flat), [],
+                         "flat runs get no layers — byte-identical path")
