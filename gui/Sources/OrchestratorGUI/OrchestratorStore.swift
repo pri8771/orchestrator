@@ -630,6 +630,9 @@ final class OrchestratorStore: ObservableObject {
     @Published var pendingTranscriptAnchor: TranscriptAnchor?
     // Stale-query guard (§12.2): only the newest query's results may land.
     private var searchGeneration = 0
+    // V3 3.8: the section rail (explicit R4 state) + selected section.
+    @Published var sectionRail: SectionRailState = .loading
+    @Published var selectedSection: String?
     private var launchingName: String?      // just-launched, not yet seen as running
     private var launchingAt: Date?
     // Pre-refresh seed must match the engine default (local model OFF) so the
@@ -1027,6 +1030,7 @@ final class OrchestratorStore: ObservableObject {
                 self.apply(snap)
                 self.orchestratorRunning = loaded.contains { $0.running }
                 AppDelegate.runsActive = self.orchestratorRunning
+                self.reloadSectionRail()
                 self.detectTransitions(loaded)
                 if loaded != self.projects { self.projects = loaded }
                 if bws != self.buildWorkerStatus { self.buildWorkerStatus = bws }
@@ -2848,6 +2852,36 @@ final class OrchestratorStore: ObservableObject {
 
     private func discoverApps() -> [String] {
         SessionLayout.discoverApps(rootURL: rootURL)
+    }
+
+    // V3 3.8: rail discovery — a cheap dir scan of the ENGINE sections/;
+    // called on each refresh apply so seeding/edits surface within a tick.
+    func reloadSectionRail() {
+        sectionRail = SectionRailLogic.discover(
+            sectionsDirURL: orchDirURL.appendingPathComponent(
+                "sections", isDirectory: true))
+    }
+
+    /// The empty state's "seed defaults" action: any engine invocation
+    /// seeds sections (ensure_seeded_sections rides main); --seed is the
+    /// cheapest honest one. Rail reloads on the refresh that follows.
+    func seedDefaultSections() {
+        let py = resolvePython()
+        let engine = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let root = rootURL.path
+        Task.detached { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.arguments = [engine, "--root", root, "--seed"]
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            try? proc.run()
+            proc.waitUntilExit()
+            await MainActor.run { [weak self] in
+                self?.reloadSectionRail()
+                self?.refresh()
+            }
+        }
     }
 
     private func loadProject(_ name: String) -> Project? {

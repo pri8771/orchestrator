@@ -16,6 +16,7 @@ enum ShellSelection: Hashable {
     case overview
     case activity
     case project(String)
+    case section(String)   // V3 3.8: a section studio's chat list
     case workflows
     case models
 }
@@ -250,6 +251,8 @@ struct AppShellView: View {
                     .tag(ShellSelection.activity)
             }
 
+            sectionsRailSection
+
             Section {
                 if runningApps.isEmpty {
                     Text("No lanes busy").font(DS.font.caption).foregroundStyle(.tertiary)
@@ -424,6 +427,43 @@ struct AppShellView: View {
                     .id(p.name)
             } else {
                 shellPlaceholder("Project not found", "questionmark.folder")
+            }
+        case .section(let name):
+            SectionChatsView(section: name,
+                             onOpenChat: { selection = .project($0) })
+        }
+    }
+
+    // V3 3.8 sub-PR 1: the section rail. Every state is explicit (R4);
+    // status lines derive from live Project state only (R2).
+    @ViewBuilder
+    private var sectionsRailSection: some View {
+        Section("Sections") {
+            switch store.sectionRail {
+            case .loading:
+                Text("Loading sections…")
+                    .font(DS.font.caption).foregroundStyle(.tertiary)
+            case .empty:
+                Text("No sections yet")
+                    .font(DS.font.caption).foregroundStyle(.tertiary)
+                Button("Seed default sections") { store.seedDefaultSections() }
+                    .font(DS.font.caption)
+            case .error(let message):
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(DS.font.caption)
+                    .foregroundStyle(DS.status.warning.color)
+            case .populated(let metas):
+                ForEach(metas) { meta in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(meta.title).font(DS.font.body)
+                        Text(SectionRailLogic.statusLine(
+                                section: meta.id, projects: store.projects))
+                            .font(DS.font.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    .tag(ShellSelection.section(meta.id))
+                }
             }
         }
     }

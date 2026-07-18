@@ -9323,6 +9323,9 @@ def main():
     # Always materialize built-in workflows to workflows/*.json (never clobbers an
     # existing file), so the engine and the GUI both have editable definitions.
     wflib.ensure_seeded(HERE)
+    # Same discipline for section manifests (V3 3.8: the GUI's section rail
+    # "seed defaults" action just runs any engine command).
+    seclib.ensure_seeded_sections(HERE)
 
     if args.seed:
         emit("Seeded workflows: %s" % ", ".join(wflib.list_workflows(HERE)))
