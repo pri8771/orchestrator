@@ -27,6 +27,24 @@ struct TranscriptView: View {
         project.currentPhase == phaseKey && project.status == .inProgress
     }
 
+    // V3 board 2.6: land a palette search hit on its turn. The anchor is
+    // consumed exactly once, and only when THIS view shows the anchored
+    // project+phase with its transcript actually loaded; a turn that isn't
+    // in the parsed transcript degrades to the phase-level landing (no
+    // scroll) rather than a wrong one.
+    private func consumeSearchAnchor(_ t: PhaseTranscript,
+                                     proxy: ScrollViewProxy) {
+        guard let anchor = store.pendingTranscriptAnchor,
+              anchor.project == project.name, anchor.phase == phaseKey,
+              loadedID == transcriptID else { return }
+        store.pendingTranscriptAnchor = nil
+        if let mid = SearchAnchorLogic.messageID(for: anchor, in: t.messages) {
+            DispatchQueue.main.async {
+                withAnimation { proxy.scrollTo(mid, anchor: .top) }
+            }
+        }
+    }
+
     var body: some View {
         let t = loadedID == transcriptID ? transcript : PhaseTranscript()
         let pending = store.pendingHuman(project)
@@ -66,7 +84,13 @@ struct TranscriptView: View {
                             if c > lastCount { withAnimation { proxy.scrollTo("BOTTOM", anchor: .bottom) } }
                             lastCount = c
                         }
-                        .onAppear { lastCount = t.messages.count }
+                        .onAppear {
+                            lastCount = t.messages.count
+                            consumeSearchAnchor(t, proxy: proxy)
+                        }
+                        .onChange(of: loadedID) { _, _ in
+                            consumeSearchAnchor(t, proxy: proxy)
+                        }
                     }
                 }
             }

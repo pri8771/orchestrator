@@ -1434,7 +1434,22 @@ private struct ProjectRunContent: View {
                 }
             }
         }
-        .onAppear { syncPhaseSelection(proj) }
+        .onAppear {
+            // A palette search hit lands here with a pending anchor: it
+            // wins phase selection once, then TranscriptView consumes the
+            // anchor for the turn scroll.
+            if let anchor = store.pendingTranscriptAnchor,
+               anchor.project == proj.name, !anchor.phase.isEmpty {
+                selectedPhaseKey = anchor.phase
+            } else {
+                syncPhaseSelection(proj)
+            }
+        }
+        .onChange(of: store.pendingTranscriptAnchor) { _, anchor in
+            if let anchor, anchor.project == proj.name, !anchor.phase.isEmpty {
+                selectedPhaseKey = anchor.phase
+            }
+        }
         .onChange(of: proj.currentPhase) { _, _ in followLiveEdge(proj) }
     }
 

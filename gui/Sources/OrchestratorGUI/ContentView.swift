@@ -291,12 +291,17 @@ struct CommandPaletteView: View {
         let action: UICommand
     }
 
-    // One selection identity across both sections, so arrow keys walk from
-    // the last command straight into the first project.
+    // One selection identity across all sections, so arrow keys walk from
+    // the last command through projects into the search hits.
     private enum RowID: Hashable {
         case command(UICommand)
         case project(String)
+        case searchHit(String)   // SearchHit.id (project|turn_id)
     }
+
+    // Debounced transcript search (V3 2.6): typing re-arms a 250ms fuse;
+    // the store's generation guard handles any stale in-flight result.
+    @State private var searchTask: Task<Void, Never>?
 
     // Computed (not a stored constant) so the Pause/Resume entry's title
     // reflects the engine's current paused state. Titles/shortcuts for the
@@ -339,6 +344,7 @@ struct CommandPaletteView: View {
     private var allRowIDs: [RowID] {
         filteredCommands.map { .command($0.id) }
             + filteredProjects.map { .project($0.name) }
+            + store.searchHits.map { .searchHit($0.id) }
     }
 
     // Fuzzy subsequence match ("bri" → Brinekeeper): every query character
@@ -368,6 +374,13 @@ struct CommandPaletteView: View {
         switch row {
         case .command(let action): store.uiCommand = action
         case .project(let name): onJumpToProject(name)
+        case .searchHit(let id):
+            guard let hit = store.searchHits.first(where: { $0.id == id })
+            else { return }
+            // Anchor FIRST: the project surface reads it on appear to
+            // select the phase, then the transcript scrolls to the turn.
+            store.pendingTranscriptAnchor = SearchResultParser.anchor(for: hit)
+            onJumpToProject(hit.project)
         }
     }
 
@@ -444,6 +457,19 @@ struct CommandPaletteView: View {
                     if !allRowIDs.contains(where: { $0 == selection }) {
                         selection = allRowIDs.first
                     }
+                    // Debounce the transcript search; the store discards
+                    // stale results by generation.
+                    searchTask?.cancel()
+                    let q = query
+                    searchTask = Task {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        guard !Task.isCancelled else { return }
+                        store.searchTranscripts(q)
+                    }
+                }
+                .onDisappear {
+                    searchTask?.cancel()
+                    store.clearSearch()
                 }
                 .onSubmit { runSelectedOrFirst() }
                 .onKeyPress(.upArrow) { moveSelection(by: -1) }
@@ -483,6 +509,19 @@ struct CommandPaletteView: View {
                                     trailing: "", detail: p.workflowTitle)
                             }
                         }
+                        if SearchResultParser.isDegraded(store.searchStatus) {
+                            sectionHeader("Transcript Search")
+                            degradedRow
+                        } else if !store.searchHits.isEmpty {
+                            sectionHeader("Transcript Search")
+                            ForEach(store.searchHits) { h in
+                                row(id: .searchHit(h.id),
+                                    symbol: "text.magnifyingglass",
+                                    title: h.snippet.isEmpty ? h.turnId : h.snippet,
+                                    trailing: "",
+                                    detail: SearchResultParser.detail(for: h))
+                            }
+                        }
                     }
                     .padding(DS.space.xs)
                 }
@@ -492,6 +531,21 @@ struct CommandPaletteView: View {
                 }
             }
         }
+    }
+
+    // R2: an unavailable index is a stated condition, never empty results.
+    private var degradedRow: some View {
+        HStack(spacing: DS.space.xs) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            Text("Search index unavailable: \(store.searchStatus)")
+                .font(DS.font.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, DS.space.xs)
+        .frame(height: 38)
+        .accessibilityLabel("Search index unavailable")
     }
 
     private func sectionHeader(_ title: String) -> some View {

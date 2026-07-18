@@ -604,6 +604,17 @@ final class OrchestratorStore: ObservableObject {
     // ⌘K command palette overlay (design §3/§8). Commands chosen in it are
     // dispatched through uiCommand, so there's one command path.
     @Published var showCommandPalette = false
+    // V3 board 2.6: transcript search (search.py index) surfaced in the
+    // palette. searchStatus carries the engine's degraded signal verbatim —
+    // the palette must render it, never show silently-empty results.
+    @Published var searchHits: [SearchHit] = []
+    @Published var searchStatus: String = "ok"
+    @Published var searchInFlight = false
+    // Where a chosen hit should land: ProjectRunContent selects the phase,
+    // TranscriptView consumes the anchor for the turn-level scroll.
+    @Published var pendingTranscriptAnchor: TranscriptAnchor?
+    // Stale-query guard (§12.2): only the newest query's results may land.
+    private var searchGeneration = 0
     private var launchingName: String?      // just-launched, not yet seen as running
     private var launchingAt: Date?
     // Pre-refresh seed must match the engine default (local model OFF) so the
@@ -3648,6 +3659,58 @@ final class OrchestratorStore: ObservableObject {
                 manualStops[name] = nil   // a fresh launch clears any old Stop
             }
         } catch { runLog += "Failed to launch: \(error.localizedDescription)\n" }
+    }
+
+    // V3 board 2.6: one debounced-upstream query against the engine's
+    // search.py (the palette debounces; this guards staleness). Results
+    // from a superseded query are DISCARDED — an old slow query must not
+    // overwrite a newer one's rows (§12.2).
+    func searchTranscripts(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        searchGeneration += 1
+        let gen = searchGeneration
+        guard !trimmed.isEmpty else {
+            searchHits = []
+            searchInFlight = false
+            return
+        }
+        searchInFlight = true
+        let py = resolvePython()
+        let script = orchDirURL.appendingPathComponent("search.py").path
+        let root = rootURL.path
+        Task.detached { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.arguments = [script, "--root", root, "--query", trimmed,
+                              "--json", "--limit", "12"]
+            let out = Pipe()
+            proc.standardOutput = out
+            proc.standardError = Pipe()   // degraded warning rides the JSON too
+            try? proc.run()
+            proc.waitUntilExit()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let parsed = SearchResultParser.parse(data)
+            await MainActor.run { [weak self] in
+                guard let self, gen == self.searchGeneration else { return }
+                self.searchInFlight = false
+                guard let parsed else {
+                    // Malformed/failed run is a capability loss, not "no
+                    // matches" — surface it like the degraded mode.
+                    self.searchHits = []
+                    self.searchStatus = "degraded:search-unavailable"
+                    return
+                }
+                self.searchHits = parsed.hits
+                self.searchStatus = parsed.status
+            }
+        }
+    }
+
+    func clearSearch() {
+        searchGeneration += 1
+        searchHits = []
+        searchStatus = "ok"
+        searchInFlight = false
     }
 
     private func resolvePython() -> String {
