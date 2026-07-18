@@ -244,39 +244,59 @@ def load_routing_for_app(here, app_dir, on_warn=None):
     fleet = load_routing(here, on_warn=on_warn)
     if not app_dir or os.path.abspath(app_dir) == os.path.abspath(here):
         return fleet
-    if not os.path.exists(os.path.join(app_dir, ROUTING_FILENAME)):
-        return fleet
-    project = load_routing(app_dir, on_warn=on_warn)
-    proj_fb = project.get("fallback") or {}
-    if not project["phases"] and not proj_fb.get("chains") \
-            and not proj_fb.get("local_model"):
-        if on_warn and (not project.get("enabled", True)
-                        or project.get("fallback") != _DEFAULT["fallback"]):
-            on_warn("Project routing file %s has no phase overrides — its "
+    return _overlay_routing(fleet, app_dir, on_warn, "Project")
+
+
+def _overlay_routing(base, layer_dir, on_warn, scope_label):
+    """One overlay pass — the EXACT project-layer semantics, reused for the
+    session/section layer (V3 board 3.4): per phase, per field, a non-empty
+    layer value wins; non-empty chains/local_model win per agent; enabled/
+    cloud_to_local stay fleet-owned (surfaced via on_warn, never honored)."""
+    if not os.path.exists(os.path.join(layer_dir, ROUTING_FILENAME)):
+        return base
+    layer = load_routing(layer_dir, on_warn=on_warn)
+    layer_fb = layer.get("fallback") or {}
+    if not layer["phases"] and not layer_fb.get("chains") \
+            and not layer_fb.get("local_model"):
+        if on_warn and (not layer.get("enabled", True)
+                        or layer.get("fallback") != _DEFAULT["fallback"]):
+            on_warn("%s routing file %s has no phase overrides — its "
                     "enabled/fallback settings are ignored (those are fleet-scoped "
-                    "only)." % os.path.join(app_dir, ROUTING_FILENAME))
-        return fleet
-    out = dict(fleet)
-    # dict(fleet) is shallow: without this, out["fallback"]/out["chains"] alias
-    # the fleet's nested dicts, so a downstream mutation of the per-app view would
-    # bleed into the fleet view.
-    out["fallback"] = _copy.deepcopy(fleet.get("fallback"))
-    out["chains"] = _copy.deepcopy(fleet.get("chains"))
-    merged_phases = {key: dict(ov) for key, ov in fleet["phases"].items()}
-    for key, ov in project["phases"].items():
+                    "only)." % (scope_label,
+                                os.path.join(layer_dir, ROUTING_FILENAME)))
+        return base
+    out = dict(base)
+    # dict(base) is shallow: without this, out["fallback"]/out["chains"] alias
+    # the base's nested dicts, so a downstream mutation of the layered view
+    # would bleed into the base view.
+    out["fallback"] = _copy.deepcopy(base.get("fallback"))
+    out["chains"] = _copy.deepcopy(base.get("chains"))
+    merged_phases = {key: dict(ov) for key, ov in base["phases"].items()}
+    for key, ov in layer["phases"].items():
         merged_phases[key] = dict(merged_phases.get(key, {}), **ov)
     out["phases"] = merged_phases
-    if proj_fb.get("chains") or proj_fb.get("local_model"):
+    if layer_fb.get("chains") or layer_fb.get("local_model"):
         fb = dict(out.get("fallback") or {})
         chains = dict(fb.get("chains") or {})
-        for agent, steps in (proj_fb.get("chains") or {}).items():
+        for agent, steps in (layer_fb.get("chains") or {}).items():
             if steps:
                 chains[agent] = list(steps)
         fb["chains"] = chains
-        if proj_fb.get("local_model"):
-            fb["local_model"] = proj_fb["local_model"]
+        if layer_fb.get("local_model"):
+            fb["local_model"] = layer_fb["local_model"]
         out["fallback"] = fb
     return out
+
+
+def load_routing_for_session(here, app_dir, section_dir=None, on_warn=None):
+    """Three-layer routing (V3 board 3.4): fleet -> project -> session's
+    SECTION, each overlay applying the identical per-field semantics. With
+    no section layer this IS load_routing_for_app — flat/legacy runs
+    resolve byte-identically."""
+    base = load_routing_for_app(here, app_dir, on_warn=on_warn)
+    if not section_dir:
+        return base
+    return _overlay_routing(base, section_dir, on_warn, "Section")
 
 
 def overrides_for(routing, phase_key):

@@ -2153,6 +2153,13 @@ def _session_coords(cfg):
     return parts[0], parts[1]
 
 
+def _section_dir(cfg):
+    """The engine-side section dir (sections/<section>) for a nested
+    session, else None — routing and roles layer on it (V3 3.4)."""
+    _project, section = _session_coords(cfg)
+    return os.path.join(HERE, "sections", section) if section else None
+
+
 def _phase_rule_layers(cfg):
     """Overlay rule files for the running session (V3 board 3.2), most
     specific first: the session's section rules
@@ -5232,8 +5239,9 @@ def _apply_phase_routing(cfg, key):
     apply the phase's participant filter. No overrides -> plain tagged copy."""
     routing = cfg.get("_routing")
     if routing is None:
-        routing = mrlib.load_routing_for_app(
-            HERE, cfg.get("_app_dir"), on_warn=emit)
+        routing = mrlib.load_routing_for_session(
+            HERE, cfg.get("_app_dir"), section_dir=_section_dir(cfg),
+            on_warn=emit)
         tcxlib.TurnContext(cfg).routing = routing
     # Shared mutable run state must exist BEFORE the copy so every phase-scoped
     # copy aliases the same dicts (cooldowns/sessions survive across phases).
@@ -8201,8 +8209,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     tctx.workflow_verify_spec = next(
         (p.get("verify") for p in phases if hasattr(p, "get") and p.get("verify")),
         None)
-    tctx.personalities, tctx.roles = roleslib.load_roles(HERE)
-    tctx.agent_role_overrides = roleslib.load_agent_role_overrides(HERE)
+    _sdir = _section_dir(cfg)
+    tctx.personalities, tctx.roles = roleslib.load_roles_layered(
+        HERE, section_dir=_sdir, on_fallback=_rules_fallback_banner(cfg))
+    tctx.agent_role_overrides = roleslib.load_agent_role_overrides_layered(
+        HERE, section_dir=_sdir)
     # Precomputed once per run (not rebuilt on every process_phase call) — see
     # assign_personas' role_by_id parameter.
     tctx.role_by_id = {r.get("id"): r for r in cfg["_roles"]}

@@ -164,3 +164,87 @@ class TestSeeding(SectionBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSectionRoles(SectionBase):
+    """V3 board 3.4: section-first role pools with whole-pool precedence,
+    invalid-pool fall-through + banner, deep-copy isolation."""
+
+    def _sdir(self):
+        d = os.path.join(self.orch, "sections", "research")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _write_roles(self, obj_or_text):
+        import json as _json
+        path = os.path.join(self._sdir(), "roles.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            if isinstance(obj_or_text, str):
+                fh.write(obj_or_text)
+            else:
+                _json.dump(obj_or_text, fh)
+        return path
+
+    def test_valid_section_pool_replaces_whole_pool(self):
+        import roles as roleslib
+        self._write_roles({"personalities": [
+            {"id": "sk", "name": "Section Skeptic", "style": "s"}]})
+        p, r = roleslib.load_roles_layered(section_dir=self._sdir())
+        self.assertEqual([x["name"] for x in p], ["Section Skeptic"],
+                         "whole-pool replacement, never a merge")
+        _bp, base_r = roleslib.load_roles()
+        self.assertEqual([x["id"] for x in r],
+                         [x["id"] for x in base_r],
+                         "the absent pool inherits the next layer")
+
+    def test_invalid_pool_falls_through_with_banner(self):
+        import roles as roleslib
+        path = self._write_roles({"personalities": [{"name": "no id"}]})
+        events = []
+        p, _r = roleslib.load_roles_layered(
+            section_dir=self._sdir(),
+            on_fallback=lambda pth, err: events.append((pth, str(err))))
+        self.assertEqual([x["id"] for x in p],
+                         [x["id"] for x in roleslib.DEFAULT_PERSONALITIES])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], path)
+        self.assertIn("personalities", events[0][1])
+
+    def test_corrupt_file_falls_through_with_banner(self):
+        import roles as roleslib
+        self._write_roles("{broken")
+        events = []
+        p, r = roleslib.load_roles_layered(
+            section_dir=self._sdir(),
+            on_fallback=lambda pth, err: events.append(pth))
+        self.assertEqual(len(events), 1)
+        self.assertTrue(p and r)
+
+    def test_absent_file_is_silent(self):
+        import roles as roleslib
+        events = []
+        roleslib.load_roles_layered(
+            section_dir=os.path.join(self.orch, "sections", "nope"),
+            on_fallback=lambda pth, err: events.append(pth))
+        self.assertEqual(events, [])
+
+    def test_deepcopy_isolation(self):
+        import roles as roleslib
+        self._write_roles({"personalities": [
+            {"id": "sk", "name": "Mutate Me", "style": "s"}]})
+        p1, _ = roleslib.load_roles_layered(section_dir=self._sdir())
+        p1[0]["name"] = "CORRUPTED"
+        p2, _ = roleslib.load_roles_layered(section_dir=self._sdir())
+        self.assertEqual(p2[0]["name"], "Mutate Me",
+                         "mutating one resolved cast bled into another")
+        d1, _ = roleslib.load_roles()
+        d1[0]["name"] = "CORRUPTED DEFAULT"
+        d2, _ = roleslib.load_roles()
+        self.assertNotEqual(d2[0]["name"], "CORRUPTED DEFAULT")
+
+    def test_section_agent_overrides_win_per_agent(self):
+        import roles as roleslib
+        self._write_roles({"agent_role_overrides": {"codex": "sec-role"}})
+        merged = roleslib.load_agent_role_overrides_layered(
+            section_dir=self._sdir())
+        self.assertEqual(merged.get("codex"), "sec-role")

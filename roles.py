@@ -114,6 +114,68 @@ def load_roles(orch_dir=None):
     return _copy.deepcopy(personalities), _copy.deepcopy(roles)
 
 
+def load_roles_layered(orch_dir=None, section_dir=None, on_fallback=None):
+    """Section-first role resolution (V3 board 3.4): a PRESENT section
+    roles.json supplies pools with WHOLE-POOL precedence — a valid section
+    pool replaces (never merges with) the next layer's; an invalid pool in
+    a present file falls through WITH one on_fallback(path, error) call;
+    an absent section file is silent. Deep-copy semantics preserved: the
+    result is always fresh, never a module default by reference."""
+    base_p, base_r = load_roles(orch_dir)
+    if not section_dir:
+        return base_p, base_r
+    path = os.path.join(section_dir, "roles.json")
+    if not os.path.exists(path):
+        return base_p, base_r
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("roles.json must be a JSON object")
+    except (OSError, ValueError) as exc:
+        if on_fallback is not None:
+            on_fallback(path, exc)
+        return base_p, base_r
+    p = data.get("personalities")
+    r = data.get("roles")
+    bad = []
+    if p is not None and not _valid_pool(p, ("id", "name", "style")):
+        bad.append("personalities")
+        p = None
+    if r is not None and not _valid_pool(r, ("id", "name", "focus")):
+        bad.append("roles")
+        r = None
+    if bad and on_fallback is not None:
+        on_fallback(path, "invalid pool(s): %s — falling through per pool"
+                    % ", ".join(bad))
+    return (_copy.deepcopy(p) if p is not None else base_p,
+            _copy.deepcopy(r) if r is not None else base_r)
+
+
+def load_agent_role_overrides_layered(orch_dir=None, section_dir=None):
+    """agent_role_overrides with the section file winning when IT is the
+    source of any override — per-agent precedence, section over engine."""
+    base = load_agent_role_overrides(orch_dir)
+    if not section_dir:
+        return base
+    path = os.path.join(section_dir, "roles.json")
+    if not os.path.exists(path):
+        return base
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        raw = data.get("agent_role_overrides") or {}
+        if not isinstance(raw, dict):
+            return base
+        merged = dict(base)
+        for agent, role in raw.items():
+            if isinstance(agent, str) and isinstance(role, str) and role:
+                merged[agent] = role
+        return merged
+    except (OSError, ValueError):
+        return base
+
+
 def load_agent_role_overrides(orch_dir=None):
     """Return {agent_id: role_id} from roles.json. Invalid/missing values simply
     disappear so callers can treat the result as optional user preference."""

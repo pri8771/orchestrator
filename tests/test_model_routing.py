@@ -590,3 +590,87 @@ class TestSearchRemote(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestThreeLayerRouting(unittest.TestCase):
+    """V3 board 3.4: fleet -> project -> section, identical per-layer
+    semantics; fleet-owned flags protected; no-section byte parity."""
+
+    def setUp(self):
+        self.here = tempfile.mkdtemp(prefix="orch_3l_here_")
+        self.app = tempfile.mkdtemp(prefix="orch_3l_app_")
+        self.section = tempfile.mkdtemp(prefix="orch_3l_sec_")
+        self.addCleanup(shutil.rmtree, self.here, True)
+        self.addCleanup(shutil.rmtree, self.app, True)
+        self.addCleanup(shutil.rmtree, self.section, True)
+
+    def _write(self, d, obj):
+        with open(os.path.join(d, mr.ROUTING_FILENAME), "w",
+                  encoding="utf-8") as fh:
+            json.dump(obj, fh)
+
+    def test_precedence_matrix_per_field(self):
+        self._write(self.here, {"phases": {
+            "chat": {"claude": "fleet-claude", "codex": "fleet-codex",
+                     "gemini": "fleet-gemini"}}})
+        self._write(self.app, {"phases": {
+            "chat": {"codex": "project-codex", "gemini": "project-gemini"}}})
+        self._write(self.section, {"phases": {
+            "chat": {"gemini": "section-gemini"}}})
+        r = mr.load_routing_for_session(self.here, self.app,
+                                        section_dir=self.section)
+        ov = mr.overrides_for(r, "chat")
+        self.assertEqual(ov["claude"], "fleet-claude")    # unset inherits
+        self.assertEqual(ov["codex"], "project-codex")    # project beats fleet
+        self.assertEqual(ov["gemini"], "section-gemini")  # section beats both
+
+    def test_no_section_layer_is_byte_identical(self):
+        self._write(self.here, {"phases": {"chat": {"claude": "x"}}})
+        self._write(self.app, {"phases": {"chat": {"codex": "y"}}})
+        two = mr.load_routing_for_app(self.here, self.app)
+        three = mr.load_routing_for_session(self.here, self.app,
+                                            section_dir=None)
+        self.assertEqual(two, three)
+        absent = mr.load_routing_for_session(
+            self.here, self.app,
+            section_dir=os.path.join(self.section, "nope"))
+        self.assertEqual(two, absent)
+
+    def test_fleet_owned_flags_never_shadowed_and_warned(self):
+        self._write(self.here, {"phases": {}, "enabled": True})
+        warns = []
+        self._write(self.section, {"phases": {}, "enabled": False})
+        r = mr.load_routing_for_session(self.here, self.app,
+                                        section_dir=self.section,
+                                        on_warn=warns.append)
+        self.assertTrue(r.get("enabled", True),
+                        "a section can never disable fleet routing")
+        self.assertTrue(any("fleet-scoped" in w for w in warns),
+                        "the ignored setting must be surfaced")
+
+    def test_section_chain_overrides_named_agents_only(self):
+        self._write(self.here, {"phases": {"chat": {"claude": "f"}},
+                                "fallback": {"chains": {
+                                    "claude": ["fleet-a"],
+                                    "codex": ["fleet-b"]}}})
+        self._write(self.section, {"phases": {"chat": {"codex": "s"}},
+                                   "fallback": {"chains": {
+                                       "claude": ["section-a"]}}})
+        r = mr.load_routing_for_session(self.here, self.app,
+                                        section_dir=self.section)
+        chains = (r.get("fallback") or {}).get("chains") or {}
+        self.assertEqual(chains["claude"], ["section-a"])
+        self.assertEqual(chains["codex"], ["fleet-b"],
+                         "unnamed agents inherit the fleet chain")
+
+    def test_layered_view_never_bleeds_into_fleet(self):
+        self._write(self.here, {"phases": {"chat": {"claude": "f"}},
+                                "fallback": {"chains": {"claude": ["a"]}}})
+        self._write(self.section, {"phases": {"chat": {"claude": "s"}}})
+        r = mr.load_routing_for_session(self.here, self.app,
+                                        section_dir=self.section)
+        (r.get("fallback") or {}).setdefault("chains", {})["claude"] = ["MUT"]
+        fleet = mr.load_routing(self.here)
+        self.assertEqual((fleet.get("fallback") or {}).get("chains",
+                                                           {}).get("claude"),
+                         ["a"], "mutating the layered view bled into fleet")
