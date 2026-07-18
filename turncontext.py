@@ -25,10 +25,12 @@ Rules this module must never break:
   this reason.)
 
 Tranche 1 covered band B: the eleven per-phase keys process_phase sets on
-entry and clears on exit. Tranche c1 adds band C (per-thread-copy state —
+entry and clears on exit. Tranche c1 added band C (per-thread-copy state —
 thread_copy() and the session/model-override protocols) and band B′ (the
-per-phase-copy keys _apply_phase_routing writes). Band D
-(shared-by-identity maps) comes in tranche c2 with its own review.
+per-phase-copy keys _apply_phase_routing writes). Tranche c2 adds band D:
+the shared-by-identity maps, exposed ONLY through methods that return the
+live object — band D has no plain properties by design, so a future
+copying getter can't slip in unnoticed.
 """
 
 
@@ -184,6 +186,40 @@ class TurnContext(object):
         read-and-leave). The finally-block take is exception-safety — a
         failed call must not leak a stale id into the next turn's copy."""
         return self._cfg.pop("_new_session_id", None)
+
+    # ---- band D: shared-mutable-by-identity. The MAPS (_agent_health,
+    # the session maps) are exposed as METHODS returning the live object,
+    # never properties — cooldowns and sessions survive thread/phase
+    # copies only because every copy aliases one in-place-mutated dict.
+    # _routing is the one band-D key that IS a property: it is a
+    # rebindable cache reference (filled once, force-reloaded by
+    # rebinding to None), never mutated in place, so the copying-getter
+    # hazard the method-only rule guards against does not apply. ----
+    routing = _prop(
+        "_routing",
+        "Per-app routing cache. Two writing intents, both here: the lazy "
+        "cache fill lands on the ORIGINAL pre-copy cfg so later phases "
+        "reuse it; conversational rounds write None onto a COPY to force "
+        "a fresh load (fleet + chat overlay).")
+
+    def session_map(self, agent):
+        """The shared session map for one agent (band D). setdefault so
+        the ensure-before-copy discipline is the call itself: maps must
+        exist on the original BEFORE any shallow copy is taken, or each
+        copy grows its own map and sessions are lost. Returns the live
+        dict — never copy it."""
+        return self._cfg.setdefault("_%s_sessions" % agent, {})
+
+    def health_map(self):
+        """The shared circuit-breaker health map (band D). Same identity
+        contract as session_map."""
+        return self._cfg.setdefault("_agent_health", {})
+
+    def reset_agent_health(self):
+        """Per-app reset between apps in one run. REPLACE the map, never
+        .clear() it: thread copies taken before the reset must keep
+        aliasing the OLD map. Only safe before this app's copies exist."""
+        self._cfg["_agent_health"] = {}
 
     def end_phase(self):
         """Clear the per-phase channels a completed phase must not leak

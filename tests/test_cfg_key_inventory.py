@@ -52,12 +52,11 @@ DYNAMIC_SENTINEL = "_<dynamic>_%s_sessions"
 # THIS baseline). Shrink freely as TurnContext absorbs keys; grow ONLY with
 # a reviewed reason recorded in the commit.
 ALLOWED_WRITTEN_KEYS = {
-    DYNAMIC_SENTINEL,
-    "_agent_health", "_agent_role_overrides",
+    "_agent_role_overrides",
     "_app_dir", "_autonomy", "_base_models",
     "_base_resolved", "_budget",
     "_checked_any_agent_runnable",
-    "_claude_sessions", "_codex_sessions", "_completeness",
+    "_completeness",
     "_deadline", "_explicit_app",
     "_gemini_disabled_reason", "_gemini_unavailable",
     "_installed_ollama_models", "_iter_verify_toolchain_absent",
@@ -68,7 +67,6 @@ ALLOWED_WRITTEN_KEYS = {
     "_prior_discussions",
     "_resolved", "_role_by_id",
     "_roles", "_round_multiplier",
-    "_routing",
     "_sim_ctx",
     "_state", "_target_path",
     "_target_paths", "_tech_stack_block",
@@ -93,6 +91,14 @@ TRANCHE_C1_MIGRATED = {
     "_drop_prior_discussions", "_build_dir",
     "_phase_key", "_routed_turn_timeout", "_routed_rounds",
     "_phase_instructions", "_role_routing", "_noted_indep_grader",
+}
+# 2.3c tranche c2 = band D, the shared-by-identity maps: session_map()/
+# health_map()/reset_agent_health() methods + the routing property. The
+# dynamic sentinel left with them — the ONE dynamic-key write now lives in
+# session_map, inside turncontext.py.
+TRANCHE_C2_MIGRATED = {
+    "_agent_health", "_claude_sessions", "_codex_sessions", "_routing",
+    DYNAMIC_SENTINEL,
 }
 
 

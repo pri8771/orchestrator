@@ -16,7 +16,7 @@ import turncontext
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_cfg_key_inventory import (  # noqa: E402
     scan, SCANNED, ALLOWED_WRITTEN_KEYS, TRANCHE1_MIGRATED,
-    TRANCHE_C1_MIGRATED, HERE)
+    TRANCHE_C1_MIGRATED, TRANCHE_C2_MIGRATED, HERE)
 
 BAND_C_PROPS = {
     "session": "_session",
@@ -31,6 +31,7 @@ BAND_BPRIME = {
     "phase_instructions": "_phase_instructions",
     "role_routing": "_role_routing",
     "noted_indep_grader": "_noted_indep_grader",
+    "routing": "_routing",
 }
 
 BAND_B = {
@@ -181,6 +182,61 @@ class TestEndPhase(unittest.TestCase):
         self.assertEqual(cfg["_agent_health"], {"codex": 1})
 
 
+class TestBandDIdentity(unittest.TestCase):
+    def test_session_map_returns_the_live_seeded_dict(self):
+        cfg = {}
+        ctx = turncontext.TurnContext(cfg)
+        m = ctx.session_map("claude")
+        self.assertIs(m, cfg["_claude_sessions"], "must be the live object")
+        self.assertIs(ctx.session_map("claude"), m, "stable across calls")
+        self.assertIs(turncontext.TurnContext(cfg).session_map("codex"),
+                      cfg["_codex_sessions"])
+
+    def test_aliasing_survives_thread_copies_end_to_end(self):
+        # The whole point of band D: a session stored through one thread
+        # copy is visible through every other, because all copies alias
+        # ONE map that existed before the copies were taken.
+        cfg = {}
+        turncontext.TurnContext(cfg).session_map("claude")   # ensure-before-copy
+        a = turncontext.TurnContext(cfg).thread_copy(health_key="lane-a")
+        b = turncontext.TurnContext(cfg).thread_copy(health_key="lane-b")
+        turncontext.TurnContext(a).session_map("claude")["k"] = "sid-1"
+        self.assertEqual(
+            turncontext.TurnContext(b).session_map("claude")["k"], "sid-1")
+        self.assertIs(a["_claude_sessions"], b["_claude_sessions"])
+
+    def test_reset_agent_health_replaces_never_clears(self):
+        cfg = {"_agent_health": {"codex": "cooling"}}
+        old_map = cfg["_agent_health"]
+        copy_before = turncontext.TurnContext(cfg).thread_copy()
+        turncontext.TurnContext(cfg).reset_agent_health()
+        self.assertIsNot(cfg["_agent_health"], old_map)
+        self.assertEqual(cfg["_agent_health"], {})
+        self.assertIs(copy_before["_agent_health"], old_map,
+                      "pre-reset copies must keep aliasing the OLD map")
+        self.assertEqual(copy_before["_agent_health"]["codex"], "cooling")
+
+    def test_no_plain_banded_getters_exist(self):
+        # Shape pin: the band-D MAPS must stay method-only. A future plain
+        # property invites a copying getter, which silently breaks
+        # cooldown/session sharing. (`routing` is deliberately exempt: a
+        # rebindable reference, never mutated in place.)
+        for name in ("agent_health", "claude_sessions", "codex_sessions"):
+            self.assertFalse(hasattr(turncontext.TurnContext, name),
+                             "band-D key %r must not be a property" % name)
+
+    def test_ensure_before_copy_ordering_in_phase_routing(self):
+        # After _apply_phase_routing, the returned phase copy's band-D maps
+        # must BE the original's (the :5150 comment made structural).
+        import orchestrator as orch
+        cfg = {"agents": {"codex_enabled": True}, "runtime": {}}
+        c = orch._apply_phase_routing(cfg, "design_discussion")
+        self.assertIsNot(c, cfg)
+        for k in ("_agent_health", "_claude_sessions", "_codex_sessions"):
+            self.assertIn(k, cfg, "%s must be seeded on the ORIGINAL" % k)
+            self.assertIs(c[k], cfg[k], "%s must alias across the copy" % k)
+
+
 class TestGateRetarget(unittest.TestCase):
     def test_turncontext_is_the_only_home_for_migrated_writes(self):
         # turncontext.py exists, is intentionally NOT scanned, and the
@@ -193,7 +249,8 @@ class TestGateRetarget(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(HERE, "turncontext.py")))
         self.assertNotIn("turncontext.py", SCANNED)
         inv = scan()
-        for key in sorted(TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED):
+        for key in sorted(TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED
+                          | TRANCHE_C2_MIGRATED):
             self.assertFalse(
                 inv.get(key, {}).get("writes"),
                 "raw write of migrated key %s reintroduced at %s"
@@ -204,7 +261,8 @@ class TestGateRetarget(unittest.TestCase):
         # The monotonic gate is what catches reintroductions — that only
         # works if the migrated keys are actually gone from the allowlist.
         self.assertFalse(
-            (TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED) & ALLOWED_WRITTEN_KEYS)
+            (TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED | TRANCHE_C2_MIGRATED)
+            & ALLOWED_WRITTEN_KEYS)
 
 
 if __name__ == "__main__":

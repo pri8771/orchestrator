@@ -1567,9 +1567,9 @@ def call_agent_sessioned(cfg, app, phase, rnd, agent, full_prompt,
         and bool(cget(cfg, "runtime.%s_session_reuse" % agent, True))
     if not reuse:
         return call_agent(cfg, app, phase, rnd, agent, full_prompt)
-    sessions = cfg.setdefault("_%s_sessions" % agent, {})
-    sid = sessions.get(session_key)
     tctx = tcxlib.TurnContext(cfg)
+    sessions = tctx.session_map(agent)
+    sid = sessions.get(session_key)
     try:
         if sid:
             tctx.session = {"id": sid, "resume": True}
@@ -4109,7 +4109,8 @@ def _pick_coordinator(cfg, active):
 def _agent_health(cfg, agent, health_key=None):
     """Return the mutable health record call_agent() will use for this identity."""
     key = health_key or agent
-    return cfg.setdefault("_agent_health", {}).setdefault(key, reslib.new_health())
+    return tcxlib.TurnContext(cfg).health_map().setdefault(
+        key, reslib.new_health())
 
 
 def _agent_in_cooldown(cfg, agent, health_key=None, now=None):
@@ -5142,15 +5143,17 @@ def _apply_phase_routing(cfg, key):
     apply the phase's participant filter. No overrides -> plain tagged copy."""
     routing = cfg.get("_routing")
     if routing is None:
-        routing = cfg["_routing"] = mrlib.load_routing_for_app(
+        routing = mrlib.load_routing_for_app(
             HERE, cfg.get("_app_dir"), on_warn=emit)
+        tcxlib.TurnContext(cfg).routing = routing
     # Shared mutable run state must exist BEFORE the copy so every phase-scoped
     # copy aliases the same dicts (cooldowns/sessions survive across phases).
     # The health map is _agent_health everywhere else — the old "_health" key was
     # written here and never read, so cooldowns didn't actually survive the copy.
-    cfg.setdefault("_agent_health", {})
-    cfg.setdefault("_claude_sessions", {})
-    cfg.setdefault("_codex_sessions", {})
+    base_tctx = tcxlib.TurnContext(cfg)
+    base_tctx.health_map()
+    base_tctx.session_map("claude")
+    base_tctx.session_map("codex")
     c = dict(cfg)
     tctx = tcxlib.TurnContext(c)
     tctx.phase_key = key
@@ -5561,7 +5564,8 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
         if _cur_routing != _last_routing:
             _last_routing = _cur_routing
             base = dict(cfg)
-            base["_routing"] = None   # force a fresh load (fleet + chat overlay)
+            # Force a fresh load (fleet + chat overlay).
+            tcxlib.TurnContext(base).routing = None
             cfg = _apply_phase_routing(base, key)
             emit("Chat routing updated — new model assignments apply from "
                  "round %d." % rnd)
@@ -6421,8 +6425,8 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         _seed_golden_scaffold(cfg["_build_dir"])
     # Session map must exist on the ORIGINAL cfg before any per-thread shallow
     # copies are taken, or each copy would grow its own map and lose sessions.
-    cfg.setdefault("_claude_sessions", {})
-    cfg.setdefault("_codex_sessions", {})
+    tctx.session_map("claude")
+    tctx.session_map("codex")
     # Stable per-app cwd for resumed claude sessions (sessions are keyed by cwd,
     # so the default ephemeral temp dir would orphan them each turn). Discussion
     # phases stay read-only regardless — acceptEdits is only granted in builds.
@@ -7837,9 +7841,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # Per-run/per-app state must NOT leak across apps (cfg is reused across apps in
     # one pass and in --watch): reset the completeness multiplier, autonomy, and the
     # circuit-breaker health map before this app applies its own.
+    tctx = tcxlib.TurnContext(cfg)
     cfg["_round_multiplier"] = None
     cfg["_autonomy"] = None
-    cfg["_agent_health"] = {}
+    tctx.reset_agent_health()
     # Workflow "overrides" preset (optional top-level JSON key): per-run model
     # swap + effort/rounds shaping. Also resets any previous run's model preset.
     _apply_workflow_overrides(cfg, workflow, phases)
@@ -7878,7 +7883,6 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
 
     # Audit target: the read-only pre-existing codebase this app analyzes.
     cfg["_target_path"] = wflib.read_target_path(app_dir, HERE)
-    tctx = tcxlib.TurnContext(cfg)
     tctx.target_digest = ""
     tctx.read_dir = None
     # library_mining analyzes MANY repos at once (a whole portfolio).
