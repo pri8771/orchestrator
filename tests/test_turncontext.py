@@ -185,8 +185,11 @@ class TestGateRetarget(unittest.TestCase):
     def test_turncontext_is_the_only_home_for_migrated_writes(self):
         # turncontext.py exists, is intentionally NOT scanned, and the
         # migrated keys have zero raw writes left in the engine files.
-        # _resolved is NOT migrated: its two band-A base-resolution writes
-        # stay raw (only the per-call patches moved into patch_agent_model).
+        # _resolved is NOT migrated: four band-A sites stay raw — two
+        # base-resolution rebinds plus two workflow-override interior
+        # chains (cfg["models"][...] = cfg["_resolved"][...] = ov[...])
+        # the chained-assignment scanner fix surfaced. Only the per-call
+        # patches moved into patch_agent_model.
         self.assertTrue(os.path.exists(os.path.join(HERE, "turncontext.py")))
         self.assertNotIn("turncontext.py", SCANNED)
         inv = scan()
@@ -195,7 +198,7 @@ class TestGateRetarget(unittest.TestCase):
                 inv.get(key, {}).get("writes"),
                 "raw write of migrated key %s reintroduced at %s"
                 % (key, inv.get(key, {}).get("writes")))
-        self.assertEqual(len(inv["_resolved"]["writes"]), 2)
+        self.assertEqual(len(inv["_resolved"]["writes"]), 4)
 
     def test_migrated_keys_left_the_allowlist(self):
         # The monotonic gate is what catches reintroductions — that only

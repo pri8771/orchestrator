@@ -96,16 +96,20 @@ TRANCHE_C1_MIGRATED = {
 }
 
 
-def _assignment_pos(code):
-    """Index of the statement-level assignment `=`, or None.
+def _assignment_positions(code):
+    """Indexes of ALL statement-level assignment `=` signs (empty if none).
 
     Only a bare `=` at bracket depth 0 splits the line — a kwarg `=` inside a
     call (os.makedirs(cfg["_build_dir"], exist_ok=True)) is NOT an assignment;
     the first version of this splitter misread every such read as a write.
+    ALL depth-0 positions are returned because a chained assignment
+    (`routing = cfg["_routing"] = load(...)`, the 2.3c2 blind spot) has a
+    target between two `=` signs that a first-match splitter files as RHS.
     String literals are masked (same length, so indices stay aligned) so
     brackets/`=` inside them can't skew the depth count."""
     masked = _STRING_RE.sub(lambda m: "\x00" * len(m.group(0)), code)
     depth = 0
+    positions = []
     for i, c in enumerate(masked):
         if c in "([{":
             depth += 1
@@ -115,8 +119,8 @@ def _assignment_pos(code):
             prev = masked[i - 1] if i else ""
             nxt = masked[i + 1] if i + 1 < len(masked) else ""
             if prev not in "=!<>+-*/%&|^:@" and nxt != "=":
-                return i
-    return None
+                positions.append(i)
+    return positions
 
 
 def scan(root=HERE, files=SCANNED):
@@ -148,9 +152,12 @@ def scan(root=HERE, files=SCANNED):
                 add("writes", m.group(1), site)
             for m in _GET_RE.finditer(code):
                 add("reads", m.group(1), site)
-            pos = _assignment_pos(code)
-            if pos is not None:
-                lhs, rhs = code[:pos], code[pos + 1:]
+            positions = _assignment_positions(code)
+            if positions:
+                # Every segment before the LAST `=` is a target list (a
+                # chain `a = b["_k"] = v` writes BOTH targets); only the
+                # final segment is the RHS.
+                lhs, rhs = code[:positions[-1]], code[positions[-1] + 1:]
                 for m in _SUB_RE.finditer(lhs):
                     add("writes", m.group(1), site)
                 for m in _SUB_RE.finditer(rhs):
@@ -189,6 +196,14 @@ class TestScannerAmendment(unittest.TestCase):
     def test_dynamic_key_records_the_sentinel(self):
         inv = self._scan_snippet('c.setdefault("_%s_sessions" % agent, {})\n')
         self.assertEqual([("probe.py", 1)], inv[DYNAMIC_SENTINEL]["writes"])
+
+    def test_chained_assignment_counts_the_middle_target(self):
+        # The c631159 first-match splitter filed the middle target of
+        # `routing = cfg["_routing"] = load(...)` (orchestrator.py, the
+        # band-D cache write) as an RHS read.
+        inv = self._scan_snippet('routing = cfg["_routing"] = load(x)\n')
+        self.assertEqual([("probe.py", 1)], inv["_routing"]["writes"])
+        self.assertFalse(inv["_routing"]["reads"])
 
     def test_kwarg_equals_is_not_an_assignment(self):
         # The first splitter misread this real idiom (orchestrator.py:610)
