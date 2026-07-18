@@ -70,6 +70,7 @@ BAND_B = {
     "phase_exemplar": "_phase_exemplar",
     "phase_playbook": "_phase_playbook",
     "knowledge": "_knowledge",
+    "artifact_context": "_artifact_context",
     "allow_writes": "_allow_writes",
     "build_dir": "_build_dir",
     "session_cwd": "_session_cwd",
@@ -81,6 +82,7 @@ BAND_B = {
 END_PHASE_CLEARED = {
     "_allow_writes": False, "_build_dir": None, "_session_cwd": None,
     "_prior_disc_cap": None, "_phase_playbook": "", "_knowledge": "",
+    "_artifact_context": "",
     "_read_dir": None, "_target_digest": "", "_verify_context": "",
 }
 
@@ -195,7 +197,7 @@ class TestPatchAgentModel(unittest.TestCase):
 
 
 class TestEndPhase(unittest.TestCase):
-    def test_clears_exactly_the_nine_keys(self):
+    def test_clears_exactly_the_end_phase_key_block(self):
         cfg = {k: "live" for k in BAND_B.values()}
         cfg["_agent_health"] = {"codex": 1}      # band D — must not be touched
         cfg["_turn_timeout"] = 480
@@ -204,7 +206,7 @@ class TestEndPhase(unittest.TestCase):
         turncontext.TurnContext(cfg).end_phase()
         changed = {k for k in before if cfg[k] != before[k]}
         self.assertEqual(changed, set(END_PHASE_CLEARED),
-                         "end_phase must change exactly the nine-key block")
+                         "end_phase must change exactly the band-B key block")
         for k, v in END_PHASE_CLEARED.items():
             self.assertEqual(cfg[k], v)
         self.assertEqual(set(cfg), set(before), "no keys added or removed")

@@ -1960,6 +1960,13 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
     know = cfg.get("_knowledge", "")
     if know:
         parts.append(know)
+    # V3 4.7 PULL: relevant FINAL artifacts from sibling sections of this
+    # project (set at phase start; '' for flat/artifact-free runs, so an
+    # unrouted run stays byte-identical). Appended raw like the knowledge
+    # block — never wrapped in _budget, which pre-cap already respected.
+    art = cfg.get("_artifact_context", "")
+    if art:
+        parts.append(art)
     # Ground-truth text fetched by the ENGINE from URLs in the user's prompt
     # (set once at run start; urlfetch.py). Only the product-definition phases
     # get it — that's where a hallucinated reading of a linked product poisons
@@ -6104,6 +6111,7 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
     tctx = tcxlib.TurnContext(cfg)
     tctx.phase_playbook = ""
     tctx.knowledge = ""
+    tctx.artifact_context = ""
     tctx.verify_context = ""
     live_log(app_dir, key, "orchestrator", "phase_completed",
              "conversational phase '%s' complete (%s)" % (key, end_reason))
@@ -6961,6 +6969,26 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         if cfg["_knowledge"]:
             emit("Injected %s knowledge (%d chars) into phase '%s'."
                  % (domain, len(cfg["_knowledge"]), key))
+
+    # V3 4.7 PULL: passively retrieve relevant FINAL artifacts published by
+    # OTHER sections of this project (self-echo excluded). Flat/legacy runs
+    # have no project bus -> no-op, so unrouted transcripts stay identical.
+    tctx.artifact_context = ""
+    _a_project, _a_section = _session_coords(cfg)
+    if _a_section:
+        tctx.artifact_context = artifactslib.retrieve(
+            os.path.join(cfg.get("root") or "", _a_project),
+            "%s %s" % (_purpose, original_prompt),
+            max_chars=int(cget(cfg, "runtime.max_artifact_context_chars",
+                               6000)),
+            top_k=int(cget(cfg, "runtime.artifact_context_top_k", 3)),
+            sensitivity_filter=None,   # 8.5 swaps this one predicate
+            on_error=lambda m: emit("ARTIFACT: WARN %s" % m),
+            exclude_session=os.path.basename(app_dir),
+            exclude_section=_a_section)
+        if cfg["_artifact_context"]:
+            emit("Injected %d chars of project artifacts into phase '%s'."
+                 % (len(cfg["_artifact_context"]), key))
 
     # During an enabled build phase, agents work (and write files) directly in a
     # persistent build folder; otherwise no writes are allowed.

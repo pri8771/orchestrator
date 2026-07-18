@@ -58,6 +58,7 @@ Design rules (V3 sections plan §4 + repo ground rules):
 Stdlib + schemas only; no other repo module may be imported here.
 """
 
+import collections
 import copy
 import datetime
 import fcntl
@@ -1261,3 +1262,158 @@ def route_push(artifact_id, source_project_dir, target_session_dir,
     return {"status": "routed", "root": root, "artifact_id": artifact_id,
             "version": version, "target": target,
             "route_id": "push-%s-%s" % (root, version)}
+
+
+# ---------------------------------------------------------------------------
+# 4.7 PULL retrieval: score the project's admissible artifacts against a
+# phase query and return a budgeted, provenance-headed block for
+# build_context. Modeled on knowledge.retrieve's score/sort/budget shape,
+# but gated on is_admissible (4.8 tightens that one seam) and lineage-aware
+# (only the live tip participates; a branched lineage contributes nothing).
+# Bounded scan: one lineage_index over meta.json; each admitted body is read
+# ONCE and stat-cached (knowledge.py's (mtime_ns,size) pattern).
+# ---------------------------------------------------------------------------
+_ART_WORD_RE = re.compile(r"[a-z0-9@._+]+")
+ARTIFACT_CONTEXT_HEADER = "\n\n===== RELEVANT PROJECT ARTIFACTS ====="
+# LRU-bounded (newest wins) so a long-lived / multi-project process cannot
+# accumulate an open-ended body corpus — unlike knowledge.py's fixed-corpus
+# cache, artifact bodies are unbounded over a fleet's lifetime.
+_ART_BODY_CACHE = collections.OrderedDict()
+_ART_BODY_CACHE_MAX = 256
+
+
+def _art_terms(text):
+    return set(_ART_WORD_RE.findall((text or "").lower()))
+
+
+def _cached_body(project_dir, artifact_id, on_error):
+    """(body_text, body_terms) for an artifact, stat-cached so a run's
+    repeated retrievals never re-read an unchanged body.md. None if
+    unreadable (reported)."""
+    path = os.path.join(artifact_dir(project_dir, artifact_id), "body.md")
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    cached = _ART_BODY_CACHE.get(path)
+    if key is not None and cached is not None and cached[0] == key:
+        _ART_BODY_CACHE.move_to_end(path)
+        return cached[1]
+    body = read_body(project_dir, artifact_id, on_error=on_error)
+    if body is None:
+        return None
+    value = (body, _art_terms(body))
+    if key is not None:
+        _ART_BODY_CACHE[path] = (key, value)
+        _ART_BODY_CACHE.move_to_end(path)
+        while len(_ART_BODY_CACHE) > _ART_BODY_CACHE_MAX:
+            _ART_BODY_CACHE.popitem(last=False)
+    return value
+
+
+def _score_artifact(query_terms, meta, body_terms):
+    """Keyword+title hits count triple; body-term overlap is the tie-breaker
+    (knowledge.py:131 shape). One keyword hit outranks up to two body hits.
+    Type-guarded: a hostile non-list keywords or non-string title degrades
+    to empty rather than raising (retrieval must never crash a phase)."""
+    strong = set()
+    kws = meta.get("keywords")
+    for k in (kws if isinstance(kws, list) else []):
+        if isinstance(k, str):
+            strong |= _art_terms(k)
+    title = meta.get("title")
+    strong |= _art_terms(title if isinstance(title, str) else "")
+    return len(query_terms & strong) * 3 + len(query_terms & body_terms)
+
+
+def retrieve(project_dir, query_text, max_chars=6000, top_k=3,
+             sensitivity_filter=None, on_error=None, *, exclude_session=None,
+             exclude_section=None):
+    """A budgeted, provenance-headed '===== RELEVANT PROJECT ARTIFACTS ====='
+    block of the top-k admissible artifacts scoring against query_text, or
+    '' when nothing is relevant.
+
+    Only the LIVE, admissible tip of each lineage participates
+    (is_admissible: published, not stale, not converged, the resolved
+    latest); a branched/unreconciled lineage contributes NOTHING and its
+    skip is reported once via on_error — retrieval never guesses a branch.
+    The current session's own publications are omitted (self-echo, keyed on
+    the (exclude_section, exclude_session) PAIR — a chat slug is unique only
+    within a section, so a sibling section's same-named chat is NOT
+    excluded). sensitivity_filter (meta -> admit?) is the 8.5 seam; default
+    admits all. A corrupt meta is skipped and reported, never fatal.
+    Provenance headers survive the char budget: a body is truncated, a
+    header is never partially cut."""
+    if on_error is None:
+        on_error = lambda _m: None
+    query_terms = _art_terms(query_text)
+    if not query_terms:
+        return ""
+    sens = sensitivity_filter or (lambda _m: True)
+    idx = lineage_index(project_dir, on_error=on_error)
+    scored = []
+    seen_roots = set()
+    seen_tips = set()
+    # Iterate the metas lineage_index already loaded — a second list_artifacts
+    # would re-scan every meta.json and double-report each corrupt one.
+    for meta in sorted(idx["by_id"].values(), key=lambda m: m["id"]):
+        root = _meta_root(meta)
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
+        tip = latest_final(project_dir, root, on_error=on_error, index=idx)
+        if tip is None:                 # branched/cycle: reported once, no guess
+            continue
+        # Two distinct root keys can resolve to the same tip when a member's
+        # lineage is hand-corrupted to empty while its supersedes edge holds;
+        # dedup on the RESOLVED tip so it is never double-injected.
+        if tip["id"] in seen_tips:
+            continue
+        seen_tips.add(tip["id"])
+        if not is_admissible(project_dir, tip, on_error=None, index=idx):
+            continue                    # non-final tip: passive omission
+        src = tip.get("source") if isinstance(tip.get("source"), dict) else {}
+        if (exclude_session is not None
+                and src.get("session") == exclude_session
+                and src.get("section") == exclude_section):
+            continue                    # self-echo (section+chat pair)
+        if not sens(tip):
+            continue
+        bt = _cached_body(project_dir, tip["id"], on_error)
+        if bt is None:
+            continue
+        body, body_terms = bt
+        s = _score_artifact(query_terms, tip, body_terms)
+        if s > 0:
+            scored.append((s, tip, body))
+    if not scored:
+        return ""
+    scored.sort(key=lambda x: (-x[0], x[1]["id"]))
+    parts = [ARTIFACT_CONTEXT_HEADER]
+    used = len(ARTIFACT_CONTEXT_HEADER)
+    for _s, tip, body in scored[:top_k]:
+        src = tip.get("source") if isinstance(tip.get("source"), dict) else {}
+        header = ("\n\n----- %s %s v%s (from %s/%s · phase %s) -----\n"
+                  % (tip.get("type", ""), tip["id"], tip.get("version", 1),
+                     src.get("section", ""), src.get("session", ""),
+                     src.get("phase", "")))
+        room = max_chars - used
+        if len(header) >= room:         # a header must NEVER be partially cut
+            break
+        if len(header) + len(body) <= room:
+            chunk = header + body
+        else:
+            avail = room - len(header)
+            if avail > len(_ROUTE_TRUNC_MARKER):
+                chunk = header + body[:avail - len(_ROUTE_TRUNC_MARKER)] \
+                    + _ROUTE_TRUNC_MARKER
+            else:
+                chunk = header + body[:avail]
+        parts.append(chunk)
+        used += len(chunk)
+        if used >= max_chars:
+            break
+    if len(parts) == 1:                 # only the block header, no artifact
+        return ""
+    return "".join(parts)
