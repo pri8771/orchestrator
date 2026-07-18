@@ -30,7 +30,7 @@ py-modules = [
     "orchestrator", "workflows", "phase_rules", "schemas", "verify", "docs",
     "backfill", "completeness", "designlint", "evalharness", "events",
     "fleetlearn", "global_resource", "knowledge",
-    "localmodels", "miniyaml", "mistakes", "modelrouting", "portfolio",
+    "localmodels", "messages", "miniyaml", "mistakes", "modelrouting", "portfolio",
     "postmortem", "procutil",
     "resilience", "roles", "uicrawl", "urlfetch", "visualqa", "seed_demo",
     "simulate_stream", "swiftscaffold", "turncontext",

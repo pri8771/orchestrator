@@ -54,6 +54,7 @@ import docs as docslib
 import completeness as complib
 import global_resource as grlib
 import knowledge as knowlib
+import messages as msglib
 import mistakes as mistklib
 import phase_rules as phaseruleslib
 import portfolio as portfoliolib
@@ -2193,6 +2194,8 @@ def run_phase_quality_gate(cfg, app, app_dir, phasedef, rnd, coord, ctx,
     qblock = "**Quality Gate (%s) — after round %d**\n\n%s\n" % (
         DISPLAY[grader], rnd, qresp)
     append_md(md_path, "\n" + qblock)
+    msglib.append_message(app_dir, key, "quality", grader, md_path,
+                          agent=grader, rnd=rnd)
     transcript += "\n" + qblock
     live_log(app_dir, key, grader, "phase_quality_%s" % ("passed" if passed else "failed"),
              qresp)
@@ -2636,11 +2639,14 @@ def _resume_round_state(existing_md_text):
     return last_complete_round + 1, existing_md_text[:last_complete_end], header_end
 
 
-def drain_human_inbox(app_dir, md_path, transcript, section_label):
+def drain_human_inbox(app_dir, md_path, transcript, section_label,
+                      phase_key=None, rnd=None, slot=""):
     """If the human dropped a message into <app>/human_inbox.txt (e.g. from the
     GUI text box), fold it into the live conversation so the agents see and
     respond to it, then clear the inbox. Returns the (possibly extended)
-    transcript."""
+    transcript. phase_key/rnd/slot feed the messages.jsonl index line; the
+    slot is STRUCTURAL (open/coord/closing) because one debate round drains
+    twice and counting drains would not survive a resume."""
     inbox = os.path.join(app_dir, "human_inbox.txt")
     try:
         with open(inbox, encoding="utf-8") as fh:
@@ -2655,6 +2661,9 @@ def drain_human_inbox(app_dir, md_path, transcript, section_label):
         pass
     block = "**You (human) — %s**\n\n%s\n" % (section_label, msg)
     append_md(md_path, "\n" + block)
+    if phase_key:
+        msglib.append_message(app_dir, phase_key, "human", "human", md_path,
+                              rnd=rnd or 0, slot=slot)
     emit("Human joined the conversation: %s" % msg.replace("\n", " ")[:100])
     return transcript + "\n" + block
 
@@ -4693,7 +4702,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         state["next_agent"] = "+".join(w["slug"] for w in roster)  # all building at once
         save_state(app_dir, state)
         append_md(md_path, "\n### Iteration %d\n\n" % rnd)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd)
+        transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd,
+                                       phase_key=key, rnd=rnd, slot="open")
 
         tree = _build_file_tree(build_dir)
         # Worker-lane context policy (runtime.build_context_policy): under
@@ -4810,6 +4820,10 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                 live_log(app_dir, w.get("lane_id") or w["slug"], w["agent"],
                          "agent_turn_completed", resp)
             append_md(md_path, "\n" + block)
+            msglib.append_message(app_dir, key, "skip" if err else "turn",
+                                  w["slug"], md_path, agent=w["agent"],
+                                  role=w.get("label") or "", persona=plabel,
+                                  rnd=rnd)
             transcript += "\n" + block
         emit("Iteration %d: %d/%d workers produced output." % (rnd, produced, len(roster)))
         if produced == 0:
@@ -4894,10 +4908,15 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                         rblock = "**%s — cross-review (iteration %d)**\n\n%s\n" % (
                             roster[i]["label"], rnd, note)
                         append_md(md_path, "\n" + rblock)
+                        msglib.append_message(
+                            app_dir, key, "review", roster[i]["slug"], md_path,
+                            agent=roster[i]["agent"],
+                            role=roster[i].get("label") or "", rnd=rnd)
                         transcript += "\n" + rblock
 
         # ---- barrier reached: integrator wires the shared files + decides ----
-        transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd)
+        transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd,
+                                       phase_key=key, rnd=rnd, slot="coord")
         failover_enabled = bool(cget(cfg, "runtime.coordinator_failover_enabled", True))
         integrator = _pick_live_coordinator(cfg, active, preferred=coord) or coord
         if integrator != coord:
@@ -4964,6 +4983,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         cblock = "**Integrator (%s) — after iteration %d**\n\n%s\n" % (
             DISPLAY.get(integrator, integrator), rnd, cresp)
         append_md(md_path, "\n" + cblock)
+        msglib.append_message(app_dir, key, "integrator", integrator, md_path,
+                              rnd=rnd)
         transcript += "\n" + cblock
         # The integrator wrote this decision itself — next delta starts after it.
         _lane_seen["__integrator__"] = len(transcript)
@@ -5122,6 +5143,8 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
             break
         rblock = "**Repair %d (%s)**\n\n%s\n" % (attempt, DISPLAY.get(coord, coord), rresp)
         append_md(md_path, "\n" + rblock)
+        msglib.append_message(app_dir, key, "repair", coord, md_path,
+                              rnd=attempt)
         transcript += "\n" + rblock
 
         res = verifylib.run_verification(build_dir, spec, _compile_timeout())
@@ -5441,6 +5464,7 @@ def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
         resp, aerr = results_by_agent.get(agent, (None, "no result"))
         plabel = roleslib.persona_label(personas.get(agent))
         hat = " (%s)" % plabel if plabel else ""
+        block_kind = "turn"
         if aerr:
             # Resilient: an unavailable/logged-out agent is skipped with a note
             # so the phase keeps going with whoever IS available (they join
@@ -5448,6 +5472,7 @@ def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
             emit("%s unavailable in %s %d: %s" % (DISPLAY[agent], unit, rnd, aerr))
             block = "**%s — %s %d (skipped: CLI unavailable)**\n\n_%s_\n" % (
                 DISPLAY[agent], "Iteration" if is_build else "Round", rnd, aerr)
+            block_kind = "skip"
         elif not is_build and rnd > 1 \
                 and (resp or "").strip().upper().rstrip(".!").strip() == "PASS":
             # PASS protocol: an honest abstention is recorded as one line,
@@ -5456,6 +5481,7 @@ def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
             round_produced += 1
             block = "**%s%s — Round %d**\n\n_PASS — nothing new to add._\n" % (
                 DISPLAY[agent], hat, rnd)
+            block_kind = "pass"
             live_log(app_dir, key, agent, "agent_turn_completed", "PASS")
             emit("%s passed in round %d (nothing new)." % (DISPLAY[agent], rnd))
         else:
@@ -5468,6 +5494,8 @@ def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
             live_log(app_dir, key, agent, "agent_turn_completed", resp)
             emit("Appended %s response to %s/%s" % (DISPLAY[agent], folder, fname))
         append_md(md_path, "\n" + block)
+        msglib.append_message(app_dir, key, block_kind, agent, md_path,
+                              persona=plabel, rnd=rnd)
         transcript += "\n" + block
     return transcript, round_produced
 
@@ -5522,6 +5550,8 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
              "recovered; no rounds discarded)." % (key, resume_round, len(transcript)))
     else:
         write_md(md_path, phase_header(app, phasedef, original_prompt))
+        msglib.reconcile_messages(app_dir, key, keep_below_round=1,
+                                  drop_post_round=True)
         # A leftover end command is stale only on a FRESH start. On the resume
         # path above it is deliberately kept: the user ended a chat the engine
         # crashed out of, and that command must still be honored.
@@ -5533,6 +5563,7 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
     state["current_phase"] = key
     save_state(app_dir, state)
 
+    _retry_seq = {}   # (round, agent) -> count; ids stay unique on re-retry
     idle_timeout = _approval_timeout(cfg)
     end_reason = None
     rounds_run = resume_round - 1
@@ -5572,7 +5603,8 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
         append_md(md_path, "\n### Round %d\n\n" % rnd)
         evlib.emit_event(app_dir, "conversation_round", project=app, phase=key,
                          round=rnd)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label)
+        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label,
+                                       phase_key=key, rnd=rnd, slot="open")
         round_agents = ordered_agents(active)
         state["next_agent"] = "+".join(round_agents)
         save_state(app_dir, state)
@@ -5615,6 +5647,11 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
                     rblock = "**%s (retry on %s) — Round %d**\n\n%s\n" % (
                         DISPLAY.get(_ragent, _ragent), _rmodel, rnd, rresp)
                     append_md(md_path, "\n" + rblock)
+                    _retry_seq[(rnd, _ragent)] = \
+                        _retry_seq.get((rnd, _ragent), 0) + 1
+                    msglib.append_message(app_dir, key, "retry", _ragent,
+                                          md_path, rnd=rnd,
+                                          seq=_retry_seq[(rnd, _ragent)])
                     transcript += "\n" + rblock
                     emit("Retry: %s re-answered round %d on %s."
                          % (DISPLAY.get(_ragent, _ragent), rnd, _rmodel))
@@ -5629,7 +5666,8 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
             # the inbox forever (nothing drains it after the phase completes):
             # fold it in as a closing section, then finalize.
             transcript = drain_human_inbox(app_dir, md_path, transcript,
-                                           "closing message")
+                                           "closing message", phase_key=key,
+                                           rnd=rnd, slot="closing")
             end_reason = "ended by user"
         elif decision == "timeout":
             end_reason = "conversation idle timeout"
@@ -5756,7 +5794,8 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
 
         unit_label = "%s %d" % ("Iteration" if is_build else "Round", rnd)
         _pre_drain_len = len(transcript)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label)
+        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label,
+                                       phase_key=key, rnd=rnd, slot="open")
         human_joined = len(transcript) > _pre_drain_len
         if stepping_in:
             try:
@@ -5815,7 +5854,8 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
 
         # Coordinator turn
         _pre_coord_len = len(transcript)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label)
+        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label,
+                                       phase_key=key, rnd=rnd, slot="coord")
         # V3 board 1.7: a step-in message can land while agents were talking —
         # this pre-coordinator drain then folds it a round early. That IS the
         # join (the message is in the transcript; the marker is consumed), but
@@ -5885,6 +5925,8 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
         cblock = "**Coordinator (%s) — decision after %s %d**\n\n%s\n" % (
             DISPLAY[acting_coord], "iteration" if is_build else "round", rnd, cresp)
         append_md(md_path, "\n" + cblock)
+        msglib.append_message(app_dir, key, "coordinator", acting_coord,
+                              md_path, rnd=rnd)
         transcript += "\n" + cblock
         live_log(app_dir, key, acting_coord, "agent_turn_completed", cresp)
         emit("Appended Coordinator (%s) decision to %s/%s" % (DISPLAY[acting_coord], folder, fname))
@@ -6029,6 +6071,8 @@ def _run_forced_vote(cfg, app, app_dir, phasedef, original_prompt,
         if agent in vote_responses:
             vblock = "**%s — vote**\n\n%s\n" % (DISPLAY[agent], vote_responses[agent])
             append_md(md_path, "\n" + vblock)
+            msglib.append_message(app_dir, key, "vote", agent, md_path,
+                                  token="final")
             transcript += "\n" + vblock
             emit("Appended %s vote to %s/%s" % (DISPLAY[agent], folder, fname))
 
@@ -6052,6 +6096,8 @@ def _run_forced_vote(cfg, app, app_dir, phasedef, original_prompt,
                (last_substantive.get(winner) or
                 "See %s's final position in the transcript above." % DISPLAY[winner])))
         append_md(md_path, "\n**Deterministic vote tally**\n\n" + tally_md)
+        msglib.append_message(app_dir, key, "tally", "orchestrator", md_path,
+                              token="final")
         final_output = tally_md
         vote = {"decided": True, "by": "ballot-tally", "winner": winner,
                 "method": "ballots",
@@ -6071,6 +6117,8 @@ def _run_forced_vote(cfg, app, app_dir, phasedef, original_prompt,
                                    prompt_tally(cfg, cand, ctx, phasedef))
                 append_md(md_path, "\n**Coordinator (%s) — vote tally & decision**\n\n%s\n"
                           % (DISPLAY[cand], tresp))
+                msglib.append_message(app_dir, key, "tally", cand, md_path,
+                                      token="final")
                 final_output = tresp
                 vote = {"decided": bool(VOTE_RE.search(tresp)), "by": cand,
                         "method": "llm-fallback"}
@@ -6531,12 +6579,15 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         # Preserve the on-disk transcript (write_md would TRUNCATE it) except
         # for a trailing incomplete round, which is dropped and redone.
         write_md(md_path, _kept)
+        msglib.reconcile_messages(app_dir, key, keep_below_round=resume_round)
         transcript = _kept[_header_end:]
         emit("Phase '%s': resuming a crashed run at round %d (%d completed "
              "round(s), %d char(s) of transcript recovered)."
              % (key, resume_round, resume_round - 1, len(transcript)))
     else:
         write_md(md_path, phase_header(app, phasedef, original_prompt))
+        msglib.reconcile_messages(app_dir, key, keep_below_round=1,
+                                  drop_post_round=True)
         transcript = ""
     extra = phase_extra(cfg, key)
 
@@ -6736,6 +6787,8 @@ def _repair_contract(cfg, app, app_dir, key, coord, active, md_path, transcript,
             continue
         block = "**%s — %s-json repair**\n\n%s\n" % (DISPLAY[cand], kind, resp)
         append_md(md_path, "\n" + block)
+        msglib.append_message(app_dir, key, "contract", cand, md_path,
+                              token="final.%s" % kind)
         transcript += "\n" + block
         return transcript, resp
     return transcript, None
@@ -7306,6 +7359,8 @@ def _record_skipped_phase(app, app_dir, phasedef, prompt, state, reason):
     os.makedirs(phase_dir, exist_ok=True)
     md_path = os.path.join(phase_dir, fname)
     write_md(md_path, phase_header(app, phasedef, prompt))
+    msglib.reconcile_messages(app_dir, key, keep_below_round=1,
+                              drop_post_round=True)
     append_md(md_path, "\n## Final Output\n\n%s\n" % reason)
     append_md(md_path, "\n---\n\nSKIPPED\n")
     state.setdefault("phase_outputs", {})[key] = reason
