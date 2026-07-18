@@ -447,6 +447,25 @@ enum FactoryScanner {
         }
         return ((obj["order"] as? [String]) ?? [], (obj["lanes"] as? Int) ?? 3)
     }
+
+    // Pid liveness, shepherd locked() parity: kill(pid, 0) probes without
+    // signaling. EPERM counts as ALIVE — a process we may not signal can still
+    // be running, and a false "alive" only suppresses a resume offer (the safe
+    // direction), never launches anything.
+    nonisolated(unsafe) static let pidAlive: (Int32) -> Bool = { pid in
+        kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    /// Names whose lock is STALE: it names no pid, or the pid is dead — the
+    /// same rule shepherd.sh locked() uses (a pid-less lock is not locked).
+    /// scanLocks stays a pure parser; this is the separate liveness layer.
+    static func staleLockNames(in locks: [String: AppLockInfo],
+                               isPidAlive: (Int32) -> Bool = pidAlive) -> Set<String> {
+        Set(locks.filter { _, info in
+            guard let pid = info.pid else { return true }
+            return !isPidAlive(pid)
+        }.keys)
+    }
 }
 
 // Commands routed from the menu bar (⌘N / ⌘R / ⌥⌘I / ⌘F / …) into the active
@@ -620,6 +639,14 @@ final class OrchestratorStore: ObservableObject {
     @Published var appLocks: [String: AppLockInfo] = [:]
     @Published var autorunDisabled: Set<String> = []
     @Published var queueOrder: [String] = []
+    // Crashed-run detection (ResumeLogic.swift): locks whose pid is dead or
+    // absent, and the settled offers derived from them. Display subtracts
+    // staleLocks from "running"; crashedRuns drives the resume banner. The
+    // refresh path only ever PUBLISHES these — the sole launch entry point is
+    // the user's click on resumeCrashedRun.
+    @Published var staleLocks: Set<String> = []
+    @Published var crashedRuns: [ResumeOffer] = []
+    private var staleLockFirstSeen: [String: Date] = [:]
 
     // Chat Home conversation state lives on the store, NOT in the view:
     // navigating to a project and back recreates ChatHomeView, and view-local
@@ -782,6 +809,12 @@ final class OrchestratorStore: ObservableObject {
     func setWorkspaceRoot(_ url: URL) {
         UserDefaults.standard.set(url.path, forKey: "workspaceRoot")
         rootURL = url
+        // Resume offers are per-workspace; clearing here (belt) plus the
+        // scannedRoot guard in updateResumeOffers (braces) keeps a stale
+        // tick's offers from ever leaking across roots.
+        staleLockFirstSeen = [:]
+        crashedRuns = []
+        staleLocks = []
         try? fm.createDirectory(at: url, withIntermediateDirectories: true)
         refresh()
     }
@@ -898,13 +931,18 @@ final class OrchestratorStore: ObservableObject {
                 }
             }
             let locks = FactoryScanner.scanLocks(rootURL: rootURL)
+            // Dead/absent-pid detection on the scan thread: cheap kill(2)
+            // probes over captured locals, same seam as every other scanner.
+            let stale = FactoryScanner.staleLockNames(in: locks)
             let autorun = FactoryScanner.scanAutorunDisabled(rootURL: rootURL, names: names)
             let queueFile = FactoryScanner.readQueueFile(rootURL: rootURL)
             // M4: events.jsonl tails + the fleet-health rollup (only files whose
             // mtime/size moved are re-read — the scanner caches parses).
             let events = EventsScanner.scan(rootURL: rootURL, names: names)
+            // A stale lock is a corpse, not a running project — counting it
+            // as running would hide the crash from the fleet-health rollup.
             let running = Set(loaded.filter(\.running).map(\.name))
-                .union(locks.keys)
+                .union(locks.keys.filter { !stale.contains($0) })
             // "Done" only means the pipeline finished — it says nothing about
             // whether the last verify_results.json record actually passed.
             // Fold a done-but-failed-verification project into the same
@@ -933,8 +971,11 @@ final class OrchestratorStore: ObservableObject {
                 if health != self.fleetHealth { self.fleetHealth = health }
                 self.escalateFallbacksIfNeeded(events)
                 if locks != self.appLocks { self.appLocks = locks }
+                if stale != self.staleLocks { self.staleLocks = stale }
                 self.syncChatSessions(with: loaded)
                 if autorun != self.autorunDisabled { self.autorunDisabled = autorun }
+                self.updateResumeOffers(scannedRoot: rootURL, loaded: loaded,
+                                        locks: locks, stale: stale, autorun: autorun)
                 if self.queueDragActive, let t = self.queueDragStarted,
                    Date().timeIntervalSince(t) > 30 {
                     self.endQueueDrag()   // abandoned drag — persist what's shown
@@ -950,6 +991,77 @@ final class OrchestratorStore: ObservableObject {
                     self.refresh()
                 }
             }
+        }
+    }
+
+    // MARK: - Crashed-run resume offers (ResumeLogic.swift)
+
+    /// Derive the settled resume offers from this tick's scan. Main-actor:
+    /// exclusion sets read CURRENT launch state (queue, live processes,
+    /// manual stops) at apply time, so a scan snapshotted before a Resume
+    /// click can never resurrect the offer for the app just launched.
+    private func updateResumeOffers(scannedRoot: URL, loaded: [Project],
+                                    locks: [String: AppLockInfo],
+                                    stale: Set<String>, autorun: Set<String>) {
+        // A coalesced refresh (refreshInFlight → refreshPending) does NOT bump
+        // refreshGeneration, so a setWorkspaceRoot mid-scan can land an
+        // old-root completion here. Offers must never cross workspaces — a
+        // click would launch --app <name> against the NEW root.
+        guard scannedRoot == rootURL else { return }
+        let now = Date()
+        staleLockFirstSeen = ResumeAdvisor.settledFirstSeen(
+            previous: staleLockFirstSeen, nowStale: stale, now: now)
+        var queuedOrLaunching = Set(runQueue)
+        if let ln = launchingName { queuedOrLaunching.insert(ln) }
+        let offers = ResumeAdvisor.candidates(
+            staleLocks: ResumeAdvisor.settled(staleLockFirstSeen, now: now),
+            locks: locks,
+            autorunDisabled: autorun,
+            doneOrMissing: Set(loaded.filter { $0.status == .done }.map(\.name))
+                .union(stale.subtracting(loaded.map(\.name))),
+            guiOwnedLive: Set(runningProcesses.compactMap {
+                $0.value.isRunning ? $0.key : nil
+            }),
+            queuedOrLaunching: queuedOrLaunching,
+            manuallyStopped: Set(manualStops.keys))
+        if offers != crashedRuns { crashedRuns = offers }
+    }
+
+    /// The ONLY launch entry this feature adds — reachable solely from the
+    /// banner button (a user click), never from the refresh path. Uses plain
+    /// `--app`: the engine detects its own stale running state and resumes
+    /// (same mechanism shepherd uses), and its flock'd per-app lock arbitrates
+    /// a simultaneous shepherd launch — one proceeds, the loser logs
+    /// "already running (locked)" and exits. The stale lock is deliberately
+    /// NOT deleted here: acquire_app_lock reclaims dead-pid locks itself, and
+    /// leaving it preserves the engine's mutual exclusion.
+    func resumeCrashedRun(_ name: String) {
+        guard !autorunDisabled.contains(name) else {
+            runLog += "\(name) is paused (autorun disabled) — enable it before resuming.\n"
+            return
+        }
+        guard staleLocks.contains(name) else {
+            runLog += "\(name) no longer looks crashed — its lock is live again (shepherd may have relaunched it).\n"
+            refresh()
+            return
+        }
+        let pid = appLocks[name]?.pid
+        runLog += pid.map { "Resuming \(name) — its previous run (pid \($0)) is gone.\n" }
+            ?? "Resuming \(name) — its run lock named no pid.\n"
+        crashedRuns.removeAll { $0.name == name }
+        staleLockFirstSeen[name] = nil
+        // orchestratorRunning is a 240s state-mtime heuristic: the crashed app
+        // counts ITSELF as running for a while, and a plain runOrQueue would
+        // park the resume behind the corpse it is resuming. Launch immediately
+        // when the crashed app is the only thing that looks busy.
+        if ResumeAdvisor.immediateLaunchAllowed(
+            resuming: name,
+            runningProjectNames: Set(projects.filter(\.running).map(\.name)),
+            launchingName: launchingName,
+            queueEmpty: runQueue.isEmpty) {
+            launchQueued(name)
+        } else {
+            runOrQueue(name)
         }
     }
 
@@ -2367,7 +2479,10 @@ final class OrchestratorStore: ObservableObject {
     // engine-owns-the-repo signals, and workers write into app_build directly
     // (not through git), so there's no index lock to rely on.
     func canRollback(_ project: Project) -> Bool {
-        !(project.running || canStop(project.name) || appLocks[project.name] != nil)
+        // A stale (dead-pid) lock is a corpse, not a live engine — without the
+        // subtraction a crashed run would pin rollback forever.
+        !(project.running || canStop(project.name)
+          || (appLocks[project.name] != nil && !staleLocks.contains(project.name)))
     }
 
     // Roll the app_build repo back to a chosen historical commit. Guards the

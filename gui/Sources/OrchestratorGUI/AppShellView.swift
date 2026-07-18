@@ -38,7 +38,9 @@ struct AppShellView: View {
     // PROJECTS sections.
 
     private func isRunning(_ p: Project) -> Bool {
-        store.appLocks[p.name] != nil || store.canStop(p.name)
+        AppShellLogic.showsAsRunning(lockPresent: store.appLocks[p.name] != nil,
+                                     lockStale: store.staleLocks.contains(p.name),
+                                     guiOwned: store.canStop(p.name))
     }
 
     // Archived projects leave the four active sections entirely; they live in
@@ -54,9 +56,10 @@ struct AppShellView: View {
                     < (store.appLocks[$1.name]?.since ?? .distantFuture) })
     }
     private var needsAttentionApps: [Project] {
-        filtered(activeProjects.filter {
-            !isRunning($0) && ($0.status == .aborted || $0.awaitingApproval != nil
-                               || $0.blockedConflict != nil)
+        filtered(activeProjects.filter { p in
+            !isRunning(p) && (p.status == .aborted || p.awaitingApproval != nil
+                              || p.blockedConflict != nil
+                              || store.crashedRuns.contains { $0.name == p.name })
         }.sorted { $0.name < $1.name })
     }
     private var doneApps: [Project] {
@@ -333,6 +336,9 @@ struct AppShellView: View {
     }
 
     private func attentionDetail(_ p: Project) -> String {
+        if store.crashedRuns.contains(where: { $0.name == p.name }) {
+            return "crashed — resume available"
+        }
         if p.awaitingApproval != nil { return "awaiting approval" }
         if p.blockedConflict != nil { return "merge conflict" }
         if let phase = p.currentPhase { return "failed at \(p.titleFor(phase))" }
@@ -480,7 +486,8 @@ private struct ShellProjectRow: View {
 
     private var isLive: Bool {
         project.running || store.canStop(project.name)
-            || store.appLocks[project.name] != nil
+            || (store.appLocks[project.name] != nil
+                && !store.staleLocks.contains(project.name))
     }
 
     var body: some View {
@@ -1027,6 +1034,39 @@ enum ProjectScopeTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// Pure classification: "shows as running" = a NON-STALE lock or a live
+// GUI-owned process. A stale (dead/absent-pid) lock is a crashed corpse and
+// must never render as Running — that was the standing lie this fixes.
+enum AppShellLogic {
+    static func showsAsRunning(lockPresent: Bool, lockStale: Bool,
+                               guiOwned: Bool) -> Bool {
+        (lockPresent && !lockStale) || guiOwned
+    }
+}
+
+// Banner for a crashed run (dead-pid lock): states what the GUI actually
+// knows and offers a one-click resume. Rendered only while a settled
+// ResumeOffer exists — parked (autorun-disabled) apps never get an offer.
+private struct CrashedRunBanner: View {
+    @EnvironmentObject var store: OrchestratorStore
+    let offer: ResumeOffer
+
+    var body: some View {
+        InlineBanner(kind: .warning,
+                     title: "\(offer.name) crashed",
+                     message: ResumeAdvisor.bannerText(deadPid: offer.deadPid,
+                                                       since: offer.since,
+                                                       shepherdActive: store.shepherdActive)) {
+            HStack(spacing: DS.space.xs) {
+                Button(store.shepherdActive ? "Resume now" : "Resume") {
+                    store.resumeCrashedRun(offer.name)
+                }
+                Button("Clear lock") { store.stopRun(offer.name) }
+            }
+        }
+    }
+}
+
 private struct ProjectShellContent: View {
     @EnvironmentObject var store: OrchestratorStore
     let project: Project
@@ -1041,6 +1081,9 @@ private struct ProjectShellContent: View {
     var body: some View {
         let proj = liveProject
         VStack(spacing: 0) {
+            if let offer = store.crashedRuns.first(where: { $0.name == proj.name }) {
+                CrashedRunBanner(offer: offer)
+            }
             HStack {
                 Picker("View", selection: $scopeTab) {
                     ForEach(ProjectScopeTab.allCases) { t in

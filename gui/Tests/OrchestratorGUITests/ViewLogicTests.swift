@@ -139,4 +139,26 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertEqual(p.phaseResolutionWarning("spec"),
                        "Closed without a clean resolution (some_future_reason).")
     }
+
+    // MARK: - AppShellLogic.showsAsRunning (stale-lock display honesty)
+
+    func testStaleLockDoesNotShowAsRunning() {
+        // A dead-pid lock is a crashed corpse — pinning it in "Running"
+        // forever was the standing lie the resume feature fixes.
+        XCTAssertFalse(AppShellLogic.showsAsRunning(lockPresent: true,
+                                                    lockStale: true,
+                                                    guiOwned: false))
+    }
+
+    func testLiveLockShowsAsRunning() {
+        XCTAssertTrue(AppShellLogic.showsAsRunning(lockPresent: true,
+                                                   lockStale: false,
+                                                   guiOwned: false))
+    }
+
+    func testGuiOwnedShowsAsRunningWithoutLock() {
+        XCTAssertTrue(AppShellLogic.showsAsRunning(lockPresent: false,
+                                                   lockStale: false,
+                                                   guiOwned: true))
+    }
 }
