@@ -1,0 +1,17 @@
+{
+  "id": "documentation",
+  "title": "Documentation",
+  "workflow": "documentation",
+  "default_mode": "manual",
+  "artifact_types_emitted": [
+    "gap",
+    "reconcile"
+  ],
+  "artifact_types_accepted": [
+    "idea",
+    "research_brief",
+    "spec_bundle",
+    "finding_report"
+  ],
+  "dod_tier": "standard"
+}

@@ -821,6 +821,40 @@
         "The response addresses what the human actually asked, not a restated agenda.",
         "No invented decisions or consensus claims appear."
       ]
+    },
+    "doc_gap_fill": {
+      "rules": [
+        "Fill only the blueprint slots the deterministic render left thin or empty.",
+        "Draft every slot from the project's published artifacts and prior-phase decisions — never invent a fact the artifacts don't support.",
+        "Where the evidence for a slot is genuinely absent, name the gap; do not write speculative prose to hide it."
+      ],
+      "required_output": [
+        "A phase-output-json block whose doc_sections map keys the filled blueprint slots.",
+        "Each filled section's markdown, self-contained and finished.",
+        "A named list of slots left as gaps for lack of supporting artifacts."
+      ],
+      "acceptance_checks": [
+        "Every drafted claim traces to a published artifact or a named phase decision.",
+        "No slot is filled with invention; unsupported slots are declared gaps.",
+        "The phase-output-json block parses and its doc_sections keys match real blueprint slots."
+      ]
+    },
+    "doc_coherence": {
+      "rules": [
+        "Read the assembled documentation as one whole; look across sections, not within one.",
+        "Flag contradictions, duplicated claims, and passages that read as thin filler.",
+        "This is a review, not a rewrite: name each problem and the sections it spans; do not author replacement content."
+      ],
+      "required_output": [
+        "A list of contradictions, each naming the sections it spans.",
+        "A list of duplicated or redundant passages to merge.",
+        "A list of sections still reading as thin or unsupported."
+      ],
+      "acceptance_checks": [
+        "Every inconsistency names the specific sections involved.",
+        "No new documentation content is invented in this pass.",
+        "A section flagged thin is tied to the missing artifact or decision that would resolve it."
+      ]
     }
   }
 }

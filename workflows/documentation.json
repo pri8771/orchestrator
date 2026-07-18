@@ -1,0 +1,55 @@
+{
+  "name": "documentation",
+  "title": "Documentation",
+  "description": "The assembly hall: documentation is mostly a deterministic render from published artifacts; these LLM phases exist ONLY to fill thin or empty blueprint slots and to catch contradictions across sections. A gap-fill pass emits structured doc_sections; a coherence pass reviews them for consistency.",
+  "target": "app",
+  "build_phase": null,
+  "budget": null,
+  "overrides": {
+    "effort": "fast"
+  },
+  "phases": [
+    {
+      "key": "doc_gap_fill",
+      "folder": "doc_gap_fill",
+      "file": "doc_gap_fill.md",
+      "title": "Documentation Gap Fill",
+      "purpose": "For each blueprint slot the deterministic render left thin or empty, draft the missing content from the project's published artifacts and prior phases — never fabricate facts the artifacts don't support; where evidence is genuinely absent, name the gap rather than inventing prose. Emit the drafted sections as a structured phase-output-json block so the renderer ingests them by key.",
+      "rounds": 3,
+      "roles": [
+        "archivist",
+        "editor"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null,
+      "conversational": false
+    },
+    {
+      "key": "doc_coherence",
+      "folder": "doc_coherence",
+      "file": "doc_coherence.md",
+      "title": "Documentation Coherence Pass",
+      "purpose": "Read the assembled documentation as one whole and flag contradictions, duplicated claims, and slots that still read as thin or unsupported. This is a review, not a rewrite: name each inconsistency and the sections it spans so the owning section can fix it; do not invent replacement content.",
+      "rounds": 2,
+      "roles": [
+        "editor",
+        "archivist"
+      ],
+      "writes": false,
+      "reads_target": false,
+      "verify": null,
+      "checkpoint": false,
+      "structurally_required": false,
+      "requires_verification": false,
+      "doc_sections": [],
+      "test_deliverable": null,
+      "conversational": false
+    }
+  ]
+}

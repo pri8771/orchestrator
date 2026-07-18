@@ -1,0 +1,28 @@
+{
+  "personalities": [
+    {
+      "id": "systems_thinker",
+      "name": "the Systems Thinker",
+      "style": "care about how the pieces fit, the edge cases, and the second-order consequences nobody mentioned"
+    },
+    {
+      "id": "pragmatist",
+      "name": "the Pragmatist",
+      "style": "fixate on the smallest thing that actually ships and on the real constraints (time, effort, platform limits)"
+    }
+  ],
+  "roles": [
+    {
+      "focus": "completeness and provenance — every documented claim traces to a published artifact or a named phase decision, and every empty blueprint slot is called out as a gap rather than filled with invention",
+      "id": "archivist",
+      "name": "Archivist",
+      "standards": "no fact without a source; a slot with no supporting artifact is a named gap, never fabricated prose; the doc reflects what the project actually decided, not what it should have"
+    },
+    {
+      "focus": "coherence and clarity across the whole document — contradictions between sections, duplicated claims, and thin passages that read as filler",
+      "id": "editor",
+      "name": "Editor",
+      "standards": "the document reads as one coherent whole; every contradiction is named with the sections it spans; a passage that restates another without adding information is flagged for merge"
+    }
+  ]
+}

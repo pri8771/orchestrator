@@ -1,0 +1,11 @@
+{
+  "contracts": [
+    {
+      "phase_key": "doc_gap_fill",
+      "contract": "phase_structured_output",
+      "fence_tag": "phase-output-json",
+      "required_fields": "phase_structured_output",
+      "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```phase-output-json``` block containing a single JSON object of the form {\"phase\": \"doc_gap_fill\", \"doc_sections\": {\"<slot key>\": \"<the drafted markdown for that blueprint slot>\"}}. Key each entry by the blueprint slot it fills. Draft ONLY from the project's published artifacts and prior-phase decisions — never fabricate a fact the artifacts don't support; where the evidence for a slot is genuinely absent, OMIT that slot from doc_sections and name the gap in your prose instead. The documentation renderer ingests these keyed sections verbatim, so each value must be finished, self-contained markdown.\n"
+    }
+  ]
+}
