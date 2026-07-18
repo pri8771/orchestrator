@@ -6077,6 +6077,236 @@ def _run_forced_vote(cfg, app, app_dir, phasedef, original_prompt,
     return final_output, transcript, vote
 
 
+# V3 board 2.2c: the phase-close hook sequence. Each hook is a VERBATIM
+# lift of one tail block of process_phase (gating `if` kept INSIDE, so
+# the runner stays a dumb loop and each hook is independently skippable).
+# Every hook takes the full uniform signature and returns the
+# (transcript, final_output) pair even when untouched — the uniformity is
+# what makes the tuple callable in a loop; 2.3's TurnContext is the
+# designated slimming pass. NOTE: _PHASE_CLOSE_HOOKS freezes function
+# references at import — tests exercise hooks end-to-end, not by
+# monkeypatching hook names. Order is CONTRACT: verify before signing
+# (device settings enforced last), contracts after verify (transcript
+# must include repair rounds), audit before the verification label (audit
+# REPLACES final_output; the label APPENDS).
+def _hook_sprint_verify_reserve(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # Sprint: the build slice is now spent, but the run still has its verify
+    # reserve. Hand the verify/repair pass the hard RUN deadline so compile +
+    # repair can use that reserved tail.
+    if cfg.get("_budget") and cfg.get("_deadline"):
+        cfg["_phase_deadline"] = cfg["_deadline"]
+    return transcript, final_output
+
+
+def _hook_verify_repair(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # After an enabled build, actually compile it and run bounded repair
+    # iterations on failure (the reliability gate). Runs while writes are still
+    # allowed so repairs can edit files; before the signing fixup so device
+    # settings are enforced last.
+    verify_note = ""
+    if (is_build or is_verify_repair) and allow_writes and cfg.get("_build_dir"):
+        transcript, verify_note = _verify_and_repair(
+            cfg, app, app_dir, phasedef, state, md_path, transcript, coord)
+        if verify_note:
+            final_output = (final_output.rstrip() + "\n\n**Build verification:** "
+                            + verify_note) if final_output else verify_note
+    return transcript, final_output
+
+
+def _hook_ios_signing(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # Deterministic safety net: after an enabled build, guarantee any generated
+    # Xcode project is signable on a real device — regardless of what the build
+    # agent wrote into the pbxproj.
+    if (is_build or is_verify_repair) and allow_writes and cfg.get("_build_dir") \
+            and bool(cget(cfg, "ios.enforce_signing", True)):
+        try:
+            fixed = fix_ios_signing(
+                cfg["_build_dir"],
+                team=str(cget(cfg, "ios.development_team", "") or ""),
+                style=str(cget(cfg, "ios.code_sign_style", "Automatic") or "Automatic"),
+                bundle_prefix=str(cget(cfg, "ios.bundle_id_prefix", "") or ""),
+            )
+            for p in fixed:
+                emit("iOS signing fixup applied: %s" % p)
+            if not fixed:
+                emit("iOS signing check: no changes needed.")
+        except OSError as exc:
+            emit("WARN iOS signing fixup failed: %s" % exc)
+    return transcript, final_output
+
+
+def _hook_secret_scan(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # V2 §17/§23: deterministic secret scan over the generated source, feeding
+    # the secret_hardcoded launch-readiness gate. Runs after every build phase,
+    # before docs render; each run replaces the previous secret_scan findings.
+    if (is_build or is_verify_repair) and allow_writes and cfg.get("_build_dir"):
+        sfinds = scan_build_secrets(cfg["_build_dir"])
+        merge_secret_findings(app_dir, sfinds)
+        for f in sfinds:
+            emit("SECRET_SCAN: %s" % f["title"])
+        emit("SECRET_SCAN: %d hardcoded secret(s) in app_build -> docs/findings.json."
+             % len(sfinds))
+        live_log(app_dir, key, "orchestrator", "secret_scan",
+                 "%d hardcoded secret finding(s) in generated source" % len(sfinds))
+    return transcript, final_output
+
+
+def _hook_record_contracts(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # V2 §19/§20: persist the machine contracts these phases emitted. Parsed from
+    # the transcript + final output (last emission of an id/name wins, so the
+    # coordinator's final revision beats any draft). Cycles are an error recorded
+    # in tasks.json — never a crash.
+    transcript, _unresolved_contract = _record_phase_contracts(
+        cfg, app, app_dir, key, transcript, final_output,
+        coord=coord, active=active, md_path=md_path,
+        record_decisions=_decisions_contract_requested(cfg, phasedef))
+    if _unresolved_contract:
+        state.setdefault("phase_resolutions", {})[key] = _unresolved_contract
+    return transcript, final_output
+
+
+def _hook_flows_requirements_research(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # Flows/requirements contracts: not part of _record_phase_contracts (that
+    # covers tasks.json/interfaces.json/decisions.json/phase_summaries.json)
+    # since these feed the UI-crawl and adherence gates specifically.
+    if key == "task_assignments":
+        blob = transcript + "\n" + (final_output or "")
+        flows, ferrs = parse_flows_blocks(blob)
+        for e in ferrs:
+            emit("FLOWS: ERROR %s" % e)
+        if flows:
+            persist_flows(app_dir, flows)
+            emit("FLOWS: %d user flow(s) -> flows.json (%d error(s)) — the "
+                 "UI-crawl gate replays these against the built app."
+                 % (len(flows), len(ferrs)))
+    if key == "app_features":
+        blob = transcript + "\n" + (final_output or "")
+        reqs, rerrs = parse_requirements_blocks(blob)
+        for e in rerrs:
+            emit("REQUIREMENTS: ERROR %s" % e)
+        if reqs:
+            persist_requirements(app_dir, reqs)
+            emit("REQUIREMENTS: %d requirement(s) -> requirements.json — the "
+                 "adherence gate grades the build against exactly these."
+                 % len(reqs))
+    if key == "product_research" and bool(cget(cfg, "runtime.research_source_check", True)):
+        _research_source_check(cfg, app, app_dir, final_output)
+    return transcript, final_output
+
+
+def _hook_library_mining(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # library_mining: write the extraction plan to a convenient report file.
+    if cfg.get("_workflow_target") == "library_mining" and key == "extraction_candidates":
+        rep_dir = os.path.join(app_dir, "report")
+        os.makedirs(rep_dir, exist_ok=True)
+        header = ("# Reusable-Library Extraction Report — %s\n\n_Read-only analysis of "
+                  "%d repos by the multi-agent orchestrator._\n\n" % (app, len(cfg.get("_target_paths") or [])))
+        write_md(os.path.join(rep_dir, "LIBRARY_REPORT.md"), header + (final_output or ""))
+        emit("LIBRARY_MINING: wrote report/LIBRARY_REPORT.md")
+        # Follow-on (NEXT_MILESTONES): if the coordinator emitted an
+        # extraction-json contract for its top candidate, scaffold it into a
+        # real, COMPILABLE SPM package skeleton and prove it builds. The ENTIRE
+        # block is exception-isolated — a scaffold/verify hiccup must never
+        # fail the (read-only, already-complete) library_mining phase.
+        try:
+            pkg, perrs = parse_extraction_blocks(transcript + "\n" + (final_output or ""))
+            for e in perrs:
+                emit("LIBRARY_MINING extraction-json: %s" % e)
+            if pkg:
+                manifest = swiftscaffoldlib.scaffold_spm_package(
+                    pkg, os.path.join(app_dir, "app_build"))
+                if manifest.get("ok"):
+                    emit("LIBRARY_MINING: scaffolded package '%s' (%d public API stub(s)) at %s"
+                         % (pkg["package_name"], manifest["api_count"], manifest["package_dir"]))
+                    if shutil.which("swift"):
+                        res = verifylib.run_verification(manifest["package_dir"], {"type": "spm"})
+                        verifylib.persist_verify_result(
+                            app_dir, key, res, prompt_hash=state.get("prompt_hash"),
+                            workflow=cfg.get("_workflow_name"))
+                        emit("LIBRARY_MINING: swift build %s"
+                             % verifylib.verification_status(res))
+                else:
+                    for e in manifest.get("errors", []):
+                        emit("LIBRARY_MINING scaffold: %s" % e)
+        except Exception as exc:  # never let the follow-on abort the phase
+            emit("LIBRARY_MINING: package scaffold skipped (%s)" % exc)
+    return transcript, final_output
+
+
+def _hook_audit_report(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # Audit report phase: synthesize ALL findings (from every audit phase, using the
+    # FULL untruncated phase_outputs — not the char-budgeted context) into a ranked
+    # findings.json + AUDIT_REPORT.md, and make the rendered report this phase's Final
+    # Output so it persists to state + the GUI with no new plumbing.
+    if cfg.get("_workflow_target") == "audit" and key == "report":
+        blob = "\n".join(str(v) for v in state.get("phase_outputs", {}).values())
+        blob += "\n" + (final_output or "")
+        findings = _assign_ids(rank_findings(dedup_findings(parse_finding_blocks(blob))))
+        rep_dir = os.path.join(app_dir, "report")
+        os.makedirs(rep_dir, exist_ok=True)
+        agents = ", ".join(DISPLAY[a] for a in active)
+        summary = _FIND_STRIP_RE.sub("", final_output or "").strip()[:800]
+        rendered = render_audit_report(findings, app, cfg.get("_target_path"),
+                                       agents=agents, summary=summary)
+        try:
+            with open(os.path.join(rep_dir, "findings.json"), "w", encoding="utf-8") as fh:
+                json.dump({"app": app, "target_path": cfg.get("_target_path"),
+                           "count": len(findings), "findings": findings}, fh, indent=2)
+        except OSError as exc:
+            emit("WARN could not write findings.json: %s" % exc)
+        write_md(os.path.join(rep_dir, "AUDIT_REPORT.md"), rendered)
+        final_output = rendered
+        emit("AUDIT: %d finding(s) -> report/findings.json + report/AUDIT_REPORT.md."
+             % len(findings))
+    return transcript, final_output
+
+
+def _hook_verification_label(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+    # Verification gate (§16): append the orchestrator-DERIVED VERIFICATION label to
+    # a requires_verification phase's output, computed from the persisted structured
+    # result — never trusting the agent's prose. verified|failed|unverified.
+    if _needs_vlabel:
+        _latest = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
+        _vstatus = (_latest.get("status") if _latest else "unverified") or "unverified"
+        _vlabel = "VERIFICATION: %s" % _vstatus.upper()
+        if not _latest:
+            _vlabel += "\n_(No structured verification result exists for this build.)_"
+        final_output = final_output.rstrip() + "\n\n" + _vlabel
+        emit("Phase '%s': %s (orchestrator-derived from verify_results.json)." % (key, _vlabel.splitlines()[0]))
+    return transcript, final_output
+
+
+_PHASE_CLOSE_HOOKS = (
+    _hook_sprint_verify_reserve,
+    _hook_verify_repair,
+    _hook_ios_signing,
+    _hook_secret_scan,
+    _hook_record_contracts,
+    _hook_flows_requirements_research,
+    _hook_library_mining,
+    _hook_audit_report,
+    _hook_verification_label,
+)
+
+
 def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                   state, phase_index=0):
     key, folder, fname, _purpose = phasedef
@@ -6388,164 +6618,13 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                         "state below stands as this phase's working decision.**\n\n"
                         + transcript[-4000:])
 
-    # Sprint: the build slice is now spent, but the run still has its verify
-    # reserve. Hand the verify/repair pass the hard RUN deadline so compile +
-    # repair can use that reserved tail.
-    if cfg.get("_budget") and cfg.get("_deadline"):
-        cfg["_phase_deadline"] = cfg["_deadline"]
-
-    # After an enabled build, actually compile it and run bounded repair
-    # iterations on failure (the reliability gate). Runs while writes are still
-    # allowed so repairs can edit files; before the signing fixup so device
-    # settings are enforced last.
-    verify_note = ""
-    if (is_build or is_verify_repair) and allow_writes and cfg.get("_build_dir"):
-        transcript, verify_note = _verify_and_repair(
-            cfg, app, app_dir, phasedef, state, md_path, transcript, coord)
-        if verify_note:
-            final_output = (final_output.rstrip() + "\n\n**Build verification:** "
-                            + verify_note) if final_output else verify_note
-
-    # Deterministic safety net: after an enabled build, guarantee any generated
-    # Xcode project is signable on a real device — regardless of what the build
-    # agent wrote into the pbxproj.
-    if (is_build or is_verify_repair) and allow_writes and cfg.get("_build_dir") \
-            and bool(cget(cfg, "ios.enforce_signing", True)):
-        try:
-            fixed = fix_ios_signing(
-                cfg["_build_dir"],
-                team=str(cget(cfg, "ios.development_team", "") or ""),
-                style=str(cget(cfg, "ios.code_sign_style", "Automatic") or "Automatic"),
-                bundle_prefix=str(cget(cfg, "ios.bundle_id_prefix", "") or ""),
-            )
-            for p in fixed:
-                emit("iOS signing fixup applied: %s" % p)
-            if not fixed:
-                emit("iOS signing check: no changes needed.")
-        except OSError as exc:
-            emit("WARN iOS signing fixup failed: %s" % exc)
-
-    # V2 §17/§23: deterministic secret scan over the generated source, feeding
-    # the secret_hardcoded launch-readiness gate. Runs after every build phase,
-    # before docs render; each run replaces the previous secret_scan findings.
-    if (is_build or is_verify_repair) and allow_writes and cfg.get("_build_dir"):
-        sfinds = scan_build_secrets(cfg["_build_dir"])
-        merge_secret_findings(app_dir, sfinds)
-        for f in sfinds:
-            emit("SECRET_SCAN: %s" % f["title"])
-        emit("SECRET_SCAN: %d hardcoded secret(s) in app_build -> docs/findings.json."
-             % len(sfinds))
-        live_log(app_dir, key, "orchestrator", "secret_scan",
-                 "%d hardcoded secret finding(s) in generated source" % len(sfinds))
-
-    # V2 §19/§20: persist the machine contracts these phases emitted. Parsed from
-    # the transcript + final output (last emission of an id/name wins, so the
-    # coordinator's final revision beats any draft). Cycles are an error recorded
-    # in tasks.json — never a crash.
-    transcript, _unresolved_contract = _record_phase_contracts(
-        cfg, app, app_dir, key, transcript, final_output,
-        coord=coord, active=active, md_path=md_path,
-        record_decisions=_decisions_contract_requested(cfg, phasedef))
-    if _unresolved_contract:
-        state.setdefault("phase_resolutions", {})[key] = _unresolved_contract
-    # Flows/requirements contracts: not part of _record_phase_contracts (that
-    # covers tasks.json/interfaces.json/decisions.json/phase_summaries.json)
-    # since these feed the UI-crawl and adherence gates specifically.
-    if key == "task_assignments":
-        blob = transcript + "\n" + (final_output or "")
-        flows, ferrs = parse_flows_blocks(blob)
-        for e in ferrs:
-            emit("FLOWS: ERROR %s" % e)
-        if flows:
-            persist_flows(app_dir, flows)
-            emit("FLOWS: %d user flow(s) -> flows.json (%d error(s)) — the "
-                 "UI-crawl gate replays these against the built app."
-                 % (len(flows), len(ferrs)))
-    if key == "app_features":
-        blob = transcript + "\n" + (final_output or "")
-        reqs, rerrs = parse_requirements_blocks(blob)
-        for e in rerrs:
-            emit("REQUIREMENTS: ERROR %s" % e)
-        if reqs:
-            persist_requirements(app_dir, reqs)
-            emit("REQUIREMENTS: %d requirement(s) -> requirements.json — the "
-                 "adherence gate grades the build against exactly these."
-                 % len(reqs))
-    if key == "product_research" and bool(cget(cfg, "runtime.research_source_check", True)):
-        _research_source_check(cfg, app, app_dir, final_output)
-
-    # Audit report phase: synthesize ALL findings (from every audit phase, using the
-    # FULL untruncated phase_outputs — not the char-budgeted context) into a ranked
-    # findings.json + AUDIT_REPORT.md, and make the rendered report this phase's Final
-    # Output so it persists to state + the GUI with no new plumbing.
-    # library_mining: write the extraction plan to a convenient report file.
-    if cfg.get("_workflow_target") == "library_mining" and key == "extraction_candidates":
-        rep_dir = os.path.join(app_dir, "report")
-        os.makedirs(rep_dir, exist_ok=True)
-        header = ("# Reusable-Library Extraction Report — %s\n\n_Read-only analysis of "
-                  "%d repos by the multi-agent orchestrator._\n\n" % (app, len(cfg.get("_target_paths") or [])))
-        write_md(os.path.join(rep_dir, "LIBRARY_REPORT.md"), header + (final_output or ""))
-        emit("LIBRARY_MINING: wrote report/LIBRARY_REPORT.md")
-        # Follow-on (NEXT_MILESTONES): if the coordinator emitted an
-        # extraction-json contract for its top candidate, scaffold it into a
-        # real, COMPILABLE SPM package skeleton and prove it builds. The ENTIRE
-        # block is exception-isolated — a scaffold/verify hiccup must never
-        # fail the (read-only, already-complete) library_mining phase.
-        try:
-            pkg, perrs = parse_extraction_blocks(transcript + "\n" + (final_output or ""))
-            for e in perrs:
-                emit("LIBRARY_MINING extraction-json: %s" % e)
-            if pkg:
-                manifest = swiftscaffoldlib.scaffold_spm_package(
-                    pkg, os.path.join(app_dir, "app_build"))
-                if manifest.get("ok"):
-                    emit("LIBRARY_MINING: scaffolded package '%s' (%d public API stub(s)) at %s"
-                         % (pkg["package_name"], manifest["api_count"], manifest["package_dir"]))
-                    if shutil.which("swift"):
-                        res = verifylib.run_verification(manifest["package_dir"], {"type": "spm"})
-                        verifylib.persist_verify_result(
-                            app_dir, key, res, prompt_hash=state.get("prompt_hash"),
-                            workflow=cfg.get("_workflow_name"))
-                        emit("LIBRARY_MINING: swift build %s"
-                             % verifylib.verification_status(res))
-                else:
-                    for e in manifest.get("errors", []):
-                        emit("LIBRARY_MINING scaffold: %s" % e)
-        except Exception as exc:  # never let the follow-on abort the phase
-            emit("LIBRARY_MINING: package scaffold skipped (%s)" % exc)
-
-    if cfg.get("_workflow_target") == "audit" and key == "report":
-        blob = "\n".join(str(v) for v in state.get("phase_outputs", {}).values())
-        blob += "\n" + (final_output or "")
-        findings = _assign_ids(rank_findings(dedup_findings(parse_finding_blocks(blob))))
-        rep_dir = os.path.join(app_dir, "report")
-        os.makedirs(rep_dir, exist_ok=True)
-        agents = ", ".join(DISPLAY[a] for a in active)
-        summary = _FIND_STRIP_RE.sub("", final_output or "").strip()[:800]
-        rendered = render_audit_report(findings, app, cfg.get("_target_path"),
-                                       agents=agents, summary=summary)
-        try:
-            with open(os.path.join(rep_dir, "findings.json"), "w", encoding="utf-8") as fh:
-                json.dump({"app": app, "target_path": cfg.get("_target_path"),
-                           "count": len(findings), "findings": findings}, fh, indent=2)
-        except OSError as exc:
-            emit("WARN could not write findings.json: %s" % exc)
-        write_md(os.path.join(rep_dir, "AUDIT_REPORT.md"), rendered)
-        final_output = rendered
-        emit("AUDIT: %d finding(s) -> report/findings.json + report/AUDIT_REPORT.md."
-             % len(findings))
-
-    # Verification gate (§16): append the orchestrator-DERIVED VERIFICATION label to
-    # a requires_verification phase's output, computed from the persisted structured
-    # result — never trusting the agent's prose. verified|failed|unverified.
-    if _needs_vlabel:
-        _latest = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
-        _vstatus = (_latest.get("status") if _latest else "unverified") or "unverified"
-        _vlabel = "VERIFICATION: %s" % _vstatus.upper()
-        if not _latest:
-            _vlabel += "\n_(No structured verification result exists for this build.)_"
-        final_output = final_output.rstrip() + "\n\n" + _vlabel
-        emit("Phase '%s': %s (orchestrator-derived from verify_results.json)." % (key, _vlabel.splitlines()[0]))
+    for _hook in _PHASE_CLOSE_HOOKS:
+        transcript, final_output = _hook(
+            cfg, app, app_dir, phasedef, state,
+            key=key, md_path=md_path, transcript=transcript,
+            final_output=final_output, coord=coord, active=active,
+            is_build=is_build, is_verify_repair=is_verify_repair,
+            allow_writes=allow_writes, _needs_vlabel=_needs_vlabel)
 
     # Final phase footer
     marker = "CONSENSUS: YES" if consensus else (
