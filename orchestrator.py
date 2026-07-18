@@ -46,6 +46,7 @@ import urllib.parse
 
 import artifacts as artifactslib
 import sessions as seslib
+import memory as memlib
 import backfill as backfilllib
 import events as evlib
 import localmodels as lmlib
@@ -1967,6 +1968,11 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
     art = cfg.get("_artifact_context", "")
     if art:
         parts.append(art)
+    # V3 4.13: founder-pinned factory memory (set at phase start; '' for a
+    # memory-free repo, so those runs stay byte-identical).
+    mem = cfg.get("_memory", "")
+    if mem:
+        parts.append(mem)
     # Ground-truth text fetched by the ENGINE from URLs in the user's prompt
     # (set once at run start; urlfetch.py). Only the product-definition phases
     # get it — that's where a hallucinated reading of a linked product poisons
@@ -6112,6 +6118,7 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
     tctx.phase_playbook = ""
     tctx.knowledge = ""
     tctx.artifact_context = ""
+    tctx.memory = ""
     tctx.verify_context = ""
     live_log(app_dir, key, "orchestrator", "phase_completed",
              "conversational phase '%s' complete (%s)" % (key, end_reason))
@@ -6999,6 +7006,18 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         if cfg["_artifact_context"]:
             emit("Injected %d chars of project artifacts into phase '%s'."
                  % (len(cfg["_artifact_context"]), key))
+
+    # V3 4.13 FACTORY MEMORY: founder-pinned facts, at the same seam. Staged
+    # UNCONDITIONALLY (global facts apply to flat/legacy runs too); a repo
+    # with no memory/ dir retrieves '' -> injects nothing -> byte-identical.
+    tctx.memory = memlib.retrieve(
+        HERE, _a_project or "", _a_section or "",
+        "%s %s" % (_purpose, original_prompt),
+        max_chars=int(cget(cfg, "runtime.max_memory_chars", 3000)),
+        on_error=lambda m: emit("MEMORY: WARN %s" % m))
+    if cfg["_memory"]:
+        emit("Injected %d chars of factory memory into phase '%s'."
+             % (len(cfg["_memory"]), key))
 
     # During an enabled build phase, agents work (and write files) directly in a
     # persistent build folder; otherwise no writes are allowed.

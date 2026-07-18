@@ -84,6 +84,9 @@ class TurnContext(object):
         "_artifact_context",
         "Retrieved project-artifact block for this phase (V3 4.7 PULL) "
         "or ''.")
+    memory = _prop(
+        "_memory",
+        "Retrieved factory-memory block for this phase (V3 4.13) or ''.")
     allow_writes = _prop(
         "_allow_writes",
         "True only during a build/verify-repair phase with code changes "
@@ -353,6 +356,7 @@ class TurnContext(object):
         c["_phase_playbook"] = ""
         c["_knowledge"] = ""
         c["_artifact_context"] = ""
+        c["_memory"] = ""
         c["_read_dir"] = None
         c["_target_digest"] = ""
         c["_verify_context"] = ""

@@ -71,6 +71,7 @@ BAND_B = {
     "phase_playbook": "_phase_playbook",
     "knowledge": "_knowledge",
     "artifact_context": "_artifact_context",
+    "memory": "_memory",
     "allow_writes": "_allow_writes",
     "build_dir": "_build_dir",
     "session_cwd": "_session_cwd",
@@ -82,7 +83,7 @@ BAND_B = {
 END_PHASE_CLEARED = {
     "_allow_writes": False, "_build_dir": None, "_session_cwd": None,
     "_prior_disc_cap": None, "_phase_playbook": "", "_knowledge": "",
-    "_artifact_context": "",
+    "_artifact_context": "", "_memory": "",
     "_read_dir": None, "_target_digest": "", "_verify_context": "",
 }
 
