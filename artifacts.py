@@ -76,7 +76,8 @@ import schemas
 # The closed status vocabulary. "superseded" and "converged" are written
 # only by 4.3's lineage machinery. "published" is RETIRED (V3 4.8): it split
 # into the honest pair {pending_review, final} the bus admission gate reads.
-STATUS = ("draft", "pending_review", "final", "superseded", "converged")
+STATUS = ("draft", "pending_review", "final", "superseded", "converged",
+          "quarantined")
 # The ONLY status a publisher (an agent's artifact-json block) may request is
 # an explicit "draft" hold; every other status is assigned by the type's
 # finalization policy (4.8), never by the publisher.
@@ -444,9 +445,17 @@ def is_routable(meta):
 
 
 def publish(project_dir, body_text, meta, registry, on_error=None,
-            supersedes=None, consensus=False):
+            supersedes=None, consensus=False, gate=None):
     """Atomically publish one artifact; return its minted id, or None with
     the reason reported through on_error.
+
+    ``gate`` (V3 4.12): an engine-owned pre-push gate outcome. When it carries
+    a truthy ``failures`` list the artifact is written with status
+    'quarantined' — it lands on disk, fully inspectable, but is_admissible
+    rejects it so it never routes (4.5) or is retrieved (4.7); quarantine is
+    evidence, never a silent drop. Recorded verbatim under meta['gate']. A
+    publisher can never request quarantine — it is set ONLY from this param
+    (a smuggled meta['gate'] falls through to fields, non-authoritative).
 
     Nothing touches the disk unless the publish is fully valid (a partial
     artifact must never appear); on success the artifact directory is
@@ -638,6 +647,12 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
             if plan is None:
                 return None
             extras["parents"] = plan.pop("parents_sorted")
+        # 4.12 pre-push gate: an outcome carrying recorded failures forces
+        # quarantine, overriding any policy/derivation status — a blocked
+        # artifact must never masquerade as final/pending. publish stays the
+        # single status assigner.
+        if gate and gate.get("failures"):
+            status = "quarantined"
         try:
             guard_fd = os.open(os.path.join(root, ".publish.lock"),
                                os.O_CREAT | os.O_RDWR, 0o644)
@@ -684,6 +699,12 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
                     "ts": ts,
                     "fields": extras,
                 }
+                # 4.12: the engine-owned gate record (attempts/failures/
+                # source_hash) — present ONLY when the publish path passed
+                # one, so an ungated publish's meta is byte-identical to
+                # before this card.
+                if gate is not None:
+                    record["gate"] = gate
                 _fsync_write(
                     os.path.join(tmp, "meta.json"),
                     json.dumps(record, indent=2,
@@ -739,6 +760,28 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
                 os.close(lin_fd)
 
 
+def publish_one_block(project_dir, block, source, registry, on_error=None,
+                      consensus=False, gate=None):
+    """Publish ONE already-parsed ```artifact-json``` block — the per-block step
+    of publish_from_output, factored out so the 4.12 gated publish path and the
+    ungated path share ONE meta construction and can never drift. ``block`` is
+    a dict with 'type'/'title' and an optional string 'body'; ``source`` is the
+    engine provenance dict (it overrides anything the block claims); ``gate`` is
+    threaded to publish() to quarantine a blocked artifact. Returns the
+    published id, or None (reason reported)."""
+    if on_error is None:
+        on_error = lambda _msg: None
+    meta = dict(block) if isinstance(block, dict) else {}
+    body = meta.pop("body", None)
+    if body is not None and not isinstance(body, str):
+        on_error("artifact-json block %r: 'body' must be a single string "
+                 "— skipped" % (meta.get("title"),))
+        return None
+    meta["source"] = dict(source) if isinstance(source, dict) else {}
+    return publish(project_dir, body, meta, registry, on_error=on_error,
+                   consensus=consensus, gate=gate)
+
+
 def publish_from_output(project_dir, final_output, source, registry,
                         on_error=None, dedupe_against=None, consensus=False):
     """Extract every ```artifact-json``` block from a phase's Final
@@ -768,27 +811,28 @@ def publish_from_output(project_dir, final_output, source, registry,
     src = dict(source) if isinstance(source, dict) else {}
     published = []
     for block in blocks:
-        meta = dict(block)
-        body = meta.pop("body", None)
+        # Peek the body WITHOUT mutating the block (publish_one_block re-copies
+        # and pops it); the non-string skip stays ahead of the dedupe so the
+        # hash below can never see a non-encodable body.
+        body = block.get("body")
         if body is not None and not isinstance(body, str):
             on_error("artifact-json block %r: 'body' must be a single "
-                     "string — skipped" % (meta.get("title"),))
+                     "string — skipped" % (block.get("title"),))
             continue
         if dedupe_against:
-            title = meta.get("title")
+            title = block.get("title")
             title = title if isinstance(title, str) else str(title)
             try:
                 bhash = hashlib.sha256(
                     (body or "").encode("utf-8")).hexdigest()
             except UnicodeEncodeError:
                 bhash = None  # publish() will reject the block anyway
-            if bhash and (meta.get("type"), title, bhash) in dedupe_against:
+            if bhash and (block.get("type"), title, bhash) in dedupe_against:
                 on_error("artifact %r already published by this phase "
                          "close — skipped (crash-resume dedupe)" % (title,))
                 continue
-        meta["source"] = src
-        aid = publish(project_dir, body, meta, registry, on_error=on_error,
-                      consensus=consensus)
+        aid = publish_one_block(project_dir, block, src, registry,
+                                on_error=on_error, consensus=consensus)
         if aid is not None:
             published.append(aid)
     return published

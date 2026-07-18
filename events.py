@@ -28,6 +28,9 @@ Event kinds emitted by orchestrator.py:
                          a missing/corrupt user config; ground rule 4: every
                          fallback is VISIBLE, never silent)
     artifact_published  (artifact_id, type, version, path)
+    artifact_quarantined (artifact_id, type, attempts, path — the pre-push
+                         gate blocked it and the bounded retry was exhausted;
+                         the failure detail lives in meta.gate on disk)
     artifact_routed     (route_id, artifact_id, target)
     artifact_consumed   (artifact_id, consumer, phase)
     delegation_spawned  (target, session, tier — a chat @-mention minted a
@@ -100,6 +103,11 @@ KINDS = (
     "message_appended",
     "artifact_published", "artifact_routed", "artifact_consumed",
     "route_proposed", "route_approved", "delegation_spawned",
+    # V3 board 4.12: the pre-push gate quarantined an artifact after its
+    # hooks/llm_rules blocked it and the bounded retry was exhausted. Payload
+    # is ids+counts only (artifact_id, type, attempts, path) — the failure
+    # detail lives in meta.gate on disk, not in the event line.
+    "artifact_quarantined",
     # V3 board 3.1: a default replaced a missing/corrupt user config file
     # — the visible-fallback banner kind (sections.py is the first
     # emitter; every future config loader reuses it).

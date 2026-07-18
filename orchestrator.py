@@ -45,6 +45,7 @@ import urllib.error
 import urllib.parse
 
 import artifacts as artifactslib
+import gate as gatelib
 import sessions as seslib
 import memory as memlib
 import backfill as backfilllib
@@ -6766,6 +6767,189 @@ def _hook_verification_label(cfg, app, app_dir, phasedef, state, *,
     return transcript, final_output
 
 
+def _prompt_gate_repair(block, feedback):
+    """Re-emit prompt for a gate-blocked artifact (V3 4.12): quote the rejected
+    block and the gate's ACTUAL feedback (§5.2 — the producing agent gets the
+    real reason, not a generic 'gate failed'), and ask for ONE corrected
+    ```artifact-json``` block — the whole block, not a diff."""
+    try:
+        shown = json.dumps(block, indent=2, default=str)
+    except (TypeError, ValueError):
+        shown = str(block)
+    return (
+        "The artifact you emitted was BLOCKED by the pre-push gate before it "
+        "could be published:\n\n```json\n%s\n```\n\n"
+        "%s\n\n"
+        "Re-emit a SINGLE corrected ```artifact-json``` fenced block — the whole "
+        "block, not a diff or a partial patch — that resolves every point above. "
+        "Emit ONLY that one fenced block.\n" % (shown, feedback))
+
+
+def _gate_repair_artifact(cfg, app, app_dir, key, coord, active, md_path,
+                          transcript, block, feedback):
+    """One bounded producing-turn retry for a gate-blocked artifact: ask the
+    best-available coordinator candidate to re-emit a corrected artifact-json
+    block given the gate feedback, appending the exchange to the transcript.
+    Mirrors _repair_contract. Never raises — resp=None when no agent could run
+    the turn (the caller then stops retrying and quarantines)."""
+    prompt = _prompt_gate_repair(block, feedback)
+    for cand in _coordinator_candidates(cfg, active, preferred=coord):
+        try:
+            resp = call_agent(cfg, app, key, "gate-repair", cand, prompt)
+        except AgentError as exc:
+            emit("%s could not re-emit the gate-blocked artifact: %s"
+                 % (DISPLAY[cand], exc))
+            continue
+        block_md = "**%s — gate re-emit**\n\n%s\n" % (DISPLAY[cand], resp)
+        append_md(md_path, "\n" + block_md)
+        msglib.append_message(app_dir, key, "contract", cand, md_path,
+                              token="final.gate")
+        transcript += "\n" + block_md
+        return transcript, resp
+    return transcript, None
+
+
+def _gate_and_publish(cfg, app, app_dir, key, coord, active, md_path,
+                      transcript, project_dir, section, final_output, src,
+                      registry, gate_cfg, seen, seen_src, consensus):
+    """The 4.12 GATED publish path (only reached when a gate is active). For each
+    ```artifact-json``` block: run it through the gate (deterministic hooks then
+    llm_rules); on a block, run a bounded producing-turn retry carrying the
+    gate's feedback; an artifact still blocked after runtime.gate_retry_limit
+    retries is published QUARANTINED — on disk and inspectable, excluded by
+    is_admissible so it never routes or is retrieved, and never a silent drop.
+    Returns the (possibly retry-extended) transcript."""
+    def _warn(msg):
+        emit("ARTIFACT: WARN %s" % msg)
+    blocks = schemalib.extract_structured_blocks(
+        final_output or "", artifactslib.FENCE_TAG,
+        required_fields=list(artifactslib.BLOCK_REQUIRED), on_error=_warn)
+    agent = cget(cfg, "runtime.gate_model", "") or pick_quality_evaluator(
+        cfg, active, coord)
+    limit = max(0, int(cget(cfg, "runtime.gate_retry_limit", 1) or 0))
+    can_retry = bool(coord and active and md_path is not None)
+
+    def _runner(prompt):
+        if not agent:
+            return ""   # no evaluator available → gate.py treats "" as FAIL
+        try:
+            return call_agent(cfg, app, key, "gate", agent, prompt)
+        except AgentError:
+            return ""
+
+    for block in blocks:
+        body0 = block.get("body")
+        if body0 is not None and not isinstance(body0, str):
+            _warn("artifact-json block %r: 'body' must be a single string — "
+                  "skipped" % (block.get("title"),))
+            continue
+        try:
+            src_hash = hashlib.sha256((body0 or "").encode("utf-8")).hexdigest()
+        except (UnicodeEncodeError, AttributeError):
+            src_hash = None
+        title0 = block.get("title")
+        title0 = title0 if isinstance(title0, str) else str(title0)
+        # Resume dedupe mirrors the gateless (type,title,content_hash) key for a
+        # clean re-publish, plus source_hash for a repaired/quarantined one —
+        # NEVER body-hash alone (that would collapse two distinct blocks that
+        # merely share a body, which the gateless path publishes as two).
+        if src_hash and ((block.get("type"), title0, src_hash) in seen
+                         or src_hash in seen_src):
+            _warn("artifact %r already gated+published by this phase close — "
+                  "skipped (crash-resume dedupe)" % (block.get("title"),))
+            continue
+        cur = dict(block)
+        attempts, failures, passed, hook_errors = 0, [], False, []
+        while True:
+            if gate_cfg["unreadable"]:
+                verdict = {"passed": False,
+                           "reasons": ["gate config unreadable — fail closed"],
+                           "feedback": ""}
+            else:
+                verdict = gatelib.gate_block(gate_cfg, project_dir, cur, section,
+                                             _runner, on_error=_warn)
+            hook_errors.extend(verdict.get("errors") or [])
+            attempts += 1
+            if verdict["passed"]:
+                passed = True
+                break
+            failures.extend(verdict["reasons"])
+            if gate_cfg["unreadable"] or attempts > limit or not can_retry:
+                break
+            transcript, resp = _gate_repair_artifact(
+                cfg, app, app_dir, key, coord, active, md_path, transcript,
+                cur, verdict["feedback"])
+            if resp is None:
+                break
+            newblocks = schemalib.extract_structured_blocks(
+                resp, artifactslib.FENCE_TAG,
+                required_fields=list(artifactslib.BLOCK_REQUIRED),
+                on_error=_warn)
+            if not newblocks:
+                failures.append("gate re-emit produced no artifact-json block")
+                break
+            # The re-emit's body type is NOT validated by extract_structured_
+            # blocks (BLOCK_REQUIRED is type+title only). A non-string body would
+            # make publish_one_block reject the artifact ENTIRELY — a silent
+            # drop (§6.2). Reject the bad re-emit instead, keeping `cur` as the
+            # last publishable block (so quarantine still lands on a real one).
+            nbody = newblocks[0].get("body")
+            if nbody is not None and not isinstance(nbody, str):
+                failures.append("gate re-emit produced a block with a "
+                                "non-string body")
+                break
+            cur = newblocks[0]
+        # A configured hook that errored (bad exit code / timeout / spawn
+        # failure) is non-blocking, but must be visible in the ledger — a
+        # broken gate hook silently unchecking artifacts is exactly the
+        # overnight-trust failure this card exists to prevent.
+        if hook_errors:
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "gate_hook_error",
+                "summary": "%d gate hook error(s) on artifact %r — non-blocking, "
+                           "published unchecked by them"
+                           % (len(hook_errors), block.get("title")),
+                "detail": {"errors": ["%s: %s" % (hid, r)
+                                      for hid, r in hook_errors[:10]]}})
+        gate_meta = None
+        if not passed:
+            gate_meta = {"source_hash": src_hash, "attempts": attempts,
+                         "failures": [schemalib.redact_secrets(f)[:300]
+                                      for f in failures[:10]]}
+        elif attempts > 1:
+            # Passed only AFTER a repair: record source_hash so a crash-resume
+            # re-close is idempotent — the repair turn is non-deterministic, so
+            # the content_hash dedupe alone would mint a -2 duplicate.
+            gate_meta = {"source_hash": src_hash, "attempts": attempts}
+        aid = artifactslib.publish_one_block(
+            project_dir, cur, src, registry, on_error=_warn,
+            consensus=consensus, gate=gate_meta)
+        if aid is None:
+            continue
+        meta = artifactslib.load_meta(project_dir, aid, on_error=_warn) or {}
+        if not passed:
+            evlib.emit_event(app_dir, "artifact_quarantined", artifact_id=aid,
+                             type=meta.get("type", ""), attempts=attempts,
+                             path="artifacts/%s" % aid, phase=key, project=app)
+            mistklib.append_mistake(app_dir, {
+                "app": app, "workflow": cfg.get("_workflow_name"), "phase": key,
+                "cls": "gate_blocked",
+                "summary": "artifact '%s' quarantined after %d gate attempt(s)"
+                           % (aid, attempts),
+                "detail": {"failures": failures[:10]}})
+            emit("ARTIFACT: QUARANTINED '%s' (%s) after %d gate attempt(s) — "
+                 "see meta.gate" % (aid, meta.get("type", "?"), attempts))
+        else:
+            evlib.emit_event(app_dir, "artifact_published", artifact_id=aid,
+                             type=meta.get("type", ""),
+                             version=meta.get("version", 1),
+                             path="artifacts/%s" % aid, phase=key, project=app)
+            emit("ARTIFACT: published '%s' (%s) to the project bus"
+                 % (aid, meta.get("type", "?")))
+    return transcript
+
+
 def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
         is_build, is_verify_repair, allow_writes, _needs_vlabel,
@@ -6807,6 +6991,16 @@ def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
             # landed durably, skip-on-resume state didn't) must not mint
             # -2 duplicates of what it already published.
             seen = set()
+            # 4.12 gated-path RESUME dedupe: match an already-published
+            # artifact by its ORIGINAL block identity. A clean publish is caught
+            # by the (type,title,content_hash) TRIPLE in `seen` (content_hash ==
+            # H(original body)); a repaired/quarantined one — whose stored
+            # content_hash is H(the REPAIRED body) — is caught by its
+            # meta.gate.source_hash (== H(the original body)) in `seen_src`.
+            # Both are disk-derived and NEVER mutated in-loop, exactly like the
+            # gateless dedupe, so two distinct blocks that merely share a body
+            # both still publish (gateless parity).
+            seen_src = set()
             for m in artifactslib.list_artifacts(project_dir,
                                                  on_error=_warn):
                 s = m.get("source") or {}
@@ -6814,19 +7008,40 @@ def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
                         and s.get("phase") == key):
                     seen.add((m.get("type"), m.get("title"),
                               m.get("content_hash")))
-            for aid in artifactslib.publish_from_output(
-                    project_dir, final_output, src, registry,
-                    on_error=_warn, dedupe_against=seen, consensus=consensus):
-                meta = artifactslib.load_meta(project_dir, aid,
-                                              on_error=_warn) or {}
-                evlib.emit_event(app_dir, "artifact_published",
-                                 artifact_id=aid,
-                                 type=meta.get("type", ""),
-                                 version=meta.get("version", 1),
-                                 path="artifacts/%s" % aid,
-                                 phase=key, project=app)
-                emit("ARTIFACT: published '%s' (%s) to the project bus"
-                     % (aid, meta.get("type", "?")))
+                    g = m.get("gate")
+                    if isinstance(g, dict) and g.get("source_hash"):
+                        seen_src.add(g["source_hash"])
+            # The gate is a file-existence switch: with no hooks.json anywhere
+            # (and no llm_rules) gate_is_active is False and the ORIGINAL
+            # publish path runs VERBATIM — zero subprocess spawns, byte-
+            # identical events, golden transcripts unchanged.
+            gate_cfg = gatelib.load_gate_config(project_dir, _section_dir(cfg),
+                                                on_error=_warn)
+            if gate_cfg["unreadable"]:
+                evlib.emit_event(app_dir, "config_fallback", section=section,
+                                 file=gatelib.HOOKS_FILENAME,
+                                 error="gate config unreadable — publishes "
+                                       "from here quarantine")
+            if not gatelib.gate_is_active(gate_cfg):
+                for aid in artifactslib.publish_from_output(
+                        project_dir, final_output, src, registry,
+                        on_error=_warn, dedupe_against=seen,
+                        consensus=consensus):
+                    meta = artifactslib.load_meta(project_dir, aid,
+                                                  on_error=_warn) or {}
+                    evlib.emit_event(app_dir, "artifact_published",
+                                     artifact_id=aid,
+                                     type=meta.get("type", ""),
+                                     version=meta.get("version", 1),
+                                     path="artifacts/%s" % aid,
+                                     phase=key, project=app)
+                    emit("ARTIFACT: published '%s' (%s) to the project bus"
+                         % (aid, meta.get("type", "?")))
+            else:
+                transcript = _gate_and_publish(
+                    cfg, app, app_dir, key, coord, active, md_path, transcript,
+                    project_dir, section, final_output, src, registry,
+                    gate_cfg, seen, seen_src, consensus)
         # V3 4.4 reply edge: if THIS session was delegated with a
         # reply_to, deliver an artifact-card reference back to the
         # originating session's inbox — exactly once, driven by the

@@ -20,6 +20,11 @@ Mistake classes appended by orchestrator.py:
     consensus_unverified  (integrator declared consensus while the verifier said NO)
     escalation_triggered  (adaptive escalation bumped effort/model after N
                            repeated failures on the SAME repair/quality-gate loop)
+    gate_blocked          (the pre-push gate blocked an artifact and quarantined
+                           it after the bounded retry was exhausted)
+    gate_hook_error       (a configured pre-push gate hook errored — bad exit
+                           code, timeout, or spawn failure; non-blocking, so the
+                           artifact published unchecked by that hook)
 
 Contract (mirrors events.py exactly):
   * Best-effort by design — writing a ledger line must NEVER take a run down.
@@ -53,6 +58,10 @@ CLASSES = (
     "verify_failure", "repair_queued", "quality_gate_fail",
     "agent_fallback", "contract_error", "requirements_coverage_gap",
     "vote_undecided", "consensus_unverified", "escalation_triggered",
+    # V3 board 4.12: the pre-push gate blocked an artifact and quarantined it
+    # after the bounded retry was exhausted; gate_hook_error = a configured
+    # gate hook errored (non-blocking, but the artifact went unchecked by it).
+    "gate_blocked", "gate_hook_error",
 )
 
 _MAX_FIELD_CHARS = 500
