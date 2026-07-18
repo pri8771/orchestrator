@@ -27,10 +27,17 @@ Rules this module must never break:
 Tranche 1 covered band B: the eleven per-phase keys process_phase sets on
 entry and clears on exit. Tranche c1 added band C (per-thread-copy state —
 thread_copy() and the session/model-override protocols) and band B′ (the
-per-phase-copy keys _apply_phase_routing writes). Tranche c2 adds band D:
+per-phase-copy keys _apply_phase_routing writes). Tranche c2 added band D:
 the shared-by-identity maps, exposed ONLY through methods that return the
 live object — band D has no plain properties by design, so a future
-copying getter can't slip in unnoticed.
+copying getter can't slip in unnoticed. Tranche d swept the tail — band A
+run/app constants, band A′ caller-per-phase keys, band E one-shot
+latches/memos, band F cross-module (_sim_ctx) — taking the engine-side
+allowlist to ZERO. The inventory gate now fails any write it can see
+outside this module: literal underscore subscripts (tuple and chained
+targets included), setdefault(), pop(), and underscore-leading %-format
+literals (the dynamic-key class — the four "_noted_…%s" latch families
+route through note_once for exactly this reason).
 """
 
 
@@ -186,6 +193,108 @@ class TurnContext(object):
         read-and-leave). The finally-block take is exception-safety — a
         failed call must not leak a stale id into the next turn's copy."""
         return self._cfg.pop("_new_session_id", None)
+
+    # ---- band A: per-run/per-app constants, written once by the run
+    # loop / startup / main and read-only below. ----
+    app_dir = _prop("_app_dir", "This app's project directory.")
+    state = _prop(
+        "_state",
+        "The live in-memory state dict — shared by identity so event sinks "
+        "down-stack mutate the same object save_state persists.")
+    original_prompt = _prop("_original_prompt", "The run's initial prompt.")
+    workflow_name = _prop("_workflow_name", "Resolved workflow name.")
+    workflow_target = _prop("_workflow_target", "Workflow target kind.")
+    workflow_verify_spec = _prop(
+        "_workflow_verify_spec",
+        "First verify spec any phase carries; the per-iteration build "
+        "verifier reuses it so both gates compile the same way.")
+    roles = _prop("_roles", "Loaded role definitions (per run).")
+    personalities = _prop("_personalities", "Loaded personality rotation.")
+    agent_role_overrides = _prop(
+        "_agent_role_overrides", "Per-agent role pin overrides.")
+    role_by_id = _prop(
+        "_role_by_id", "Precomputed id->role map (once per run).")
+    autonomy = _prop("_autonomy", "Run-config autonomy level or None.")
+    round_multiplier = _prop(
+        "_round_multiplier", "Completeness round-budget multiplier or None.")
+    completeness = _prop("_completeness", "Completeness profile name.")
+    target_path = _prop("_target_path", "Audit target codebase dir.")
+    target_paths = _prop(
+        "_target_paths", "library_mining portfolio repo list.")
+    tech_stack_block = _prop(
+        "_tech_stack_block", "Rendered tech-stack block (lazy, once).")
+    url_context = _prop(
+        "_url_context", "Fetched-URL context block for product phases.")
+    budget = _prop("_budget", "Sprint time-budget dict or None.")
+    deadline = _prop("_deadline", "Hard run deadline (epoch) or None.")
+    base_models = _prop(
+        "_base_models",
+        "Pristine per-process models snapshot. The '_base_models not in "
+        "cfg' containment latch guards the ONE-TIME snapshot — nothing "
+        "may pre-seed this key.")
+    base_resolved = _prop(
+        "_base_resolved", "Pristine per-process resolved-models snapshot.")
+    explicit_app = _prop(
+        "_explicit_app", "True when the CLI named a specific app/project.")
+    gemini_disabled_reason = _prop(
+        "_gemini_disabled_reason", "Startup probe's gemini-disable reason.")
+
+    # ---- band A′: per-phase but written by the RUN LOOP before each
+    # process_phase call (plus one hook write for the budget tail). ----
+    phase_deadline = _prop(
+        "_phase_deadline", "Wall-clock ceiling for the current phase.")
+    prior_discussions = _prop(
+        "_prior_discussions", "Selected prior-phase context for this phase.")
+
+    # ---- band E: one-shot latches and memos (set once, read as guards).
+    # One property each, deliberately — a generic note_once(name) would
+    # reintroduce the stringliness this module removes. ----
+    checked_any_agent_runnable = _prop(
+        "_checked_any_agent_runnable", "Once-per-run agent-runnable check.")
+    gemini_unavailable = _prop(
+        "_gemini_unavailable", "Cached gemini hard-failure message.")
+    installed_ollama_models = _prop(
+        "_installed_ollama_models", "Memo of installed Ollama models.")
+    iter_verify_toolchain_absent = _prop(
+        "_iter_verify_toolchain_absent",
+        "Phase-copy latch: iteration verify skipped, toolchain absent.")
+    noted_local_active_limit = _prop(
+        "_noted_local_active_limit", "Emitted the local-active-limit note.")
+    noted_local_lane_skip = _prop(
+        "_noted_local_lane_skip", "Emitted the local-lane-skip note.")
+    noted_local_ram_gate = _prop(
+        "_noted_local_ram_gate", "Emitted the local-RAM-gate note.")
+    noted_ollama_sprint_skip = _prop(
+        "_noted_ollama_sprint_skip", "Emitted the sprint local-skip note.")
+    noted_ollama_uninstalled_skip = _prop(
+        "_noted_ollama_uninstalled_skip",
+        "Emitted the not-yet-pulled-models note.")
+    warned_no_git_repo = _prop(
+        "_warned_no_git_repo", "Emitted the no-git-repo warning.")
+
+    def note_once(self, family, suffix):
+        """One-shot DYNAMIC latch — band E's dynamic tail. Builds the
+        historical "_noted_<family>_<suffix>" key and returns True exactly
+        once per key (the caller emits its note only on True). Families in
+        use: ollama_reasoning_noop_cli (per phase), routing_filter (per
+        phase), <field>_noop (per noop field per phase),
+        ollama_override_shadowed (per phase). The inventory gate bans
+        underscore-key FORMAT LITERALS from the engine files, so new
+        dynamic latches must route through here — that is what keeps the
+        dynamic-key class visible instead of silently bypassing the
+        zero-allowlist gate."""
+        key = "_noted_%s_%s" % (family, suffix)
+        if self._cfg.get(key):
+            return False
+        self._cfg[key] = True
+        return True
+
+    # ---- band F: cross-module. Written by visualqa, read by uicrawl —
+    # the one key whose writer and reader live in different files. ----
+    sim_ctx = _prop(
+        "_sim_ctx",
+        "Booted-simulator context (udid/bundle_id/app_path) visualqa "
+        "hands to the UI-crawl gate so it can skip build/install.")
 
     # ---- band D: shared-mutable-by-identity. The MAPS (_agent_health,
     # the session maps) are exposed as METHODS returning the live object,

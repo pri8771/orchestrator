@@ -912,7 +912,7 @@ def run_gemini(cfg, prompt, timeout):
         # Keyless failures are structural (no TTY / deprecated tier), not
         # transient — cache so later rounds skip the probe instantly. A keyed
         # failure may be a blip, so those keep retrying.
-        cfg["_gemini_unavailable"] = msg
+        tcxlib.TurnContext(cfg).gemini_unavailable = msg
     raise AgentError(msg)
 
 
@@ -940,9 +940,8 @@ def run_ollama(cfg, prompt, timeout):
     # a routing edit that only works for the other path doesn't look silently
     # broken.
     if cget(cfg, "models.ollama_reasoning", ""):
-        _memo = "_noted_ollama_reasoning_noop_cli_%s" % cfg.get("_phase_key")
-        if not cfg.get(_memo):
-            cfg[_memo] = True
+        if tcxlib.TurnContext(cfg).note_once(
+                "ollama_reasoning_noop_cli", cfg.get("_phase_key")):
             emit("Phase '%s': routing sets ollama_reasoning, but the roster "
                  "'ollama' agent runs via the `ollama run` CLI, which this "
                  "engine invokes with no think-mode flag — accepted but "
@@ -3669,7 +3668,8 @@ def _installed_local_models(cfg):
     `ollama list` subprocess. Previously the key was read here but never set
     anywhere — a dead read that always fell through to the uncached call."""
     if cfg.get("_installed_ollama_models") is None:
-        cfg["_installed_ollama_models"] = list(lmlib.installed_models_cached())
+        tcxlib.TurnContext(cfg).installed_ollama_models = \
+            list(lmlib.installed_models_cached())
     return set(cfg["_installed_ollama_models"])
 
 
@@ -3706,7 +3706,7 @@ def enabled_agents(cfg):
         not bool(cget(cfg, "runtime.local_models_in_sprints", False))
     if skip_local and (local_roster or local_model):
         if not cfg.get("_noted_ollama_sprint_skip"):
-            cfg["_noted_ollama_sprint_skip"] = True
+            tcxlib.TurnContext(cfg).noted_ollama_sprint_skip = True
             emit("Sprint mode: excluding local Ollama participants from this time-budgeted "
                  "run (runtime.local_models_in_sprints=false).")
 
@@ -3716,7 +3716,7 @@ def enabled_agents(cfg):
         kept = [model for model in local_roster if model in installed]
         skipped = [model for model in local_roster if model not in installed]
         if skipped and not cfg.get("_noted_ollama_uninstalled_skip"):
-            cfg["_noted_ollama_uninstalled_skip"] = True
+            tcxlib.TurnContext(cfg).noted_ollama_uninstalled_skip = True
             emit("Local Ollama: skipping not-yet-pulled model(s): %s. "
                  "Use Settings -> Local Models or `ollama pull <id>` to add them."
                  % ", ".join(skipped))
@@ -3738,7 +3738,7 @@ def enabled_agents(cfg):
             if too_big:
                 local_roster = [m for m in local_roster if m not in too_big]
                 if not cfg.get("_noted_local_ram_gate"):
-                    cfg["_noted_local_ram_gate"] = True
+                    tcxlib.TurnContext(cfg).noted_local_ram_gate = True
                     emit("Local Ollama: benching %s — registry min RAM exceeds "
                          "this machine's %d GB (disable with "
                          "runtime.enforce_local_ram_gate: false)."
@@ -3759,7 +3759,7 @@ def enabled_agents(cfg):
             dropped = ordered[limit:]
             local_roster = ordered[:limit]
             if dropped and not cfg.get("_noted_local_active_limit"):
-                cfg["_noted_local_active_limit"] = True
+                tcxlib.TurnContext(cfg).noted_local_active_limit = True
                 emit("Local Ollama: models.local_active_limit=%d — active: %s. "
                      "Benched: %s (raise the limit in Settings to include them)."
                      % (limit, ", ".join(local_roster), ", ".join(dropped)))
@@ -3788,9 +3788,8 @@ def enabled_agents(cfg):
     routing = cfg.get("_routing")
     if phase_key and routing:
         out, note = mrlib.filter_agents(routing, phase_key, out)
-        memo = "_noted_routing_filter_%s" % phase_key
-        if note and not cfg.get(memo):
-            cfg[memo] = True
+        if note and tcxlib.TurnContext(cfg).note_once("routing_filter",
+                                                      phase_key):
             emit(note)
     return out
 
@@ -3898,7 +3897,7 @@ def build_worker_roster(cfg, active):
                       if not (a == "ollama" or str(a).startswith("local:"))]
         if cloud_only:
             if len(cloud_only) < len(avail) and not cfg.get("_noted_local_lane_skip"):
-                cfg["_noted_local_lane_skip"] = True
+                tcxlib.TurnContext(cfg).noted_local_lane_skip = True
                 emit("Build lanes: excluding local model(s) from lane duty "
                      "(runtime.locals_in_build_lanes=false) — they keep "
                      "discussing and backstopping fallbacks.")
@@ -4610,7 +4609,7 @@ def _run_iteration_verify(cfg, app, app_dir, phasedef, state, md_path, rnd):
                      status=status,
                      detail="iteration %d: %s" % (rnd, res.get("summary", "")))
     if not res.get("ran"):
-        cfg["_iter_verify_toolchain_absent"] = True
+        tcxlib.TurnContext(cfg).iter_verify_toolchain_absent = True
         append_md(md_path, "\n_Iteration %d verification skipped: %s — further "
                   "per-iteration checks disabled for this phase._\n"
                   % (rnd, res.get("summary", "no toolchain")))
@@ -5193,9 +5192,8 @@ def _apply_phase_routing(cfg, key):
         _vals = [ov.get(_noop_field)] + [r.get(_noop_field)
                                          for r in _roles_ov.values()]
         if any(_vals):
-            _memo = "_noted_%s_noop_%s" % (_noop_field, key)
-            if not cfg.get(_memo):
-                cfg[_memo] = True
+            if tcxlib.TurnContext(cfg).note_once(
+                    "%s_noop" % _noop_field, key):
                 emit("Phase '%s': routing sets %s, but the %s CLI exposes no "
                      "effort control in how this engine invokes it — field "
                      "accepted but ignored."
@@ -5214,9 +5212,8 @@ def _apply_phase_routing(cfg, key):
         _roster_now = _split_local_roster(
             resolved.get("ollama_roster") or cget(c, "models.ollama_roster", []))
         if _roster_now and ov["ollama"] not in _roster_now:
-            _memo = "_noted_ollama_override_shadowed_%s" % key
-            if not cfg.get(_memo):
-                cfg[_memo] = True
+            if tcxlib.TurnContext(cfg).note_once(
+                    "ollama_override_shadowed", key):
                 emit("Phase '%s': routing sets models.ollama=%r, but "
                      "models.ollama_roster is configured and doesn't include "
                      "it — the roster's own entries are used for this phase "
@@ -6106,7 +6103,7 @@ def _hook_sprint_verify_reserve(cfg, app, app_dir, phasedef, state, *,
     # reserve. Hand the verify/repair pass the hard RUN deadline so compile +
     # repair can use that reserved tail.
     if cfg.get("_budget") and cfg.get("_deadline"):
-        cfg["_phase_deadline"] = cfg["_deadline"]
+        tcxlib.TurnContext(cfg).phase_deadline = cfg["_deadline"]
     return transcript, final_output
 
 
@@ -7206,7 +7203,7 @@ def process_app(cfg, root, app):
     if bool(cget(cfg, "runtime.require_git_repo", False)) \
             and not cfg.get("_warned_no_git_repo") \
             and not os.path.isdir(os.path.join(root, ".git")):
-        cfg["_warned_no_git_repo"] = True
+        tcxlib.TurnContext(cfg).warned_no_git_repo = True
         emit("WARN runtime.require_git_repo=true but %s is not a git repo — "
              "run.sh will skip its commit/push step (run `git init` there to fix)." % root)
     # No agent runnable at all (every cloud CLI disabled/missing AND no local
@@ -7214,7 +7211,7 @@ def process_app(cfg, root, app):
     # every turn fails one at a time with no upfront diagnosis. Check once per
     # run (not per app) and give a single clear pointer to --doctor.
     if not cfg.get("_checked_any_agent_runnable"):
-        cfg["_checked_any_agent_runnable"] = True
+        tcxlib.TurnContext(cfg).checked_any_agent_runnable = True
         if not any(_agent_available(a, cfg) for a in enabled_agents(cfg)):
             emit("WARN no agent is runnable: every enabled agent's CLI is "
                  "missing/logged-out, and no local Ollama model is enabled+pulled. "
@@ -7728,20 +7725,24 @@ def _apply_workflow_overrides(cfg, workflow, phases):
     Models are rebuilt from a pristine base each run so a preset can never leak
     into the next app (cfg and its models/_resolved dicts are shared across apps
     and --watch passes). A workflow without "overrides" behaves exactly as before."""
+    tctx = tcxlib.TurnContext(cfg)
+    # The containment check stays a raw `not in` — reading through the view
+    # would be equivalent (getters never seed), but the latch IS the
+    # one-time-snapshot contract, so keep it explicit on the dict.
     if "_base_models" not in cfg:
-        cfg["_base_models"] = dict(cfg.get("models") or {})
-        cfg["_base_resolved"] = dict(cfg.get("_resolved") or {})
+        tctx.base_models = dict(cfg.get("models") or {})
+        tctx.base_resolved = dict(cfg.get("_resolved") or {})
     cfg["models"] = dict(cfg["_base_models"])
-    cfg["_resolved"] = dict(cfg["_base_resolved"])
+    tctx.resolved = dict(cfg["_base_resolved"])
     ov = getattr(workflow, "overrides", None) or {}
     if not ov:
         return
     if ov.get("claude_model"):
-        cfg["models"]["claude"] = cfg["_resolved"]["claude_model"] = ov["claude_model"]
+        cfg["models"]["claude"] = tctx.resolved["claude_model"] = ov["claude_model"]
     if ov.get("codex_model"):
         # The preset is authoritative: it also replaces the probed "preferred"
         # model so detect_codex_model can't reintroduce another one.
-        cfg["models"]["codex"] = cfg["_resolved"]["codex_model"] = ov["codex_model"]
+        cfg["models"]["codex"] = tctx.resolved["codex_model"] = ov["codex_model"]
         cfg["models"]["codex_preferred_if_available"] = ov["codex_model"]
     try:
         scale = float(ov.get("rounds_scale") or 0)
@@ -7804,7 +7805,7 @@ def _prepare_url_context(cfg, app, app_dir, prompt):
                      % (app, res["url"], reason))
                 evlib.emit_event(app_dir, "url_fetch_failed", project=app,
                                  url=res["url"], reason=reason)
-    cfg["_url_context"] = urlfetchlib.build_url_context(results)
+    tcxlib.TurnContext(cfg).url_context = urlfetchlib.build_url_context(results)
 
 
 # Directories excluded from the target-change signature: VCS/build/dependency
@@ -7815,11 +7816,12 @@ _TSIG_PRUNE_DIRS = {".git", "node_modules", "DerivedData", ".build", "build",
 
 def _run_app_pipeline(cfg, app, app_dir, prompt):
     state = load_state(app_dir)
+    tctx = tcxlib.TurnContext(cfg)
     # Sinks for structured events (§6) + fallback-count aggregation: every
     # call_agent/_call_agent_once down-stack finds the project dir and the
     # live state dict on cfg (both per-app; cfg is copied per app/worker).
-    cfg["_app_dir"] = app_dir
-    cfg["_state"] = state
+    tctx.app_dir = app_dir
+    tctx.state = state
     if _is_stale_running_state(app_dir, state):
         emit("App '%s': detected stale 'running' state — recovering and resuming"
              % app)
@@ -7832,7 +7834,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         state["runner_pid"] = os.getpid()
         save_state(app_dir, state)
     root = os.path.dirname(app_dir)
-    cfg["_original_prompt"] = prompt
+    tctx.original_prompt = prompt
 
     # Resolve the workflow FIRST (so an audit target folds into change detection).
     workflow = wflib.resolve_workflow_for_app(
@@ -7841,9 +7843,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # Per-run/per-app state must NOT leak across apps (cfg is reused across apps in
     # one pass and in --watch): reset the completeness multiplier, autonomy, and the
     # circuit-breaker health map before this app applies its own.
-    tctx = tcxlib.TurnContext(cfg)
-    cfg["_round_multiplier"] = None
-    cfg["_autonomy"] = None
+    tctx.round_multiplier = None
+    tctx.autonomy = None
     tctx.reset_agent_health()
     # Workflow "overrides" preset (optional top-level JSON key): per-run model
     # swap + effort/rounds shaping. Also resets any previous run's model preset.
@@ -7856,8 +7857,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         _before = len(phases)
         phases = complib.filter_phases(phases, _rc["completeness"],
                                        on_warn=lambda m: emit("WARN " + m))
-        cfg["_round_multiplier"] = complib.round_multiplier(_rc["completeness"])
-        cfg["_completeness"] = _rc["completeness"]
+        tctx.round_multiplier = complib.round_multiplier(_rc["completeness"])
+        tctx.completeness = _rc["completeness"]
         emit("Completeness '%s': %d of %d phases included."
              % (_rc["completeness"], len(phases), _before))
     if _rc.get("stop_after_phase"):
@@ -7867,29 +7868,29 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         if len(phases) < _before:
             emit("Stop target: run will stop after '%s'." % _rc["stop_after_phase"])
     if _rc.get("autonomy"):
-        cfg["_autonomy"] = _rc["autonomy"]
-    cfg["_workflow_name"] = workflow.name
-    cfg["_workflow_target"] = workflow.target
+        tctx.autonomy = _rc["autonomy"]
+    tctx.workflow_name = workflow.name
+    tctx.workflow_target = workflow.target
     # First verify spec any phase carries (usually build_verification's): the
     # per-iteration build verifier reuses it so both gates compile the same way.
-    cfg["_workflow_verify_spec"] = next(
+    tctx.workflow_verify_spec = next(
         (p.get("verify") for p in phases if hasattr(p, "get") and p.get("verify")),
         None)
-    cfg["_personalities"], cfg["_roles"] = roleslib.load_roles(HERE)
-    cfg["_agent_role_overrides"] = roleslib.load_agent_role_overrides(HERE)
+    tctx.personalities, tctx.roles = roleslib.load_roles(HERE)
+    tctx.agent_role_overrides = roleslib.load_agent_role_overrides(HERE)
     # Precomputed once per run (not rebuilt on every process_phase call) — see
     # assign_personas' role_by_id parameter.
-    cfg["_role_by_id"] = {r.get("id"): r for r in cfg["_roles"]}
+    tctx.role_by_id = {r.get("id"): r for r in cfg["_roles"]}
 
     # Audit target: the read-only pre-existing codebase this app analyzes.
-    cfg["_target_path"] = wflib.read_target_path(app_dir, HERE)
+    tctx.target_path = wflib.read_target_path(app_dir, HERE)
     tctx.target_digest = ""
     tctx.read_dir = None
     # library_mining analyzes MANY repos at once (a whole portfolio).
-    cfg["_target_paths"] = (wflib.read_target_paths(app_dir, HERE)
+    tctx.target_paths = (wflib.read_target_paths(app_dir, HERE)
                             if workflow.target == "library_mining" else [])
     if workflow.target == "library_mining" and not cfg["_target_path"]:
-        cfg["_target_path"] = cfg["_target_paths"][0] if cfg["_target_paths"] else None
+        tctx.target_path = cfg["_target_paths"][0] if cfg["_target_paths"] else None
     if workflow.target == "audit" and not cfg["_target_path"]:
         msg = ("audit workflow needs <app>/target_path.txt (or a 'target:' line in "
                "initial_prompt.md) pointing at an existing codebase dir outside app_build.")
@@ -7996,7 +7997,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         state["workflow"] = workflow.name
         save_state(app_dir, state)
     if workflow.target == "app" and not cfg.get("_tech_stack_block"):
-        cfg["_tech_stack_block"] = dlintlib.render_tech_stack(
+        tctx.tech_stack_block = dlintlib.render_tech_stack(
             dlintlib.load_tech_stack(HERE))
     emit("App '%s': workflow '%s' (%d phases, target=%s)."
          % (app, workflow.name, len(phases), workflow.target))
@@ -8028,7 +8029,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # <app>/docs/fetched/ and cfg["_url_context"]; build_context injects it into
     # the product-definition phases only. Best-effort: failures inject an
     # explicit UNVERIFIED warning, and nothing here may take the run down.
-    cfg["_url_context"] = ""
+    tctx.url_context = ""
     if bool(cget(cfg, "runtime.fetch_prompt_urls", True)):
         try:
             _prepare_url_context(cfg, app, app_dir, prompt)
@@ -8042,9 +8043,9 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # verify loops) reads these cfg keys; a workflow without a budget leaves them
     # all None and behaves exactly as before.
     budget = getattr(workflow, "budget", None)
-    cfg["_budget"] = budget
-    cfg["_deadline"] = None
-    cfg["_phase_deadline"] = None
+    tctx.budget = budget
+    tctx.deadline = None
+    tctx.phase_deadline = None
     tctx.turn_timeout = None
     plan_deadline = build_deadline = None
     build_idx = None
@@ -8053,7 +8054,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         _total = float(budget.get("time_budget_minutes", 55)) * 60.0
         _build_res = float(budget.get("build_reserve_minutes", 42)) * 60.0
         _verify_res = float(budget.get("verify_reserve_minutes", 8)) * 60.0
-        cfg["_deadline"] = _start + _total
+        tctx.deadline = _start + _total
         plan_deadline = _start + max(60.0, _total - _build_res)
         build_deadline = cfg["_deadline"] - _verify_res
         build_idx = next((j for j, p in enumerate(phases)
@@ -8111,7 +8112,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                         "manifest. portfolio_selection must emit the selected-app "
                         "manifest before any per-app phase begins; refusing to "
                         "collapse multiple apps into one app_build folder." % key)
-            cfg["_prior_discussions"] = _select_prior_context(
+            tctx.prior_discussions = _select_prior_context(
                 cfg, app_dir, phases, state.get("completed_phases", []), phasedef)
             if budget:
                 _now = time.time()
@@ -8125,11 +8126,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                     i += 1
                     continue
                 if _is_build:
-                    cfg["_phase_deadline"] = build_deadline
+                    tctx.phase_deadline = build_deadline
                 elif _pre_build:
-                    cfg["_phase_deadline"] = plan_deadline
+                    tctx.phase_deadline = plan_deadline
                 else:  # post-build (e.g. review): use the remaining time to the ceiling
-                    cfg["_phase_deadline"] = cfg["_deadline"]
+                    tctx.phase_deadline = cfg["_deadline"]
             out = process_phase(cfg, app, app_dir, phasedef, prompt, prior_outputs,
                                 state, phase_index=i)
             prior_outputs.append((key, out))
@@ -8526,7 +8527,7 @@ def doctor(cfg):
 # Main
 # ---------------------------------------------------------------------------
 def resolve_models(cfg):
-    cfg["_resolved"] = {
+    tcxlib.TurnContext(cfg).resolved = {
         "claude_model": cget(cfg, "models.claude", "sonnet") or "sonnet",
         "codex_model": detect_codex_model(cfg),
         "gemini_model": (cget(cfg, "models.gemini_fallback", "")
@@ -8546,7 +8547,7 @@ def resolve_models(cfg):
     if cget(cfg, "agents.gemini_enabled", True):
         ok, reason = detect_gemini_available(cfg)
         if not ok:
-            cfg["_gemini_disabled_reason"] = reason
+            tcxlib.TurnContext(cfg).gemini_disabled_reason = reason
             emit("Gemini auto-disabled for this run — %s. (Probe verdict cached "
                  "4h in .gemini_probe.json; fix the key/CLI and delete the cache "
                  "to retry sooner.)" % reason)
@@ -8997,7 +8998,7 @@ def main():
         global LOCKS_DIR
         LOCKS_DIR = os.path.join(cfg["root"], ".orch-locks")
     target_app = args.app or args.project
-    cfg["_explicit_app"] = bool(target_app or args.resume)
+    tcxlib.TurnContext(cfg).explicit_app = bool(target_app or args.resume)
     # An app/project name is a single folder under the root — refuse anything
     # that would traverse out of it when joined (orchestrator.py never treats
     # these as paths, only as folder names).

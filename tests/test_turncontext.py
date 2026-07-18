@@ -16,7 +16,37 @@ import turncontext
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_cfg_key_inventory import (  # noqa: E402
     scan, SCANNED, ALLOWED_WRITTEN_KEYS, TRANCHE1_MIGRATED,
-    TRANCHE_C1_MIGRATED, TRANCHE_C2_MIGRATED, HERE)
+    TRANCHE_C1_MIGRATED, TRANCHE_C2_MIGRATED, TRANCHE_D_MIGRATED, HERE)
+
+BAND_A_SWEEP = {
+    "app_dir": "_app_dir", "state": "_state",
+    "original_prompt": "_original_prompt", "workflow_name": "_workflow_name",
+    "workflow_target": "_workflow_target",
+    "workflow_verify_spec": "_workflow_verify_spec", "roles": "_roles",
+    "personalities": "_personalities",
+    "agent_role_overrides": "_agent_role_overrides",
+    "role_by_id": "_role_by_id", "autonomy": "_autonomy",
+    "round_multiplier": "_round_multiplier", "completeness": "_completeness",
+    "target_path": "_target_path", "target_paths": "_target_paths",
+    "tech_stack_block": "_tech_stack_block", "url_context": "_url_context",
+    "budget": "_budget", "deadline": "_deadline",
+    "base_models": "_base_models", "base_resolved": "_base_resolved",
+    "explicit_app": "_explicit_app",
+    "gemini_disabled_reason": "_gemini_disabled_reason",
+    "phase_deadline": "_phase_deadline",
+    "prior_discussions": "_prior_discussions",
+    "checked_any_agent_runnable": "_checked_any_agent_runnable",
+    "gemini_unavailable": "_gemini_unavailable",
+    "installed_ollama_models": "_installed_ollama_models",
+    "iter_verify_toolchain_absent": "_iter_verify_toolchain_absent",
+    "noted_local_active_limit": "_noted_local_active_limit",
+    "noted_local_lane_skip": "_noted_local_lane_skip",
+    "noted_local_ram_gate": "_noted_local_ram_gate",
+    "noted_ollama_sprint_skip": "_noted_ollama_sprint_skip",
+    "noted_ollama_uninstalled_skip": "_noted_ollama_uninstalled_skip",
+    "warned_no_git_repo": "_warned_no_git_repo",
+    "sim_ctx": "_sim_ctx",
+}
 
 BAND_C_PROPS = {
     "session": "_session",
@@ -59,6 +89,7 @@ ALL_PROPS = {}
 ALL_PROPS.update(BAND_B)
 ALL_PROPS.update(BAND_C_PROPS)
 ALL_PROPS.update(BAND_BPRIME)
+ALL_PROPS.update(BAND_A_SWEEP)
 
 
 class TestViewSemantics(unittest.TestCase):
@@ -237,6 +268,32 @@ class TestBandDIdentity(unittest.TestCase):
             self.assertIs(c[k], cfg[k], "%s must alias across the copy" % k)
 
 
+class TestNoteOnce(unittest.TestCase):
+    def test_true_exactly_once_per_key(self):
+        cfg = {}
+        ctx = turncontext.TurnContext(cfg)
+        self.assertTrue(ctx.note_once("routing_filter", "chat"))
+        self.assertFalse(ctx.note_once("routing_filter", "chat"))
+        self.assertTrue(ctx.note_once("routing_filter", "app_design"),
+                        "a different suffix is a different latch")
+
+    def test_key_bytes_match_the_four_historical_families(self):
+        # note_once must build the exact keys the raw %-format code built,
+        # or resumed runs would re-emit already-noted warnings.
+        cfg = {}
+        ctx = turncontext.TurnContext(cfg)
+        ctx.note_once("ollama_reasoning_noop_cli", "chat")
+        ctx.note_once("routing_filter", "chat")
+        ctx.note_once("%s_noop" % "gemini_reasoning", "chat")
+        ctx.note_once("ollama_override_shadowed", "chat")
+        self.assertEqual(set(cfg), {
+            "_noted_ollama_reasoning_noop_cli_%s" % "chat",
+            "_noted_routing_filter_%s" % "chat",
+            "_noted_%s_noop_%s" % ("gemini_reasoning", "chat"),
+            "_noted_ollama_override_shadowed_%s" % "chat",
+        })
+
+
 class TestGateRetarget(unittest.TestCase):
     def test_turncontext_is_the_only_home_for_migrated_writes(self):
         # turncontext.py exists, is intentionally NOT scanned, and the
@@ -250,19 +307,19 @@ class TestGateRetarget(unittest.TestCase):
         self.assertNotIn("turncontext.py", SCANNED)
         inv = scan()
         for key in sorted(TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED
-                          | TRANCHE_C2_MIGRATED):
+                          | TRANCHE_C2_MIGRATED | TRANCHE_D_MIGRATED):
             self.assertFalse(
                 inv.get(key, {}).get("writes"),
                 "raw write of migrated key %s reintroduced at %s"
                 % (key, inv.get(key, {}).get("writes")))
-        self.assertEqual(len(inv["_resolved"]["writes"]), 4)
 
-    def test_migrated_keys_left_the_allowlist(self):
-        # The monotonic gate is what catches reintroductions — that only
-        # works if the migrated keys are actually gone from the allowlist.
-        self.assertFalse(
-            (TRANCHE1_MIGRATED | TRANCHE_C1_MIGRATED | TRANCHE_C2_MIGRATED)
-            & ALLOWED_WRITTEN_KEYS)
+    def test_allowlist_is_zero(self):
+        # The 2.3 end state: no raw cfg["_…"] write anywhere in the
+        # scanned engine files is permitted, full stop. Growing this set
+        # again is a design decision, not a convenience.
+        self.assertEqual(ALLOWED_WRITTEN_KEYS, set())
+        self.assertEqual(
+            {k: v["writes"] for k, v in scan().items() if v["writes"]}, {})
 
 
 if __name__ == "__main__":

@@ -5,71 +5,71 @@ GENERATED — do not hand-edit. Regenerate with:
 gate (tests/test_cfg_key_inventory.py) fails on any NEW
 underscore key and on stale allowlist entries.
 
-37 written keys · 49 write sites · 201 read sites across orchestrator.py, visualqa.py, urlfetch.py, uicrawl.py
+0 written keys · 0 write sites · 201 read sites across orchestrator.py, visualqa.py, urlfetch.py, uicrawl.py
 
 | key | writes | reads | write sites |
 |---|---|---|---|
-| `_agent_role_overrides` | 1 | 1 | orchestrator.py:7879 |
-| `_app_dir` | 1 | 6 | orchestrator.py:7821 |
-| `_autonomy` | 2 | 1 | orchestrator.py:7846; orchestrator.py:7870 |
-| `_base_models` | 1 | 1 | orchestrator.py:7732 |
-| `_base_resolved` | 1 | 1 | orchestrator.py:7733 |
-| `_budget` | 1 | 4 | orchestrator.py:8045 |
-| `_checked_any_agent_runnable` | 1 | 1 | orchestrator.py:7217 |
-| `_completeness` | 1 | 1 | orchestrator.py:7860 |
-| `_deadline` | 2 | 13 | orchestrator.py:8046; orchestrator.py:8056 |
-| `_explicit_app` | 1 | 2 | orchestrator.py:9000 |
-| `_gemini_disabled_reason` | 1 | 5 | orchestrator.py:8549 |
-| `_gemini_unavailable` | 1 | 2 | orchestrator.py:915 |
-| `_installed_ollama_models` | 1 | 4 | orchestrator.py:3672 |
-| `_iter_verify_toolchain_absent` | 1 | 2 | orchestrator.py:4613 |
-| `_noted_local_active_limit` | 1 | 1 | orchestrator.py:3762 |
-| `_noted_local_lane_skip` | 1 | 1 | orchestrator.py:3901 |
-| `_noted_local_ram_gate` | 1 | 1 | orchestrator.py:3741 |
-| `_noted_ollama_sprint_skip` | 1 | 1 | orchestrator.py:3709 |
-| `_noted_ollama_uninstalled_skip` | 1 | 1 | orchestrator.py:3719 |
-| `_original_prompt` | 1 | 1 | orchestrator.py:7835 |
-| `_personalities` | 1 | 1 | orchestrator.py:7878 |
-| `_phase_deadline` | 5 | 13 | orchestrator.py:6109; orchestrator.py:8047; orchestrator.py:8128; orchestrator.py:8130; orchestrator.py:8132 |
-| `_prior_discussions` | 1 | 1 | orchestrator.py:8114 |
-| `_resolved` | 4 | 14 | orchestrator.py:7735; orchestrator.py:7740; orchestrator.py:7744; orchestrator.py:8529 |
-| `_role_by_id` | 1 | 1 | orchestrator.py:7882 |
-| `_roles` | 1 | 2 | orchestrator.py:7878 |
-| `_round_multiplier` | 2 | 1 | orchestrator.py:7845; orchestrator.py:7859 |
-| `_sim_ctx` | 1 | 1 | visualqa.py:368 |
-| `_state` | 1 | 2 | orchestrator.py:7822 |
-| `_target_path` | 2 | 11 | orchestrator.py:7885; orchestrator.py:7892 |
-| `_target_paths` | 1 | 5 | orchestrator.py:7889 |
-| `_tech_stack_block` | 1 | 2 | orchestrator.py:7999 |
-| `_url_context` | 2 | 5 | orchestrator.py:7807; orchestrator.py:8031 |
-| `_warned_no_git_repo` | 1 | 1 | orchestrator.py:7209 |
-| `_workflow_name` | 1 | 14 | orchestrator.py:7871 |
-| `_workflow_target` | 1 | 11 | orchestrator.py:7872 |
-| `_workflow_verify_spec` | 1 | 1 | orchestrator.py:7875 |
 
 Read-only keys (written nowhere in the scanned files —
 either dead reads or written via non-subscript paths;
 verify before migrating):
 
+- `_agent_role_overrides` — 1 read(s): orchestrator.py:6371
 - `_allow_writes` — 11 read(s): orchestrator.py:610; orchestrator.py:617; orchestrator.py:631; orchestrator.py:635
-- `_build_dir` — 15 read(s): orchestrator.py:610; orchestrator.py:611; orchestrator.py:612; orchestrator.py:4577
-- `_claude_model_override` — 2 read(s): orchestrator.py:678; orchestrator.py:1152
-- `_drop_prior_discussions` — 1 read(s): orchestrator.py:1832
-- `_health_key` — 2 read(s): orchestrator.py:1252; orchestrator.py:1381
-- `_knowledge` — 3 read(s): orchestrator.py:1860; orchestrator.py:6413; orchestrator.py:6415
-- `_noted_indep_grader` — 1 read(s): orchestrator.py:5925
-- `_phase_exemplar` — 1 read(s): orchestrator.py:1845
-- `_phase_instructions` — 1 read(s): orchestrator.py:1855
-- `_phase_key` — 3 read(s): orchestrator.py:943; orchestrator.py:951; orchestrator.py:3787
-- `_phase_playbook` — 2 read(s): orchestrator.py:1842; orchestrator.py:6401
-- `_prior_disc_cap` — 2 read(s): orchestrator.py:1812; orchestrator.py:1813
+- `_app_dir` — 6 read(s): orchestrator.py:1136; orchestrator.py:1139; orchestrator.py:1174; orchestrator.py:1825
+- `_autonomy` — 1 read(s): orchestrator.py:6939
+- `_base_models` — 1 read(s): orchestrator.py:7735
+- `_base_resolved` — 1 read(s): orchestrator.py:7736
+- `_budget` — 4 read(s): orchestrator.py:3705; orchestrator.py:5046; orchestrator.py:6105; orchestrator.py:6352
+- `_build_dir` — 15 read(s): orchestrator.py:610; orchestrator.py:611; orchestrator.py:612; orchestrator.py:4576
+- `_checked_any_agent_runnable` — 1 read(s): orchestrator.py:7213
+- `_claude_model_override` — 2 read(s): orchestrator.py:678; orchestrator.py:1151
+- `_completeness` — 1 read(s): orchestrator.py:7462
+- `_deadline` — 13 read(s): orchestrator.py:1097; orchestrator.py:1118; orchestrator.py:1367; orchestrator.py:4597
+- `_drop_prior_discussions` — 1 read(s): orchestrator.py:1831
+- `_explicit_app` — 2 read(s): orchestrator.py:7197; orchestrator.py:7950
+- `_gemini_disabled_reason` — 5 read(s): orchestrator.py:3770; orchestrator.py:8006; orchestrator.py:8010; orchestrator.py:8505
+- `_gemini_unavailable` — 2 read(s): orchestrator.py:823; orchestrator.py:824
+- `_health_key` — 2 read(s): orchestrator.py:1251; orchestrator.py:1380
+- `_installed_ollama_models` — 4 read(s): orchestrator.py:3666; orchestrator.py:3670; orchestrator.py:3673; orchestrator.py:3866
+- `_iter_verify_toolchain_absent` — 2 read(s): orchestrator.py:4572; orchestrator.py:4577
+- `_knowledge` — 3 read(s): orchestrator.py:1859; orchestrator.py:6410; orchestrator.py:6412
+- `_noted_indep_grader` — 1 read(s): orchestrator.py:5922
+- `_noted_local_active_limit` — 1 read(s): orchestrator.py:3761
+- `_noted_local_lane_skip` — 1 read(s): orchestrator.py:3899
+- `_noted_local_ram_gate` — 1 read(s): orchestrator.py:3740
+- `_noted_ollama_sprint_skip` — 1 read(s): orchestrator.py:3708
+- `_noted_ollama_uninstalled_skip` — 1 read(s): orchestrator.py:3718
+- `_original_prompt` — 1 read(s): orchestrator.py:2392
+- `_personalities` — 1 read(s): orchestrator.py:6369
+- `_phase_deadline` — 13 read(s): orchestrator.py:1097; orchestrator.py:1118; orchestrator.py:1367; orchestrator.py:4687
+- `_phase_exemplar` — 1 read(s): orchestrator.py:1844
+- `_phase_instructions` — 1 read(s): orchestrator.py:1854
+- `_phase_key` — 3 read(s): orchestrator.py:944; orchestrator.py:950; orchestrator.py:3787
+- `_phase_playbook` — 2 read(s): orchestrator.py:1841; orchestrator.py:6398
+- `_prior_disc_cap` — 2 read(s): orchestrator.py:1811; orchestrator.py:1812
+- `_prior_discussions` — 1 read(s): orchestrator.py:1830
 - `_read_dir` — 3 read(s): orchestrator.py:617; orchestrator.py:618; orchestrator.py:619
-- `_role_routing` — 1 read(s): orchestrator.py:5262
-- `_routed_rounds` — 2 read(s): orchestrator.py:6343; orchestrator.py:6344
-- `_routed_turn_timeout` — 1 read(s): orchestrator.py:6356
-- `_routing` — 4 read(s): orchestrator.py:1095; orchestrator.py:1116; orchestrator.py:3788; orchestrator.py:5144
-- `_session` — 3 read(s): orchestrator.py:637; orchestrator.py:687; orchestrator.py:1583
+- `_resolved` — 14 read(s): orchestrator.py:629; orchestrator.py:678; orchestrator.py:834; orchestrator.py:890
+- `_role_by_id` — 1 read(s): orchestrator.py:6371
+- `_role_routing` — 1 read(s): orchestrator.py:5259
+- `_roles` — 2 read(s): orchestrator.py:6370; orchestrator.py:7883
+- `_round_multiplier` — 1 read(s): orchestrator.py:6346
+- `_routed_rounds` — 2 read(s): orchestrator.py:6340; orchestrator.py:6341
+- `_routed_turn_timeout` — 1 read(s): orchestrator.py:6353
+- `_routing` — 4 read(s): orchestrator.py:1094; orchestrator.py:1115; orchestrator.py:3788; orchestrator.py:5143
+- `_session` — 3 read(s): orchestrator.py:637; orchestrator.py:687; orchestrator.py:1582
 - `_session_cwd` — 2 read(s): orchestrator.py:723; orchestrator.py:724
-- `_target_digest` — 3 read(s): orchestrator.py:1872; orchestrator.py:6458; orchestrator.py:6465
-- `_turn_timeout` — 1 read(s): orchestrator.py:1353
-- `_verify_context` — 1 read(s): orchestrator.py:1877
+- `_sim_ctx` — 1 read(s): uicrawl.py:272
+- `_state` — 2 read(s): orchestrator.py:1170; orchestrator.py:1173
+- `_target_digest` — 3 read(s): orchestrator.py:1871; orchestrator.py:6455; orchestrator.py:6462
+- `_target_path` — 11 read(s): orchestrator.py:6272; orchestrator.py:6276; orchestrator.py:6456; orchestrator.py:6457
+- `_target_paths` — 5 read(s): orchestrator.py:6224; orchestrator.py:6449; orchestrator.py:7893; orchestrator.py:7893
+- `_tech_stack_block` — 2 read(s): orchestrator.py:1847; orchestrator.py:7999
+- `_turn_timeout` — 1 read(s): orchestrator.py:1352
+- `_url_context` — 5 read(s): orchestrator.py:1867; orchestrator.py:3010; orchestrator.py:7776; urlfetch.py:24
+- `_verify_context` — 1 read(s): orchestrator.py:1876
+- `_warned_no_git_repo` — 1 read(s): orchestrator.py:7204
+- `_workflow_name` — 14 read(s): orchestrator.py:1228; orchestrator.py:4602; orchestrator.py:4618; orchestrator.py:5015
+- `_workflow_target` — 11 read(s): orchestrator.py:1939; orchestrator.py:2046; orchestrator.py:2147; orchestrator.py:2351
+- `_workflow_verify_spec` — 1 read(s): orchestrator.py:4584

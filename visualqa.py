@@ -32,6 +32,7 @@ import time
 import urllib.request
 
 import localmodels as lmlib
+import turncontext as tcxlib
 import verify as verifylib
 
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
@@ -365,8 +366,8 @@ def run_visual_qa(cfg, cget, emit, app, app_dir, state, prompt):
         shots, note = capture_screens(udid, app_path, bid, shots_dir)
         # Downstream gates (UI crawl) reuse this booted simulator + installed
         # app instead of building/installing again.
-        cfg["_sim_ctx"] = {"udid": udid, "bundle_id": bid,
-                           "app_path": app_path}
+        tcxlib.TurnContext(cfg).sim_ctx = {
+            "udid": udid, "bundle_id": bid, "app_path": app_path}
         if not shots:
             # The app not even launching IS a finding — but it's the release
             # gate's job to catch broken builds; report and skip here.

@@ -43,36 +43,29 @@ _GET_RE = re.compile(r'\.get\(\s*' + _KEY)
 _STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 _DYNAMIC_RE = re.compile(r'\.setdefault\(\s*"_%s')
 DYNAMIC_SENTINEL = "_<dynamic>_%s_sessions"
+# 2.3d second amendment: an underscore-leading %-format string literal in an
+# engine file is how a DYNAMIC cfg key gets built for a `cfg[var] = ...`
+# write the literal-subscript scan cannot see (four "_noted_...%s" latch
+# families hid this way until the (d) verification pass caught them). Such
+# literals are banned from the scanned files outright — dynamic latches
+# route through TurnContext.note_once, and the session maps through
+# session_map. The gate's honest mechanism statement: it detects literal
+# underscore subscripts/setdefault/pop AND underscore format literals;
+# deliberately laundering a key through concatenation would still evade it.
+_DYN_FMT_RE = re.compile(r'"(_[a-z0-9][a-z0-9_]*%[^"]*)"')
 
-# The frozen inventory (2.3a baseline, regenerated ONCE in 2.3b when the
-# scanner amendment surfaced four keys the old regex could not see —
-# _claude_sessions/_codex_sessions (setdefault), _personalities (first
-# tuple-unpack target), and the dynamic-sessions sentinel. That growth is
-# the gate becoming honest, not new state; the monotonic rule applies from
-# THIS baseline). Shrink freely as TurnContext absorbs keys; grow ONLY with
-# a reviewed reason recorded in the commit.
-ALLOWED_WRITTEN_KEYS = {
-    "_agent_role_overrides",
-    "_app_dir", "_autonomy", "_base_models",
-    "_base_resolved", "_budget",
-    "_checked_any_agent_runnable",
-    "_completeness",
-    "_deadline", "_explicit_app",
-    "_gemini_disabled_reason", "_gemini_unavailable",
-    "_installed_ollama_models", "_iter_verify_toolchain_absent",
-    "_noted_local_active_limit",
-    "_noted_local_lane_skip", "_noted_local_ram_gate", "_noted_ollama_sprint_skip",
-    "_noted_ollama_uninstalled_skip", "_original_prompt", "_personalities",
-    "_phase_deadline",
-    "_prior_discussions",
-    "_resolved", "_role_by_id",
-    "_roles", "_round_multiplier",
-    "_sim_ctx",
-    "_state", "_target_path",
-    "_target_paths", "_tech_stack_block",
-    "_url_context", "_warned_no_git_repo",
-    "_workflow_name", "_workflow_target", "_workflow_verify_spec",
-}
+# ZERO since 2.3d: every underscore key now rides TurnContext, so a raw
+# cfg["_…"] write in the scanned files fails the gate — where "raw write"
+# means everything this scanner can see: literal subscript assignments
+# (incl. tuple/chained targets), setdefault(), pop(), and underscore-leading
+# %-format literals (the dynamic-key class; see _DYN_FMT_RE). (History: 60
+# keys at the 2.3a baseline; one honest regeneration to 64 when the 2.3b
+# amendment surfaced setdefault/tuple/pop/dynamic blind spots; monotonic
+# shrink to zero across tranches 1/c1/c2/d, with the four "_noted_…%s"
+# dynamic latch families caught by the (d) verification pass and rehomed
+# onto TurnContext.note_once.) Grow ONLY with a reviewed reason recorded in
+# the commit — and expect the answer to be "put it on TurnContext instead".
+ALLOWED_WRITTEN_KEYS = set()
 
 # Keys migrated to the TurnContext view: raw writes of these now live ONLY
 # in turncontext.py, which is deliberately outside SCANNED — the gate above
@@ -99,6 +92,26 @@ TRANCHE_C1_MIGRATED = {
 TRANCHE_C2_MIGRATED = {
     "_agent_health", "_claude_sessions", "_codex_sessions", "_routing",
     DYNAMIC_SENTINEL,
+}
+# 2.3d = the sweep: bands A (run/app constants), A′ (caller-per-phase),
+# E (one-shot latches, one property each), F (_sim_ctx, written by
+# visualqa through the same view) — and _resolved's last four band-A
+# sites (base resolution + the workflow-override interior chains, which
+# now mutate through tctx.resolved).
+TRANCHE_D_MIGRATED = {
+    "_agent_role_overrides", "_app_dir", "_autonomy", "_base_models",
+    "_base_resolved", "_budget", "_checked_any_agent_runnable",
+    "_completeness", "_deadline", "_explicit_app",
+    "_gemini_disabled_reason", "_gemini_unavailable",
+    "_installed_ollama_models", "_iter_verify_toolchain_absent",
+    "_noted_local_active_limit", "_noted_local_lane_skip",
+    "_noted_local_ram_gate", "_noted_ollama_sprint_skip",
+    "_noted_ollama_uninstalled_skip", "_original_prompt", "_personalities",
+    "_phase_deadline", "_prior_discussions", "_resolved", "_role_by_id",
+    "_roles", "_round_multiplier", "_sim_ctx", "_state", "_target_path",
+    "_target_paths", "_tech_stack_block", "_url_context",
+    "_warned_no_git_repo", "_workflow_name", "_workflow_target",
+    "_workflow_verify_spec",
 }
 
 
@@ -152,6 +165,8 @@ def scan(root=HERE, files=SCANNED):
             site = (fn, lineno)
             if _DYNAMIC_RE.search(code):
                 add("writes", DYNAMIC_SENTINEL, site)
+            for m in _DYN_FMT_RE.finditer(code):
+                add("writes", "_<dynfmt>%s" % m.group(1), site)
             for m in _SETDEFAULT_RE.finditer(code):
                 add("writes", m.group(1), site)
             for m in _POP_RE.finditer(code):
@@ -202,6 +217,17 @@ class TestScannerAmendment(unittest.TestCase):
     def test_dynamic_key_records_the_sentinel(self):
         inv = self._scan_snippet('c.setdefault("_%s_sessions" % agent, {})\n')
         self.assertEqual([("probe.py", 1)], inv[DYNAMIC_SENTINEL]["writes"])
+
+    def test_underscore_format_literal_is_flagged(self):
+        # The (d) verification pass found four dynamic-latch writes hiding
+        # behind %-formatted keys in variables (`memo = "_noted_x_%s" %
+        # key; cfg[memo] = True`) — invisible to every subscript pattern.
+        # The format literal itself is now the detection surface.
+        inv = self._scan_snippet(
+            'memo = "_noted_routing_filter_%s" % phase_key\n')
+        flagged = [k for k in inv if k.startswith("_<dynfmt>")]
+        self.assertEqual(len(flagged), 1, "underscore format literal missed")
+        self.assertTrue(inv[flagged[0]]["writes"])
 
     def test_chained_assignment_counts_the_middle_target(self):
         # The c631159 first-match splitter filed the middle target of
