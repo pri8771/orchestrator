@@ -2244,11 +2244,20 @@ _FLOWS_JSON_INSTRUCTION = (
     "accessibilityIdentifier — or, if you must use a label, name the EXACT "
     "full accessibilityLabel the control will expose ('Add custom tea'), never "
     "the glyph. assert_exists MAY instead name a user-visible string you expect "
-    "on screen (e.g. the item you just created). Whatever a step names, the "
-    "built app has to expose that EXACT string on the control or the UI-crawl "
-    "gate fails the journey. These are executed against the real built app by "
-    "the UI-crawl gate — a journey you forget to declare is a journey nobody "
-    "verifies.\n"
+    "on screen (e.g. the item you just created). When an asserted state only "
+    "arrives after an app-determined delay — a timer completing, a countdown "
+    "reaching zero — add \"timeout\": <seconds> to THAT step (e.g. "
+    '{"assert_exists": "Ready", "timeout": 95}), sized to the app\'s own '
+    "duration plus margin: the default wait is ~5 seconds, so a timer's "
+    "completion state can NEVER pass without a declared timeout. Route such "
+    "flows through the SHORTEST built-in duration. Never route a flow through "
+    "a control hidden behind a gesture (swipe actions, long-press context "
+    "menus): the gate taps directly-visible controls only, so a journey "
+    "needing edit/delete must use a visibly exposed affordance. Whatever a "
+    "step names, the built app has to expose that EXACT string on the control "
+    "or the UI-crawl gate fails the journey. These are executed against the "
+    "real built app by the UI-crawl gate — a journey you forget to declare is "
+    "a journey nobody verifies.\n"
 )
 _INTERFACES_JSON_INSTRUCTION = (
     "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
@@ -4053,8 +4062,11 @@ def _flows_contract_block(flows):
             "matches controls by these EXACT strings. For EVERY token below, set "
             "it VERBATIM as the .accessibilityIdentifier of the control that "
             "fulfills that step, AND keep a descriptive .accessibilityLabel for "
-            "VoiceOver — set BOTH; never replace the label with the token. A "
-            "token you don't expose as an identifier is a journey that FAILS:\n"
+            "VoiceOver — set BOTH; never replace the label with the token. Each "
+            "token's control must be DIRECTLY visible and hittable on its "
+            "screen — never hidden behind a swipe action or long-press menu "
+            "(the gate cannot perform gestures to reveal it). A token you "
+            "don't expose as an identifier is a journey that FAILS:\n"
             + "\n".join("  - %s" % t for t in tokens))
 
 

@@ -209,6 +209,25 @@ class TestFlowsContract(unittest.TestCase):
         # It explicitly forbids bare glyph tokens.
         self.assertIn("NEVER name a bare glyph", instr)
 
+    def test_flows_instruction_supports_assert_timeouts(self):
+        # A state that arrives after an app-determined delay (a 90s steep timer
+        # hitting "Ready") can NEVER pass the default ~5s assert window — the
+        # contract must teach the planner to declare a per-step timeout (the
+        # runner honors it; observed live as a temporally-impossible flow).
+        instr = orch._FLOWS_JSON_INSTRUCTION
+        self.assertIn('"timeout"', instr)
+        self.assertIn("timer", instr)
+        self.assertIn("SHORTEST built-in duration", instr)
+
+    def test_flows_instruction_forbids_gesture_hidden_controls(self):
+        # A swipe-action/long-press-only control isn't in the hierarchy until
+        # the gesture happens, and flows can't declare gestures — observed live
+        # as "no tappable element 'settings.customTeaEditButton'" for a
+        # swipe-action Edit button that genuinely existed.
+        instr = orch._FLOWS_JSON_INSTRUCTION
+        self.assertIn("swipe", instr)
+        self.assertIn("long-press", instr)
+
     def test_parse_flows_blocks(self):
         text = ("Prose...\n```flows-json\n"
                 + json.dumps({"flows": [
@@ -245,6 +264,9 @@ class TestFlowsContract(unittest.TestCase):
         block = orch._flows_contract_block(flows)
         self.assertIn("BINDING CONTRACT", block)
         self.assertIn("accessibilityIdentifier", block)
+        # Build workers are told the control must be reachable without a
+        # gesture — a swipe-action-only affordance fails its journey.
+        self.assertIn("swipe action", block)
         self.assertIn("home.addItemButton", block)
         self.assertIn("addEdit.nameField", block)
         self.assertIn("addEdit.saveButton", block)
