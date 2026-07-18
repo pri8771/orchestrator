@@ -148,6 +148,59 @@ def scan(build_dir, here):
                          "detail": "no DesignSystem*.swift — the design "
                                    "handoff's token spec was never realized"})
 
+    # Letterboxing hard error: an iOS app target with NO launch-screen
+    # configuration anywhere (UILaunchScreen/UILaunchStoryboardName in an
+    # Info.plist, an INFOPLIST_KEY_UILaunchScreen* build setting, or a
+    # LaunchScreen storyboard) renders in a legacy-sized, letterboxed window.
+    # Observed live: a 630pt-tall window on a 912pt screen cropped the timer
+    # screen's Start button clean off the bottom — declared flows failed and
+    # screens graded BAD while the Swift code itself was fine. Deterministic,
+    # so gated hard (M-004 in knowledge/ios/observed-mistakes.md).
+    has_xcodeproj = False
+    launch_ok = False
+    plists = []
+    for dirpath, dirnames, filenames in os.walk(build_dir):
+        dirnames[:] = [d for d in dirnames
+                       if d not in (".git", "DerivedData", ".dd", ".build",
+                                    "node_modules")]
+        for d in dirnames:
+            if d.endswith(".xcodeproj"):
+                has_xcodeproj = True
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            low = os.path.relpath(p, build_dir).lower()
+            if fn == "Info.plist" and "test" not in low:
+                plists.append(p)
+            if fn.startswith("LaunchScreen") and fn.endswith(".storyboard"):
+                launch_ok = True
+            if fn in ("project.pbxproj", "project.yml"):
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        if "UILaunchScreen" in fh.read():
+                            launch_ok = True
+                except OSError:
+                    pass
+    if has_xcodeproj and not launch_ok:
+        for p in plists:
+            try:
+                with open(p, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            if b"UILaunchScreen" in data or b"UILaunchStoryboardName" in data:
+                launch_ok = True
+                break
+        if not launch_ok:
+            where = os.path.relpath(plists[0], build_dir) if plists \
+                else "app_build/"
+            errors.append({"rule": "missing_launch_screen", "file": where,
+                           "line": 0,
+                           "detail": "no UILaunchScreen/UILaunchStoryboardName "
+                                     "anywhere — iOS letterboxes the app into a "
+                                     "legacy-size window, cropping layouts (add "
+                                     "UILaunchScreen to the app target's "
+                                     "Info.plist)"})
+
     stack = load_tech_stack(here)
     banned = {e["name"].lower() for e in stack["banned"]}
     allowed = {e["name"].lower() for e in stack["allowed"]} \

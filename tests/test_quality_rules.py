@@ -94,6 +94,61 @@ class TestEmptyActionLint(unittest.TestCase):
         self.assertFalse(any(x["rule"] == "empty_action" for x in e))
 
 
+class TestLaunchScreenLint(unittest.TestCase):
+    """designlint's letterboxing check (M-004): an iOS app target with no
+    launch-screen configuration anywhere renders in a legacy-size, letterboxed
+    window — observed live cropping a timer screen's Start button clean off
+    the bottom while the Swift code itself was fine. Hard error."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _mk(self, rel, content=""):
+        p = os.path.join(self.d, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(content)
+
+    def _mkproj(self, pbx_content=""):
+        os.makedirs(os.path.join(self.d, "App.xcodeproj"), exist_ok=True)
+        self._mk("App.xcodeproj/project.pbxproj", pbx_content)
+
+    def test_app_without_any_launch_config_is_hard_error(self):
+        self._mkproj("/* no launch keys */")
+        self._mk("Info.plist", "<plist><dict><key>CFBundleName</key>"
+                               "<string>App</string></dict></plist>")
+        errors, _w = designlint.scan(self.d, self.d)
+        self.assertTrue(any(x["rule"] == "missing_launch_screen" for x in errors),
+                        "letterboxing config gap not flagged: %s" % errors)
+
+    def test_uilaunchscreen_in_plist_is_clean(self):
+        self._mkproj()
+        self._mk("Info.plist", "<plist><dict><key>UILaunchScreen</key>"
+                               "<dict/></dict></plist>")
+        errors, _w = designlint.scan(self.d, self.d)
+        self.assertFalse(any(x["rule"] == "missing_launch_screen" for x in errors))
+
+    def test_generated_infoplist_key_in_pbxproj_is_clean(self):
+        # GENERATE_INFOPLIST_FILE projects carry the key as a build setting.
+        self._mkproj("INFOPLIST_KEY_UILaunchScreen_Generation = YES;")
+        errors, _w = designlint.scan(self.d, self.d)
+        self.assertFalse(any(x["rule"] == "missing_launch_screen" for x in errors))
+
+    def test_launchscreen_storyboard_is_clean(self):
+        self._mkproj()
+        self._mk("Info.plist", "<plist><dict/></plist>")
+        self._mk("LaunchScreen.storyboard", "<document/>")
+        errors, _w = designlint.scan(self.d, self.d)
+        self.assertFalse(any(x["rule"] == "missing_launch_screen" for x in errors))
+
+    def test_spm_library_without_xcodeproj_is_skipped(self):
+        # No app target -> nothing to letterbox (verify.py owns the
+        # no-runnable-app-target failure).
+        self._mk("Package.swift", "// swift-tools-version:5.9")
+        errors, _w = designlint.scan(self.d, self.d)
+        self.assertFalse(any(x["rule"] == "missing_launch_screen" for x in errors))
+
+
 class TestOverlapRuleEverywhere(unittest.TestCase):
     """The layout-collision rule (from the observed Gloam text-overlap defect)
     must live in every place that shapes or grades a build — the build prompt,

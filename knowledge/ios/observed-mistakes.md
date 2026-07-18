@@ -91,5 +91,33 @@ on the same screen.
 
 ---
 
+## M-004 · Missing launch-screen config letterboxes the whole app
+
+**What was seen (steep, 2026-07-18):** the generated app target's Info.plist
+had no `UILaunchScreen` key (and no LaunchScreen storyboard, and no
+`INFOPLIST_KEY_UILaunchScreen_Generation` build setting). iOS treats such an
+app as legacy-sized and LETTERBOXES it: on a 912pt-tall device the app got a
+630pt-tall window with black bands above and below. The timer screen's layout
+overflowed the shrunken window and its Start button rendered ~32pt BELOW the
+window's bottom edge — visible in screenshots as a cropped, unfinished screen,
+and untappable by any user or UI test. Every declared flow through the timer
+failed while the Swift layout code itself was "correct".
+
+**Generic rule:** an iOS app target MUST declare launch-screen configuration —
+`UILaunchScreen` (an empty dict is enough) in the app's Info.plist, or a
+LaunchScreen storyboard, or `INFOPLIST_KEY_UILaunchScreen_Generation` when the
+Info.plist is generated. Without it, nothing about the layout can be trusted:
+the app runs in a smaller window than the device on modern iPhones.
+
+**How to avoid it:**
+- Always include `<key>UILaunchScreen</key><dict/>` (at minimum) in the app
+  target's Info.plist, or the equivalent generated-plist build setting.
+- Never treat the letterboxed window as a layout constraint to design around —
+  fix the plist, don't shrink the design.
+- The `designlint` gate now hard-errors (`missing_launch_screen`) when an
+  .xcodeproj app has no launch-screen configuration anywhere.
+
+---
+
 _Append new entries as real defects are observed. Keep each one concrete
 (what was seen) plus a GENERIC rule, so it transfers to unrelated apps._
