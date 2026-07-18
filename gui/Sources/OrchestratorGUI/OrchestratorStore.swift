@@ -630,6 +630,18 @@ final class OrchestratorStore: ObservableObject {
     }
     @Published var chatInput = ""
     @Published var chatThinking = false
+    // V3 board 1.4: per-chat history. currentChatKey selects which history
+    // file chatMessages mirrors ("home" = the legacy Chat Home thread; see
+    // ChatHistoryStore's key-space note). thinkingKeys/draftsByChat keep
+    // thinking state and composer drafts per chat so switching mid-reply
+    // can't show a "Thinking…" the new chat never asked for (§12.1/R2).
+    private(set) var currentChatKey = "home"
+    private var thinkingKeys: Set<String> = []
+    private var draftsByChat: [String: String] = [:]
+    // Load-guard: loadChatHistory assigns chatMessages, which fires didSet →
+    // saveChatHistory; without this flag a load-during-switch would write
+    // chat A's messages under chat B's key.
+    private var isLoadingChatHistory = false
     @Published var chatClaudeAvailable = true
     @Published var buildLanes = 3
     @Published var shepherdActive = false
@@ -2943,36 +2955,80 @@ final class OrchestratorStore: ObservableObject {
     // resolve to a from-source repo checkout — this must never land as a stray
     // file in a git working tree) and not rootURL (the project workspace, not
     // GUI state). Sibling to the bundled-engine-copy destination.
+    // V3 board 1.4: chat_history.json is the LEGACY single-file location,
+    // kept only as the migration source; per-chat files live under
+    // chat_history/ via ChatHistoryStore.
     var chatHistoryURL: URL {
         fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Orchestrator/chat_history.json")
     }
 
+    var chatHistory: ChatHistoryStore {
+        ChatHistoryStore(baseDir:
+            fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Orchestrator/chat_history"))
+    }
+
     private func saveChatHistory() {
+        guard !isLoadingChatHistory else { return }
         do {
-            let data = try JSONEncoder().encode(chatMessages)
-            try fm.createDirectory(at: chatHistoryURL.deletingLastPathComponent(),
-                                   withIntermediateDirectories: true)
-            try data.write(to: chatHistoryURL)
+            try chatHistory.save(chatMessages, key: currentChatKey)
         } catch {
             runLog += "Couldn't save chat history: \(error.localizedDescription)\n"
         }
     }
 
     private func loadChatHistory() {
-        guard let data = try? Data(contentsOf: chatHistoryURL),
-              let messages = try? JSONDecoder().decode([ConciergeMessage].self, from: data)
-        else { return }
-        chatMessages = messages
+        chatHistory.migrateLegacyIfNeeded(legacyURL: chatHistoryURL, homeKey: "home")
+        isLoadingChatHistory = true
+        // Missing file == genuinely empty chat: reset rather than keeping the
+        // previous chat's messages on screen.
+        chatMessages = chatHistory.load(key: currentChatKey) ?? []
+        isLoadingChatHistory = false
+    }
+
+    // Switch the visible conversation to another history key: persist the
+    // outgoing chat's draft, swap keys, restore the incoming chat's state.
+    // (No UI caller mints non-"home" keys in M1 — engine chat sessions render
+    // transcripts, not this store — but the isolation contract is load-bearing
+    // and test-proven now so later keys can't cross-write histories.)
+    func switchChat(to key: String) {
+        guard key != currentChatKey else { return }
+        draftsByChat[currentChatKey] = chatInput
+        currentChatKey = key
+        chatInput = draftsByChat[key] ?? ""
+        chatThinking = thinkingKeys.contains(key)
+        loadChatHistory()
+    }
+
+    // Concierge bookkeeping, keyed so a reply that lands after a chat switch
+    // is delivered to the chat that asked — never the newly-focused one.
+    func setChatThinking(_ thinking: Bool, for key: String) {
+        if thinking { thinkingKeys.insert(key) } else { thinkingKeys.remove(key) }
+        if key == currentChatKey { chatThinking = thinking }
+    }
+
+    func deliverConciergeReply(_ message: ConciergeMessage, to key: String) {
+        setChatThinking(false, for: key)
+        if key == currentChatKey {
+            chatMessages.append(message)   // didSet persists under this key
+        } else {
+            do {
+                try chatHistory.append(message, key: key)
+            } catch {
+                runLog += "Couldn't deliver chat reply to '\(key)': \(error.localizedDescription)\n"
+            }
+        }
     }
 
     // The only way back to a blank conversation: chatMessages has no other
     // reset path anywhere, so once it's non-empty the mode-card picker (gated
-    // on chatMessages.isEmpty) is gone for good without this.
+    // on chatMessages.isEmpty) is gone for good without this. Clears ONLY the
+    // current chat's messages/file.
     func startNewChat() {
         chatMessages = []
         chatInput = ""
-        chatThinking = false
+        setChatThinking(false, for: currentChatKey)
     }
 
     // nonisolated: pure string transform, exercised synchronously by

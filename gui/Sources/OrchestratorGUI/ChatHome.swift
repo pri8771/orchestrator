@@ -202,29 +202,34 @@ struct ChatHomeView: View {
         guard !text.isEmpty, !store.chatThinking else { return }
         store.chatInput = ""
         store.chatMessages.append(ConciergeMessage(role: .user, text: text))
-        store.chatThinking = true
         let history = store.chatMessages
         let workflows = store.workflows.map { "\($0.name): \($0.title)" }
         // The reply lands on the store, so it survives the user navigating
-        // away from Home while the concierge is still thinking.
+        // away from Home while the concierge is still thinking. V3 board 1.4:
+        // capture the ORIGIN chat key — an in-flight reply is delivered to
+        // the chat that asked, never whichever chat is current when it
+        // completes (§12.2).
         let store = self.store
+        let originKey = store.currentChatKey
+        store.setChatThinking(true, for: originKey)
         Task {
             let reply = await OrchestratorStore.conciergeAsk(
                 history: history.map { ($0.role == .user ? "USER" : "ASSISTANT", $0.text) },
                 workflowList: workflows)
             await MainActor.run {
-                store.chatThinking = false
                 guard let reply else {
                     store.chatClaudeAvailable = false
-                    store.chatMessages.append(ConciergeMessage(
+                    store.deliverConciergeReply(ConciergeMessage(
                         role: .concierge,
-                        text: "I couldn't reach the claude CLI (is it installed and logged in?). You can still create a run directly with ⌘N — pick a workflow that matches what you're after."))
+                        text: "I couldn't reach the claude CLI (is it installed and logged in?). You can still create a run directly with ⌘N — pick a workflow that matches what you're after."),
+                        to: originKey)
                     return
                 }
                 let (clean, suggestion) = RunSuggestion.parse(from: reply)
-                store.chatMessages.append(ConciergeMessage(role: .concierge,
-                                                 text: clean,
-                                                 suggestion: suggestion))
+                store.deliverConciergeReply(ConciergeMessage(role: .concierge,
+                                                             text: clean,
+                                                             suggestion: suggestion),
+                                            to: originKey)
             }
         }
     }
