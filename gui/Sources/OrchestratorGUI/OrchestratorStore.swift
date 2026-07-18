@@ -1180,6 +1180,44 @@ final class OrchestratorStore: ObservableObject {
         }
     }
 
+    // V3 board 1.11: "retry with…" — one agent re-answers the current round
+    // on a chosen model. File contract: approvals/<phase>.retry {agent,
+    // model}; the engine renames it .consumed before running (rename-then-
+    // run: a crash loses one retry rather than double-running it).
+    func requestChatRetry(_ id: String, phaseKey: String, agent: String,
+                          model: String) {
+        let dir = rootURL.appendingPathComponent("\(id)/approvals")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let data = try? JSONSerialization.data(
+                withJSONObject: ["agent": agent, "model": model]) {
+            try? data.write(to: dir.appendingPathComponent("\(phaseKey).retry"))
+        }
+    }
+
+    // V3 board 1.11: mid-chat model swap — merge one per-agent override into
+    // the CHAT dir's model_routing.json (fleet file untouched). The engine's
+    // conversational loop re-reads it at the next round barrier; the chip
+    // shows a pending state until a message_produced event confirms the new
+    // model actually ran (R2 — never claim the swap before it is real).
+    func setChatModelOverride(_ id: String, phaseKey: String, agent: String,
+                              model: String?) {
+        let url = rootURL.appendingPathComponent("\(id)/model_routing.json")
+        var obj: [String: Any] = ["schema_version": 1, "enabled": true]
+        if let data = try? Data(contentsOf: url),
+           let existing = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            obj = existing
+        }
+        var phases = obj["phases"] as? [String: Any] ?? [:]
+        var ph = phases[phaseKey] as? [String: Any] ?? [:]
+        if let model { ph[agent] = model } else { ph.removeValue(forKey: agent) }
+        phases[phaseKey] = ph
+        obj["phases"] = phases
+        if let data = try? JSONSerialization.data(withJSONObject: obj,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: url)
+        }
+    }
+
     // V3 board 1.8 ("Let them discuss"): promote a chat session to an auto
     // debate. A LIVE chat is ended first (pendingPromote defers the handoff
     // to the termination reducer); the promotion itself runs through the

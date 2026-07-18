@@ -63,6 +63,14 @@ KINDS = (
     # missed = the marker could not be honored (stale, or the phase ended
     # first — detail says whether a message is still queued).
     "step_in_requested", "step_in_joined", "step_in_missed",
+    # V3 board 1.11: exactly one per DELIVERED agent reply (direct or
+    # fallback-rescued) — agent is the roster id, model_used the model that
+    # actually answered, status "direct" | "fallback". The GUI's per-message
+    # attribution captions resolve from these instead of parsing transcript
+    # prose (a fallback rescue re-enters the turn under a DIFFERENT id, so a
+    # (phase, round, agent) join on turn_completed fails exactly when
+    # attribution matters most).
+    "message_produced",
 )
 
 _MAX_FIELD_CHARS = 500

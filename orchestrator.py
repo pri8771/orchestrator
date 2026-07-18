@@ -1201,8 +1201,19 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
     (from_model/to_model/reason/status) so UIs no longer have to parse the
     transcript marker. Configure in model_routing.json -> fallback (GUI:
     Settings -> Routing)."""
+    def _produced(model, status):
+        # V3 board 1.11: one message_produced per DELIVERED reply. Every
+        # sessioned path routes through call_agent, so these three returns
+        # cover chats and debates alike.
+        evlib.emit_event(_event_app_dir(cfg, app), "message_produced",
+                         project=app, phase=phase, round=rnd,
+                         agent=str(agent), model_used=str(model),
+                         status=status)
+
     try:
-        return _call_agent_once(cfg, app, phase, rnd, agent, prompt)
+        out = _call_agent_once(cfg, app, phase, rnd, agent, prompt)
+        _produced(_primary_model_label(cfg, agent), "direct")
+        return out
     except AgentError as exc:
         steps = _fallback_steps(cfg, agent)
         if not steps:
@@ -1258,6 +1269,7 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                                             "local:%s" % local_tag, prompt)
                     _fallback_event(to_model, "rescued", exc)
                     _bump_fallback_count(cfg, agent)
+                    _produced(to_model, "fallback")
                     return ("_[Fallback: %s answered on this Mac because %s (%s) "
                             "was unavailable.]_\n\n%s"
                             % (_derive_display("local:%s" % local_tag),
@@ -1269,6 +1281,7 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                 text = _call_agent_once(fcfg, app, phase, rnd, agent, prompt)
                 _fallback_event(to_model, "rescued", exc)
                 _bump_fallback_count(cfg, agent)
+                _produced(to_model, "fallback")
                 return ("_[Fallback: %s answered on %s because %s was "
                         "unavailable.]_\n\n%s"
                         % (DISPLAY[agent], step, primary, text))
@@ -5414,6 +5427,18 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
     end_reason = None
     rounds_run = resume_round - 1
     _seen_chars = {}
+    # V3 board 1.11: a mid-chat model swap edits <chat>/model_routing.json;
+    # the once-per-run routing cache would ignore it. Conversational phases
+    # ONLY re-resolve routing at each round open when the file's stat
+    # changes — non-conversational workflows keep the once-per-run cache.
+    _routing_file = os.path.join(app_dir, mrlib.ROUTING_FILENAME)
+    def _routing_stat():
+        try:
+            s = os.stat(_routing_file)
+            return (s.st_mtime_ns, s.st_size)
+        except OSError:
+            return None
+    _last_routing = _routing_stat()
     for rnd in itertools.count(resume_round):
         if cfg.get("_phase_deadline") and time.time() >= cfg["_phase_deadline"]:
             end_reason = "time budget reached"
@@ -5421,6 +5446,14 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
         if _SHUTDOWN.is_set():
             end_reason = "engine shutdown"
             break
+        _cur_routing = _routing_stat()
+        if _cur_routing != _last_routing:
+            _last_routing = _cur_routing
+            base = dict(cfg)
+            base["_routing"] = None   # force a fresh load (fleet + chat overlay)
+            cfg = _apply_phase_routing(base, key)
+            emit("Chat routing updated — new model assignments apply from "
+                 "round %d." % rnd)
         state["current_round"] = rnd
         save_state(app_dir, state)
         unit_label = "Round %d" % rnd
@@ -5490,6 +5523,41 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
 
         decision, _payload = _await_inbox(cfg, app, app_dir, key, state,
                                           timeout=idle_timeout)
+        while decision == "retry":
+            # Stateless re-run of ONE agent's turn on the requested model,
+            # appended as an explicitly labeled block; the original message
+            # is preserved and the round does not advance.
+            _ragent = str(_payload.get("agent") or "")
+            _rmodel = str(_payload.get("model") or "")
+            if _ragent not in round_agents:
+                emit("Retry ignored — %r is not in this chat's roster." % _ragent)
+            else:
+                acfg = dict(cfg)
+                acfg["_session"] = None
+                acfg["_health_key"] = _ragent
+                ident = _ragent
+                if _rmodel.startswith("local:"):
+                    ident = _rmodel
+                else:
+                    _patch_agent_model(acfg, _ragent, _rmodel)
+                rctx = build_context(acfg, app, phasedef, original_prompt,
+                                     prior_outputs, transcript)
+                rprompt = prompt_discuss(
+                    acfg, _ragent, rctx, phasedef, rnd, extra=extra,
+                    persona=roleslib.persona_preamble(personas.get(_ragent)),
+                    conversational=True)
+                try:
+                    rresp = call_agent(acfg, app, key, rnd, ident, rprompt)
+                    rblock = "**%s (retry on %s) — Round %d**\n\n%s\n" % (
+                        DISPLAY.get(_ragent, _ragent), _rmodel, rnd, rresp)
+                    append_md(md_path, "\n" + rblock)
+                    transcript += "\n" + rblock
+                    emit("Retry: %s re-answered round %d on %s."
+                         % (DISPLAY.get(_ragent, _ragent), rnd, _rmodel))
+                except AgentError as exc:
+                    emit("Retry on %s failed: %s" % (_rmodel, exc))
+            decision, _payload = _await_inbox(cfg, app, app_dir, key, state,
+                                              timeout=idle_timeout)
         if decision == "message":
             continue
         if decision == "end":
@@ -6798,6 +6866,7 @@ def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=0.25):
     appr_dir = os.path.join(app_dir, "approvals")
     os.makedirs(appr_dir, exist_ok=True)
     end_file = os.path.join(appr_dir, "%s.ok" % phase_key)
+    retry_file = os.path.join(appr_dir, "%s.retry" % phase_key)
     inbox = os.path.join(app_dir, "human_inbox.txt")
     state["awaiting_human"] = phase_key
     save_state(app_dir, state)
@@ -6823,6 +6892,22 @@ def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=0.25):
                 except OSError:
                     pass
                 return "end", None
+            if os.path.exists(retry_file):
+                # V3 board 1.11 "retry with…": rename-then-run — a crash
+                # after the rename loses one retry rather than double-running
+                # it (the deliberate side of the trade).
+                consumed = retry_file + ".consumed"
+                try:
+                    os.replace(retry_file, consumed)
+                    with open(consumed, encoding="utf-8") as fh:
+                        req = json.load(fh)
+                except (OSError, ValueError) as exc:
+                    emit("Retry request unreadable (%s) — ignored." % exc)
+                    req = None
+                if isinstance(req, dict) and req.get("agent") and req.get("model"):
+                    return "retry", req
+                if req is not None:
+                    emit("Retry request missing agent/model — ignored.")
             try:
                 _s = os.stat(inbox)
                 _st = (_s.st_mtime_ns, _s.st_size)

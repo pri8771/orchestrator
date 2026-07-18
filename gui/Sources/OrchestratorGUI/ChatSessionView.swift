@@ -60,6 +60,10 @@ struct ChatSessionView: View {
     @State private var loadedID = ""
     @State private var lastCount = 0
     @Environment(\.dismiss) private var dismiss
+    // V3 board 1.11: pending states are cleared by ENGINE EVIDENCE (a
+    // message_produced event / a new transcript block), never by timers.
+    @State private var pendingSwap: [String: String] = [:]   // agent -> model
+    @State private var retryPending = false
 
     private var session: ChatSession? { store.chatSessions[sessionID] }
     // The background scan discovers the minted dir on its next tick; until
@@ -89,6 +93,16 @@ struct ChatSessionView: View {
         .onDisappear {
             if store.focusedLivePane == sessionID { store.setFocusedLivePane(nil) }
         }
+        .onChange(of: store.eventsByProject[sessionID] ?? []) { _, events in
+            // Clear pending-swap chips only on ENGINE EVIDENCE: a
+            // message_produced whose model matches the requested swap.
+            guard !pendingSwap.isEmpty else { return }
+            for ev in events where ev.kind == "message_produced" && ev.phase == phaseKey {
+                if pendingSwap[ev.agent] == ev.modelUsed {
+                    pendingSwap[ev.agent] = nil
+                }
+            }
+        }
     }
 
     // MARK: header
@@ -102,10 +116,45 @@ struct ChatSessionView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             stateChip(state)
+            modelSwapMenu
             Spacer()
             controls(state)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    // V3 board 1.11: mid-chat model swap. Writes the CHAT's routing overlay;
+    // the chip shows "→ next round" until a message_produced event proves
+    // the new model actually answered (cleared in .onChange below).
+    private var modelSwapMenu: some View {
+        Menu {
+            ForEach(enabledAgentIds, id: \.self) { agent in
+                Menu("\(agent) — \(pendingSwap[agent].map { "\($0) → next round" } ?? (store.agentModels[agent] ?? "default"))") {
+                    Button("Default") {
+                        store.setChatModelOverride(sessionID, phaseKey: phaseKey,
+                                                   agent: agent, model: nil)
+                        pendingSwap[agent] = nil
+                    }
+                    ForEach(installedLocalTags, id: \.self) { tag in
+                        Button("local:\(tag)") {
+                            store.setChatModelOverride(sessionID, phaseKey: phaseKey,
+                                                       agent: agent, model: "local:\(tag)")
+                            pendingSwap[agent] = "local:\(tag)"
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Models", systemImage: "cpu")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Swap an agent's model — applies at the next round barrier")
+    }
+
+    private var enabledAgentIds: [String] {
+        store.enabledAgents.filter(\.value).keys.sorted()
     }
 
     // Symbol + word, never color alone (DS status grammar).
@@ -192,7 +241,10 @@ struct ChatSessionView: View {
                                 MessageBubble(message: msg)
                             }
                         } else {
-                            MessageBubble(message: msg)
+                            VStack(alignment: .leading, spacing: 2) {
+                                MessageBubble(message: msg)
+                                attributionCaption(for: msg)
+                            }
                         }
                     }
                     if let p = project, !store.pendingHuman(p).isEmpty {
@@ -214,6 +266,7 @@ struct ChatSessionView: View {
             }
             .onChange(of: transcript.messages.count) { _, c in
                 if c > lastCount { withAnimation { proxy.scrollTo("BOTTOM", anchor: .bottom) } }
+                if c != lastCount { retryPending = false }   // evidence landed
                 lastCount = c
             }
         }
@@ -242,6 +295,66 @@ struct ChatSessionView: View {
         Label("The room is waiting for your message.", systemImage: "person.wave.2")
             .font(.callout).foregroundStyle(.secondary)
             .accessibilityLabel("Waiting for your message")
+    }
+
+    // V3 board 1.11: per-message attribution from message_produced events —
+    // the roster id stays on the bubble; the caption says which MODEL
+    // actually answered, with an explicit badge when a fallback rescued it.
+    private func producedEvent(for msg: ChatMessage) -> EngineEvent? {
+        let round = Int(msg.section.split(separator: " ").last.map(String.init) ?? "") ?? 0
+        return (store.eventsByProject[sessionID] ?? []).last {
+            $0.kind == "message_produced" && $0.phase == phaseKey
+                && $0.round == round
+                && ($0.agent == msg.speaker.rawValue
+                    || (msg.speaker == .ollama && $0.agent.hasPrefix("local:")))
+        }
+    }
+
+    @ViewBuilder
+    private func attributionCaption(for msg: ChatMessage) -> some View {
+        if let ev = producedEvent(for: msg) {
+            HStack(spacing: 6) {
+                Text(ev.modelUsed)
+                    .font(.caption2).foregroundStyle(.tertiary)
+                if ev.status == "fallback" {
+                    Label("fallback", systemImage: "arrow.uturn.down")
+                        .font(.caption2)
+                        .foregroundStyle(DS.status.fallback.color)
+                        .accessibilityLabel("Answered by a fallback model")
+                }
+                if msg.id == transcript.messages.last?.id,
+                   session?.state.isAlive == true {
+                    retryMenu(agent: ev.agent)
+                }
+            }
+            .padding(.leading, 44)
+        }
+    }
+
+    private func retryMenu(agent: String) -> some View {
+        Menu("Retry with…") {
+            ForEach(installedLocalTags, id: \.self) { tag in
+                Button("local:\(tag)") { requestRetry(agent: agent, model: "local:\(tag)") }
+            }
+            if let current = store.agentModels[agent] {
+                Button("\(current) (fresh roll)") { requestRetry(agent: agent, model: current) }
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .font(.caption2)
+        .disabled(retryPending)
+        .help(retryPending ? "A retry is already pending" : "Ask this agent to re-answer on a different model")
+        .fixedSize()
+    }
+
+    private func requestRetry(agent: String, model: String) {
+        store.requestChatRetry(sessionID, phaseKey: phaseKey,
+                               agent: agent, model: model)
+        retryPending = true
+    }
+
+    private var installedLocalTags: [String] {
+        (store.localModels?.registry ?? []).filter(\.installed).map(\.id)
     }
 
     // ENDED BY USER is not a MarkerBadge marker and the closure note is not a
