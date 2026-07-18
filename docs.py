@@ -710,10 +710,203 @@ def render_known_limitations(app, ordered_phases, phase_outputs, consensus_statu
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# V3 board 5.2: SUBSCRIBE-mode artifact ingestion into blueprint slots.
+# docs.py never imports artifacts.py — the store is reached through an INJECTED
+# reader (any object exposing lineage_index / latest_final / lineage_heads /
+# is_admissible / read_body, which the artifacts module satisfies as-is). So
+# `import docs` still works with artifacts.py absent (leaf purity), and reader=
+# None skips the whole layer → the 5.1 doc set stays byte-identical.
+# ---------------------------------------------------------------------------
+_BLUEPRINT_INTRO = (
+    "_Deterministic render of the App Factory handoff blueprint. Artifact-filled "
+    "slots name their source; unfilled slots stay visibly unfilled — nothing "
+    "here is fabricated._")
+
+
+def _artifact_root(meta):
+    """The lineage root id of an artifact meta (lineage[0], else its own id).
+    Inline so docs.py needs no artifacts import."""
+    lin = meta.get("lineage")
+    if isinstance(lin, list) and lin and isinstance(lin[0], str):
+        return lin[0]
+    return meta.get("id")
+
+
+def _slot_selector(slot):
+    """(tag, types) for a blueprint slot's artifact ingestion. The OPTIONAL
+    per-slot 'artifact' {types:[...], match:"<tag>"} defaults to match=slot_id,
+    types=any — so the default 40-slot map ingests any admissible final artifact
+    tagged with the slot's own id, with zero doc_map surgery."""
+    sel = slot.get("artifact") if isinstance(slot.get("artifact"), dict) else {}
+    match = sel.get("match")
+    tag = match if isinstance(match, str) and match else slot.get("slot_id")
+    raw = sel.get("types")
+    types = ({t for t in raw if isinstance(t, str)}
+             if isinstance(raw, list) else set())
+    return tag, types
+
+
+def _artifact_matches(meta, tag, types):
+    """True iff an artifact meta CLAIMS a slot: its doc_slots (guarded to a list
+    — a corrupt non-list value must degrade, never raise `tag in 1`) contains
+    the tag, and its type passes the optional filter. Applied uniformly at root
+    discovery, the resolved tip, and branched heads so the effective rule is
+    always 'the CLAIMING artifact is an allowed type', never 'some ancestor
+    was' (a supersede can change type or drop the tag)."""
+    ds = meta.get("doc_slots")
+    return (isinstance(ds, list) and tag in ds
+            and (not types or meta.get("type") in types))
+
+
+def _head_label(m):
+    """'id (v<n>-<branch|a>)' for a branched-head conflict note — mirrors
+    latest_final's own refusal wording."""
+    try:
+        v = int(m.get("version"))
+    except (TypeError, ValueError):
+        v = 0
+    return "%s (v%s-%s)" % (m.get("id"), v, m.get("branch") or "a")
+
+
+def _resolve_slot_artifact(project_dir, reader, idx, slot, on_warn):
+    """Resolve ONE blueprint slot against the artifact store. Returns exactly one:
+       ("fill", tip_meta, body)   an admissible FINAL artifact fills the slot
+       ("conflict", root, heads)  a branched lineage claims it (stays unfilled)
+       (None, None, None)         no candidate — the caller falls through
+    Never raises: reader calls report-not-raise, every access is .get-guarded.
+    Final-only is enforced by is_admissible on the resolved tip — latest_final
+    returns the live tip regardless of status, so it alone is NOT enough."""
+    tag, types = _slot_selector(slot)
+    if not tag:
+        return (None, None, None)
+    swallow = lambda _m: None
+    roots = set()
+    for m in (idx.get("by_id") or {}).values():
+        if _artifact_matches(m, tag, types):
+            r = _artifact_root(m)
+            if r:
+                roots.add(r)
+    fills, conflicts = [], []
+    for root in sorted(roots):
+        tip = reader.latest_final(project_dir, root, on_error=swallow, index=idx)
+        if tip is not None:
+            # Re-check the CLAIM (tag + type, list-guarded) ON THE RESOLVED TIP,
+            # not just at root discovery: a supersede can change type or drop the
+            # tag, so an ancestor matching the selector must not admit a tip that
+            # no longer does.
+            if (_artifact_matches(tip, tag, types)
+                    and reader.is_admissible(project_dir, tip,
+                                             on_error=swallow, index=idx)):
+                body = reader.read_body(project_dir, tip.get("id"),
+                                        on_error=on_warn)
+                if body is None:
+                    on_warn("blueprint slot %r: artifact %r body unreadable — "
+                            "falling through" % (slot.get("slot_id"),
+                                                 tip.get("id")))
+                else:
+                    fills.append((tip, body))
+            # A tip that dropped the tag (it lived on an abandoned old version)
+            # is neither a fill nor a conflict for this slot — honest, not a pick.
+        else:
+            heads = reader.lineage_heads(project_dir, root, on_error=swallow,
+                                         index=idx) or []
+            if (len(heads) >= 2
+                    and any(_artifact_matches(h, tag, types) for h in heads)):
+                conflicts.append((root, heads))
+            elif not heads:
+                on_warn("blueprint slot %r: lineage %r unresolvable (cycle) — "
+                        "falling through" % (slot.get("slot_id"), root))
+    if fills:
+        fills.sort(key=lambda tb: (tb[0].get("ts", ""), tb[0].get("id", "")))
+        if len(fills) > 1:
+            on_warn("blueprint slot %r matched %d lineages; using %r "
+                    "(cross-section ownership arbitration is 5.3)"
+                    % (slot.get("slot_id"), len(fills), fills[-1][0].get("id")))
+        return ("fill", fills[-1][0], fills[-1][1])
+    if conflicts:
+        return ("conflict", conflicts[0][0], conflicts[0][1])
+    return (None, None, None)
+
+
+def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
+                             project_dir, reader, on_warn=None):
+    """HANDOFF_BLUEPRINT.md (V3 5.2): the 40 blueprint slots grouped under the 11
+    categories, each filled by per-slot precedence artifact > phase-output(slot
+    .sources) > empty — NEVER merged. An artifact fill names its source (id +
+    version); a branched lineage renders an explicit conflict note and stays
+    UNFILLED (never a silent branch-pick); an unfilled slot is visibly unfilled
+    (never invented). Returns the markdown, or None when the map declares no
+    slots. Reader-gated by the caller so reader=None keeps 5.1 byte-identical."""
+    if on_warn is None:
+        on_warn = lambda _m: None
+    slots = doc_map.get("slots") or []
+    if not slots:
+        return None
+    idx = reader.lineage_index(project_dir, on_error=on_warn)
+    lines = ["# %s — Handoff Blueprint" % app, "", _BLUEPRINT_INTRO, ""]
+    by_cat = {}
+    for s in slots:
+        by_cat.setdefault(s.get("category"), []).append(s)
+    seen_cat = set()
+
+    def _emit(cat_id, title):
+        seen_cat.add(cat_id)
+        group = by_cat.get(cat_id) or []
+        if not group:
+            return
+        lines.append("## %s\n" % (title or cat_id))
+        for s in group:
+            lines.append("### %s\n" % (s.get("title") or s.get("slot_id")))
+            kind, a, b = _resolve_slot_artifact(project_dir, reader, idx, s,
+                                                on_warn)
+            if kind == "fill":
+                lines.append(str(b).strip())
+                lines.append("")
+                lines.append("_Source: artifact %s v%s_"
+                             % (a.get("id"), a.get("version", 1)))
+            elif kind == "conflict":
+                named = ", ".join(_head_label(h) for h in b)
+                lines.append("_Unresolved — lineage '%s' is branched across "
+                             "heads %s; publish a 'reconcile' artifact. Slot "
+                             "left unfilled._" % (a, named))
+            else:
+                # Guard a corrupt slot 'sources' (disk-wins doc_map isn't
+                # validated at the slot level): a string would iterate
+                # char-by-char and silently drop the fill; an int/bool would
+                # raise `for k in 5` and abort the WHOLE blueprint. Degrade this
+                # one slot visibly instead.
+                srcs = s.get("sources")
+                if srcs and not isinstance(srcs, list):
+                    on_warn("blueprint slot %r: 'sources' is %s, not a list — "
+                            "ignored" % (s.get("slot_id"),
+                                         type(srcs).__name__))
+                    srcs = []
+                parts = [(phase_outputs or {}).get(k, "")
+                         for k in (srcs or [])
+                         if isinstance(k, str)
+                         and (phase_outputs or {}).get(k, "").strip()]
+                if parts:
+                    lines.append(_phase_section(s.get("title") or "",
+                                                "\n\n".join(parts)))
+                else:
+                    lines.append("_Unfilled — no artifact or phase output for "
+                                 "this slot._")
+            lines.append("")
+
+    for c in (doc_map.get("categories") or []):
+        _emit(c.get("category_id"), c.get("title"))
+    for cat_id in by_cat:                     # any slot whose category is
+        if cat_id not in seen_cat:            # unknown still renders (honesty)
+            _emit(cat_id, cat_id or "Other")
+    return "\n".join(lines)
+
+
 def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                        consensus_status=None, workflow_name="app_build",
                        verify_summary="", findings=None, blocked_conflict=None,
-                       conversation_end=None, orch_dir=None, on_warn=None):
+                       conversation_end=None, orch_dir=None, on_warn=None,
+                       artifact_reader=None):
     """Render + persist the full doc set (§24) into <app_dir>/docs/:
     PROJECT_DOCUMENTATION.md, LAUNCH_READINESS.md, phase_outputs.json, plus
     PRD.md / TECHNICAL_ARCHITECTURE.md / QA_REPORT.md when their source phases
@@ -764,6 +957,20 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                                         blocked_conflict=blocked_conflict,
                                         conversation_end=conversation_end))
         written.append("docs/KNOWN_LIMITATIONS.md")
+        # V3 5.2: SUBSCRIBE artifact ingestion. Reader-gated and LAST, in its own
+        # guard, so a store fault can never disturb the 5.1 docs already written
+        # and reader=None leaves the doc set byte-identical to 5.1.
+        if artifact_reader is not None:
+            try:
+                bp = render_handoff_blueprint(
+                    app, doc_map, ordered_phases, phase_outputs, app_dir,
+                    artifact_reader, on_warn=on_warn)
+                if bp is not None:
+                    _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), bp)
+                    written.append("docs/HANDOFF_BLUEPRINT.md")
+            except Exception as exc:      # never crash the run on a store fault
+                if on_warn:
+                    on_warn("HANDOFF_BLUEPRINT render skipped: %s" % exc)
     except OSError:
         pass
     return written
