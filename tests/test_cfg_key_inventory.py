@@ -40,7 +40,7 @@ _SUB_RE = re.compile(r'\[\s*' + _KEY + r'\s*\]')
 _SETDEFAULT_RE = re.compile(r'\.setdefault\(\s*' + _KEY)
 _POP_RE = re.compile(r'\.pop\(\s*' + _KEY)
 _GET_RE = re.compile(r'\.get\(\s*' + _KEY)
-_ASSIGN_SPLIT_RE = re.compile(r'(?<![=!<>+\-*/])=(?![=])')
+_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 _DYNAMIC_RE = re.compile(r'\.setdefault\(\s*"_%s')
 DYNAMIC_SENTINEL = "_<dynamic>_%s_sessions"
 
@@ -78,6 +78,29 @@ ALLOWED_WRITTEN_KEYS = {
 }
 
 
+def _assignment_pos(code):
+    """Index of the statement-level assignment `=`, or None.
+
+    Only a bare `=` at bracket depth 0 splits the line — a kwarg `=` inside a
+    call (os.makedirs(cfg["_build_dir"], exist_ok=True)) is NOT an assignment;
+    the first version of this splitter misread every such read as a write.
+    String literals are masked (same length, so indices stay aligned) so
+    brackets/`=` inside them can't skew the depth count."""
+    masked = _STRING_RE.sub(lambda m: "\x00" * len(m.group(0)), code)
+    depth = 0
+    for i, c in enumerate(masked):
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "=" and depth == 0:
+            prev = masked[i - 1] if i else ""
+            nxt = masked[i + 1] if i + 1 < len(masked) else ""
+            if prev not in "=!<>+-*/%&|^:@" and nxt != "=":
+                return i
+    return None
+
+
 def scan(root=HERE, files=SCANNED):
     """Return {key: {"writes": [(file, line)], "reads": [(file, line)]}}.
 
@@ -107,9 +130,9 @@ def scan(root=HERE, files=SCANNED):
                 add("writes", m.group(1), site)
             for m in _GET_RE.finditer(code):
                 add("reads", m.group(1), site)
-            m_assign = _ASSIGN_SPLIT_RE.search(code)
-            if m_assign:
-                lhs, rhs = code[:m_assign.start()], code[m_assign.end():]
+            pos = _assignment_pos(code)
+            if pos is not None:
+                lhs, rhs = code[:pos], code[pos + 1:]
                 for m in _SUB_RE.finditer(lhs):
                     add("writes", m.group(1), site)
                 for m in _SUB_RE.finditer(rhs):
@@ -148,6 +171,14 @@ class TestScannerAmendment(unittest.TestCase):
     def test_dynamic_key_records_the_sentinel(self):
         inv = self._scan_snippet('c.setdefault("_%s_sessions" % agent, {})\n')
         self.assertEqual([("probe.py", 1)], inv[DYNAMIC_SENTINEL]["writes"])
+
+    def test_kwarg_equals_is_not_an_assignment(self):
+        # The first splitter misread this real idiom (orchestrator.py:610)
+        # as a write of _build_dir.
+        inv = self._scan_snippet(
+            'os.makedirs(cfg["_build_dir"], exist_ok=True)\n')
+        self.assertFalse(inv["_build_dir"]["writes"])
+        self.assertTrue(inv["_build_dir"]["reads"])
 
     def test_rhs_subscript_still_reads_and_comparison_not_a_write(self):
         inv = self._scan_snippet(

@@ -5,7 +5,7 @@ GENERATED — do not hand-edit. Regenerate with:
 gate (tests/test_cfg_key_inventory.py) fails on any NEW
 underscore key and on stale allowlist entries.
 
-64 written keys · 120 write sites · 205 read sites across orchestrator.py, visualqa.py, urlfetch.py, uicrawl.py
+64 written keys · 118 write sites · 207 read sites across orchestrator.py, visualqa.py, urlfetch.py, uicrawl.py
 
 | key | writes | reads | write sites |
 |---|---|---|---|
@@ -18,7 +18,7 @@ underscore key and on stale allowlist entries.
 | `_base_models` | 1 | 1 | orchestrator.py:7716 |
 | `_base_resolved` | 1 | 1 | orchestrator.py:7717 |
 | `_budget` | 1 | 4 | orchestrator.py:8028 |
-| `_build_dir` | 5 | 13 | orchestrator.py:610; orchestrator.py:4754; orchestrator.py:6398; orchestrator.py:6416; orchestrator.py:6647 |
+| `_build_dir` | 3 | 15 | orchestrator.py:4754; orchestrator.py:6398; orchestrator.py:6647 |
 | `_checked_any_agent_runnable` | 1 | 1 | orchestrator.py:7201 |
 | `_claude_model_override` | 3 | 2 | orchestrator.py:1163; orchestrator.py:4927; orchestrator.py:5318 |
 | `_claude_sessions` | 2 | 0 | orchestrator.py:5142; orchestrator.py:6404 |
