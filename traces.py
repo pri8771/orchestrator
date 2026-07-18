@@ -61,8 +61,8 @@ def _default_warn(msg):
 on_warn = _default_warn
 
 _lock = threading.Lock()
-_runs = {}   # app_dir -> run_id
-_seqs = {}   # app_dir -> next seq (int)
+_runs: dict[str, str] = {}   # app_dir -> run_id
+_seqs: dict[str, int] = {}   # app_dir -> next seq (int)
 _usage = threading.local()
 
 
