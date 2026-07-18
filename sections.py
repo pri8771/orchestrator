@@ -226,3 +226,146 @@ def list_sections(orch_dir):
     except OSError:
         pass
     return sorted(names)
+
+
+CONTRACTS_FILENAME = "contracts.json"
+
+# The shipped structured-output contracts (V3 board 3.3),
+# materialized VERBATIM from the historical orchestrator
+# constants by the 3.3 generation script — prompt BYTES are the
+# product; tests/fixtures/contracts_frozen.json pins every
+# assembled output. phase_key "@decisions" is gated by the
+# engine's decisions predicate; "@summary" appends to EVERY
+# phase unconditionally. required_fields names a key of
+# schemas.REQUIRED_FIELDS (resolved at extraction time) so the
+# publication snippet and the extraction call can never drift.
+DEFAULT_CONTRACTS = [
+    {
+        "phase_key": "task_assignments",
+        "contract": "tasks",
+        "fence_tag": "tasks-json",
+        "required_fields": None,
+        "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```tasks-json``` block containing a single JSON object of the form {\"tasks\": [{\"id\": \"T-001\", \"title\": ..., \"owner_lane\": ..., \"files\": [...], \"depends_on\": [], \"acceptance_criteria\": [...], \"requirement_ids\": [\"R-001\"], \"status\": \"pending\"}]}. owner_lane must be one of: data_domain, primary_ui, services_utilities, polish_resilience. depends_on lists task ids and the graph must be acyclic. requirement_ids lists the id(s) from requirements.json this task fulfills \u2014 every CORE requirement needs at least one task naming it, or the build is missing part of what was promised. The build workers are assigned their lane's tasks from this block, so make it complete.\n",
+    },
+    {
+        "phase_key": "task_assignments",
+        "contract": "flows",
+        "fence_tag": "flows-json",
+        "required_fields": None,
+        "prompt_snippet": "MACHINE CONTRACT (required): ALSO emit ONE fenced ```flows-json``` block of the form {\"flows\": [{\"name\": \"add first item\", \"steps\": [{\"tap\": \"home.addItemButton\"}, {\"type\": \"Sample\", \"into\": \"addEdit.nameField\"}, {\"tap\": \"addEdit.saveButton\"}, {\"assert_exists\": \"Sample\"}, {\"back\": true}]}]}. Cover EVERY primary user journey the app promises (3-8 flows). Every tap/type step MUST name a stable dotted accessibilityIdentifier (screen.controlName) \u2014 PREFER accessibilityIdentifiers over visible labels: an identifier is a contract the build MUST honor, whereas a visible label drifts during the build. NEVER name a bare glyph or symbol as a tap/type token ('+', 'x', '\u00d7', '\u00b0F', a gear icon): an icon-only control has no matchable text, so reference it by its accessibilityIdentifier \u2014 or, if you must use a label, name the EXACT full accessibilityLabel the control will expose ('Add custom tea'), never the glyph. assert_exists MAY instead name a user-visible string you expect on screen (e.g. the item you just created). When an asserted state only arrives after an app-determined delay \u2014 a timer completing, a countdown reaching zero \u2014 add \"timeout\": <seconds> to THAT step (e.g. {\"assert_exists\": \"Ready\", \"timeout\": 95}), sized to the app's own duration plus margin: the default wait is ~5 seconds, so a timer's completion state can NEVER pass without a declared timeout. Route such flows through the SHORTEST built-in duration. Never route a flow through a control hidden behind a gesture (swipe actions, long-press context menus): the gate taps directly-visible controls only, so a journey needing edit/delete must use a visibly exposed affordance. Whatever a step names, the built app has to expose that EXACT string on the control or the UI-crawl gate fails the journey. These are executed against the real built app by the UI-crawl gate \u2014 a journey you forget to declare is a journey nobody verifies.\n",
+    },
+    {
+        "phase_key": "app_features",
+        "contract": "requirements",
+        "fence_tag": "requirements-json",
+        "required_fields": None,
+        "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```requirements-json``` block of the form {\"requirements\": [{\"id\": \"R-001\", \"text\": \"...\", \"core\": true|false}]}. Number EVERY testable promise the app makes (from the original prompt plus agreed features). The adherence gate grades the BUILT app against exactly this list \u2014 an unlisted requirement is an unverified one.\n",
+    },
+    {
+        "phase_key": "tech_specs",
+        "contract": "interfaces",
+        "fence_tag": "interfaces-json",
+        "required_fields": None,
+        "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```interfaces-json``` block containing a single JSON object of the form {\"interfaces\": [{\"name\": ..., \"kind\": \"struct|protocol|function|enum|endpoint\", \"language\": ..., \"signature\": ..., \"owning_lane\": ..., \"notes\": ...}]}. owning_lane must be one of: data_domain, primary_ui, services_utilities, polish_resilience. This is the shared type/signature contract every parallel build worker codes against, so include every cross-lane type, API and function.\n",
+    },
+    {
+        "phase_key": "extraction_candidates",
+        "workflow_target": "library_mining",
+        "contract": "extraction",
+        "fence_tag": "extraction-json",
+        "required_fields": "extraction_package",
+        "prompt_snippet": "MACHINE CONTRACT (optional but recommended): for your TOP extraction candidate, ALSO emit ONE fenced ```extraction-json``` block of the form {\"package_name\": \"NetworkKit\", \"platforms\": [], \"products\": [], \"public_api\": [{\"kind\": \"protocol|struct|class|enum|func\", \"name\": \"APIClient\", \"signature\": \"func send(_ r: Request) async throws -> Response\"}], \"adopting_repos\": [\"repo-a\", \"repo-b\"]}. The orchestrator scaffolds this into a real, COMPILABLE Swift Package skeleton (the public API becomes buildable stubs, your signature preserved as documentation) and runs `swift build` to prove it holds together \u2014 so name the package and its public surface precisely. One package (your single best candidate); implementations are left as stubs for a human to fill in.\n",
+    },
+    {
+        "phase_key": "@decisions",
+        "contract": "decisions",
+        "fence_tag": "decisions-json",
+        "required_fields": None,
+        "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```decisions-json``` block containing a single JSON object of the form {\"decisions\": [{\"id\": \"DEC-<phase>-001\", \"decision\": ..., \"rationale\": ..., \"rejected_alternatives\": [...], \"constraints\": [...], \"supersedes\": null}]}. Record every decision this phase actually made, one entry each: the decision in one sentence, why it won, what was rejected, and any hard constraints later phases must respect. Set \"supersedes\" to an earlier decision id ONLY when this decision replaces it. These entries become the authoritative cross-phase DECISIONS LOG injected into every later phase, so completeness beats prose.\n",
+    },
+    {
+        "phase_key": "@summary",
+        "contract": "phase_summary",
+        "fence_tag": "phase-summary-json",
+        "required_fields": "phase_summary",
+        "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```phase-summary-json``` block containing a single JSON object of the form {\"phase\": \"<this phase's key>\", \"one_paragraph_summary\": ..., \"key_decisions\": [...decision ids from decisions.json this phase made, if any...], \"open_risks\": [...]}. Once this phase is no longer one of the most recently completed phases, THIS summary \u2014 not the raw transcript above \u2014 is what later phases see, so make the paragraph self-contained: state what was actually decided or produced, not just that a discussion happened.\n",
+    },
+]
+
+
+def _contracts_display_path(name):
+    return os.path.join(SECTIONS_DIRNAME, name, CONTRACTS_FILENAME)
+
+
+def load_contracts(orch_dir, section=None, app_dir=None):
+    """The contract entries for a run: shipped defaults, overlaid by the
+    session's sections/<section>/contracts.json when one exists. Overlay
+    semantics: an entry with the same (phase_key, contract) REPLACES the
+    default; a new pair adds. Absent file = defaults, silent; PRESENT but
+    corrupt = defaults + one config_fallback banner (never silent, never
+    half-applied)."""
+    defaults = [dict(e) for e in DEFAULT_CONTRACTS]
+    if not section:
+        return defaults
+    path = os.path.join(_sections_dir(orch_dir), section, CONTRACTS_FILENAME)
+    if not os.path.exists(path):
+        return defaults
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        entries = data.get("contracts") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError("contracts.json must be an object with a "
+                             "'contracts' list")
+        overlay = []
+        for e in entries:
+            if not isinstance(e, dict) or "phase_key" not in e \
+                    or "prompt_snippet" not in e:
+                raise ValueError("each contract entry needs phase_key and "
+                                 "prompt_snippet")
+            overlay.append(dict(e))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _banner(app_dir, section, _contracts_display_path(section), exc)
+        return defaults
+    merged = list(defaults)
+    for e in overlay:
+        okey = (e.get("phase_key"), e.get("contract"))
+        for i, d in enumerate(merged):
+            if (d.get("phase_key"), d.get("contract")) == okey:
+                merged[i] = e
+                break
+        else:
+            merged.append(e)
+    return merged
+
+
+def assemble_contract(contracts, phase_key, workflow_target,
+                      include_decisions):
+    """The wrap-up contract text: phase-matching entries in list order,
+    then @decisions when the engine's predicate asked, then @summary
+    ALWAYS — joined exactly like the historical constant assembly
+    (byte-parity pinned by tests/fixtures/contracts_frozen.json)."""
+    parts = []
+    for e in contracts:
+        if e.get("phase_key") != phase_key:
+            continue
+        gate = e.get("workflow_target")
+        if gate and workflow_target != gate:
+            continue
+        parts.append(e["prompt_snippet"])
+    if include_decisions:
+        parts.extend(e["prompt_snippet"] for e in contracts
+                     if e.get("phase_key") == "@decisions")
+    parts.extend(e["prompt_snippet"] for e in contracts
+                 if e.get("phase_key") == "@summary")
+    return "\n".join(parts)
+
+
+def contract_fence(name, contracts=None):
+    """(fence_tag, required_fields_key) for a named contract — THE single
+    source both the publication snippet and the extraction call sites
+    read, so they can never drift apart."""
+    for e in (contracts or DEFAULT_CONTRACTS):
+        if e.get("contract") == name:
+            return e.get("fence_tag"), e.get("required_fields")
+    return None, None

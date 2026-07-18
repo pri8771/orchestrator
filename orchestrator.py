@@ -49,6 +49,7 @@ import events as evlib
 import localmodels as lmlib
 import modelrouting as mrlib
 import roles as roleslib
+import sections as seclib
 import workflows as wflib
 import schemas as schemalib
 import resilience as reslib
@@ -2138,6 +2139,20 @@ def prompt_coordinate(cfg, agent, ctx, phasedef, rnd, is_build=False, final_roun
     )
 
 
+def _session_coords(cfg):
+    """(project, section) for a nested session, else (None, None) — the
+    one derivation every section-scoped lookup (rules, contracts) shares."""
+    app_dir = cfg.get("_app_dir") or ""
+    root = cfg.get("root") or ""
+    if not app_dir or not root:
+        return None, None
+    rel = os.path.relpath(app_dir, root)
+    parts = rel.split(os.sep)
+    if len(parts) != 3 or rel.startswith(".."):
+        return None, None
+    return parts[0], parts[1]
+
+
 def _phase_rule_layers(cfg):
     """Overlay rule files for the running session (V3 board 3.2), most
     specific first: the session's section rules
@@ -2145,17 +2160,11 @@ def _phase_rule_layers(cfg):
     (<root>/<project>/phase_rules.json). Flat/legacy runs get [] and
     behave byte-identically — two sections naming the same phase key stop
     colliding on the one global entry."""
-    app_dir = cfg.get("_app_dir") or ""
-    root = cfg.get("root") or ""
-    if not app_dir or not root:
+    project, section = _session_coords(cfg)
+    if not section:
         return []
-    rel = os.path.relpath(app_dir, root)
-    parts = rel.split(os.sep)
-    if len(parts) != 3 or rel.startswith(".."):
-        return []
-    project, section = parts[0], parts[1]
     return [os.path.join(HERE, "sections", section, "rules.json"),
-            os.path.join(root, project, phaseruleslib.RULES_FILENAME)]
+            os.path.join(cfg["root"], project, phaseruleslib.RULES_FILENAME)]
 
 
 def _rules_fallback_banner(cfg):
@@ -2340,68 +2349,14 @@ def run_phase_quality_gate(cfg, app, app_dir, phasedef, rnd, coord, ctx,
 # coordinator's wrap-up prompt; parsed after the phase by parse_tasks_blocks /
 # parse_interface_blocks. Lane names must match BUILD_LANE_IDS so tasks can be
 # routed to the right parallel build worker.
-_TASKS_JSON_INSTRUCTION = (
-    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
-    "fenced ```tasks-json``` block containing a single JSON object of the form "
-    '{"tasks": [{"id": "T-001", "title": ..., "owner_lane": ..., '
-    '"files": [...], "depends_on": [], "acceptance_criteria": [...], '
-    '"requirement_ids": ["R-001"], "status": "pending"}]}. owner_lane must be '
-    "one of: data_domain, primary_ui, services_utilities, polish_resilience. "
-    "depends_on lists task ids and the graph must be acyclic. requirement_ids "
-    "lists the id(s) from requirements.json this task fulfills — every CORE "
-    "requirement needs at least one task naming it, or the build is missing "
-    "part of what was promised. The build workers are assigned their lane's "
-    "tasks from this block, so make it complete.\n"
-)
-_REQUIREMENTS_JSON_INSTRUCTION = (
-    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit "
-    "ONE fenced ```requirements-json``` block of the form {\"requirements\": "
-    "[{\"id\": \"R-001\", \"text\": \"...\", \"core\": true|false}]}. "
-    "Number EVERY testable promise the app makes (from the original prompt "
-    "plus agreed features). The adherence gate grades the BUILT app against "
-    "exactly this list — an unlisted requirement is an unverified one.\n"
-)
-_FLOWS_JSON_INSTRUCTION = (
-    "MACHINE CONTRACT (required): ALSO emit ONE fenced ```flows-json``` block "
-    'of the form {"flows": [{"name": "add first item", "steps": ['
-    '{"tap": "home.addItemButton"}, {"type": "Sample", "into": '
-    '"addEdit.nameField"}, {"tap": "addEdit.saveButton"}, '
-    '{"assert_exists": "Sample"}, {"back": true}]}]}. '
-    "Cover EVERY primary user journey the app promises (3-8 flows). Every "
-    "tap/type step MUST name a stable dotted accessibilityIdentifier "
-    "(screen.controlName) — PREFER accessibilityIdentifiers over visible "
-    "labels: an identifier is a contract the build MUST honor, whereas a "
-    "visible label drifts during the build. NEVER name a bare glyph or symbol "
-    "as a tap/type token ('+', 'x', '×', '°F', a gear icon): an icon-only "
-    "control has no matchable text, so reference it by its "
-    "accessibilityIdentifier — or, if you must use a label, name the EXACT "
-    "full accessibilityLabel the control will expose ('Add custom tea'), never "
-    "the glyph. assert_exists MAY instead name a user-visible string you expect "
-    "on screen (e.g. the item you just created). When an asserted state only "
-    "arrives after an app-determined delay — a timer completing, a countdown "
-    "reaching zero — add \"timeout\": <seconds> to THAT step (e.g. "
-    '{"assert_exists": "Ready", "timeout": 95}), sized to the app\'s own '
-    "duration plus margin: the default wait is ~5 seconds, so a timer's "
-    "completion state can NEVER pass without a declared timeout. Route such "
-    "flows through the SHORTEST built-in duration. Never route a flow through "
-    "a control hidden behind a gesture (swipe actions, long-press context "
-    "menus): the gate taps directly-visible controls only, so a journey "
-    "needing edit/delete must use a visibly exposed affordance. Whatever a "
-    "step names, the built app has to expose that EXACT string on the control "
-    "or the UI-crawl gate fails the journey. These are executed against the "
-    "real built app by the UI-crawl gate — a journey you forget to declare is "
-    "a journey nobody verifies.\n"
-)
-_INTERFACES_JSON_INSTRUCTION = (
-    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
-    "fenced ```interfaces-json``` block containing a single JSON object of the "
-    'form {"interfaces": [{"name": ..., "kind": '
-    '"struct|protocol|function|enum|endpoint", "language": ..., "signature": '
-    '..., "owning_lane": ..., "notes": ...}]}. owning_lane must be one of: '
-    "data_domain, primary_ui, services_utilities, polish_resilience. This is "
-    "the shared type/signature contract every parallel build worker codes "
-    "against, so include every cross-lane type, API and function.\n"
-)
+# _TASKS_JSON_INSTRUCTION moved to sections.DEFAULT_CONTRACTS (V3 3.3) —
+# prompt bytes pinned by tests/fixtures/contracts_frozen.json.
+# _REQUIREMENTS_JSON_INSTRUCTION moved to sections.DEFAULT_CONTRACTS (V3 3.3) —
+# prompt bytes pinned by tests/fixtures/contracts_frozen.json.
+# _FLOWS_JSON_INSTRUCTION moved to sections.DEFAULT_CONTRACTS (V3 3.3) —
+# prompt bytes pinned by tests/fixtures/contracts_frozen.json.
+# _INTERFACES_JSON_INSTRUCTION moved to sections.DEFAULT_CONTRACTS (V3 3.3) —
+# prompt bytes pinned by tests/fixtures/contracts_frozen.json.
 _QUALITY_RULES_INSTRUCTION = (
     "PRODUCT-QUALITY RULES (a feature is NOT done just because the screen exists "
     "and compiles — build for real use, not the demo path):\n"
@@ -2437,45 +2392,16 @@ _QUALITY_RULES_INSTRUCTION = (
     "- In your wrap-up, HONESTLY name anything left as a placeholder, mock, or "
     "unfinished path — never claim a feature is done on the basis of it compiling.\n"
 )
-_EXTRACTION_JSON_INSTRUCTION = (
-    "MACHINE CONTRACT (optional but recommended): for your TOP extraction "
-    "candidate, ALSO emit ONE fenced ```extraction-json``` block of the form "
-    '{"package_name": "NetworkKit", "platforms": [], "products": [], '
-    '"public_api": [{"kind": "protocol|struct|class|enum|func", "name": '
-    '"APIClient", "signature": "func send(_ r: Request) async throws -> '
-    'Response"}], "adopting_repos": ["repo-a", "repo-b"]}. The orchestrator '
-    "scaffolds this into a real, COMPILABLE Swift Package skeleton (the public "
-    "API becomes buildable stubs, your signature preserved as documentation) "
-    "and runs `swift build` to prove it holds together — so name the package "
-    "and its public surface precisely. One package (your single best "
-    "candidate); implementations are left as stubs for a human to fill in.\n"
-)
+# _EXTRACTION_JSON_INSTRUCTION moved to sections.DEFAULT_CONTRACTS (V3 3.3) —
+# prompt bytes pinned by tests/fixtures/contracts_frozen.json.
 
 
-_DECISIONS_JSON_INSTRUCTION = (
-    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
-    "fenced ```decisions-json``` block containing a single JSON object of the "
-    'form {"decisions": [{"id": "DEC-<phase>-001", "decision": ..., '
-    '"rationale": ..., "rejected_alternatives": [...], "constraints": [...], '
-    '"supersedes": null}]}. Record every decision this phase actually made, '
-    "one entry each: the decision in one sentence, why it won, what was "
-    "rejected, and any hard constraints later phases must respect. Set "
-    '"supersedes" to an earlier decision id ONLY when this decision replaces '
-    "it. These entries become the authoritative cross-phase DECISIONS LOG "
-    "injected into every later phase, so completeness beats prose.\n"
-)
+# _DECISIONS_JSON_INSTRUCTION moved to sections.DEFAULT_CONTRACTS (V3 3.3) —
+# prompt bytes pinned by tests/fixtures/contracts_frozen.json.
 
 
-_PHASE_SUMMARY_JSON_INSTRUCTION = (
-    "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "
-    "fenced ```phase-summary-json``` block containing a single JSON object of the "
-    'form {"phase": "<this phase\'s key>", "one_paragraph_summary": ..., '
-    '"key_decisions": [...decision ids from decisions.json this phase made, if '
-    'any...], "open_risks": [...]}. Once this phase is no longer one of the most '
-    "recently completed phases, THIS summary — not the raw transcript above — is "
-    "what later phases see, so make the paragraph self-contained: state what was "
-    "actually decided or produced, not just that a discussion happened.\n"
-)
+# _PHASE_SUMMARY_JSON_INSTRUCTION moved to sections.DEFAULT_CONTRACTS (V3 3.3) —
+# prompt bytes pinned by tests/fixtures/contracts_frozen.json.
 
 
 def _decisions_contract_requested(cfg, phasedef):
@@ -2494,31 +2420,32 @@ def _decisions_contract_requested(cfg, phasedef):
     return True
 
 
+def _contract_snippet(name):
+    """One named contract's prompt snippet from the shipped data — the
+    repair prompts and phase_extra re-statements read the same bytes the
+    wrap-up published."""
+    for e in seclib.DEFAULT_CONTRACTS:
+        if e.get("contract") == name:
+            return e["prompt_snippet"]
+    return ""
+
+
 def _phase_contract(cfg, phasedef):
-    """The structured-block instruction(s), if any, for this phase's wrap-up."""
+    """The structured-block instruction(s) for this phase's wrap-up —
+    assembled from sections.DEFAULT_CONTRACTS (or the session section's
+    contracts.json overlay). The workflow_target gate rides the entry
+    data (an unrelated workflow naming "extraction_candidates" must not
+    inherit that contract); the decisions predicate stays code; the
+    phase summary appends to EVERY phase. Byte parity with the historical
+    constants is pinned by tests/fixtures/contracts_frozen.json AND the
+    golden transcript suite."""
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
-    parts = []
-    if key == "task_assignments":
-        parts.append(_TASKS_JSON_INSTRUCTION)
-        parts.append(_FLOWS_JSON_INSTRUCTION)
-    if key == "app_features":
-        parts.append(_REQUIREMENTS_JSON_INSTRUCTION)
-    if key == "tech_specs":
-        parts.append(_INTERFACES_JSON_INSTRUCTION)
-    # Gated on the workflow target, NOT the phase key alone: _phase_contract
-    # runs for every workflow's wrap-up, so an unrelated workflow that ever
-    # named a phase "extraction_candidates" must not inherit this contract.
-    if key == "extraction_candidates" and (cfg or {}).get("_workflow_target") == "library_mining":
-        parts.append(_EXTRACTION_JSON_INSTRUCTION)
-    if _decisions_contract_requested(cfg, phasedef):
-        parts.append(_DECISIONS_JSON_INSTRUCTION)
-    # Every phase (not just decision-bearing ones) gets the phase-summary
-    # request piggybacked onto this same wrap-up turn: build phases and
-    # verify/repair phases produce prior context worth summarizing too, and
-    # this is the one coordinator call every non-parallel-build phase already
-    # makes, so no extra agent call is needed to get it.
-    parts.append(_PHASE_SUMMARY_JSON_INSTRUCTION)
-    return "\n".join(parts)
+    _project, section = _session_coords(cfg or {})
+    contracts = seclib.load_contracts(HERE, section=section,
+                                      app_dir=(cfg or {}).get("_app_dir"))
+    return seclib.assemble_contract(
+        contracts, key, (cfg or {}).get("_workflow_target"),
+        include_decisions=_decisions_contract_requested(cfg, phasedef))
 
 
 # Phase-specific extra guidance.
@@ -2618,10 +2545,10 @@ def phase_extra(cfg, key):
             "who takes which parts, WHERE the app will live (agree on a folder / "
             "location), how you'll avoid stepping on each other, and how you'll know "
             "it works. End this phase with a clear, agreed division of labor.\n"
-            + _TASKS_JSON_INSTRUCTION
+            + _contract_snippet("tasks")
         )
     if key == "tech_specs":
-        return _INTERFACES_JSON_INSTRUCTION
+        return _contract_snippet("interfaces")
     if key == "build_coordination":
         if bool(cget(cfg, "runtime.build_code_changes_enabled", False)):
             return (
@@ -2973,8 +2900,9 @@ def parse_tasks_blocks(text):
     (last emission wins, so the coordinator's final revision beats a draft);
     errors is the human-readable list of malformed blocks/items. Never raises."""
     errors = []
-    blocks = schemalib.extract_structured_blocks(text or "", "tasks-json",
-                                                 on_error=errors.append)
+    blocks = schemalib.extract_structured_blocks(
+        text or "", seclib.contract_fence("tasks")[0],
+        on_error=errors.append)
     byid = {}
     for b in blocks:
         items = b["tasks"] if isinstance(b.get("tasks"), list) else [b]
@@ -3020,9 +2948,10 @@ def parse_extraction_blocks(text):
     kind AND its name sanitizes to something usable; deduped by sanitized name
     (last wins). Never raises."""
     errors = []
+    _xf, _xreq = seclib.contract_fence("extraction")
     blocks = schemalib.extract_structured_blocks(
-        text or "", "extraction-json",
-        required_fields=schemalib.REQUIRED_FIELDS["extraction_package"],
+        text or "", _xf,
+        required_fields=schemalib.REQUIRED_FIELDS[_xreq],
         on_error=errors.append)
     if not blocks:
         return None, errors
@@ -3070,8 +2999,9 @@ def parse_flows_blocks(text):
     user journeys the UI-crawl gate replays. Returns (flows, errors); a flow
     needs a name and a non-empty steps list. Never raises."""
     errors = []
-    blocks = schemalib.extract_structured_blocks(text or "", "flows-json",
-                                                 on_error=errors.append)
+    blocks = schemalib.extract_structured_blocks(
+        text or "", seclib.contract_fence("flows")[0],
+        on_error=errors.append)
     byname = {}
     for b in blocks:
         items = b.get("flows") if isinstance(b.get("flows"), list) else [b]
@@ -3109,8 +3039,9 @@ def parse_requirements_blocks(text):
     """Extract ```requirements-json``` blocks -> (requirements, errors).
     Each needs id + text; core defaults True. Never raises."""
     errors = []
-    blocks = schemalib.extract_structured_blocks(text or "", "requirements-json",
-                                                 on_error=errors.append)
+    blocks = schemalib.extract_structured_blocks(
+        text or "", seclib.contract_fence("requirements")[0],
+        on_error=errors.append)
     byid = {}
     for b in blocks:
         items = b.get("requirements") if isinstance(b.get("requirements"), list) else [b]
@@ -3254,8 +3185,9 @@ def parse_interface_blocks(text):
     (interfaces, errors) with items validated against
     REQUIRED_FIELDS["interface_item"], de-duplicated by name (last wins)."""
     errors = []
-    blocks = schemalib.extract_structured_blocks(text or "", "interfaces-json",
-                                                 on_error=errors.append)
+    blocks = schemalib.extract_structured_blocks(
+        text or "", seclib.contract_fence("interfaces")[0],
+        on_error=errors.append)
     byname = {}
     for b in blocks:
         items = b["interfaces"] if isinstance(b.get("interfaces"), list) else [b]
@@ -3278,8 +3210,9 @@ def parse_decision_blocks(text):
     REQUIRED_FIELDS["decision_item"], de-duplicated by id (last emission wins,
     so the coordinator's final revision beats a draft). Never raises."""
     errors = []
-    blocks = schemalib.extract_structured_blocks(text or "", "decisions-json",
-                                                 on_error=errors.append)
+    blocks = schemalib.extract_structured_blocks(
+        text or "", seclib.contract_fence("decisions")[0],
+        on_error=errors.append)
     byid = {}
     order = []
     for b in blocks:
@@ -3387,9 +3320,10 @@ def parse_phase_summary_blocks(text):
     wins (matches the decisions/tasks/interfaces convention: the coordinator's
     final revision beats a draft). Returns (summary_dict_or_None, errors)."""
     errors = []
+    _sf, _sreq = seclib.contract_fence("phase_summary")
     blocks = schemalib.extract_structured_blocks(
-        text or "", "phase-summary-json",
-        schemalib.REQUIRED_FIELDS["phase_summary"], on_error=errors.append)
+        text or "", _sf,
+        schemalib.REQUIRED_FIELDS[_sreq], on_error=errors.append)
     return (blocks[-1] if blocks else None), errors
 
 
@@ -6996,7 +6930,7 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
             attempts += 1
             emit("CONTRACT: tasks.json has %d error(s) — repair attempt %d/%d."
                  % (len(terrs), attempts, contract_repair_limit))
-            prompt = _prompt_contract_repair("tasks", terrs, _TASKS_JSON_INSTRUCTION)
+            prompt = _prompt_contract_repair("tasks", terrs, _contract_snippet("tasks"))
             transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
                                                 md_path, transcript, "tasks", prompt)
             if resp is None:
@@ -7038,7 +6972,7 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
                      "coverage repair attempt %d/%d: %s"
                      % (len(gaps), cov_attempts, contract_repair_limit,
                         ", ".join(g[0] for g in gaps)))
-                prompt = _prompt_requirements_coverage_repair(gaps, _TASKS_JSON_INSTRUCTION)
+                prompt = _prompt_requirements_coverage_repair(gaps, _contract_snippet("tasks"))
                 transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
                                                     md_path, transcript, "tasks", prompt)
                 if resp is None:
@@ -7082,7 +7016,7 @@ def _record_phase_contracts(cfg, app, app_dir, key, transcript, final_output,
             attempts += 1
             emit("CONTRACT: interfaces.json has %d error(s) — repair attempt %d/%d."
                  % (len(ierrs), attempts, contract_repair_limit))
-            prompt = _prompt_contract_repair("interfaces", ierrs, _INTERFACES_JSON_INSTRUCTION)
+            prompt = _prompt_contract_repair("interfaces", ierrs, _contract_snippet("interfaces"))
             transcript, resp = _repair_contract(cfg, app, app_dir, key, coord, active,
                                                 md_path, transcript, "interfaces", prompt)
             if resp is None:

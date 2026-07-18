@@ -192,15 +192,15 @@ class TestFlowsContract(unittest.TestCase):
     def test_flows_instruction_prefers_stable_identifiers(self):
         # Prevention side of the drift fix: the contract nudges toward
         # accessibilityIdentifiers so declared labels don't drift from the build.
-        self.assertIn("accessibilityIdentifier", orch._FLOWS_JSON_INSTRUCTION)
-        self.assertIn("PREFER", orch._FLOWS_JSON_INSTRUCTION)
+        self.assertIn("accessibilityIdentifier", orch._contract_snippet("flows"))
+        self.assertIn("PREFER", orch._contract_snippet("flows"))
 
     def test_flows_instruction_example_uses_dotted_identifiers(self):
         # The worked example must MODEL dotted identifiers, not visible labels —
         # the LLM copies the example, and visible-label/glyph tokens ('+',
         # 'Start') don't match a well-built app's descriptive a11y labels +
         # dotted identifiers (the observed steep flow-drift failure).
-        instr = orch._FLOWS_JSON_INSTRUCTION
+        instr = orch._contract_snippet("flows")
         # A dotted identifier token appears in the example.
         self.assertRegex(instr, r'"tap":\s*"[a-z]+\.[A-Za-z]+')
         # The old label-drift story that taught naming the visible label is gone.
@@ -214,7 +214,7 @@ class TestFlowsContract(unittest.TestCase):
         # hitting "Ready") can NEVER pass the default ~5s assert window — the
         # contract must teach the planner to declare a per-step timeout (the
         # runner honors it; observed live as a temporally-impossible flow).
-        instr = orch._FLOWS_JSON_INSTRUCTION
+        instr = orch._contract_snippet("flows")
         self.assertIn('"timeout"', instr)
         self.assertIn("timer", instr)
         self.assertIn("SHORTEST built-in duration", instr)
@@ -224,7 +224,7 @@ class TestFlowsContract(unittest.TestCase):
         # the gesture happens, and flows can't declare gestures — observed live
         # as "no tappable element 'settings.customTeaEditButton'" for a
         # swipe-action Edit button that genuinely existed.
-        instr = orch._FLOWS_JSON_INSTRUCTION
+        instr = orch._contract_snippet("flows")
         self.assertIn("swipe", instr)
         self.assertIn("long-press", instr)
 
