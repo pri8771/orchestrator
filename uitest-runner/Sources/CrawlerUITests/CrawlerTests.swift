@@ -139,6 +139,9 @@ final class CrawlerTests: XCTestCase {
         // declaring a toggle's identifier failed "no tappable element" even
         // when the control existed with the exact identifier (seen live).
         for e in app.switches.allElementsBoundByIndex.prefix(15) { add("switch", e) }
+        // Same story for .pickerStyle(.segmented) → .segmentedControl (a live
+        // units picker with the declared identifier was invisible to flows).
+        for e in app.segmentedControls.allElementsBoundByIndex.prefix(10) { add("segment", e) }
         return out
     }
 
@@ -151,6 +154,7 @@ final class CrawlerTests: XCTestCase {
         case "link": query = app.links
         case "field": query = app.textFields
         case "switch": query = app.switches
+        case "segment": query = app.segmentedControls
         default: query = app.buttons
         }
         let byId = t.identifier.isEmpty ? nil
@@ -194,6 +198,71 @@ final class CrawlerTests: XCTestCase {
     }
 
     private func settle() { Thread.sleep(forTimeInterval: 0.9) }
+
+    /// Tap without ever triggering XCUITest's implicit "scroll to visible":
+    /// calling .tap() on an element the framework deems not hittable attempts
+    /// an AX scroll action that, on a NON-scrollable container, raises
+    /// kAXErrorCannotComplete and HARD-ABORTS the whole test method — observed
+    /// live (a bottom-edge Start button killed testFlows before any report was
+    /// written). Hittable → normal tap. Visible-but-unhittable (edge inset,
+    /// decorative overlay over the hit point) → coordinate tap at the frame's
+    /// midpoint, which skips the hittability/scroll machinery entirely.
+    /// Off-screen/empty frame → false, so the caller records an honest step
+    /// failure instead of the framework aborting the run.
+    @discardableResult
+    private func safeTap(_ el: XCUIElement, in app: XCUIApplication) -> Bool {
+        guard el.exists else { return false }
+        if el.isHittable { el.tap(); return true }
+        // Screen bounds via the key window, NOT app.frame — the application
+        // element's own frame proved unreliable on a pushed screen (a plainly
+        // visible bottom-edge button read as non-intersecting and the
+        // coordinate fallback was skipped, observed live). A window frame is
+        // the real on-screen rect; fall back to app.frame only if no window
+        // resolves.
+        let win = app.windows.firstMatch
+        let bounds = win.exists ? win.frame : app.frame
+        let f = el.frame
+        guard !f.isEmpty, bounds.isEmpty || f.intersects(bounds) else { return false }
+        el.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        return true
+    }
+
+    /// Flow-tap semantics per element type: a segmented control's "tap" means
+    /// selecting its currently-unselected segment (that's what "toggle the
+    /// unit" wants); anything else is a plain safe tap.
+    private func flowTap(_ el: XCUIElement, in app: XCUIApplication) -> Bool {
+        if el.elementType == .segmentedControl {
+            let segs = el.buttons.allElementsBoundByIndex
+            if let target = segs.first(where: { !$0.isSelected }) ?? segs.first {
+                return safeTap(target, in: app)
+            }
+        }
+        return safeTap(el, in: app)
+    }
+
+    /// locate(), then up to two swipe-up scroll probes and re-locates. Lazy
+    /// containers (ScrollView + LazyVStack) do not materialize off-screen rows
+    /// into the accessibility hierarchy AT ALL, so a just-saved item below the
+    /// fold is invisible to a plain query — observed live (a saved custom tea
+    /// under six preset rows failed its assert while the app was correct).
+    /// Scrolling to find content is exactly what a human tester does. Bounded,
+    /// flows-only; the crawl keeps its own exact, unscrolled enumeration.
+    private func locateScrolling(_ app: XCUIApplication, _ key: String,
+                                 purpose: MatchPurpose) -> XCUIElement? {
+        if let e = locate(app, key, purpose: purpose) { return e }
+        // Up to five swipes (~3000pt of content). The bound is a fixed count,
+        // deliberately NOT a "screen stopped changing" signature check: lazy
+        // containers keep already-materialized rows in the hierarchy, so the
+        // fingerprint can read identical right after a real scroll (observed
+        // live — the probe stopped after one swipe). Five futile swipes on a
+        // genuinely-absent element cost ~8s and then fail honestly.
+        for _ in 0..<5 {
+            app.swipeUp()
+            settle()
+            if let e = locate(app, key, purpose: purpose) { return e }
+        }
+        return nil
+    }
 
     private func dismissAlertIfAny(_ app: XCUIApplication) {
         // System permission alerts run in springboard; app alerts in-app.
@@ -292,7 +361,8 @@ final class CrawlerTests: XCTestCase {
 
             guard let el = find(app, target) else { continue }
             if target.kind == "field" {
-                el.tap(); settle()
+                guard safeTap(el, in: app) else { continue }
+                settle()
                 app.typeText("Sample")
                 // Keyboards cover the screen; dismiss via return if present.
                 if app.keyboards.buttons["return"].exists {
@@ -301,7 +371,9 @@ final class CrawlerTests: XCTestCase {
                 settle()
                 continue
             }
-            el.tap()
+            // safeTap, never bare .tap(): an implicit scroll-to-visible on a
+            // non-scrollable container hard-aborts the entire test method.
+            guard safeTap(el, in: app) else { continue }
             settle()
 
             if app.state != .runningForeground {
@@ -372,10 +444,20 @@ final class CrawlerTests: XCTestCase {
             for (i, step) in steps.enumerated() {
                 dismissAlertIfAny(app)
                 if let label = step["tap"] as? String {
-                    guard let el = locate(app, label), el.waitForExistence(timeout: 5) else {
+                    guard let el = locateScrolling(app, label, purpose: .tap) else {
                         failure = "step \(i + 1): no tappable element ‘\(label)’"; break
                     }
-                    el.tap(); settle()
+                    guard flowTap(el, in: app) else {
+                        // Diagnostics in the message: the repairing agents (and
+                        // engine debugging) need to know WHERE the element was,
+                        // not just that the tap was refused.
+                        let win = app.windows.firstMatch
+                        failure = "step \(i + 1): ‘\(label)’ exists but is not "
+                            + "tappable (exists=\(el.exists) frame=\(el.frame) "
+                            + "window=\(win.exists ? "\(win.frame)" : "none"))"
+                        break
+                    }
+                    settle()
                 } else if let text = step["type"] as? String {
                     let into = (step["into"] as? String) ?? ""
                     let field = into.isEmpty ? app.textFields.firstMatch
@@ -384,7 +466,25 @@ final class CrawlerTests: XCTestCase {
                     guard field.waitForExistence(timeout: 5) else {
                         failure = "step \(i + 1): no text field ‘\(into)’"; break
                     }
-                    field.tap(); app.typeText(text); settle()
+                    guard safeTap(field, in: app) else {
+                        failure = "step \(i + 1): text field ‘\(into)’ is not tappable"; break
+                    }
+                    // Declarative type semantics: the field ends up containing
+                    // exactly `text`. typeText APPENDS, so a pre-filled field
+                    // (an edit form) turned "Chamomile" + "Chamomile Deluxe"
+                    // into "ChamomileChamomile Deluxe" and failed the assert
+                    // while the app was correct (observed live). Clear first:
+                    // cursor to the trailing edge, then backspace it away
+                    // (value == placeholder on an empty field — deleting a
+                    // few extra chars over nothing is a harmless no-op).
+                    let existing = (field.value as? String) ?? ""
+                    if !existing.isEmpty && existing != text {
+                        field.coordinate(withNormalizedOffset:
+                            CGVector(dx: 0.97, dy: 0.5)).tap()
+                        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue,
+                                              count: existing.count + 2))
+                    }
+                    app.typeText(text); settle()
                 } else if let label = step["assert_exists"] as? String {
                     // Optional per-step "timeout" (seconds, clamped 1…180):
                     // a state that arrives after an app-determined delay — a
@@ -406,9 +506,15 @@ final class CrawlerTests: XCTestCase {
                         }
                         ok = found
                     } else {
+                        // Default path: exact/fuzzy locate, then the legacy
+                        // staticText wait, then a bounded scroll-probe — lazy
+                        // containers don't materialize below-the-fold content
+                        // into the hierarchy at all, so a correct app can
+                        // fail a plain assert on a just-created item.
                         ok = (locate(app, label, purpose: .assertExists)?
                                 .waitForExistence(timeout: 5) ?? false)
                             || app.staticTexts[label].waitForExistence(timeout: 2)
+                            || locateScrolling(app, label, purpose: .assertExists) != nil
                     }
                     if !ok {
                         failure = "step \(i + 1): expected ‘\(label)’ on screen"; break
@@ -422,6 +528,12 @@ final class CrawlerTests: XCTestCase {
             }
             results.append(["name": name, "passed": failure == nil,
                             "failure": failure ?? ""])
+            // Flush after EVERY flow, not once at the end: an uncatchable
+            // XCUITest interaction abort mid-flow must not erase the results
+            // of flows that already finished (observed live: one aborting tap
+            // left NO report at all, failing the whole invocation opaquely).
+            report["flows"] = results
+            flushReport()
         }
         report["flows"] = results
         flushReport()
@@ -432,7 +544,8 @@ final class CrawlerTests: XCTestCase {
                         purpose: MatchPurpose = .tap) -> XCUIElement? {
         let queries = kinds ?? [app.buttons, app.cells, app.tabBars.buttons,
                                 app.navigationBars.buttons, app.links,
-                                app.staticTexts, app.textFields, app.switches]
+                                app.staticTexts, app.textFields, app.switches,
+                                app.segmentedControls]
         // PASS 1 — EXACT (byte-identical to the original matcher): identifier,
         // then label. Every currently-green flow keeps matching here; the fuzzy
         // PASS 2 runs ONLY when PASS 1 found nothing (a step that would already
@@ -472,7 +585,7 @@ final class CrawlerTests: XCTestCase {
             // a tap/type target must be an interactive control, never a label.
             queries = [app.buttons, app.cells, app.tabBars.buttons,
                        app.navigationBars.buttons, app.links, app.textFields,
-                       app.switches]
+                       app.switches, app.segmentedControls]
         }
         let requireHittable = (purpose != .assertExists)
         var matches: [XCUIElement] = []
