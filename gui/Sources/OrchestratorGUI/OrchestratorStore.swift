@@ -564,6 +564,29 @@ struct DiffLine: Hashable {
 // (new project, run a pass, demo stream).
 @MainActor
 final class OrchestratorStore: ObservableObject {
+    // MARK: - Test seams (V3 board 2.7)
+    // The golden-path suite constructs a REAL store against a temp
+    // workspace. These four statics are the only injection points; each
+    // defaults to production behavior and tests must reset them in
+    // teardown. STATIC by necessity: enginePaused's property initializer
+    // runs before any instance value could land.
+    static var defaults: UserDefaults = .standard
+    // Both chat-history paths (legacy file + per-chat dir) derive from
+    // this ONE base — pinning only one of them would let the legacy
+    // migration copy the user's REAL history into a test dir.
+    static var appSupportBaseURL: URL = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Orchestrator", isDirectory: true)
+    // The xctest runner HAS a bundle id, so the bundle-id guard alone
+    // would let refresh transitions post real user notifications (and
+    // runProject trigger a real authorization prompt) during tests.
+    static var suppressNotifications = false
+    // The 20s watchdog and an artificial scan delay: the watchdog fires
+    // via asyncAfter armed in refresh() itself (not the start() timer),
+    // but a deterministic test can neither wait 20s nor wedge the static
+    // scan without these.
+    var watchdogSeconds: TimeInterval = 20
+    static var scanDelayForTests: TimeInterval = 0
 
     @Published var projects: [Project] = []
     @Published var orchestratorRunning = false
@@ -596,8 +619,8 @@ final class OrchestratorStore: ObservableObject {
     // queue, it doesn't kill work. Persisted (UserDefaults, matching
     // workspaceRoot's pattern) so a user who paused and quit isn't silently
     // un-paused on next launch with no indication anything changed.
-    @Published var enginePaused = UserDefaults.standard.bool(forKey: "enginePaused") {
-        didSet { UserDefaults.standard.set(enginePaused, forKey: "enginePaused") }
+    @Published var enginePaused = OrchestratorStore.defaults.bool(forKey: "enginePaused") {
+        didSet { Self.defaults.set(enginePaused, forKey: "enginePaused") }
     }
     // Menu-bar command relay (⌘N/⌘R/⌘L) — ContentView observes and handles.
     @Published var uiCommand: UICommand?
@@ -762,7 +785,7 @@ final class OrchestratorStore: ObservableObject {
         // picked in Settings → the shared factory workspace.
         if let r = env["ORCH_ROOT"] {
             self.rootURL = URL(fileURLWithPath: r, isDirectory: true)
-        } else if let saved = UserDefaults.standard.string(forKey: "workspaceRoot"), !saved.isEmpty {
+        } else if let saved = Self.defaults.string(forKey: "workspaceRoot"), !saved.isEmpty {
             self.rootURL = URL(fileURLWithPath: saved, isDirectory: true)
         } else {
             self.rootURL = FileManager.default.homeDirectoryForCurrentUser
@@ -818,7 +841,7 @@ final class OrchestratorStore: ObservableObject {
 
     // Change the workspace folder at runtime (Settings). Persists + rescans.
     func setWorkspaceRoot(_ url: URL) {
-        UserDefaults.standard.set(url.path, forKey: "workspaceRoot")
+        Self.defaults.set(url.path, forKey: "workspaceRoot")
         rootURL = url
         // Resume offers are per-workspace; clearing here (belt) plus the
         // scannedRoot guard in updateResumeOffers (braces) keeps a stale
@@ -931,7 +954,7 @@ final class OrchestratorStore: ObservableObject {
         // completion from the abandoned attempt a safe no-op rather than
         // clobbering fresher state gathered by a refresh that started after
         // this recovery.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + watchdogSeconds) { [weak self] in
             guard let self, self.refreshInFlight, self.refreshGeneration == myGeneration else { return }
             self.refreshInFlight = false
             self.runLog += "WARN: a background refresh didn't finish within 20s — recovering so live updates don't stall.\n"
@@ -950,6 +973,11 @@ final class OrchestratorStore: ObservableObject {
         let runningProcessNames = Set(runningProcesses.compactMap { $0.value.isRunning ? $0.key : nil })
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            // 2.7 seam D: lets the watchdog/stale-generation tests wedge
+            // the scan deterministically; 0 in production.
+            if OrchestratorStore.scanDelayForTests > 0 {
+                Thread.sleep(forTimeInterval: OrchestratorStore.scanDelayForTests)
+            }
             // Config + workflows first, so each project's shape can be resolved.
             let snap = BackgroundConfigLoader.load(workflowsDirURL: workflowsDirURL,
                                                    rolesURL: rolesURL,
@@ -1429,11 +1457,14 @@ final class OrchestratorStore: ObservableObject {
 
     // MARK: - macOS notifications (run finished / needs approval / failed)
 
-    private var notifAuthRequested = false
+    private(set) var notifAuthRequested = false
     private var lastStatusKey: [String: String] = [:]
     // Notifications need a bundle identity; skip when run as a raw executable so we
-    // never crash on UNUserNotificationCenter with a nil bundle id.
-    private var notificationsAvailable: Bool { Bundle.main.bundleIdentifier != nil }
+    // never crash on UNUserNotificationCenter with a nil bundle id. The
+    // suppression seam exists because the xctest runner HAS a bundle id.
+    private var notificationsAvailable: Bool {
+        !Self.suppressNotifications && Bundle.main.bundleIdentifier != nil
+    }
 
     func requestNotificationAuthIfNeeded() {
         guard notificationsAvailable, !notifAuthRequested else { return }
@@ -3378,14 +3409,13 @@ final class OrchestratorStore: ObservableObject {
     // kept only as the migration source; per-chat files live under
     // chat_history/ via ChatHistoryStore.
     var chatHistoryURL: URL {
-        fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Orchestrator/chat_history.json")
+        Self.appSupportBaseURL.appendingPathComponent("chat_history.json")
     }
 
     var chatHistory: ChatHistoryStore {
         ChatHistoryStore(baseDir:
-            fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Orchestrator/chat_history"))
+            Self.appSupportBaseURL.appendingPathComponent("chat_history",
+                                                          isDirectory: true))
     }
 
     private func saveChatHistory() {
