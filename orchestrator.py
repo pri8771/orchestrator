@@ -7570,6 +7570,69 @@ def create_session(root, session_id, prompt, workflow=None):
     return app_dir
 
 
+def _do_route_push(cfg, args):
+    """CLI 'route' verb (V3 4.5): PUSH an admissible bus artifact into a
+    target session's carryover context — minting the target session if it
+    doesn't exist yet — and emit artifact_routed. This is the SAME
+    artifacts.route_push the GUI drag (4.9) drives. Spawning the target is
+    deliberately NOT done here: a plain route lands context for a chat the
+    human runs when ready; the mint+push+SPAWN autonomous flow rides a real
+    delegation request (4.6 composer / 7.2 Conductor)."""
+    root = cfg["root"]
+    if not (args.route_from and args.route_to):
+        emit("--route-artifact needs both --route-from and --route-to")
+        return 2
+    source_project = parse_session_id(args.route_from).split("/")[0]
+    source_project_dir = os.path.join(root, source_project)
+    target_sid = parse_session_id(args.route_to)
+    target_dir = os.path.join(root, target_sid)
+    # Pre-check the artifact BEFORE minting a target: a refused route must
+    # never leave an orphan (phantom) session dir on disk. route_push
+    # re-validates under its lock (defense in depth), so this duplication
+    # is only to gate the side-effectful mint.
+    _meta = artifactslib.load_meta(source_project_dir, args.route_artifact,
+                                   on_error=emit)
+    if _meta is None:
+        emit("--route: artifact %r not found under %s"
+             % (args.route_artifact, source_project))
+        return 2
+    if not artifactslib.is_admissible(source_project_dir, _meta,
+                                      on_error=emit):
+        emit("--route refused: artifact not admissible")
+        return 2
+    if not os.path.isdir(target_dir):
+        try:
+            create_session(root, target_sid, "(routed artifacts)", None)
+        except AppError as exc:
+            emit("--route: cannot create target %r: %s" % (target_sid, exc))
+            return 2
+    elif _app_lock_has_live_owner(target_sid):
+        # State surgery against a live engine would lose updates.
+        emit("--route: target %r is running — stop it first" % target_sid)
+        return 3
+    budget = int(cget(cfg, "runtime.max_prior_output_chars", 4000))
+    res = artifactslib.route_push(
+        args.route_artifact, source_project_dir, target_dir,
+        on_error=emit, budget=budget, default_state=load_state(target_dir))
+    status = res.get("status")
+    if status == "routed":
+        evlib.emit_event(target_dir, "artifact_routed",
+                         route_id=res["route_id"],
+                         artifact_id=res["artifact_id"],
+                         version=res["version"], target=res["target"],
+                         target_session=target_sid,
+                         route_kind="manual_push")
+        print("ROUTED: %s v%s -> %s"
+              % (res["artifact_id"], res["version"], target_sid))
+        return 0
+    if status == "noop":
+        print("ALREADY-ROUTED: %s -> %s"
+              % (res["artifact_id"], target_sid))
+        return 0
+    emit("--route refused: %s" % res.get("reason", "unknown"))
+    return 2
+
+
 def migrate_layout(root, apply=False, out=print):
     """One-shot flat->nested chat migration (V3 board 3.0). DRY-RUN by
     default — the confirmation channel is the --apply flag, never stdin
@@ -9397,6 +9460,15 @@ def main():
                          "workflow, carrying prior phase outputs forward as "
                          "context (staged continuation, e.g. research now, "
                          "full build later)")
+    ap.add_argument("--route-artifact", dest="route_artifact", metavar="ID",
+                    help="PUSH an admissible bus artifact into a target "
+                         "session's carryover context (V3 4.5); needs "
+                         "--route-from and --route-to")
+    ap.add_argument("--route-from", dest="route_from", metavar="SID",
+                    help="source session/project id whose artifacts/ holds "
+                         "the --route-artifact")
+    ap.add_argument("--route-to", dest="route_to", metavar="SID",
+                    help="target session id to route into (created if absent)")
     ap.add_argument("--doctor", action="store_true", help="print environment report and exit")
     ap.add_argument("--mistakes", action="store_true",
                     help="print the cross-run mistakes-ledger report (per-class/"
@@ -9495,7 +9567,7 @@ def main():
     # that would traverse out of it when joined (orchestrator.py never treats
     # these as paths, only as folder names).
     for _slug in (args.app, args.project, args.resume,
-                  args.fork, args.promote):
+                  args.fork, args.promote, args.route_from, args.route_to):
         if _slug and parse_session_id(_slug) is None:
             ap.error("invalid project name %r — use a single folder name under "
                      "the workspace root, or a nested session id "
@@ -9582,6 +9654,9 @@ def main():
     if args.migrate_layout:
         migrate_layout(cfg["root"], apply=args.migrate_apply)
         return 0
+
+    if args.route_artifact:
+        return _do_route_push(cfg, args)
 
     if args.fork:
         rc, _forked = fork_session(cfg["root"], args.fork)

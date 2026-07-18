@@ -1025,3 +1025,239 @@ def is_stale(project_dir, meta, on_error=None, *, index=None):
     live = [c for c in idx["children"].get(mid, [])
             if c.get("status") != "converged"]
     return len(live) == 1
+
+
+# ---------------------------------------------------------------------------
+# 4.5 PUSH routing: materialize an admissible artifact into a target
+# session's carryover context. artifacts.py stays a schemas-only leaf — it
+# does NOT import orchestrator, emit events, or read config; the CLI hook
+# owns those. State I/O here is self-contained (never orchestrator.load_state,
+# which resets a transiently-corrupt file to defaults — data loss).
+# ---------------------------------------------------------------------------
+# The carryover value is pre-capped to this many chars so build_context's
+# tail-keep _budget (which cuts the FRONT) never truncates the provenance
+# header. The CLI hook passes the target's resolved
+# runtime.max_prior_output_chars so the push-time cap equals the render cap.
+CARRYOVER_BUDGET_CHARS = 4000
+_ROUTE_TRUNC_MARKER = "\n[...routed artifact body truncated to fit context budget...]"
+
+
+def is_admissible(project_dir, meta, on_error=None, *, index=None):
+    """THE shared admission predicate for routing (4.5 route_push, later
+    4.7 retrieval + 7.2 guards). Today 'admissible' means the live,
+    routable tip of a RESOLVED lineage:
+      * is_routable(meta)                — not a converged tombstone (4.3)
+      * status == 'published'            — not draft, not superseded
+      * not is_stale(...)                — no authoritative successor
+      * latest_final(root) IS this id    — lineage not branched/dangling
+    Refusals are reported via on_error. 4.8 will tighten THIS body to a
+    policy-driven status=='final' check without touching route_push or its
+    callers — the one admission seam."""
+    if on_error is None:
+        on_error = lambda _m: None
+    if not isinstance(meta, dict):
+        on_error("artifact meta is not an object")
+        return False
+    aid = meta.get("id")
+    if not is_routable(meta):
+        on_error("artifact %r is converged — not routable" % (aid,))
+        return False
+    if meta.get("status") != "published":
+        on_error("artifact %r status is %r, not 'published' — not "
+                 "admissible" % (aid, meta.get("status")))
+        return False
+    if is_stale(project_dir, meta, on_error=on_error, index=index):
+        on_error("artifact %r is superseded — route the lineage head, "
+                 "not a stale version" % (aid,))
+        return False
+    root = _meta_root(meta)
+    tip = latest_final(project_dir, root, on_error=on_error, index=index)
+    if tip is None:
+        return False  # latest_final already reported (branched / cycle)
+    if tip.get("id") != aid:
+        on_error("artifact %r is not the resolved tip of lineage %r "
+                 "(tip is %r)" % (aid, root, tip.get("id")))
+        return False
+    return True
+
+
+def _state_path(session_dir):
+    return os.path.join(session_dir, "agent_state.json")
+
+
+def _read_target_state(session_dir):
+    """(state, corrupt): absent -> (None, False); valid dict -> (dict,
+    False); present-but-unparseable/non-dict -> (None, True). Unlike
+    orchestrator.load_state, a corrupt file is NEVER silently reset."""
+    path = _state_path(session_dir)
+    if not os.path.exists(path):
+        return None, False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None, True
+    if not isinstance(doc, dict):
+        return None, True
+    return doc, False
+
+
+def _write_state_atomic(session_dir, state):
+    path = _state_path(session_dir)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    data = json.dumps(state, indent=2, default=str).encode("utf-8")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _render_carryover(meta, source_project_dir, body, budget):
+    """Provenance header (kept as a prefix) + body. The returned value is
+    ALWAYS <= budget so build_context's tail-keep _budget (which cuts the
+    FRONT) takes its no-op fast path and never eats the header. When the
+    budget is pathologically small (< header length) the body is dropped
+    and the header itself is capped to budget — the provenance prefix is
+    the last thing to go, never the first."""
+    src = meta.get("source") if isinstance(meta.get("source"), dict) else {}
+    header = ("[routed artifact] %s %s v%s\n"
+              "source: %s/%s · phase %s\n"
+              "routed-from: %s · %s\n---\n"
+              % (meta.get("type", ""), meta.get("id", ""),
+                 meta.get("version", 1),
+                 src.get("section", ""), src.get("session", ""),
+                 src.get("phase", ""),
+                 os.path.basename(source_project_dir.rstrip("/") or
+                                  source_project_dir),
+                 _now_iso()))
+    if len(header) >= budget:
+        return header[:budget]                       # header itself capped
+    if len(header) + len(body) <= budget:
+        return header + body                         # everything fits
+    room = budget - len(header)                      # > 0
+    if room > len(_ROUTE_TRUNC_MARKER):
+        return header + body[:room - len(_ROUTE_TRUNC_MARKER)] \
+            + _ROUTE_TRUNC_MARKER
+    return header + body[:room]                      # no room for the marker
+
+
+def route_push(artifact_id, source_project_dir, target_session_dir,
+               on_error=None, *, budget=None, default_state=None):
+    """Materialize a provenance-headed reference to an ADMISSIBLE artifact
+    into target_session_dir's carryover context, so the target's next
+    phases treat it as authoritative prior context. Returns a result dict:
+      {"status":"routed",  root,artifact_id,version,target,route_id}
+      {"status":"noop",    ...}        idempotent re-push of same (id,ver)
+      {"status":"refused", "reason":...}   NOTHING written to the target
+
+    Keyed by the lineage ROOT ("artifact:<root>") so a newer version
+    (which mints a new id) REPLACES the prior entry rather than adding a
+    second. A machine-readable state["routed_artifacts"][root] ledger
+    drives idempotency/versioning; build_context never reads it. The whole
+    read-modify-write is flock-serialized and atomic — a concurrent push
+    or a crash never tears the target's agent_state.json."""
+    if on_error is None:
+        on_error = lambda _m: None
+    if budget is None:
+        budget = CARRYOVER_BUDGET_CHARS
+    if not _valid_artifact_id(artifact_id):
+        on_error("route rejected: %s is not a valid artifact id"
+                 % (_short(artifact_id),))
+        return {"status": "refused", "reason": "invalid artifact id"}
+    meta = load_meta(source_project_dir, artifact_id, on_error=on_error)
+    if meta is None:
+        on_error("route rejected: artifact %r not found under %s"
+                 % (artifact_id, source_project_dir))
+        return {"status": "refused", "reason": "artifact not found"}
+    if not is_admissible(source_project_dir, meta, on_error=on_error):
+        return {"status": "refused", "reason": "artifact not admissible"}
+    body = read_body(source_project_dir, artifact_id, on_error=on_error)
+    if body is None:
+        return {"status": "refused", "reason": "artifact body unreadable"}
+    if not os.path.isdir(target_session_dir):
+        on_error("route rejected: target %r does not exist"
+                 % (target_session_dir,))
+        return {"status": "refused", "reason": "target does not exist"}
+
+    root = _meta_root(meta)
+    version = meta.get("version") if isinstance(
+        meta.get("version"), int) else 1
+    # Namespace the carryover key and the idempotency ledger by the SOURCE
+    # project: artifact ids are title-slugs unique only WITHIN a project, so
+    # two projects' "Dark mode" both mint id "dark-mode" — keying by the
+    # bare root would collide and treat the second, unrelated push as an
+    # idempotent no-op, silently dropping its content.
+    source = os.path.basename(source_project_dir.rstrip("/") or
+                              source_project_dir)
+    led_key = "%s/%s" % (source, root)
+    key = "artifact:%s" % led_key
+    target = os.path.basename(target_session_dir.rstrip("/") or
+                              target_session_dir)
+    try:
+        lock_fd = os.open(os.path.join(target_session_dir,
+                                       ".carryover.lock"),
+                          os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        on_error("route failed: cannot lock target %r (%s)"
+                 % (target, exc))
+        return {"status": "refused", "reason": "cannot lock target"}
+    # Acquire the lock BEFORE establishing the unlock finally — otherwise a
+    # LOCK_EX failure would close the fd here AND the finally would flock/
+    # close it again (EBADF), masking the return with a raise.
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        os.close(lock_fd)
+        on_error("route failed: cannot lock target %r (%s)"
+                 % (target, exc))
+        return {"status": "refused", "reason": "cannot lock target"}
+    try:
+        state, corrupt = _read_target_state(target_session_dir)
+        if corrupt:
+            on_error("route rejected: target %r agent_state.json is "
+                     "corrupt — nothing written" % (target,))
+            return {"status": "refused", "reason": "corrupt target state"}
+        if state is None:
+            state = copy.deepcopy(default_state) \
+                if isinstance(default_state, dict) else {}
+        ledger = state.get("routed_artifacts")
+        ledger = ledger if isinstance(ledger, dict) else {}
+        prev = ledger.get(led_key)
+        if isinstance(prev, dict):
+            prev_id = prev.get("artifact_id")
+            prev_ver = prev.get("version") if isinstance(
+                prev.get("version"), int) else 0
+            if prev_id == artifact_id:
+                return {"status": "noop", "root": root,
+                        "artifact_id": artifact_id, "version": version,
+                        "target": target}
+            if version <= prev_ver:
+                on_error("route rejected: %r v%s does not supersede the "
+                         "routed v%s of lineage %r"
+                         % (artifact_id, version, prev_ver, root))
+                return {"status": "refused", "reason": "version downgrade"}
+        carry = state.get("carryover_outputs")
+        carry = carry if isinstance(carry, dict) else {}
+        carry[key] = _render_carryover(meta, source_project_dir, body,
+                                       budget)
+        state["carryover_outputs"] = carry
+        ledger[led_key] = {"artifact_id": artifact_id, "version": version,
+                           "source": source,
+                           "content_hash": meta.get("content_hash"),
+                           "at": _now_iso()}
+        state["routed_artifacts"] = ledger
+        try:
+            _write_state_atomic(target_session_dir, state)
+        except (OSError, TypeError, ValueError) as exc:
+            on_error("route failed writing target %r state (%s) — nothing "
+                     "stored" % (target, exc))
+            return {"status": "refused", "reason": "state write failed"}
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+    return {"status": "routed", "root": root, "artifact_id": artifact_id,
+            "version": version, "target": target,
+            "route_id": "push-%s-%s" % (root, version)}
