@@ -2217,16 +2217,24 @@ _REQUIREMENTS_JSON_INSTRUCTION = (
 _FLOWS_JSON_INSTRUCTION = (
     "MACHINE CONTRACT (required): ALSO emit ONE fenced ```flows-json``` block "
     'of the form {"flows": [{"name": "add first item", "steps": ['
-    '{"tap": "Get Started"}, {"type": "Sample", "into": "Name"}, '
-    '{"tap": "Save"}, {"assert_exists": "Sample"}, {"back": true}]}]}. '
-    "Cover EVERY primary user journey the app promises (3-8 flows). Steps "
-    "reference visible labels or accessibilityIdentifiers — PREFER stable "
-    "accessibilityIdentifiers: a visible label often changes during the build "
-    "(a 'Play' button ships as 'Start today’s chain'), but an identifier "
-    "is a contract the build MUST honor. Whatever a step names, the built app "
-    "has to expose that EXACT string on the control or the UI-crawl gate fails "
-    "the journey. These are executed against the real built app by the UI-crawl "
-    "gate — a journey you forget to declare is a journey nobody verifies.\n"
+    '{"tap": "home.addItemButton"}, {"type": "Sample", "into": '
+    '"addEdit.nameField"}, {"tap": "addEdit.saveButton"}, '
+    '{"assert_exists": "Sample"}, {"back": true}]}]}. '
+    "Cover EVERY primary user journey the app promises (3-8 flows). Every "
+    "tap/type step MUST name a stable dotted accessibilityIdentifier "
+    "(screen.controlName) — PREFER accessibilityIdentifiers over visible "
+    "labels: an identifier is a contract the build MUST honor, whereas a "
+    "visible label drifts during the build. NEVER name a bare glyph or symbol "
+    "as a tap/type token ('+', 'x', '×', '°F', a gear icon): an icon-only "
+    "control has no matchable text, so reference it by its "
+    "accessibilityIdentifier — or, if you must use a label, name the EXACT "
+    "full accessibilityLabel the control will expose ('Add custom tea'), never "
+    "the glyph. assert_exists MAY instead name a user-visible string you expect "
+    "on screen (e.g. the item you just created). Whatever a step names, the "
+    "built app has to expose that EXACT string on the control or the UI-crawl "
+    "gate fails the journey. These are executed against the real built app by "
+    "the UI-crawl gate — a journey you forget to declare is a journey nobody "
+    "verifies.\n"
 )
 _INTERFACES_JSON_INSTRUCTION = (
     "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE "

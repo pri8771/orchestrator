@@ -195,6 +195,20 @@ class TestFlowsContract(unittest.TestCase):
         self.assertIn("accessibilityIdentifier", orch._FLOWS_JSON_INSTRUCTION)
         self.assertIn("PREFER", orch._FLOWS_JSON_INSTRUCTION)
 
+    def test_flows_instruction_example_uses_dotted_identifiers(self):
+        # The worked example must MODEL dotted identifiers, not visible labels —
+        # the LLM copies the example, and visible-label/glyph tokens ('+',
+        # 'Start') don't match a well-built app's descriptive a11y labels +
+        # dotted identifiers (the observed steep flow-drift failure).
+        instr = orch._FLOWS_JSON_INSTRUCTION
+        # A dotted identifier token appears in the example.
+        self.assertRegex(instr, r'"tap":\s*"[a-z]+\.[A-Za-z]+')
+        # The old label-drift story that taught naming the visible label is gone.
+        self.assertNotIn("Start today", instr)
+        self.assertNotIn('"tap": "Save"', instr)
+        # It explicitly forbids bare glyph tokens.
+        self.assertIn("NEVER name a bare glyph", instr)
+
     def test_parse_flows_blocks(self):
         text = ("Prose...\n```flows-json\n"
                 + json.dumps({"flows": [
