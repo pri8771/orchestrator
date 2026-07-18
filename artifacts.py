@@ -82,6 +82,11 @@ _PUBLISHER_STATUS = ("draft", "published")
 FENCE_TAG = "artifact-json"
 BLOCK_REQUIRED = ("type", "title")
 
+# 4.3 lineage: the depth cap when a type entry carries no "max_depth".
+# The cap stops runaway derivation loops AT THE BUS, so no consumer
+# (manual today, the M7 Conductor later) can bypass it.
+DEFAULT_MAX_DEPTH = 4
+
 REGISTRY_BASENAME = "artifact_types.json"
 
 # Seed registry: "required" lists the keys a publish (or a 4.2 artifact-json
@@ -169,6 +174,12 @@ def _registry_problem(doc):
         if status not in _PUBLISHER_STATUS:
             return ("type %r default_status %r is not one of %s"
                     % (name, status, "/".join(_PUBLISHER_STATUS)))
+        cap = entry.get("max_depth", 0)
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
+            # A mistyped cap silently ignored is a DISABLED loop guard —
+            # validate-when-present, all-or-default otherwise.
+            return ("type %r max_depth %r is not a non-negative int"
+                    % (name, cap))
     return None
 
 
@@ -272,7 +283,88 @@ def _now_iso():
             .astimezone().isoformat(timespec="seconds"))
 
 
-def publish(project_dir, body_text, meta, registry, on_error=None):
+def _lineage_lock_path(project_dir, root_id):
+    # Root ids match _VALID_ID ([a-z0-9-], <=60 chars), so no quoting is
+    # needed; the dot prefix hides the file from every reader and from
+    # _sweep_orphans (which reaps only ".tmp-").
+    return os.path.join(artifacts_root(project_dir),
+                        ".lineage-%s.lock" % root_id)
+
+
+def _derivation_plan(project_dir, pid, body_bytes, type_name, title,
+                     entry, source_section, on_error):
+    """The lineage fields for a supersedes=<pid> publish, computed UNDER
+    the lineage lock (the caller holds it). None = refused, reported."""
+    parent = load_meta(project_dir, pid, on_error=on_error)
+    if parent is None:
+        on_error("publish rejected: cannot derive — parent %r is missing "
+                 "or unreadable" % (pid,))
+        return None
+    if parent.get("status") == "converged":
+        on_error("publish rejected: cannot derive from CONVERGED %r — a "
+                 "convergence tombstone ends its loop" % (pid,))
+        return None
+    plineage = parent.get("lineage") or []
+    pdepth = parent.get("depth")
+    if not isinstance(pdepth, int) or isinstance(pdepth, bool):
+        pdepth = len(plineage)  # legacy metas: derive
+    cap = entry.get("max_depth", DEFAULT_MAX_DEPTH)
+    if type_name != "reconcile" and pdepth + 1 > cap:
+        on_error("publish REFUSED: deriving from %r would exceed the "
+                 "lineage depth cap (%d) — the chain is done deriving"
+                 % (pid, cap))
+        return None
+    # One scan: existing children decide linear-vs-branch, and catch a
+    # crash-retried duplicate derivation (§12.4 — refuse, never return
+    # an id this call didn't create).
+    bhash = hashlib.sha256(body_bytes).hexdigest()
+    children = []
+    for m in list_artifacts(project_dir):
+        if m.get("supersedes") == pid:
+            children.append(m)
+            if (m.get("type"), m.get("title"),
+                    m.get("content_hash")) == (type_name, title, bhash):
+                on_error("publish rejected: duplicate derivation — this "
+                         "content is already published as %r"
+                         % (m.get("id"),))
+                return None
+    pver = parent.get("version") if isinstance(parent.get("version"),
+                                               int) else 1
+    phops = parent.get("hop_count")
+    if not isinstance(phops, int) or isinstance(phops, bool):
+        phops = 0
+    psection = ((parent.get("source") or {}).get("section")
+                if isinstance(parent.get("source"), dict) else "") or ""
+    hop = 0 if (source_section and source_section == psection) else 1
+    plan = {
+        "supersedes": pid,
+        "lineage": list(plineage) + [pid],
+        "version": pver + 1,
+        # First child stores "" (labeled a only when siblings exist);
+        # the k-th collision writer stores chr(ord('a')+k) — letters
+        # never shuffle after the fact.
+        "branch": "" if not children else chr(ord("a") + len(children)),
+        "depth": pdepth + 1,
+        "hop_count": phops + hop,
+        "forced_status": None,
+    }
+    if bhash == parent.get("content_hash"):
+        on_error("publish note: content is byte-identical to %r — "
+                 "auto-marking status 'converged' (never routable, "
+                 "never derivable)" % (pid,))
+        plan["forced_status"] = "converged"
+    return plan
+
+
+def is_routable(meta):
+    """False for convergence tombstones — THE shared predicate (4.5
+    route_push, 7.2 pre-route guards, 4.8 admission wraps it). Pure,
+    meta-only, never raises."""
+    return isinstance(meta, dict) and meta.get("status") != "converged"
+
+
+def publish(project_dir, body_text, meta, registry, on_error=None,
+            supersedes=None):
     """Atomically publish one artifact; return its minted id, or None with
     the reason reported through on_error.
 
@@ -374,87 +466,145 @@ def publish(project_dir, body_text, meta, registry, on_error=None):
     root = artifacts_root(project_dir)
     try:
         os.makedirs(root, exist_ok=True)
-        guard_fd = os.open(os.path.join(root, ".publish.lock"),
-                           os.O_CREAT | os.O_RDWR, 0o644)
     except OSError as exc:
         on_error("publish failed: cannot open %s (%s)" % (root, exc))
         return None
-    try:
-        fcntl.flock(guard_fd, fcntl.LOCK_EX)
-    except OSError as exc:
-        # Acquisition failure (ENOLCK/EOPNOTSUPP on network volumes) must
-        # report, not raise — and the outer try/finally that would close
-        # the fd has not been entered yet.
-        os.close(guard_fd)
-        on_error("publish failed: cannot lock %s (%s)" % (root, exc))
-        return None
-    try:
-        _sweep_orphans(root)
-        aid = mint_id(project_dir, type_name, title)
-        tmp = os.path.join(root, ".tmp-%s.%d" % (aid, os.getpid()))
-        try:
-            os.mkdir(tmp)
-            _fsync_write(os.path.join(tmp, "body.md"), body_bytes)
-            record = {
-                "schema_version": schemas.SCHEMA_VERSION,
-                "id": aid,
-                "type": type_name,
-                "title": title,
-                "source": source,
-                "version": 1,
-                "supersedes": None,
-                "lineage": [],
-                "content_hash": hashlib.sha256(body_bytes).hexdigest(),
-                "keywords": keywords,
-                "doc_slots": doc_slots,
-                "status": status,
-                "ts": _now_iso(),
-                "fields": extras,
-            }
-            _fsync_write(
-                os.path.join(tmp, "meta.json"),
-                json.dumps(record, indent=2, sort_keys=True).encode("utf-8"))
-            # fsync the tmp DIR itself: the dirents naming body.md and
-            # meta.json live in ITS data, and POSIX does not persist them
-            # as a side effect of fsyncing the files — without this a
-            # power cut could surface artifacts/<id>/ missing a child,
-            # the torn state the module rules out.
-            tdfd = os.open(tmp, os.O_RDONLY)
-            try:
-                os.fsync(tdfd)
-            finally:
-                os.close(tdfd)
-            # os.rename (not os.replace): the destination must not exist —
-            # mint under the lock guarantees it, and a violated invariant
-            # should fail loudly rather than merge directories.
-            os.rename(tmp, artifact_dir(project_dir, aid))
-        except Exception as exc:
-            shutil.rmtree(tmp, ignore_errors=True)
-            on_error("publish failed for type %r (%s) — nothing was stored"
-                     % (type_name, exc))
+
+    # 4.3 lineage lock — STRICT hierarchy: lineage lock OUTSIDE,
+    # .publish.lock INSIDE, always; no path takes a lineage lock while
+    # holding the publish lock, and no publish holds two lineage locks —
+    # deadlock impossible. Every write that creates an edge into a
+    # lineage holds that lineage's lock, so the derivation plan computed
+    # under it can never go stale.
+    lin_fd = None
+    if supersedes is not None:
+        if not _valid_artifact_id(supersedes):
+            on_error("publish rejected: supersedes %r is not a valid "
+                     "artifact id" % (supersedes,))
             return None
-        # The rename made the artifact visible: from here on, failure may
-        # only be reported as success-with-warning — "nothing was stored"
-        # about an artifact readers can already see would make the caller
-        # skip artifact_published and a retry mint a -2 duplicate
-        # (R2, §12.4). A failed parent-dir fsync merely widens the
-        # accepted power-loss residual to this last publish's dirent.
+        pre = load_meta(project_dir, supersedes, on_error=on_error)
+        if pre is None:
+            on_error("publish rejected: cannot derive — parent %r is "
+                     "missing or unreadable" % (supersedes,))
+            return None
+        plin = pre.get("lineage") or []
+        lroot = plin[0] if plin else supersedes
         try:
-            dfd = os.open(root, os.O_RDONLY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
+            lin_fd = os.open(_lineage_lock_path(project_dir, lroot),
+                             os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(lin_fd, fcntl.LOCK_EX)
         except OSError as exc:
-            on_error("publish %r: artifacts dir fsync failed (%s) — the "
-                     "artifact is live but may not survive a power cut"
-                     % (aid, exc))
-    finally:
+            if lin_fd is not None:
+                os.close(lin_fd)
+            on_error("publish failed: cannot lock lineage %r (%s)"
+                     % (lroot, exc))
+            return None
+    try:
+        plan = None
+        if supersedes is not None:
+            # TOCTOU: the parent is RE-read under the lock (it may have
+            # converged or vanished since the pre-check above).
+            plan = _derivation_plan(project_dir, supersedes, body_bytes,
+                                    type_name, title, entry,
+                                    source["section"], on_error)
+            if plan is None:
+                return None
+            if plan["forced_status"] is not None:
+                status = plan["forced_status"]
         try:
-            fcntl.flock(guard_fd, fcntl.LOCK_UN)
-        finally:
+            guard_fd = os.open(os.path.join(root, ".publish.lock"),
+                               os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as exc:
+            on_error("publish failed: cannot open %s (%s)" % (root, exc))
+            return None
+        try:
+            fcntl.flock(guard_fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            # Acquisition failure (ENOLCK/EOPNOTSUPP on network volumes)
+            # must report, not raise — and the try/finally that would
+            # close the fd has not been entered yet.
             os.close(guard_fd)
-    return aid
+            on_error("publish failed: cannot lock %s (%s)" % (root, exc))
+            return None
+        try:
+            _sweep_orphans(root)
+            aid = mint_id(project_dir, type_name, title)
+            tmp = os.path.join(root, ".tmp-%s.%d" % (aid, os.getpid()))
+            try:
+                os.mkdir(tmp)
+                _fsync_write(os.path.join(tmp, "body.md"), body_bytes)
+                record = {
+                    "schema_version": schemas.SCHEMA_VERSION,
+                    "id": aid,
+                    "type": type_name,
+                    "title": title,
+                    "source": source,
+                    "version": plan["version"] if plan else 1,
+                    "supersedes": plan["supersedes"] if plan else None,
+                    "lineage": list(plan["lineage"]) if plan else [],
+                    "branch": plan["branch"] if plan else "",
+                    "depth": plan["depth"] if plan else 0,
+                    "hop_count": plan["hop_count"] if plan else 0,
+                    "content_hash": hashlib.sha256(body_bytes).hexdigest(),
+                    "keywords": keywords,
+                    "doc_slots": doc_slots,
+                    "status": status,
+                    "ts": _now_iso(),
+                    "fields": extras,
+                }
+                _fsync_write(
+                    os.path.join(tmp, "meta.json"),
+                    json.dumps(record, indent=2,
+                               sort_keys=True).encode("utf-8"))
+                # fsync the tmp DIR itself: the dirents naming body.md
+                # and meta.json live in ITS data, and POSIX does not
+                # persist them as a side effect of fsyncing the files —
+                # without this a power cut could surface artifacts/<id>/
+                # missing a child, the torn state the module rules out.
+                tdfd = os.open(tmp, os.O_RDONLY)
+                try:
+                    os.fsync(tdfd)
+                finally:
+                    os.close(tdfd)
+                # os.rename (not os.replace): the destination must not
+                # exist — mint under the lock guarantees it, and a
+                # violated invariant should fail loudly rather than
+                # merge directories.
+                os.rename(tmp, artifact_dir(project_dir, aid))
+            except Exception as exc:
+                shutil.rmtree(tmp, ignore_errors=True)
+                on_error("publish failed for type %r (%s) — nothing was "
+                         "stored" % (type_name, exc))
+                return None
+            # The rename made the artifact visible: from here on, failure
+            # may only be reported as success-with-warning — "nothing was
+            # stored" about an artifact readers can already see would
+            # make the caller skip artifact_published and a retry mint a
+            # -2 duplicate (R2, §12.4). A failed parent-dir fsync merely
+            # widens the accepted power-loss residual to this last
+            # publish's dirent.
+            try:
+                dfd = os.open(root, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError as exc:
+                on_error("publish %r: artifacts dir fsync failed (%s) — "
+                         "the artifact is live but may not survive a "
+                         "power cut" % (aid, exc))
+        finally:
+            try:
+                fcntl.flock(guard_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(guard_fd)
+        return aid
+    finally:
+        if lin_fd is not None:
+            try:
+                fcntl.flock(lin_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lin_fd)
 
 
 def publish_from_output(project_dir, final_output, source, registry,

@@ -661,6 +661,198 @@ class TestPublicationHook(_Base):
 
 
 # ---------------------------------------------------------------------------
+# V3 board 4.3 (commit 1): publish-side lineage — versions, branches,
+# depth caps, convergence, the per-lineage lock.
+# ---------------------------------------------------------------------------
+class TestLineagePublish(_Base):
+    def _root(self, title="Root", body="v1\n", section="ideas"):
+        return self._publish({"type": "idea", "title": title,
+                              "source": {"section": section}}, body=body)
+
+    def _derive(self, parent, body, title="Derived", section="ideas"):
+        return artlib.publish(
+            self.project, body,
+            {"type": "idea", "title": title,
+             "source": {"section": section}},
+            self.registry, on_error=self.errors.append, supersedes=parent)
+
+    def test_derivation_chain_fields(self):
+        r = self._root()
+        c = self._derive(r, "v2\n")
+        g = self._derive(c, "v3\n", title="Grand")
+        self.assertEqual(self.errors, [])
+        cm = artlib.load_meta(self.project, c)
+        gm = artlib.load_meta(self.project, g)
+        self.assertEqual((cm["version"], cm["supersedes"], cm["lineage"],
+                          cm["branch"], cm["depth"], cm["hop_count"]),
+                         (2, r, [r], "", 1, 0))
+        self.assertEqual((gm["version"], gm["supersedes"], gm["lineage"],
+                          gm["depth"]), (3, c, [r, c], 2))
+        # Roots carry the new fields too.
+        rm = artlib.load_meta(self.project, r)
+        self.assertEqual((rm["branch"], rm["depth"], rm["hop_count"]),
+                         ("", 0, 0))
+
+    def test_refusals_write_nothing(self):
+        r = self._root()
+        before = self._entries()
+        for bad in ("../evil", "absent-parent"):
+            self.errors.clear()
+            self.assertIsNone(self._derive(bad, "x\n"))
+            self.assertGreaterEqual(len(self.errors), 1)
+        self.assertEqual(self._entries(), before)
+        self.assertIsNotNone(r)
+
+    def test_depth_cap_refuses_the_fifth_hop(self):
+        aid = self._root()
+        for i in range(4):  # v2..v5 = depth 1..4, all admitted at cap 4
+            aid = self._derive(aid, "v%d\n" % (i + 2))
+            self.assertIsNotNone(aid, self.errors)
+        before = self._entries()
+        self.assertIsNone(self._derive(aid, "v6\n"))
+        self.assertIn("depth cap", self.errors[-1])
+        self.assertEqual(self._entries(), before, "refusal writes nothing")
+
+    def test_registry_max_depth_override_and_validation(self):
+        path = os.path.join(self.orch_dir, "artifact_types.json")
+        doc = {"schema_version": 1, "types": {"idea": {
+            "required": ["title", "body"], "default_status": "published",
+            "max_depth": 1}}}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        reg = artlib.load_registry(self.orch_dir,
+                                   on_error=self.errors.append)
+        self.assertEqual(self.errors, [])
+        r = artlib.publish(self.project, "v1\n",
+                           {"type": "idea", "title": "Capped"}, reg)
+        c = artlib.publish(self.project, "v2\n",
+                           {"type": "idea", "title": "Capped"}, reg,
+                           on_error=self.errors.append, supersedes=r)
+        self.assertIsNotNone(c)
+        self.assertIsNone(artlib.publish(
+            self.project, "v3\n", {"type": "idea", "title": "Capped"},
+            reg, on_error=self.errors.append, supersedes=c))
+        # Mis-typed caps are a DISABLED loop guard: all-or-default.
+        for bad in (True, "4", -1):
+            doc["types"]["idea"]["max_depth"] = bad
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+            errs = []
+            fallback = artlib.load_registry(self.orch_dir,
+                                            on_error=errs.append)
+            self.assertEqual(len(errs), 1, repr(bad))
+            self.assertEqual(set(fallback["types"]),
+                             set(artlib.SEED_TYPES))
+
+    def test_duplicate_derivation_refused_changed_body_publishes(self):
+        r = self._root()
+        self.assertIsNotNone(self._derive(r, "same\n"))
+        self.errors.clear()
+        self.assertIsNone(self._derive(r, "same\n"))
+        self.assertIn("duplicate derivation", self.errors[0])
+        self.errors.clear()
+        b = self._derive(r, "different\n")
+        self.assertIsNotNone(b)
+        self.assertEqual(artlib.load_meta(self.project, b)["branch"], "b")
+
+    def test_convergence_is_terminal(self):
+        r = self._root(body="stable\n")
+        c = self._derive(r, "stable\n")
+        self.assertIsNotNone(c)
+        cm = artlib.load_meta(self.project, c)
+        self.assertEqual(cm["status"], "converged")
+        self.assertFalse(artlib.is_routable(cm))
+        self.assertTrue(artlib.is_routable(
+            artlib.load_meta(self.project, r)))
+        self.errors.clear()
+        self.assertIsNone(self._derive(c, "anything\n"))
+        self.assertIn("CONVERGED", self.errors[-1])
+
+    def test_hop_count_increments_on_section_change(self):
+        r = self._root(section="ideas")
+        same = self._derive(r, "a\n", section="ideas")
+        cross = self._derive(same, "b\n", section="research")
+        blank = self._derive(cross, "c\n", section="")
+        self.assertEqual(
+            [artlib.load_meta(self.project, a)["hop_count"]
+             for a in (same, cross, blank)],
+            [0, 1, 2], "same-section free, cross +1, unknown +1")
+
+    def test_branch_letters_are_deterministic(self):
+        r = self._root()
+        ids = [self._derive(r, "body %d\n" % i) for i in range(3)]
+        metas = [artlib.load_meta(self.project, a) for a in ids]
+        self.assertEqual([m["branch"] for m in metas], ["", "b", "c"])
+        self.assertEqual({m["version"] for m in metas}, {2})
+
+    def test_racing_process_derivers_become_named_branches(self):
+        r = self._root()
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import artifacts\n"
+            "reg = artifacts.load_registry(%r)\n"
+            "aid = artifacts.publish(%r, 'from %%s\\n' %% sys.argv[1],\n"
+            "    {'type': 'idea', 'title': 'Race'}, reg,\n"
+            "    supersedes=%r)\n"
+            "print(aid)\n" % (HERE, self.orch_dir, self.project, r))
+        procs = [subprocess.Popen([sys.executable, "-c", script, n],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+                 for n in ("alpha", "beta")]
+        ids = []
+        for p in procs:
+            out, err = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, err)
+            ids.extend(out.split())
+        self.assertEqual(len(set(ids)), 2, "never a lost update")
+        metas = [artlib.load_meta(self.project, a) for a in ids]
+        self.assertEqual(sorted(m["branch"] for m in metas), ["", "b"])
+        self.assertEqual({m["version"] for m in metas}, {2})
+
+    def test_lineage_lock_is_invisible_and_kill_released(self):
+        r = self._root()
+        lock = artlib._lineage_lock_path(self.project, r)
+        script = (
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(%r, os.O_CREAT | os.O_RDWR, 0o644)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "open(%r, 'w').write('held')\n"
+            "time.sleep(60)\n" % (lock, lock + ".flag"))
+        p = subprocess.Popen([sys.executable, "-c", script])
+        try:
+            for _ in range(200):
+                if os.path.exists(lock + ".flag"):
+                    break
+                threading.Event().wait(0.05)
+            p.kill()
+            p.wait(timeout=30)
+            # The kernel released the flock with the fds: a fresh
+            # derivation must succeed, not hang.
+            self.assertIsNotNone(self._derive(r, "after kill\n"))
+        finally:
+            if p.poll() is None:
+                p.kill()
+        self.assertEqual(
+            [m["id"] for m in artlib.list_artifacts(self.project)
+             if m["id"].startswith(".")], [],
+            "lock files never surface in listings")
+
+    def test_legacy_metas_without_43_fields_still_derive(self):
+        r = self._root()
+        path = os.path.join(artlib.artifact_dir(self.project, r),
+                            "meta.json")
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        for k in ("branch", "depth", "hop_count"):
+            doc.pop(k, None)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        c = self._derive(r, "v2\n")
+        self.assertIsNotNone(c, self.errors)
+        self.assertEqual(artlib.load_meta(self.project, c)["depth"], 1)
+
+
+# ---------------------------------------------------------------------------
 # Regressions from the pre-commit adversarial verification pass — each test
 # pins an execution-confirmed defect in the first draft of this module.
 # ---------------------------------------------------------------------------
