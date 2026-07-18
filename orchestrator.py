@@ -5968,6 +5968,115 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
     return consensus, final_output, transcript, last_substantive, any_agent_output
 
 
+def _run_forced_vote(cfg, app, app_dir, phasedef, original_prompt,
+                     prior_outputs, state, *,
+                     md_path, transcript, unit, coord,
+                     available_active, last_substantive, final_output):
+    """Forced weighted vote: concurrent ballots, deterministic
+    confidence-weighted tally, LLM-tally fallback — extracted VERBATIM
+    from process_phase (V3 board 2.2b), dedented one level. Seam notes:
+    - Returns (final_output, transcript, vote). transcript MUST be
+      returned: the vote blocks are appended to it for downstream
+      contract parsing, and losing the rebinding would stay byte-green
+      (append_md writes the .md independently) while silently hiding
+      ballots from _record_phase_contracts.
+    - final_output arrives SEEDED with the coordinator's last recap:
+      on the no-tally-agent path this function assigns nothing and the
+      recap must survive to the return.
+    - vote starts {} here AND at the call site's skeleton: the empty
+      dict crossing back is load-bearing — `if vote:` gates
+      state['vote_results'] and the undecided bookkeeping; the no-vote
+      paths must keep writing nothing.
+    - state crosses by identity (next_agent roster save happens BEFORE
+      the ballots so a crash mid-vote shows who was voting).
+    """
+    key, folder, fname, _purpose = phasedef
+    vote = {}
+    emit("No consensus by max %s in phase '%s' — forcing a weighted vote." % (unit, key))
+    append_md(md_path, "\n### Forced Vote (max %ss reached)\n\n" % unit)
+    candidates = "the proposals advanced by " + ", ".join(DISPLAY[a] for a in available_active)
+    voters = ordered_agents(available_active)
+    state["next_agent"] = "+".join(voters)
+    save_state(app_dir, state)
+    # Ballots are independent — cast them concurrently (same round-barrier
+    # pattern as discussion turns; wall-clock = slowest voter, not the sum).
+    vote_ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
+
+    def _vote_turn(agent):
+        acfg = dict(cfg)   # per-thread copy: session/health flags must not race
+        acfg["_health_key"] = agent
+        return call_agent(acfg, app, key, "vote", agent,
+                          prompt_vote(acfg, agent, vote_ctx, phasedef, candidates))
+
+    vote_responses = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(voters)) as ex:
+        futs = {ex.submit(_vote_turn, a): a for a in voters}
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                vote_responses[futs[fut]] = fut.result()
+            except AgentError as exc:
+                emit("%s could not vote: %s" % (DISPLAY[futs[fut]], exc))
+            except Exception as exc:  # noqa: BLE001 - one ballot must not kill the phase
+                emit("%s vote failed unexpectedly: %s" % (DISPLAY[futs[fut]], exc))
+    for agent in voters:   # transcript stays deterministic: roster order
+        if agent in vote_responses:
+            vblock = "**%s — vote**\n\n%s\n" % (DISPLAY[agent], vote_responses[agent])
+            append_md(md_path, "\n" + vblock)
+            transcript += "\n" + vblock
+            emit("Appended %s vote to %s/%s" % (DISPLAY[agent], folder, fname))
+
+    # Deterministic tally: parse the vote-json ballots and count them in
+    # Python. The legacy LLM tally turn survives only as a fallback when
+    # fewer than two ballots parse — a tally must never hinge on one
+    # model's reading of prose.
+    ballots = parse_vote_ballots(
+        vote_responses, voters,
+        on_error=lambda msg: emit("WARN BALLOT %s (phase '%s')" % (msg, key)))
+    if len(ballots) >= 2:
+        winner, weights = tally_votes(ballots, voters)
+        weight_line = ", ".join("%s: %d" % (DISPLAY[a], w)
+                                for a, w in sorted(weights.items(),
+                                                   key=lambda kv: -kv[1]))
+        tally_md = (
+            "The orchestrator tallied %d valid ballot(s) (confidence-weighted): %s.\n\n"
+            "**Decision: the group commits to %s's proposal.**\n\n"
+            "## Final Output\n\n%s\n\nVOTE_DECISION: YES\n"
+            % (len(ballots), weight_line, DISPLAY[winner],
+               (last_substantive.get(winner) or
+                "See %s's final position in the transcript above." % DISPLAY[winner])))
+        append_md(md_path, "\n**Deterministic vote tally**\n\n" + tally_md)
+        final_output = tally_md
+        vote = {"decided": True, "by": "ballot-tally", "winner": winner,
+                "method": "ballots",
+                "ballots": [{k: b[k] for k in ("voter", "choice", "confidence")}
+                            for b in ballots]}
+        emit("Vote tally complete for phase '%s' (deterministic; winner: %s; %s)."
+             % (key, DISPLAY[winner], weight_line))
+    else:
+        emit("Only %d parseable ballot(s) in phase '%s' — falling back to an "
+             "LLM tally." % (len(ballots), key))
+        ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
+        # Tally with the same failover as the decision turn: any working
+        # participant may count the votes rather than losing the phase result.
+        for cand in [coord] + [a for a in voters if a != coord]:
+            try:
+                tresp = call_agent(cfg, app, key, "tally", cand,
+                                   prompt_tally(cfg, cand, ctx, phasedef))
+                append_md(md_path, "\n**Coordinator (%s) — vote tally & decision**\n\n%s\n"
+                          % (DISPLAY[cand], tresp))
+                final_output = tresp
+                vote = {"decided": bool(VOTE_RE.search(tresp)), "by": cand,
+                        "method": "llm-fallback"}
+                emit("Vote tally complete for phase '%s' (VOTE_DECISION: %s)."
+                     % (key, "YES" if vote["decided"] else "UNCLEAR"))
+                break
+            except AgentError as exc:
+                emit("%s could not tally the vote: %s" % (DISPLAY[cand], exc))
+        else:
+            emit("No agent could tally the vote in phase '%s' — keeping last recap." % key)
+    return final_output, transcript, vote
+
+
 def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                   state, phase_index=0):
     key, folder, fname, _purpose = phasedef
@@ -6256,88 +6365,11 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     vote = {}
     available_active = [a for a in active if _agent_available(a, cfg)]
     if not consensus and not unlimited_rounds and not is_build and len(available_active) >= 2:
-        emit("No consensus by max %s in phase '%s' — forcing a weighted vote." % (unit, key))
-        append_md(md_path, "\n### Forced Vote (max %ss reached)\n\n" % unit)
-        candidates = "the proposals advanced by " + ", ".join(DISPLAY[a] for a in available_active)
-        voters = ordered_agents(available_active)
-        state["next_agent"] = "+".join(voters)
-        save_state(app_dir, state)
-        # Ballots are independent — cast them concurrently (same round-barrier
-        # pattern as discussion turns; wall-clock = slowest voter, not the sum).
-        vote_ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
-
-        def _vote_turn(agent):
-            acfg = dict(cfg)   # per-thread copy: session/health flags must not race
-            acfg["_health_key"] = agent
-            return call_agent(acfg, app, key, "vote", agent,
-                              prompt_vote(acfg, agent, vote_ctx, phasedef, candidates))
-
-        vote_responses = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(voters)) as ex:
-            futs = {ex.submit(_vote_turn, a): a for a in voters}
-            for fut in concurrent.futures.as_completed(futs):
-                try:
-                    vote_responses[futs[fut]] = fut.result()
-                except AgentError as exc:
-                    emit("%s could not vote: %s" % (DISPLAY[futs[fut]], exc))
-                except Exception as exc:  # noqa: BLE001 - one ballot must not kill the phase
-                    emit("%s vote failed unexpectedly: %s" % (DISPLAY[futs[fut]], exc))
-        for agent in voters:   # transcript stays deterministic: roster order
-            if agent in vote_responses:
-                vblock = "**%s — vote**\n\n%s\n" % (DISPLAY[agent], vote_responses[agent])
-                append_md(md_path, "\n" + vblock)
-                transcript += "\n" + vblock
-                emit("Appended %s vote to %s/%s" % (DISPLAY[agent], folder, fname))
-
-        # Deterministic tally: parse the vote-json ballots and count them in
-        # Python. The legacy LLM tally turn survives only as a fallback when
-        # fewer than two ballots parse — a tally must never hinge on one
-        # model's reading of prose.
-        ballots = parse_vote_ballots(
-            vote_responses, voters,
-            on_error=lambda msg: emit("WARN BALLOT %s (phase '%s')" % (msg, key)))
-        if len(ballots) >= 2:
-            winner, weights = tally_votes(ballots, voters)
-            weight_line = ", ".join("%s: %d" % (DISPLAY[a], w)
-                                    for a, w in sorted(weights.items(),
-                                                       key=lambda kv: -kv[1]))
-            tally_md = (
-                "The orchestrator tallied %d valid ballot(s) (confidence-weighted): %s.\n\n"
-                "**Decision: the group commits to %s's proposal.**\n\n"
-                "## Final Output\n\n%s\n\nVOTE_DECISION: YES\n"
-                % (len(ballots), weight_line, DISPLAY[winner],
-                   (last_substantive.get(winner) or
-                    "See %s's final position in the transcript above." % DISPLAY[winner])))
-            append_md(md_path, "\n**Deterministic vote tally**\n\n" + tally_md)
-            final_output = tally_md
-            vote = {"decided": True, "by": "ballot-tally", "winner": winner,
-                    "method": "ballots",
-                    "ballots": [{k: b[k] for k in ("voter", "choice", "confidence")}
-                                for b in ballots]}
-            emit("Vote tally complete for phase '%s' (deterministic; winner: %s; %s)."
-                 % (key, DISPLAY[winner], weight_line))
-        else:
-            emit("Only %d parseable ballot(s) in phase '%s' — falling back to an "
-                 "LLM tally." % (len(ballots), key))
-            ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
-            # Tally with the same failover as the decision turn: any working
-            # participant may count the votes rather than losing the phase result.
-            for cand in [coord] + [a for a in voters if a != coord]:
-                try:
-                    tresp = call_agent(cfg, app, key, "tally", cand,
-                                       prompt_tally(cfg, cand, ctx, phasedef))
-                    append_md(md_path, "\n**Coordinator (%s) — vote tally & decision**\n\n%s\n"
-                              % (DISPLAY[cand], tresp))
-                    final_output = tresp
-                    vote = {"decided": bool(VOTE_RE.search(tresp)), "by": cand,
-                            "method": "llm-fallback"}
-                    emit("Vote tally complete for phase '%s' (VOTE_DECISION: %s)."
-                         % (key, "YES" if vote["decided"] else "UNCLEAR"))
-                    break
-                except AgentError as exc:
-                    emit("%s could not tally the vote: %s" % (DISPLAY[cand], exc))
-            else:
-                emit("No agent could tally the vote in phase '%s' — keeping last recap." % key)
+        final_output, transcript, vote = _run_forced_vote(
+            cfg, app, app_dir, phasedef, original_prompt, prior_outputs, state,
+            md_path=md_path, transcript=transcript, unit=unit, coord=coord,
+            available_active=available_active,
+            last_substantive=last_substantive, final_output=final_output)
     elif not consensus and is_build:
         # Build ran out of iterations; keep the coordinator's last recap as the
         # result (final_output already holds it) and close the phase out.
