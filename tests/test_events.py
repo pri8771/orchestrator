@@ -110,6 +110,76 @@ class TestEmitEvent(unittest.TestCase):
         mock_warn.assert_not_called()
 
 
+class TestArtifactBusVocabulary(unittest.TestCase):
+    """V3 board 2.5: the six bus kinds are registered ahead of their
+    emitters (2.4 / M4 / M7) — vocabulary, warning, and cap contracts."""
+
+    NEW_KINDS = ("message_appended",
+                 "artifact_published", "artifact_routed", "artifact_consumed",
+                 "route_proposed", "route_approved")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="orch_events_")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_each_new_kind_emits_warning_free(self):
+        for kind in self.NEW_KINDS:
+            with unittest.mock.patch("warnings.warn") as mock_warn:
+                self.assertTrue(evlib.emit_event(self.dir, kind, probe="x"))
+            mock_warn.assert_not_called()
+
+    def test_unknown_kind_still_warns_regression(self):
+        with self.assertWarns(Warning):
+            self.assertTrue(evlib.emit_event(self.dir, "artifact_publised"))
+
+    def test_read_events_filters_the_new_kinds(self):
+        for kind in self.NEW_KINDS:
+            evlib.emit_event(self.dir, kind, artifact_id="a1")
+        evlib.emit_event(self.dir, "run_started")
+        got = evlib.read_events(self.dir, kinds=["artifact_published",
+                                                 "route_approved"])
+        self.assertEqual([e["kind"] for e in got],
+                         ["artifact_published", "route_approved"])
+
+    def test_pathological_artifact_line_stays_under_cap(self):
+        # Exercises the shrink loop: worst-case long id/path fields must
+        # still produce one ≤3500B valid-JSON line (PIPE_BUF atomicity).
+        evlib.emit_event(
+            self.dir, "artifact_published",
+            artifact_id="a" * 4000, type="research_report", version=3,
+            path="/very/long/" + "p" * 4000)
+        with open(evlib.events_path(self.dir), encoding="utf-8") as fh:
+            line = fh.readline().rstrip("\n")
+        self.assertLessEqual(len(line.encode("utf-8")), 3500)
+        evt = json.loads(line)
+        self.assertEqual(evt["kind"], "artifact_published")
+
+    def test_docstring_documents_every_kind_ids_and_paths_only(self):
+        # The module docstring is the human-readable contract: every new
+        # kind must appear there, and no documented field may be a bare
+        # content/body carrier (content_path is a path and is fine).
+        doc = evlib.__doc__
+        for kind in self.NEW_KINDS:
+            self.assertIn(kind, doc, "kind %r missing from docstring" % kind)
+            para = doc[doc.index(kind):]
+            fields = para[para.index("(") + 1:para.index(")")]
+            # Field NAMES precede the em-dash; prose after it may of course
+            # mention where bodies live.
+            names = fields.split("—", 1)[0]
+            tokens = {t.strip(" .,") for t in names.replace(",", " ").split()}
+            self.assertFalse({"content", "body"} & tokens,
+                             "%s documents a content-carrying field" % kind)
+
+    def test_every_kind_in_code_is_in_the_docstring(self):
+        # No kind may exist in KINDS but not in the human-readable contract.
+        doc = evlib.__doc__
+        for kind in evlib.KINDS:
+            self.assertIn(kind, doc,
+                          "KINDS entry %r missing from docstring" % kind)
+
+
 class _RunnerStub:
     def __init__(self, result=None, exc=None):
         self.result = result

@@ -16,6 +16,19 @@ Event kinds emitted by orchestrator.py:
     verify_result       (status, detail)
     url_fetched         (url, title, chars — prompt-URL ground truth, urlfetch.py)
     url_fetch_failed    (url, reason)
+    release_gate_timing (gate, seconds — wall-clock inside each release gate)
+    conversation_round  (project, phase, round — a chat round opened)
+    awaiting_human      (project, phase — engine blocked on the human's turn)
+    step_in_requested / step_in_joined / step_in_missed
+                        (project, phase, detail — live-debate join lifecycle)
+    message_produced    (agent, model_used, status — one per DELIVERED reply)
+    message_appended    (turn_id, content_path — one per messages.jsonl index
+                         line; ids+paths only, the body lives in the phase .md)
+    artifact_published  (artifact_id, type, version, path)
+    artifact_routed     (route_id, artifact_id, target)
+    artifact_consumed   (artifact_id, consumer, phase)
+    route_proposed      (route_id, artifact_id, target)
+    route_approved      (route_id, artifact_id, target)
 
 Contract:
   * Best-effort by design — emitting an event must NEVER take a run down.
@@ -71,6 +84,16 @@ KINDS = (
     # (phase, round, agent) join on turn_completed fails exactly when
     # attribution matters most).
     "message_produced",
+    # V3 board 2.5 — the artifact-bus vocabulary, registered ahead of its
+    # emitters so nothing trips the unknown-kind warning later. Payloads
+    # are ids+paths ONLY (never message/artifact content — bodies live in
+    # messages.jsonl / artifact files, and the 3500B line cap depends on
+    # it). Consumers: message_appended = 2.4's messages.jsonl dual-write;
+    # artifact_published/_routed/_consumed = the M4 artifact bus;
+    # route_proposed/_approved = the M7 Conductor.
+    "message_appended",
+    "artifact_published", "artifact_routed", "artifact_consumed",
+    "route_proposed", "route_approved",
 )
 
 _MAX_FIELD_CHARS = 500
