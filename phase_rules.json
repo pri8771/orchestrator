@@ -325,7 +325,7 @@
         "Build real files in app_build; do not only describe the solution.",
         "Create the design spec's tokens as a single theme file (Theme.swift or equivalent) before building screens, and style every view through it; scattered font/spacing/color literals are defects.",
         "Implement the handoff's named components, per-screen empty states, and dark-mode palette as specified; a default unstyled List where the spec says otherwise is a defect.",
-        "Every interactive element (buttons, cells, fields, toggles) must set .accessibilityIdentifier — the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support.",
+        "Every interactive element (buttons, cells, fields, toggles) must set .accessibilityIdentifier — the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support. When a DECLARED FLOW TOKENS contract is present, expose each of those tokens VERBATIM as the matching control's .accessibilityIdentifier (keep a descriptive .accessibilityLabel for VoiceOver — set BOTH); an independently-named identifier fails that journey.",
         "Implement screens with ALL specified states: empty, loading, error, and populated. A screen with only the happy path is incomplete.",
         "Keep changes scoped to the assigned lane and leave integration files to the integrator.",
         "Every iteration should reduce compile, runtime, or product-completeness risk.",
@@ -342,6 +342,7 @@
         "The main user workflow is implemented end-to-end.",
         "A single theme/token file exists, views use it, dark mode works, and all specified states (empty/loading/error/populated) are real.",
         "Interactive elements carry accessibilityIdentifiers (crawl/flow targetable).",
+        "Every declared-flow tap/type token is exposed as the exact .accessibilityIdentifier of the control that satisfies that step.",
         "The integrator has wired lane outputs together."
       ]
     },

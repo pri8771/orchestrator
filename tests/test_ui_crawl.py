@@ -219,6 +219,60 @@ class TestFlowsContract(unittest.TestCase):
         self.assertEqual([f["name"] for f in flows], ["add dish"])
         self.assertTrue(any("bad" in e for e in errors))
 
+    def test_load_flows_missing_corrupt_and_valid(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Missing file -> [] (never raises).
+            self.assertEqual(orch.load_flows(d), [])
+            # Corrupt JSON -> [].
+            with open(os.path.join(d, "flows.json"), "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            self.assertEqual(orch.load_flows(d), [])
+            # Valid -> the flows list.
+            with open(os.path.join(d, "flows.json"), "w", encoding="utf-8") as fh:
+                json.dump({"flows": [{"name": "x", "steps": [{"tap": "home.a"}]}]}, fh)
+            self.assertEqual([f["name"] for f in orch.load_flows(d)], ["x"])
+
+    def test_flows_contract_block_tokens_and_exclusions(self):
+        # F3: the binding contract renders DISTINCT tap + type-into tokens, and
+        # EXCLUDES assert_exists tokens (those name user content, not a control).
+        flows = [{"name": "add", "steps": [
+            {"tap": "home.addItemButton"},
+            {"type": "Sample", "into": "addEdit.nameField"},
+            {"tap": "addEdit.saveButton"},
+            {"assert_exists": "Sample"},            # excluded (content)
+            {"tap": "home.addItemButton"},          # dup -> collapsed
+            {"back": True}]}]
+        block = orch._flows_contract_block(flows)
+        self.assertIn("BINDING CONTRACT", block)
+        self.assertIn("accessibilityIdentifier", block)
+        self.assertIn("home.addItemButton", block)
+        self.assertIn("addEdit.nameField", block)
+        self.assertIn("addEdit.saveButton", block)
+        self.assertNotIn("Sample", block)           # assert_exists token excluded
+        self.assertEqual(block.count("home.addItemButton"), 1)  # deduped
+
+    def test_flows_contract_block_empty_when_no_control_tokens(self):
+        self.assertEqual(orch._flows_contract_block([]), "")
+        self.assertEqual(orch._flows_contract_block(None), "")
+        # Only asserts/back -> no control tokens -> no block.
+        self.assertEqual(
+            orch._flows_contract_block(
+                [{"name": "a", "steps": [{"assert_exists": "X"}, {"back": True}]}]),
+            "")
+        # Defensive against malformed shapes.
+        self.assertEqual(orch._flows_contract_block(["nope", {"steps": "bad"}]), "")
+
+    def test_worker_contract_block_appends_flow_tokens(self):
+        block = orch._flows_contract_block(
+            [{"name": "a", "steps": [{"tap": "home.addItemButton"}]}])
+        out = orch._worker_contract_block(
+            backlog=[], claimed=[], interfaces=[], flows_contract=block)
+        self.assertIn("home.addItemButton", out)
+        self.assertIn("BINDING CONTRACT", out)
+        # No flow contract -> no flow section.
+        self.assertNotIn("BINDING CONTRACT",
+                         orch._worker_contract_block([], [], [], flows_contract=""))
+
     def test_persist_preserves_learned_regressions(self):
         app_dir = tempfile.mkdtemp()
         with open(os.path.join(app_dir, "flows.json"), "w") as fh:

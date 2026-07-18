@@ -3309,6 +3309,18 @@ def load_interfaces(app_dir):
         return []
 
 
+def load_flows(app_dir):
+    """The declared user journeys (flows.json), frozen from the planning phase
+    and replayed by the UI-crawl gate. Missing/corrupt -> [] (never raises),
+    mirroring load_tasks/load_interfaces."""
+    try:
+        with open(os.path.join(app_dir, "flows.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("flows", []) if isinstance(data, dict) else []
+    except (OSError, ValueError):
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Generated-source secret scan (V2 spec §17/§23): a deterministic pass over the
 # build output feeding the secret_hardcoded launch gate. Findings carry only the
@@ -3999,11 +4011,46 @@ def _claim_tasks_for_iteration(roster, backlog, rnd):
     return claims
 
 
-def _worker_contract_block(backlog, claimed, interfaces, wave_note=""):
+def _flows_contract_block(flows):
+    """The DISTINCT control tokens the frozen flows.json journeys tap into or
+    type into, rendered as a binding contract for every build worker: each token
+    MUST be exposed VERBATIM as that control's .accessibilityIdentifier, because
+    the UI-crawl gate matches controls by these exact strings. Reconciles the
+    flow-token/build-identifier drift AT THE FIRST build pass instead of only
+    reactively via the release-gate repair message. assert_exists tokens are
+    excluded — those name user-visible content, not a control to identify. ''
+    when there are no such tokens (or no flows)."""
+    tokens = []
+    seen = set()
+    for flow in flows or []:
+        if not isinstance(flow, dict):
+            continue
+        for step in flow.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            tok = step.get("tap") or step.get("into")
+            if isinstance(tok, str) and tok and tok not in seen:
+                seen.add(tok)
+                tokens.append(tok)
+    if not tokens:
+        return ""
+    return ("===== DECLARED FLOW TOKENS (flows.json — BINDING CONTRACT) =====\n"
+            "The UI-crawl release gate replays these frozen user journeys and "
+            "matches controls by these EXACT strings. For EVERY token below, set "
+            "it VERBATIM as the .accessibilityIdentifier of the control that "
+            "fulfills that step, AND keep a descriptive .accessibilityLabel for "
+            "VoiceOver — set BOTH; never replace the label with the token. A "
+            "token you don't expose as an identifier is a journey that FAILS:\n"
+            + "\n".join("  - %s" % t for t in tokens))
+
+
+def _worker_contract_block(backlog, claimed, interfaces, wave_note="",
+                           flows_contract=""):
     """This worker's CLAIMED tasks (see _claim_tasks_for_iteration) plus the
-    full interfaces.json contract, rendered for one build-worker prompt
-    (§19/§20). backlog is only consulted to decide whether the project has
-    a task backlog at all; '' when there's neither a backlog nor interfaces."""
+    full interfaces.json contract and the flows.json identifier contract,
+    rendered for one build-worker prompt (§19/§20). backlog is only consulted to
+    decide whether the project has a task backlog at all; '' when there's neither
+    a backlog nor interfaces nor flow tokens."""
     parts = []
     if wave_note:
         parts.append("===== BUILD WAVE =====\n" + wave_note)
@@ -4021,6 +4068,8 @@ def _worker_contract_block(backlog, claimed, interfaces, wave_note=""):
                      "Code against these EXACT names/signatures; if one must "
                      "change, ask the integrator instead of diverging:\n"
                      + json.dumps(interfaces, indent=2))
+    if flows_contract:
+        parts.append(flows_contract)
     return "\n\n".join(parts)
 
 
@@ -4571,9 +4620,11 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
     # full shared interface contract). Missing files just mean no injection.
     backlog = load_tasks(app_dir)
     interfaces = load_interfaces(app_dir)
+    flows_contract = _flows_contract_block(load_flows(app_dir))
     if backlog or interfaces:
-        emit("Injecting build contracts: %d task(s), %d interface(s)."
-             % (len(backlog), len(interfaces)))
+        emit("Injecting build contracts: %d task(s), %d interface(s)%s."
+             % (len(backlog), len(interfaces),
+                " + flow-token identifier contract" if flows_contract else ""))
     # Vertical slices (runtime.build_vertical_slices): topo-layer the backlog
     # by depends_on; iteration k works wave k — one coherent slice end-to-end
     # at a time instead of the whole app at once. Waves beyond the iteration
@@ -4675,7 +4726,8 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                                          persona=pers,
                                          contract=_worker_contract_block(
                                              _wave_backlog, claims.get(w["slug"], []),
-                                             interfaces, wave_note=_wave_note))
+                                             interfaces, wave_note=_wave_note,
+                                             flows_contract=flows_contract))
             # Per-worker cfg: a shallow copy that (a) points an isolated lane at
             # its OWN worktree and (b) keys circuit-breaker health by the worker
             # slug so concurrent threads of the SAME agent never race on one
