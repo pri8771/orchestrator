@@ -63,6 +63,7 @@ private enum BackgroundProjectLoader {
         var outputs: [String: String] = [:]
         var workflowName: String? = nil
         var awaiting: String? = nil
+        var awaitingHuman: String? = nil
         var blocked: BlockedConflict? = nil
         var resolutions: [String: String] = [:]
 
@@ -77,6 +78,7 @@ private enum BackgroundProjectLoader {
             outputs = (obj["phase_outputs"] as? [String: String]) ?? [:]
             workflowName = obj["workflow"] as? String
             awaiting = obj["awaiting_approval"] as? String
+            awaitingHuman = obj["awaiting_human"] as? String
             blocked = BlockedConflict.parse(fromStateObject: obj)
             resolutions = (obj["phase_resolutions"] as? [String: String]) ?? [:]
             let done = (obj["done"] as? Bool) ?? false
@@ -121,6 +123,7 @@ private enum BackgroundProjectLoader {
                            workflowKind: wf?.kindLabel ?? "Build",
                            phaseCount: wfPhases.count, phaseTitles: titles)
         proj.awaitingApproval = (awaiting?.isEmpty == false) ? awaiting : nil
+        proj.awaitingHuman = (awaitingHuman?.isEmpty == false) ? awaitingHuman : nil
         proj.blockedConflict = blocked
         proj.manuallyStopped = stopped
         proj.archived = fm.fileExists(
@@ -642,6 +645,10 @@ final class OrchestratorStore: ObservableObject {
     // saveChatHistory; without this flag a load-during-switch would write
     // chat A's messages under chat B's key.
     private var isLoadingChatHistory = false
+    // V3 board 1.5: engine-backed chat sessions minted by this GUI instance,
+    // keyed by flat dir name. Lifecycle is the ChatSession state enum; the
+    // scan-merge in refresh() only derives waiting/running transitions.
+    @Published var chatSessions: [String: ChatSession] = [:]
     @Published var chatClaudeAvailable = true
     @Published var buildLanes = 3
     @Published var shepherdActive = false
@@ -926,6 +933,7 @@ final class OrchestratorStore: ObservableObject {
                 if health != self.fleetHealth { self.fleetHealth = health }
                 self.escalateFallbacksIfNeeded(events)
                 if locks != self.appLocks { self.appLocks = locks }
+                self.syncChatSessions(with: loaded)
                 if autorun != self.autorunDisabled { self.autorunDisabled = autorun }
                 if self.queueDragActive, let t = self.queueDragStarted,
                    Date().timeIntervalSince(t) > 30 {
@@ -942,6 +950,132 @@ final class OrchestratorStore: ObservableObject {
                     self.refresh()
                 }
             }
+        }
+    }
+
+    // MARK: - Chat sessions (V3 board 1.5)
+
+    // Mint a flat chat dir per GLOSSARY "Layout (M1 interim)" and register the
+    // session SYNCHRONOUSLY — the 1.5s background scan hasn't discovered the
+    // dir yet, and navigation must not race it (the chat surface renders from
+    // this ChatSession, tolerating a missing Project for the first ticks).
+    @discardableResult
+    func mintChatSession(project: String, section: String, title: String,
+                         workflow: String, firstMessage: String) -> ChatSession? {
+        do {
+            let minted = try ChatSessionMint.mintChatDir(
+                rootURL: rootURL, project: project, section: section,
+                title: title, workflow: workflow, firstMessage: firstMessage)
+            let session = ChatSession(
+                id: minted.name,
+                project: OrchestratorStore.slugify(project),
+                section: OrchestratorStore.slugify(section),
+                slug: OrchestratorStore.slugify(title),
+                workflow: workflow)
+            chatSessions[minted.name] = session
+            refresh()
+            return session
+        } catch {
+            surfaceError("Couldn't create the chat: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func startChatSession(_ id: String) {
+        guard var s = chatSessions[id] else { return }
+        switch s.state {
+        case .launching, .running, .waitingForHuman, .stopping, .relaunching:
+            return   // already alive — never double-launch one dir
+        case .ended:
+            // The engine SKIPS done apps ("already done"): relaunching an
+            // ended chat is a no-op that would flash launching→stopped.
+            surfaceError("This chat has ended — start a new chat instead.")
+            return
+        case .stopped, .crashed:
+            s.state = .relaunching
+        case .idle:
+            s.state = .launching
+        }
+        chatSessions[id] = s
+        launch(args: ["orchestrator.py", "--root", rootURL.path, "--app", id],
+               project: id)
+        // R2: 'running' only with a live handle backing it.
+        if runningProcesses[id]?.isRunning == true {
+            chatSessions[id]?.state = .running
+        } else if chatSessions[id]?.state.isAlive == true {
+            chatSessions[id]?.state = .crashed(code: -1, wasSignal: false)
+            surfaceError("The chat engine failed to launch — see the run log.")
+        }
+    }
+
+    func stopChatSession(_ id: String) {
+        guard chatSessions[id]?.state.isAlive == true else { return }
+        chatSessions[id]?.state = .stopping
+        stopProject(id)   // SIGTERM→grace→SIGKILL + owner-checked lock cleanup
+    }
+
+    // 'End chat' = the 1.1 engine contract: approvals/<phaseKey>.ok. Only
+    // meaningful while the engine is alive to consume it — a leftover end
+    // file on a STOPPED chat would arm an instant end on the next launch
+    // (the engine deliberately honors a pre-existing .ok on resume).
+    func endChatSession(_ id: String) {
+        guard let s = chatSessions[id], s.state.isAlive else {
+            surfaceError("The chat isn't running — an end command now would "
+                         + "end it instantly on the next launch instead.")
+            return
+        }
+        // Phase key from the workflow def's conversational phase — never
+        // hardcoded, never derived by splitting the dir name.
+        let key = workflow(named: s.workflow)?.phases.first(where: \.conversational)?.key ?? "chat"
+        let apprDir = rootURL.appendingPathComponent("\(id)/approvals")
+        do {
+            try fm.createDirectory(at: apprDir, withIntermediateDirectories: true)
+            try Data().write(to: apprDir.appendingPathComponent("\(key).ok"))
+        } catch {
+            surfaceError("Couldn't end the chat: \(error.localizedDescription)")
+        }
+    }
+
+    // Termination reducer entry (from launch()'s terminationHandler): reads
+    // the FINAL agent_state.json to distinguish ended (done=true) from
+    // stopped — the pure mapping lives in ChatSessionState.afterTermination.
+    func noteChatTermination(name: String, status: Int32, uncaughtSignal: Bool) {
+        guard let s = chatSessions[name] else { return }
+        let wasStopping = (s.state == .stopping)
+        var done = false
+        var endReason: String? = nil
+        let stateURL = rootURL.appendingPathComponent("\(name)/agent_state.json")
+        if let data = try? Data(contentsOf: stateURL),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            done = (obj["done"] as? Bool) ?? false
+            let phaseKey = workflow(named: s.workflow)?.phases.first(where: \.conversational)?.key ?? "chat"
+            endReason = (obj["conversation_end"] as? [String: String])?[phaseKey]
+        }
+        let next = ChatSessionState.afterTermination(
+            status: status, uncaughtSignal: uncaughtSignal,
+            wasStopping: wasStopping, stateDone: done, conversationEnd: endReason)
+        chatSessions[name]?.state = next
+        if case .crashed(let code, let wasSignal) = next {
+            surfaceError(wasSignal
+                ? "Chat '\(name)' was killed by signal \(code)."
+                : "Chat '\(name)' crashed with exit code \(code).")
+        }
+    }
+
+    // Scan merge: only waiting↔running transitions, gated on process
+    // liveness (awaiting_human survives kill -9 in agent_state.json — a dead
+    // chat must never show 'waiting for you'). Terminal states are owned by
+    // the termination reducer, not the scan.
+    func syncChatSessions(with projects: [Project]) {
+        guard !chatSessions.isEmpty else { return }
+        let byName = Dictionary(projects.map { ($0.name, $0) },
+                                uniquingKeysWith: { a, _ in a })
+        for (id, session) in chatSessions {
+            let alive = runningProcesses[id]?.isRunning == true
+            let awaiting = byName[id]?.awaitingHuman != nil
+            let next = ChatSessionState.applyingScan(
+                current: session.state, awaitingHuman: awaiting, processAlive: alive)
+            if next != session.state { chatSessions[id]?.state = next }
         }
     }
 
@@ -3212,12 +3346,21 @@ final class OrchestratorStore: ObservableObject {
             }
         }
         proc.terminationHandler = { [weak self] p in
+            let status = p.terminationStatus
+            let uncaught = p.terminationReason == .uncaughtSignal
             Task { @MainActor in
-                self?.runLog += "\n[exited with code \(p.terminationStatus)]\n"
+                // §5.2: a SIGKILL'd child reports uncaughtSignal with the
+                // SIGNAL number in terminationStatus — "killed by signal 9"
+                // is not "exited with code 9".
+                self?.runLog += uncaught
+                    ? "\n[killed by signal \(status)]\n"
+                    : "\n[exited with code \(status)]\n"
                 pipe.fileHandleForReading.readabilityHandler = nil
                 if let name = project {
                     self?.runningProcesses[name] = nil
                     self?.stoppableProjects.remove(name)
+                    self?.noteChatTermination(name: name, status: status,
+                                              uncaughtSignal: uncaught)
                 }
                 self?.refresh()
             }

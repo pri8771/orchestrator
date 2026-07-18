@@ -197,6 +197,10 @@ struct Project: Identifiable, Equatable {
     var phaseTitles: [String: String] = [:]
     // Set when the engine paused for a semi-autonomous/manual approval after this phase.
     var awaitingApproval: String? = nil
+    // V3 board 1.5: agent_state.json's awaiting_human — the conversational
+    // wait marker. NOTE it survives kill -9; consumers must gate on process
+    // liveness (ChatSessionState.applyingScan), never trust it alone.
+    var awaitingHuman: String? = nil
     // Set when a parallel-build lane merge hit a real conflict (agent_state.json
     // blocked_conflict) — the run is paused until the user resolves and resumes.
     var blockedConflict: BlockedConflict? = nil
