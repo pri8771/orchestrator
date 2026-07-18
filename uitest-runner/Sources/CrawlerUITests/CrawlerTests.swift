@@ -38,6 +38,46 @@ private struct Target: Hashable {
     var json: [String: String] { ["kind": kind, "id": identifier, "label": label] }
 }
 
+// MARK: - Fuzzy flow-token matching (engine: uicrawl.py) — pure helpers
+
+/// What a flow step is trying to do, so the fuzzy tier can scope its search and
+/// decide whether the match must be hittable.
+enum MatchPurpose { case tap, assertExists }
+
+/// A flow token is eligible for FUZZY (last-resort) matching only if it has at
+/// least 2 characters AND contains at least one letter. This deterministically
+/// REFUSES bare glyph/symbol tokens ("+", "x", ".", "°") — they fall through to
+/// a hard FAIL rather than being guessed at. The build-side identifier contract
+/// (flows.json tokens -> .accessibilityIdentifier) is what carries the symbol
+/// case; the matcher never tries to bridge a glyph to a descriptive label.
+func isFuzzyEligible(_ key: String) -> Bool {
+    return key.count >= 2 && key.contains(where: { $0.isLetter })
+}
+
+/// True iff `key` occurs in `label` as a WHOLE WORD, case-insensitive: every
+/// character adjacent to an occurrence is a string boundary or a non-alphanumeric
+/// character. So "Start" matches "Start steeping Oolong" but NOT "Restart"/
+/// "Started", and "Save" does NOT match "Unsaved". Pure index arithmetic — `key`
+/// is never compiled into a regex, so a key like "+" or ".*" cannot inject a
+/// pattern or widen the match.
+func labelMatchesWord(_ key: String, _ label: String) -> Bool {
+    let k = Array(key.lowercased())
+    let l = Array(label.lowercased())
+    guard !k.isEmpty, k.count <= l.count else { return false }
+    func isWordChar(_ c: Character) -> Bool { return c.isLetter || c.isNumber }
+    var i = 0
+    while i <= l.count - k.count {
+        if Array(l[i ..< i + k.count]) == k {
+            let beforeOK = (i == 0) || !isWordChar(l[i - 1])
+            let after = i + k.count
+            let afterOK = (after == l.count) || !isWordChar(l[after])
+            if beforeOK && afterOK { return true }
+        }
+        i += 1
+    }
+    return false
+}
+
 final class CrawlerTests: XCTestCase {
 
     private var report: [String: Any] = [:]
@@ -340,7 +380,8 @@ final class CrawlerTests: XCTestCase {
                     }
                     field.tap(); app.typeText(text); settle()
                 } else if let label = step["assert_exists"] as? String {
-                    if !(locate(app, label)?.waitForExistence(timeout: 5) ?? false)
+                    if !(locate(app, label, purpose: .assertExists)?
+                            .waitForExistence(timeout: 5) ?? false)
                         && !app.staticTexts[label].waitForExistence(timeout: 2) {
                         failure = "step \(i + 1): expected ‘\(label)’ on screen"; break
                     }
@@ -359,16 +400,63 @@ final class CrawlerTests: XCTestCase {
     }
 
     private func locate(_ app: XCUIApplication, _ key: String,
-                        kinds: [XCUIElementQuery]? = nil) -> XCUIElement? {
+                        kinds: [XCUIElementQuery]? = nil,
+                        purpose: MatchPurpose = .tap) -> XCUIElement? {
         let queries = kinds ?? [app.buttons, app.cells, app.tabBars.buttons,
                                 app.navigationBars.buttons, app.links,
                                 app.staticTexts, app.textFields]
+        // PASS 1 — EXACT (byte-identical to the original matcher): identifier,
+        // then label. Every currently-green flow keeps matching here; the fuzzy
+        // PASS 2 runs ONLY when PASS 1 found nothing (a step that would already
+        // FAIL), so it can only ever rescue a would-be failure, never break a
+        // passing one.
         for q in queries {
             let byId = q.matching(identifier: key).firstMatch
             if byId.exists { return byId }
             let byLabel = q.matching(NSPredicate(format: "label == %@", key)).firstMatch
             if byLabel.exists { return byLabel }
         }
-        return nil
+        return fuzzyLocate(app, key, kinds: kinds, purpose: purpose)
+    }
+
+    /// PASS 2 — GUARDED FUZZY (last resort). Rescues visible-label drift ("Start"
+    /// -> accessibilityLabel "Start steeping Oolong") WITHOUT ever relaxing the
+    /// gate's pass/fail decision. Five guards: (1) eligibility — glyph-only tokens
+    /// are refused; (2) label-only — never fuzzes an identifier; (3) word-boundary
+    /// only (labelMatchesWord); (4) unique-or-refuse — >1 distinct match FAILS the
+    /// step (ambiguity is under-specification, never a guess); (5) hittable — a
+    /// fuzzy TAP target must be hittable (a dead/offscreen control can't satisfy a
+    /// tap). A genuinely absent control still yields zero matches and FAILS.
+    private func fuzzyLocate(_ app: XCUIApplication, _ key: String,
+                             kinds: [XCUIElementQuery]?,
+                             purpose: MatchPurpose) -> XCUIElement? {
+        guard isFuzzyEligible(key) else { return nil }
+        let queries: [XCUIElementQuery]
+        if let kinds = kinds {
+            queries = kinds
+        } else if purpose == .assertExists {
+            // assert_exists may match a static text — an asserted string is
+            // often user-visible content, not an interactive control.
+            queries = [app.buttons, app.cells, app.tabBars.buttons,
+                       app.navigationBars.buttons, app.links, app.staticTexts]
+        } else {
+            // a tap/type target must be an interactive control, never a label.
+            queries = [app.buttons, app.cells, app.tabBars.buttons,
+                       app.navigationBars.buttons, app.links, app.textFields]
+        }
+        let requireHittable = (purpose != .assertExists)
+        var matches: [XCUIElement] = []
+        var seen = Set<String>()
+        for q in queries {
+            for el in q.allElementsBoundByIndex.prefix(40) {
+                guard el.exists, labelMatchesWord(key, el.label) else { continue }
+                if requireHittable && !el.isHittable { continue }
+                // Dedupe so a control and a duplicate query hit don't inflate the
+                // ambiguity count (elementType+id+label+frame identifies one).
+                let sig = "\(el.elementType.rawValue)|\(el.identifier)|\(el.label)|\(el.frame)"
+                if seen.insert(sig).inserted { matches.append(el) }
+            }
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 }
