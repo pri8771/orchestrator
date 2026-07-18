@@ -66,6 +66,7 @@ import uicrawl as uicrawllib
 import designlint as dlintlib
 import fleetlearn as fllib
 import evalharness as evallib
+import turncontext as tcxlib
 import procutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -5654,9 +5655,13 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
     state["current_round"] = 0
     state["next_agent"] = None
     save_state(app_dir, state)
-    cfg["_phase_playbook"] = ""
-    cfg["_knowledge"] = ""
-    cfg["_verify_context"] = ""
+    # Deliberate SUBSET of end_phase(): the six other band-B keys are never
+    # set on the conversational path; clearing them here would be silent
+    # semantic drift, not hygiene.
+    tctx = tcxlib.TurnContext(cfg)
+    tctx.phase_playbook = ""
+    tctx.knowledge = ""
+    tctx.verify_context = ""
     live_log(app_dir, key, "orchestrator", "phase_completed",
              "conversational phase '%s' complete (%s)" % (key, end_reason))
     evlib.emit_event(app_dir, "phase_completed", project=app, phase=key,
@@ -6303,6 +6308,10 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # V2 routing: everything below (roster, coordinator, build lanes, every
     # agent turn) sees this phase's model overrides through the scoped copy.
     cfg = _apply_phase_routing(cfg, key)
+    # Band-B per-phase state rides this view over the ROUTED copy —
+    # constructed any earlier it would write phase state onto the
+    # original cfg and leak it across phases.
+    tctx = tcxlib.TurnContext(cfg)
     # A phase that writes files is a "build" phase, regardless of its name — this
     # is what lets non-app workflows (e.g. productionize) have their own build.
     is_build = bool(phasedef.get("writes", False)) if hasattr(phasedef, "get") \
@@ -6329,7 +6338,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # for building) so a single hung turn can't eat the whole budget. Cleared to
     # None when the workflow declares no budget (every non-sprint workflow).
     _bud = cfg.get("_budget")
-    cfg["_turn_timeout"] = cfg.get("_routed_turn_timeout") or \
+    tctx.turn_timeout = cfg.get("_routed_turn_timeout") or \
         (int(_bud.get("build_turn_timeout", 480)
              if (is_build or is_verify_repair)
              else _bud.get("chat_turn_timeout", 150)) if _bud else None)
@@ -6359,29 +6368,29 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     if _needs_vlabel:
         _vr = verifylib.load_verify_results(app_dir)
         _latest = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
-        cfg["_verify_context"] = (
+        tctx.verify_context = (
             "\n\n===== VERIFICATION RESULTS (structured, authoritative) =====\n"
             + verifylib.summarize_verify_results(_vr, _latest)
             + "\nThe final VERIFICATION label is derived by the orchestrator from this "
               "result, not chosen by you — explain it, don't override it.")
     else:
-        cfg["_verify_context"] = ""
+        tctx.verify_context = ""
 
     # Retrieve curated domain knowledge relevant to this phase and stash it so
     # build_context injects it into every turn this phase (the RAG "specialist").
     # Few-shot exemplar (fleet learning): a rated-good project's output for
     # THIS phase key, if one has been exported to knowledge/exemplars/.
-    cfg["_phase_exemplar"] = _load_phase_exemplar(key)
-    cfg["_phase_playbook"] = phaseruleslib.render_phase_playbook(
+    tctx.phase_exemplar = _load_phase_exemplar(key)
+    tctx.phase_playbook = phaseruleslib.render_phase_playbook(
         HERE, cfg.get("_workflow_target", "app"), key)
     if cfg["_phase_playbook"]:
         emit("Injected phase playbook into phase '%s'." % key)
-    cfg["_knowledge"] = ""
+    tctx.knowledge = ""
     if knowlib.should_inject(key):
         domain = knowlib.domain_for(cget(cfg, "knowledge.domain", ""),
                                     cfg.get("_workflow_target", "app"),
                                     original_prompt, phasedef.purpose if hasattr(phasedef, "purpose") else _purpose)
-        cfg["_knowledge"] = knowlib.retrieve(
+        tctx.knowledge = knowlib.retrieve(
             HERE, domain,
             "%s %s" % (_purpose, original_prompt),
             max_chars=int(cget(cfg, "knowledge.max_chars", 6000)),
@@ -6394,8 +6403,8 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # persistent build folder; otherwise no writes are allowed.
     allow_writes = (is_build or is_verify_repair) and \
         bool(cget(cfg, "runtime.build_code_changes_enabled", False))
-    cfg["_allow_writes"] = allow_writes
-    cfg["_build_dir"] = os.path.join(app_dir, "app_build") if allow_writes else None
+    tctx.allow_writes = allow_writes
+    tctx.build_dir = os.path.join(app_dir, "app_build") if allow_writes else None
     if allow_writes and cfg.get("_workflow_target", "app") == "app" \
             and bool(cget(cfg, "runtime.golden_scaffold_enabled", True)):
         _seed_golden_scaffold(cfg["_build_dir"])
@@ -6406,11 +6415,11 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # Stable per-app cwd for resumed claude sessions (sessions are keyed by cwd,
     # so the default ephemeral temp dir would orphan them each turn). Discussion
     # phases stay read-only regardless — acceptEdits is only granted in builds.
-    cfg["_session_cwd"] = None
+    tctx.session_cwd = None
     if not allow_writes and bool(cget(cfg, "runtime.claude_session_reuse", True)):
-        cfg["_session_cwd"] = os.path.join(app_dir, ".agent_cwd")
+        tctx.session_cwd = os.path.join(app_dir, ".agent_cwd")
     # Trim the planning-transcript payload for build turns (see build_context).
-    cfg["_prior_disc_cap"] = int(cget(
+    tctx.prior_disc_cap = int(cget(
         cfg, "runtime.build_max_prior_discussion_chars", 30000)) if allow_writes else None
     if allow_writes:
         os.makedirs(cfg["_build_dir"], exist_ok=True)
@@ -6428,21 +6437,21 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     _portfolio = cfg.get("_target_paths") or []
     if reads and len(_portfolio) > 0:
         # library_mining: a combined digest of the whole portfolio.
-        cfg["_target_digest"] = cfg.get("_target_digest") or build_portfolio_digest(_portfolio)
-        cfg["_read_dir"] = None
+        tctx.target_digest = tctx.target_digest or build_portfolio_digest(_portfolio)
+        tctx.read_dir = None
         emit("PORTFOLIO phase '%s': %d repos, %d-char digest."
              % (key, len(_portfolio), len(cfg["_target_digest"])))
     elif reads and cfg.get("_target_path"):
-        cfg["_target_digest"] = cfg.get("_target_digest") or build_target_digest(cfg["_target_path"])
+        tctx.target_digest = tctx.target_digest or build_target_digest(cfg["_target_path"])
         live = (not allow_writes
                 and bool(cget(cfg, "runtime.audit_live_read_cwd", False)))
-        cfg["_read_dir"] = cfg["_target_path"] if live else None
+        tctx.read_dir = cfg["_target_path"] if live else None
         emit("AUDIT phase '%s': read-only target %s (%d-char digest%s)."
              % (key, cfg["_target_path"], len(cfg["_target_digest"]),
                 "; live cwd" if live else ""))
     else:
-        cfg["_target_digest"] = ""
-        cfg["_read_dir"] = None
+        tctx.target_digest = ""
+        tctx.read_dir = None
 
     phase_dir = os.path.join(app_dir, folder)
     os.makedirs(phase_dir, exist_ok=True)
@@ -6643,15 +6652,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     state["current_round"] = 0
     state["next_agent"] = None
     save_state(app_dir, state)
-    cfg["_allow_writes"] = False
-    cfg["_build_dir"] = None
-    cfg["_session_cwd"] = None
-    cfg["_prior_disc_cap"] = None
-    cfg["_phase_playbook"] = ""
-    cfg["_knowledge"] = ""
-    cfg["_read_dir"] = None
-    cfg["_target_digest"] = ""
-    cfg["_verify_context"] = ""
+    tctx.end_phase()
     live_log(app_dir, key, "orchestrator", "phase_completed",
              "phase '%s' complete (%s)" % (key, marker))
     evlib.emit_event(app_dir, "phase_completed", project=app, phase=key,
@@ -7866,8 +7867,9 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
 
     # Audit target: the read-only pre-existing codebase this app analyzes.
     cfg["_target_path"] = wflib.read_target_path(app_dir, HERE)
-    cfg["_target_digest"] = ""
-    cfg["_read_dir"] = None
+    tctx = tcxlib.TurnContext(cfg)
+    tctx.target_digest = ""
+    tctx.read_dir = None
     # library_mining analyzes MANY repos at once (a whole portfolio).
     cfg["_target_paths"] = (wflib.read_target_paths(app_dir, HERE)
                             if workflow.target == "library_mining" else [])
@@ -8028,7 +8030,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     cfg["_budget"] = budget
     cfg["_deadline"] = None
     cfg["_phase_deadline"] = None
-    cfg["_turn_timeout"] = None
+    tctx.turn_timeout = None
     plan_deadline = build_deadline = None
     build_idx = None
     if budget:

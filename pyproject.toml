@@ -33,7 +33,7 @@ py-modules = [
     "localmodels", "miniyaml", "mistakes", "modelrouting", "portfolio",
     "postmortem", "procutil",
     "resilience", "roles", "uicrawl", "urlfetch", "visualqa", "seed_demo",
-    "simulate_stream", "swiftscaffold",
+    "simulate_stream", "swiftscaffold", "turncontext",
 ]
 
 # ---------------------------------------------------------------------------
