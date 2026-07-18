@@ -47,6 +47,26 @@ class NoOutputTimeout(subprocess.TimeoutExpired):
     """
 
 
+# Env var names (and name fragments) whose VALUES are secrets no spawned
+# child — an `npm install` postinstall (verify.py) or a delegated engine run
+# (sessions.py) — has any business inheriting. ONE source so the two scrub
+# sites can never drift apart.
+_SECRET_ENV_FRAGMENTS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD",
+                         "CREDENTIAL", "PRIVATE_KEY", "SESSION")
+_SECRET_ENV_PREFIXES = ("AWS_", "ANTHROPIC_", "OPENAI_", "GEMINI_", "GOOGLE_",
+                        "GITHUB_", "GH_", "NPM_", "SLACK_", "STRIPE_")
+
+
+def is_secret_env(name):
+    """True when an env var name looks secret-shaped (a provider prefix or a
+    credential fragment). Conservative by design: a false positive merely
+    drops a var from a child's env, a false negative leaks a credential."""
+    up = str(name).upper()
+    if any(up.startswith(p) for p in _SECRET_ENV_PREFIXES):
+        return True
+    return any(frag in up for frag in _SECRET_ENV_FRAGMENTS)
+
+
 # Process groups run_capture is currently executing. The orchestrator's
 # SIGTERM/SIGINT handler drains this via kill_live_groups() so stopping a run
 # also stops its in-flight agent CLIs — they run in their own sessions and

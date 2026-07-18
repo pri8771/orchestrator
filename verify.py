@@ -613,17 +613,10 @@ def _verify_http(build_dir, spec, timeout):
 # malicious/curious postinstall can't read our provider keys straight out of
 # the environment. (Reads of ~/.ssh etc. are a separate, documented residual
 # risk — see KNOWN_LIMITATIONS; this closes the cheap, high-value hole.)
-_SECRET_ENV_FRAGMENTS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD",
-                         "CREDENTIAL", "PRIVATE_KEY", "SESSION")
-_SECRET_ENV_PREFIXES = ("AWS_", "ANTHROPIC_", "OPENAI_", "GEMINI_", "GOOGLE_",
-                        "GITHUB_", "GH_", "NPM_", "SLACK_", "STRIPE_")
-
-
-def _is_secret_env(name):
-    up = name.upper()
-    if any(up.startswith(p) for p in _SECRET_ENV_PREFIXES):
-        return True
-    return any(frag in up for frag in _SECRET_ENV_FRAGMENTS)
+# The secret-env predicate now lives in procutil (single source shared with
+# sessions.py's delegated-run env scrub); kept here under its original name so
+# call sites and tests are unchanged.
+_is_secret_env = procutil.is_secret_env
 
 
 def _npm_env(cache_dir):

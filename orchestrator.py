@@ -45,6 +45,7 @@ import urllib.error
 import urllib.parse
 
 import artifacts as artifactslib
+import sessions as seslib
 import backfill as backfilllib
 import events as evlib
 import localmodels as lmlib
@@ -6455,10 +6456,10 @@ def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
     # completed phase (§13.3).
     try:
         _project, section = _session_coords(cfg)
+        def _warn(msg):
+            emit("ARTIFACT: WARN %s" % msg)
+        project_dir = os.path.join(cfg.get("root") or "", _project or "")
         if section and artifactslib.FENCE_TAG in (final_output or ""):
-            def _warn(msg):
-                emit("ARTIFACT: WARN %s" % msg)
-            project_dir = os.path.join(cfg.get("root") or "", _project)
             registry = artifactslib.load_registry(
                 HERE, on_error=lambda m: (
                     _warn(m),
@@ -6498,6 +6499,36 @@ def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
                                  phase=key, project=app)
                 emit("ARTIFACT: published '%s' (%s) to the project bus"
                      % (aid, meta.get("type", "?")))
+        # V3 4.4 reply edge: if THIS session was delegated with a
+        # reply_to, deliver an artifact-card reference back to the
+        # originating session's inbox — exactly once, driven by the
+        # DURABLE delegation ledger, not this run's publish list (a crash
+        # between publish and append re-delivers on resume, where the
+        # republish above returns no new ids). Non-delegated sessions have
+        # no delegation.json, so this is a pure no-op → golden transcripts
+        # are byte-unchanged.
+        if _project:
+            deleg = seslib.read_delegation(app_dir, on_error=_warn)
+            # Only 'failed' is terminal here — NOT 'replied': a delegated
+            # run can publish across multiple phase closes, and each new
+            # artifact must still be delivered. deliver_reply's per-artifact
+            # ledger makes redelivery of already-sent ones a no-op, so this
+            # re-runs safely every close.
+            if deleg and deleg.get("reply_to") and \
+                    deleg.get("status") != "failed":
+                sess = os.path.basename(app_dir)
+                for m in artifactslib.list_artifacts(project_dir,
+                                                     on_error=_warn):
+                    if (m.get("source") or {}).get("session") != sess:
+                        continue
+                    card = {"id": m.get("id"),
+                            "type": m.get("type", ""),
+                            "version": m.get("version", 1),
+                            "path": "%s/artifacts/%s"
+                                    % (_project, m.get("id"))}
+                    if seslib.deliver_reply(app_dir, card, on_error=_warn):
+                        emit("ARTIFACT: replied '%s' to %s"
+                             % (m.get("id"), deleg.get("reply_to")))
     except Exception as exc:  # never let publication fail the phase
         emit("ARTIFACT: publication skipped (%s)" % exc)
     return transcript, final_output
