@@ -94,6 +94,77 @@ class TestEmptyActionLint(unittest.TestCase):
         self.assertFalse(any(x["rule"] == "empty_action" for x in e))
 
 
+class TestDesignLintCommentStripping(unittest.TestCase):
+    """Code-token checks (inline_color/raw_font_size/empty_action) must match
+    REAL code, not a forbidden pattern appearing in a comment or string. A
+    `.font(.system(size:))` mentioned in a doc comment that documented AVOIDING
+    it hard-failed a clean build (steep, live)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _errs(self, src, name="V.swift"):
+        with open(os.path.join(self.d, name), "w", encoding="utf-8") as fh:
+            fh.write(src)
+        e, _w = designlint.scan(self.d, self.d)
+        return e
+
+    def test_raw_font_in_doc_comment_not_flagged(self):
+        # The exact live false positive.
+        src = ('/// Uses `.imageScale` rather than `.font(.system(size:))` so it\n'
+               '/// stays outside the design-lint gate.\n'
+               'struct V: View { var body: some View { Text("x") } }\n')
+        self.assertFalse(any(x["rule"] == "raw_font_size" for x in self._errs(src)))
+
+    def test_raw_font_in_real_code_still_flagged(self):
+        # No false negative: a genuine violation still fails.
+        src = 'Text("x").font(.system(size: 17))\n'
+        self.assertTrue(any(x["rule"] == "raw_font_size" for x in self._errs(src)))
+
+    def test_inline_color_in_line_comment_not_flagged(self):
+        self.assertFalse(any(x["rule"] == "inline_color"
+                             for x in self._errs('// avoid Color(red: 1, green: 0, blue: 0)\n')))
+
+    def test_inline_color_in_string_not_flagged(self):
+        self.assertFalse(any(x["rule"] == "inline_color"
+                             for x in self._errs('let hint = "do not use Color(red:)"\n')))
+
+    def test_inline_color_in_real_code_still_flagged(self):
+        self.assertTrue(any(x["rule"] == "inline_color"
+                            for x in self._errs('let c = Color(red: 1, green: 0, blue: 0)\n')))
+
+    def test_pattern_in_block_comment_across_lines_not_flagged(self):
+        src = ('/*\n'
+               ' Color(red: 1) and .font(.system(size: 12)) are both banned;\n'
+               ' this block explains why.\n'
+               '*/\n'
+               'struct V: View { var body: some View { Text("x") } }\n')
+        e = self._errs(src)
+        self.assertFalse(any(x["rule"] in ("inline_color", "raw_font_size") for x in e))
+
+    def test_empty_action_still_flags_real_button_after_string_strip(self):
+        # Stripping the label string leaves Button() { } — still a dead control.
+        _w = self._errs('Button("Save") { }\n')
+        # empty_action is a warning; scan() returns (errors, warnings)
+        with open(os.path.join(self.d, "W.swift"), "w") as fh:
+            fh.write('Button("Save") { }\n')
+        _e, warns = designlint.scan(self.d, self.d)
+        self.assertTrue(any(x["rule"] == "empty_action" for x in warns))
+
+    def test_empty_action_in_comment_not_flagged(self):
+        with open(os.path.join(self.d, "V.swift"), "w") as fh:
+            fh.write('// example: Button("x") { }\n')
+        _e, warns = designlint.scan(self.d, self.d)
+        self.assertFalse(any(x["rule"] == "empty_action" for x in warns))
+
+    def test_todo_in_comment_still_detected(self):
+        # todo_marker keeps the raw line — comments are its whole point.
+        with open(os.path.join(self.d, "V.swift"), "w") as fh:
+            fh.write('// TODO: wire this up\n')
+        _e, warns = designlint.scan(self.d, self.d)
+        self.assertTrue(any(x["rule"] == "todo_marker" for x in warns))
+
+
 class TestLaunchScreenLint(unittest.TestCase):
     """designlint's letterboxing check (M-004): an iOS app target with no
     launch-screen configuration anywhere renders in a legacy-size, letterboxed

@@ -100,6 +100,54 @@ def _is_design_system(path):
     return os.path.basename(path).lower().startswith("designsystem")
 
 
+def _code_portion(line, in_block):
+    """The line with Swift comments and string LITERALS blanked out, so the
+    code-token checks (inline_color / raw_font_size / empty_action) match REAL
+    code — not a forbidden pattern that merely appears in a doc comment or a
+    string. Observed live: `.font(.system(size:))` written inside a `///`
+    comment that documented AVOIDING it hard-failed a clean build. Handles
+    `//` line comments, `/* */` block comments (across lines via in_block), and
+    "..." strings with \\" escapes. Best-effort — triple-quoted strings and
+    string interpolation are rare for these tokens; a miss degrades toward the
+    pre-existing over-matching, never a crash. Returns (code, in_block_after).
+    Never strips a real violation: only comment and string bytes are removed,
+    and neither is ever executable code."""
+    out = []
+    i, n = 0, len(line)
+    in_str = False
+    while i < n:
+        two = line[i:i + 2]
+        if in_block:
+            if two == "*/":
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            c = line[i]
+            if c == "\\":       # skip the escaped character (e.g. \")
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if two == "//":         # line comment: the rest is not code
+            break
+        if two == "/*":
+            in_block = True
+            i += 2
+            continue
+        if line[i] == '"':
+            in_str = True
+            i += 1
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out), in_block
+
+
 def scan(build_dir, here):
     """Lint app_build. Returns (errors, warnings): lists of
     {rule, file, line, detail} with repo-relative paths. Never raises."""
@@ -120,14 +168,19 @@ def scan(build_dir, here):
         # Tests/previews may hardcode fixtures; only product source is held
         # to the token rules.
         test_file = "test" in rel.lower() or "preview" in rel.lower()
+        in_block = False   # /* */ comment state, carried across lines per file
         for i, line in enumerate(lines, 1):
+            # Code-token checks match the CODE portion only (comments + string
+            # literals stripped); todo_marker keeps the raw line because a TODO
+            # lives in a comment by definition.
+            code, in_block = _code_portion(line, in_block)
             if not ds_file and not test_file:
-                if _INLINE_COLOR.search(line):
+                if _INLINE_COLOR.search(code):
                     errors.append({"rule": "inline_color", "file": rel,
                                    "line": i,
                                    "detail": "hardcoded color — use a "
                                              "DesignSystem token"})
-                if _RAW_FONT.search(line):
+                if _RAW_FONT.search(code):
                     errors.append({"rule": "raw_font_size", "file": rel,
                                    "line": i,
                                    "detail": "raw font size — use the "
@@ -135,7 +188,7 @@ def scan(build_dir, here):
             if _TODO.search(line):
                 warnings.append({"rule": "todo_marker", "file": rel,
                                  "line": i, "detail": line.strip()[:100]})
-            if not test_file and _EMPTY_ACTION.search(line):
+            if not test_file and _EMPTY_ACTION.search(code):
                 warnings.append({"rule": "empty_action", "file": rel,
                                  "line": i,
                                  "detail": "control with an empty action — "
