@@ -322,7 +322,7 @@ class TestFallbackEventsAndCounts(unittest.TestCase):
         orch._call_agent_once = once
 
     def test_local_rescue_emits_events_and_bumps_count(self):
-        def once(cfg, app, phase, rnd, agent, prompt):
+        def once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             if str(agent).startswith("local:"):
                 return "rescued answer"
             raise orch.AgentError("Claude unavailable — provider banner")
@@ -342,7 +342,7 @@ class TestFallbackEventsAndCounts(unittest.TestCase):
         self.assertEqual(st["fallback_counts"], {"claude": 1})
 
     def test_sibling_rescue_emits_events_and_bumps_count(self):
-        def once(cfg, app, phase, rnd, agent, prompt):
+        def once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             if cfg.get("_claude_model_override") == "haiku":
                 return "sibling answer"
             raise orch.AgentError("timed out")
@@ -359,7 +359,7 @@ class TestFallbackEventsAndCounts(unittest.TestCase):
         self.assertEqual(st["fallback_counts"], {"claude": 1})
 
     def test_exhausted_ladder_emits_events_and_no_count(self):
-        def once(cfg, app, phase, rnd, agent, prompt):
+        def once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             raise orch.AgentError("everything is down")
 
         self._wire(["local:tiny:1b"], once)
@@ -372,7 +372,7 @@ class TestFallbackEventsAndCounts(unittest.TestCase):
         self.assertEqual(st.get("fallback_counts", {}), {})
 
     def test_not_pulled_step_emits_skipped(self):
-        def once(cfg, app, phase, rnd, agent, prompt):
+        def once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             raise orch.AgentError("down")
 
         self._wire(["local:not-pulled:7b"], once)
@@ -383,7 +383,7 @@ class TestFallbackEventsAndCounts(unittest.TestCase):
         self.assertEqual(statuses, ["skipped", "exhausted"])
 
     def test_counts_accumulate_across_rescues(self):
-        def once(cfg, app, phase, rnd, agent, prompt):
+        def once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             if str(agent).startswith("local:"):
                 return "ok"
             raise orch.AgentError("down")

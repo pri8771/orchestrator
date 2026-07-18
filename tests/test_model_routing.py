@@ -345,7 +345,7 @@ class TestCallAgentFallback(unittest.TestCase):
     def test_cloud_failure_rescued_by_local(self):
         calls = []
 
-        def fake_once(cfg, app, phase, rnd, agent, prompt):
+        def fake_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             calls.append(agent)
             if agent == "codex":
                 raise orch.AgentError("codex timed out")
@@ -358,7 +358,7 @@ class TestCallAgentFallback(unittest.TestCase):
         self.assertTrue(out.endswith("local answer"))
 
     def test_disabled_fallback_reraises(self):
-        def fake_once(cfg, app, phase, rnd, agent, prompt):
+        def fake_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             raise orch.AgentError("down")
         orch._call_agent_once = fake_once
         with self.assertRaises(orch.AgentError):
@@ -367,7 +367,7 @@ class TestCallAgentFallback(unittest.TestCase):
     def test_local_agent_never_falls_back(self):
         calls = []
 
-        def fake_once(cfg, app, phase, rnd, agent, prompt):
+        def fake_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             calls.append(agent)
             raise orch.AgentError("down")
         orch._call_agent_once = fake_once
@@ -376,7 +376,7 @@ class TestCallAgentFallback(unittest.TestCase):
         self.assertEqual(calls, ["local:qwen2.5-coder:7b"])
 
     def test_local_also_failing_raises_original_error(self):
-        def fake_once(cfg, app, phase, rnd, agent, prompt):
+        def fake_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             raise orch.AgentError("cloud broke" if agent == "claude" else "local broke")
         orch._call_agent_once = fake_once
         with self.assertRaises(orch.AgentError) as ctx:
@@ -500,7 +500,7 @@ class TestCallAgentChain(unittest.TestCase):
     def test_sibling_model_rescues_codex(self):
         seen = []
 
-        def fake_once(cfg, app, phase, rnd, agent, prompt):
+        def fake_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             model = (cfg.get("_resolved") or {}).get("codex_model")
             seen.append((agent, model))
             if model == "gpt-5.4":
@@ -516,7 +516,7 @@ class TestCallAgentChain(unittest.TestCase):
     def test_chain_walks_to_local_then_net(self):
         seen = []
 
-        def fake_once(cfg, app, phase, rnd, agent, prompt):
+        def fake_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             seen.append(agent if agent.startswith("local:")
                         else (cfg.get("_claude_model_override") or "primary"))
             if agent == "local:qwen2.5-coder:7b":
@@ -531,7 +531,7 @@ class TestCallAgentChain(unittest.TestCase):
         self.assertIn("answered on this Mac", out)
 
     def test_all_steps_fail_raises_original(self):
-        def fake_once(cfg, app, phase, rnd, agent, prompt):
+        def fake_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             raise orch.AgentError("primary broke" if agent == "codex" else "step broke")
         orch._call_agent_once = fake_once
         with self.assertRaises(orch.AgentError) as ctx:

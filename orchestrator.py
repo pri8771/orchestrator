@@ -67,10 +67,12 @@ import uicrawl as uicrawllib
 import designlint as dlintlib
 import fleetlearn as fllib
 import evalharness as evallib
+import traces as traceslib
 import turncontext as tcxlib
 import procutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+traceslib.on_warn = lambda msg: emit("WARN " + msg)
 LOG_DIR = os.path.join(HERE, "logs")
 # Per-app locks. Default is engine-local, but main() re-points this at
 # <root>/.orch-locks once the workspace root is known: two engine copies (a
@@ -987,6 +989,11 @@ def run_local(cfg, prompt, timeout, model=None):
                                      method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
+        # 2.8: the ONLY runner with real token counts. The 4-tuple contract
+        # is frozen, so they ride the traces side-channel.
+        traceslib.set_last_usage({
+            "prompt_tokens": body.get("prompt_eval_count"),
+            "completion_tokens": body.get("eval_count")})
         return (body.get("response", ""), "", 0, cmd)
     except urllib.error.HTTPError as exc:
         return ("", "ollama HTTP %s: %s" % (exc.code, exc.reason), 1, cmd)
@@ -1262,7 +1269,8 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                          % (DISPLAY[agent], primary, str(exc)[:140], local_tag))
                     _fallback_event(to_model, "attempt", exc)
                     text = _call_agent_once(fcfg, app, phase, rnd,
-                                            "local:%s" % local_tag, prompt)
+                                            "local:%s" % local_tag, prompt,
+                                            parent_call=getattr(exc, "trace_id", None))
                     _fallback_event(to_model, "rescued", exc)
                     _bump_fallback_count(cfg, agent)
                     _produced(to_model, "fallback")
@@ -1274,7 +1282,8 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
                      % (DISPLAY[agent], primary, str(exc)[:140], step))
                 _fallback_event(to_model, "attempt", exc)
                 _patch_agent_model(fcfg, agent, step)
-                text = _call_agent_once(fcfg, app, phase, rnd, agent, prompt)
+                text = _call_agent_once(fcfg, app, phase, rnd, agent, prompt,
+                                        parent_call=getattr(exc, "trace_id", None))
                 _fallback_event(to_model, "rescued", exc)
                 _bump_fallback_count(cfg, agent)
                 _produced(to_model, "fallback")
@@ -1343,7 +1352,16 @@ def _pace_provider(cfg, agent):
         time.sleep(min(wait, 1.0))
 
 
-def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
+def _err_with_trace(err, trace):
+    """Attach the failed call's trace id so the fallback ladder can chain
+    rescue attempts to the primary (parent_call) — an explicit attribute,
+    never a cfg key (2.3 gate)."""
+    if trace:
+        err.trace_id = traceslib.trace_id(trace)
+    return err
+
+
+def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
     """Invoke an agent CLI, log everything, and return its text response.
 
     Enforces the mandatory trailing signature and refuses to fabricate output
@@ -1424,6 +1442,13 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
         evlib.emit_event(_ev_dir, "turn_started", project=app, phase=phase,
                          round=rnd, agent=str(agent), model_requested=_model_req)
         t0 = time.time()
+        # 2.8: crash-valid trace — a 'started' record exists on disk before
+        # the runner runs; every arm below finalizes it exactly once.
+        traceslib.pop_last_usage()   # a stale local count must never attach
+        _trace = traceslib.write_started(
+            _ev_dir, app=app, phase=phase, round=rnd, agent=str(agent),
+            producer=str(agent), model=_model_req, rendered_prompt=prompt,
+            parent_call=parent_call)
 
         # Slow-turn heartbeat: long build/integrate turns (10+ min) are legitimate,
         # but silence is indistinguishable from a hang without this — humans kill
@@ -1441,30 +1466,41 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
             # Enabled agent whose CLI binary is missing/uninstalled: skip it like
             # any other unavailable agent instead of crashing the whole run.
             write_call_log(app, phase, rnd, agent, "(missing CLI)", "", str(exc), 127)
+            traceslib.finalize(_trace, stderr=str(exc), exit=127,
+                               duration_s=time.time() - t0, status="error")
             reslib.record_failure(health, "missing_cli", time.time(), str(exc))
             evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                              round=rnd, agent=str(agent), ok=False, exit=127,
                              model_requested=_model_req, reason="missing_cli",
                              dur=round(time.time() - t0, 1))
-            raise AgentError("%s CLI not found on PATH — is it installed? (%s)"
-                             % (DISPLAY[agent], exc))
+            raise _err_with_trace(
+                AgentError("%s CLI not found on PATH — is it installed? (%s)"
+                           % (DISPLAY[agent], exc)), _trace)
         except procutil.NoOutputTimeout as exc:
             write_call_log(app, phase, rnd, agent, "(no-output timeout)", "", "no output", 124)
+            traceslib.finalize(_trace, stderr="no output", exit=124,
+                               duration_s=time.time() - t0, status="error")
             reslib.record_failure(health, "timeout", time.time(), "no output")
             evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                              round=rnd, agent=str(agent), ok=False, exit=124,
                              model_requested=_model_req, reason="no_output_timeout",
                              dur=round(time.time() - t0, 1))
-            raise AgentError("%s produced no output for %ss — killed as a suspected hang."
-                             % (DISPLAY[agent], exc.timeout))
+            raise _err_with_trace(
+                AgentError("%s produced no output for %ss — killed as a "
+                           "suspected hang." % (DISPLAY[agent], exc.timeout)),
+                _trace)
         except subprocess.TimeoutExpired:
             write_call_log(app, phase, rnd, agent, "(timeout)", "", "timeout", 124)
+            traceslib.finalize(_trace, stderr="timeout", exit=124,
+                               duration_s=time.time() - t0, status="error")
             reslib.record_failure(health, "timeout", time.time(), "timed out")
             evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                              round=rnd, agent=str(agent), ok=False, exit=124,
                              model_requested=_model_req, reason="timeout",
                              dur=round(time.time() - t0, 1))
-            raise AgentError("%s timed out after %ds" % (DISPLAY[agent], timeout or 0))
+            raise _err_with_trace(
+                AgentError("%s timed out after %ds"
+                           % (DISPLAY[agent], timeout or 0)), _trace)
         except AgentError as exc:
             # A runner-level refusal (e.g. run_gemini's unavailable memo) —
             # still exactly one turn_completed per turn_started.
@@ -1472,12 +1508,17 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
                              round=rnd, agent=str(agent), ok=False,
                              model_requested=_model_req, reason="agent_error",
                              detail=str(exc), dur=round(time.time() - t0, 1))
+            traceslib.finalize(_trace, stderr=str(exc),
+                               duration_s=time.time() - t0, status="error")
+            if _trace and not getattr(exc, "trace_id", None):
+                exc.trace_id = traceslib.trace_id(_trace)
             raise
         # V2 spec §17: single redaction chokepoint. Every sink (call log, transcript,
         # live log, docs) is built from call_agent's return value, so scrubbing here
         # means a secret an agent echoed never reaches any persisted artifact.
         out = schemalib.redact_secrets(out)
         err = schemalib.redact_secrets(err)
+        _tokens = traceslib.pop_last_usage()
         write_call_log(app, phase, rnd, agent, command, out, err, code)
         text = (out or "").strip()
         if not text:
@@ -1488,8 +1529,12 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
                              round=rnd, agent=str(agent), ok=False, exit=code,
                              model_requested=_model_req, reason="empty_output",
                              output_len=0, dur=round(time.time() - t0, 1))
-            raise AgentError("%s returned empty output — refusing to fabricate a "
-                             "response. See logs/." % DISPLAY[agent])
+            traceslib.finalize(_trace, response=out, stderr=err, exit=code,
+                               tokens=_tokens, duration_s=time.time() - t0,
+                               status="error")
+            raise _err_with_trace(
+                AgentError("%s returned empty output — refusing to fabricate "
+                           "a response. See logs/." % DISPLAY[agent]), _trace)
         banner = _provider_banner(text)
         if banner:
             emit("%s returned a provider limit/auth banner, not content (%r) — "
@@ -1499,9 +1544,15 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt):
                              round=rnd, agent=str(agent), ok=False, exit=code,
                              model_requested=_model_req, reason="provider_banner",
                              detail=banner, dur=round(time.time() - t0, 1))
-            raise AgentError("%s unavailable — provider banner: %s"
-                             % (DISPLAY[agent], banner))
+            traceslib.finalize(_trace, response=out, stderr=err, exit=code,
+                               tokens=_tokens, duration_s=time.time() - t0,
+                               status="error")
+            raise _err_with_trace(
+                AgentError("%s unavailable — provider banner: %s"
+                           % (DISPLAY[agent], banner)), _trace)
         dur = time.time() - t0
+        traceslib.finalize(_trace, response=out, stderr=err, exit=code,
+                           tokens=_tokens, duration_s=dur, status="ok")
         emit("%s responded, %s characters (%.1fs)" % (DISPLAY[agent], f"{len(text):,}", dur))
         evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                          round=rnd, agent=str(agent), ok=True, exit=code,
