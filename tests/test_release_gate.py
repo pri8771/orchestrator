@@ -105,13 +105,17 @@ class TestQueueReleaseGateRepair(_GateBase):
         self.assertEqual(state["release_gate_repairs"], 2)  # not incremented
         self.assertFalse(os.path.exists(os.path.join(self.dir, ".repair_pending")))
 
-    def test_second_repair_still_clears_build_phases_when_prompt_unchanged(self):
-        # Regression: a PRIOR repair already appended "## Change requested",
-        # so the append guard skips it this time — the prompt hash never
-        # changes. Without explicitly clearing completed_phases here, the
-        # next pass would skip build_coordination/final_review (already
-        # marked complete from the failed attempt) and burn the whole repair
-        # budget doing nothing, per the exact failure seen live on longwave.
+    def test_second_repair_clears_build_phases_and_refreshes_the_ask(self):
+        # A PRIOR repair already appended "## Change requested". This pass must
+        # (a) clear completed_phases from the build phase on, or the next pass
+        # skips build_coordination/final_review (marked done from the failed
+        # attempt) and burns the budget doing nothing (seen live on longwave);
+        # and (b) REPLACE the stale ask with THIS failure — a repair routinely
+        # surfaces a different gate than the one that triggered it (fixing
+        # UI-crawl reveals a design-lint letterbox error), and leaving the old
+        # ask told the agents to fix an already-addressed problem (seen live
+        # on steep: a launch-screen error never converged behind a stale
+        # UI-crawl ask).
         with open(os.path.join(self.dir, "initial_prompt",
                                "initial_prompt.md"), "a") as fh:
             fh.write("\n\n## Change requested\nAn earlier, unrelated ask.\n")
@@ -127,7 +131,8 @@ class TestQueueReleaseGateRepair(_GateBase):
                               "final_review": "VERIFICATION: FAILED"},
             "consensus_status": {"build_coordination": True, "final_review": True},
         }
-        orch._queue_release_gate_repair("x", self.dir, state, "compile failed",
+        orch._queue_release_gate_repair("x", self.dir, state,
+                                        "missing_launch_screen at Info.plist",
                                         phases=phases, build_phase_key="build_coordination")
         self.assertEqual(state["completed_phases"], ["iterate_scope"])
         self.assertNotIn("build_coordination", state["phase_outputs"])
@@ -135,11 +140,28 @@ class TestQueueReleaseGateRepair(_GateBase):
         self.assertNotIn("build_coordination", state["consensus_status"])
         # iterate_scope (before the build phase) is untouched — no need to redo it.
         self.assertEqual(state["phase_outputs"]["iterate_scope"], "scope")
-        # the append guard still holds — the prompt text itself is unchanged
         with open(os.path.join(self.dir, "initial_prompt",
                                "initial_prompt.md")) as fh:
             text = fh.read()
+        # Still exactly one block (replaced, not stacked), now naming THIS
+        # failure — the stale ask is gone so the agents fix the right thing.
         self.assertEqual(text.count("## Change requested"), 1)
+        self.assertIn("missing_launch_screen", text)
+        self.assertNotIn("An earlier, unrelated ask", text)
+
+    def test_repair_preserves_original_prompt_body(self):
+        # Replacing the ask must not eat the user's actual prompt.
+        prompt_p = os.path.join(self.dir, "initial_prompt", "initial_prompt.md")
+        with open(prompt_p) as fh:
+            body = fh.read()
+        orch._queue_release_gate_repair("x", self.dir, {}, "first failure")
+        orch._queue_release_gate_repair("x", self.dir, {}, "second failure")
+        with open(prompt_p) as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith(body.rstrip("\n")))
+        self.assertEqual(text.count("## Change requested"), 1)
+        self.assertIn("second failure", text)
+        self.assertNotIn("first failure", text)
 
 
 class TestManifestTranscriptRecovery(_GateBase):

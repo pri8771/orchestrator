@@ -8054,9 +8054,21 @@ def _queue_release_gate_repair(app, app_dir, state, reason, phases=None,
         try:
             with open(prompt_p, encoding="utf-8") as fh:
                 existing = fh.read()
-            if "## Change requested" not in existing:
-                with open(prompt_p, "a", encoding="utf-8") as fh:
-                    fh.write("\n\n## Change requested\n%s\n" % req)
+            # REPLACE any prior "## Change requested" block with the CURRENT
+            # failure, don't just skip when one exists: a repair pass routinely
+            # surfaces a DIFFERENT gate than the one that triggered it (fixing
+            # UI-crawl reveals a design-lint letterbox error), and leaving the
+            # stale block told the agents to fix the wrong, already-addressed
+            # problem — so the new failure never converged. The block is always
+            # the tail (this is the only writer), so truncate from its marker
+            # and re-append the fresh reason. Changing the text also moves the
+            # prompt hash, which is what forces the build phases to actually
+            # re-run rather than resume as already-done.
+            marker = "\n\n## Change requested\n"
+            idx = existing.find(marker)
+            base = existing[:idx] if idx != -1 else existing.rstrip("\n")
+            with open(prompt_p, "w", encoding="utf-8") as fh:
+                fh.write(base + "%s%s\n" % (marker, req))
             with open(os.path.join(app_dir, "workflow.txt"), "w",
                       encoding="utf-8") as fh:
                 fh.write("iterate\n")
