@@ -6488,10 +6488,22 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # rotate every phase so no agent is ever stuck to one voice.
     speaking = ordered_agents(active)
     phase_roles = phasedef.get("roles") if hasattr(phasedef, "get") else None
+    _guests = []
+    if phase_roles:
+        # V3 3.5: "section:id" refs resolve to guest cast members from
+        # that section's roles.json; dangling refs banner and DROP —
+        # never a fabricated stand-in. Resolved once per phase, before
+        # assign_personas, so resumed runs reproduce the identical cast.
+        phase_roles, _guests = roleslib.resolve_phase_role_refs(
+            phase_roles, os.path.join(HERE, "sections"),
+            on_missing=lambda ref, why: evlib.emit_event(
+                _event_app_dir(cfg, app), "config_fallback",
+                ref=ref, phase=key, error=why))
     personas = roleslib.assign_personas(
         phase_index, speaking, cfg.get("_personalities", roleslib.DEFAULT_PERSONALITIES),
-        cfg.get("_roles", roleslib.DEFAULT_ROLES), phase_roles,
-        cfg.get("_agent_role_overrides", {}), cfg.get("_role_by_id"))
+        list(cfg.get("_roles", roleslib.DEFAULT_ROLES)) + _guests, phase_roles,
+        cfg.get("_agent_role_overrides", {}),
+        None if _guests else cfg.get("_role_by_id"))
     if personas:
         emit("Personas — " + "; ".join(
             "%s: %s" % (DISPLAY[a], roleslib.persona_label(personas[a])) for a in speaking))

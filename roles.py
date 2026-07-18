@@ -152,6 +152,69 @@ def load_roles_layered(orch_dir=None, section_dir=None, on_fallback=None):
             _copy.deepcopy(r) if r is not None else base_r)
 
 
+def resolve_phase_role_refs(phase_role_ids, sections_root, on_missing=None):
+    """Cross-section cast references (V3 board 3.5): a phase's roles list
+    may name "section:id", resolved against THAT section's own roles.json
+    — its roles pool first, then its personalities pool (a personality hit
+    joins as a role-shaped guest {id, name, focus:=style}; deterministic
+    lookup order). Returns (kept_ids, guest_dicts): kept_ids is the input
+    minus dangling refs (plain ids pass through byte-identically); guests
+    carry the FULL ref as their id so a local id can never collide.
+
+    A dangling ref — unknown section, no roles.json, or unknown id —
+    calls on_missing(ref, reason) exactly once and is DROPPED: the run
+    continues, and no placeholder cast member is ever invented (the
+    fail-open silent drop this milestone exists to kill). Guests are
+    deepcopied; resolving one never mutates the source section's pools."""
+    if not phase_role_ids:
+        return phase_role_ids, []
+    kept, guests = [], []
+    for rid in phase_role_ids:
+        if not isinstance(rid, str) or ":" not in rid:
+            kept.append(rid)
+            continue
+        section, _sep, target = rid.partition(":")
+        path = os.path.join(sections_root, section, "roles.json")
+        reason = None
+        if not section or not target:
+            reason = "malformed reference"
+        elif not os.path.isdir(os.path.join(sections_root, section)):
+            reason = "unknown section %r" % section
+        elif not os.path.exists(path):
+            reason = "section %r has no roles.json" % section
+        if reason is None:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if not isinstance(data, dict):
+                    raise ValueError("roles.json must be a JSON object")
+            except (OSError, ValueError) as exc:
+                reason = "unreadable roles.json (%s)" % exc
+        if reason is None:
+            r = data.get("roles")
+            p = data.get("personalities")
+            hit = None
+            if _valid_pool(r, ("id", "name", "focus")):
+                hit = next((e for e in r if e.get("id") == target), None)
+            if hit is None and _valid_pool(p, ("id", "name", "style")):
+                pe = next((e for e in p if e.get("id") == target), None)
+                if pe is not None:
+                    hit = {"id": target, "name": pe["name"],
+                           "focus": pe.get("style", "")}
+            if hit is None:
+                reason = "no role or personality %r in section %r" \
+                    % (target, section)
+            else:
+                guest = _copy.deepcopy(hit)
+                guest["id"] = rid
+                guests.append(guest)
+                kept.append(rid)
+                continue
+        if on_missing is not None:
+            on_missing(rid, reason)
+    return kept, guests
+
+
 def load_agent_role_overrides_layered(orch_dir=None, section_dir=None):
     """agent_role_overrides with the section file winning when IT is the
     source of any override — per-agent precedence, section over engine."""
