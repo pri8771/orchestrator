@@ -48,9 +48,11 @@ class _Base(unittest.TestCase):
                 "source": {"section": section, "session": "chat-1",
                            "phase": "brainstorm"}}
         meta.update(fields)
+        # consensus=True so an auto_final_on_consensus type lands 'final'
+        # and is admissible to route (4.8).
         return artlib.publish(project_dir, body, meta, self.registry,
                               on_error=self.errors.append,
-                              supersedes=supersedes)
+                              supersedes=supersedes, consensus=True)
 
     def _target(self, sid="gloam/research/chat-2"):
         return orch.create_session(self.root, sid, "target prompt")

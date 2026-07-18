@@ -6547,7 +6547,8 @@ def _run_forced_vote(cfg, app, app_dir, phasedef, original_prompt,
 # REPLACES final_output; the label APPENDS).
 def _hook_sprint_verify_reserve(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # Sprint: the build slice is now spent, but the run still has its verify
     # reserve. Hand the verify/repair pass the hard RUN deadline so compile +
     # repair can use that reserved tail.
@@ -6558,7 +6559,8 @@ def _hook_sprint_verify_reserve(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_verify_repair(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # After an enabled build, actually compile it and run bounded repair
     # iterations on failure (the reliability gate). Runs while writes are still
     # allowed so repairs can edit files; before the signing fixup so device
@@ -6575,7 +6577,8 @@ def _hook_verify_repair(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_ios_signing(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # Deterministic safety net: after an enabled build, guarantee any generated
     # Xcode project is signable on a real device — regardless of what the build
     # agent wrote into the pbxproj.
@@ -6599,7 +6602,8 @@ def _hook_ios_signing(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_secret_scan(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # V2 §17/§23: deterministic secret scan over the generated source, feeding
     # the secret_hardcoded launch-readiness gate. Runs after every build phase,
     # before docs render; each run replaces the previous secret_scan findings.
@@ -6617,7 +6621,8 @@ def _hook_secret_scan(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_record_contracts(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # V2 §19/§20: persist the machine contracts these phases emitted. Parsed from
     # the transcript + final output (last emission of an id/name wins, so the
     # coordinator's final revision beats any draft). Cycles are an error recorded
@@ -6633,7 +6638,8 @@ def _hook_record_contracts(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_flows_requirements_research(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # Flows/requirements contracts: not part of _record_phase_contracts (that
     # covers tasks.json/interfaces.json/decisions.json/phase_summaries.json)
     # since these feed the UI-crawl and adherence gates specifically.
@@ -6664,7 +6670,8 @@ def _hook_flows_requirements_research(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_library_mining(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # library_mining: write the extraction plan to a convenient report file.
     if cfg.get("_workflow_target") == "library_mining" and key == "extraction_candidates":
         rep_dir = os.path.join(app_dir, "report")
@@ -6705,7 +6712,8 @@ def _hook_library_mining(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_audit_report(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # Audit report phase: synthesize ALL findings (from every audit phase, using the
     # FULL untruncated phase_outputs — not the char-budgeted context) into a ranked
     # findings.json + AUDIT_REPORT.md, and make the rendered report this phase's Final
@@ -6735,7 +6743,8 @@ def _hook_audit_report(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_verification_label(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # Verification gate (§16): append the orchestrator-DERIVED VERIFICATION label to
     # a requires_verification phase's output, computed from the persisted structured
     # result — never trusting the agent's prose. verified|failed|unverified.
@@ -6752,7 +6761,8 @@ def _hook_verification_label(cfg, app, app_dir, phasedef, state, *,
 
 def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
-        is_build, is_verify_repair, allow_writes, _needs_vlabel):
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
     # V3 4.2: materialize ```artifact-json``` blocks from the phase's
     # Final Output into the project artifact store, emitting one
     # artifact_published event per landed artifact (ids+paths only,
@@ -6799,7 +6809,7 @@ def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
                               m.get("content_hash")))
             for aid in artifactslib.publish_from_output(
                     project_dir, final_output, src, registry,
-                    on_error=_warn, dedupe_against=seen):
+                    on_error=_warn, dedupe_against=seen, consensus=consensus):
                 meta = artifactslib.load_meta(project_dir, aid,
                                               on_error=_warn) or {}
                 evlib.emit_event(app_dir, "artifact_published",
@@ -7217,7 +7227,8 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             key=key, md_path=md_path, transcript=transcript,
             final_output=final_output, coord=coord, active=active,
             is_build=is_build, is_verify_repair=is_verify_repair,
-            allow_writes=allow_writes, _needs_vlabel=_needs_vlabel)
+            allow_writes=allow_writes, _needs_vlabel=_needs_vlabel,
+            consensus=consensus)
 
     # Final phase footer
     marker = "CONSENSUS: YES" if consensus else (
@@ -7962,6 +7973,29 @@ def _do_route_push(cfg, args):
         return 0
     emit("--route refused: %s" % res.get("reason", "unknown"))
     return 2
+
+
+def _do_finalize(cfg, args):
+    """CLI 'finalize' verb (V3 4.8): flip a pending_review/draft artifact to
+    'final', recording who did it in status_history. The thin pre-4.9 path
+    for the requires_human gate (--by-human). Same artifacts.finalize the
+    4.9 GUI Finalize button will drive."""
+    root = cfg["root"]
+    if not args.finalize_in:
+        emit("--finalize-artifact needs --finalize-in <project|session id>")
+        return 2
+    project = parse_session_id(args.finalize_in).split("/")[0]
+    project_dir = os.path.join(root, project)
+    registry = artifactslib.load_registry(HERE, on_error=emit)
+    meta = artifactslib.finalize(
+        project_dir, args.finalize_artifact, args.finalize_by, registry,
+        human=bool(args.by_human), on_error=emit)
+    if meta is None:
+        emit("--finalize refused")
+        return 2
+    print("FINALIZED: %s -> final (by %s)"
+          % (args.finalize_artifact, args.finalize_by))
+    return 0
 
 
 def migrate_layout(root, apply=False, out=print):
@@ -9800,6 +9834,18 @@ def main():
                          "the --route-artifact")
     ap.add_argument("--route-to", dest="route_to", metavar="SID",
                     help="target session id to route into (created if absent)")
+    ap.add_argument("--finalize-artifact", dest="finalize_artifact",
+                    metavar="ID",
+                    help="transition a pending_review/draft bus artifact to "
+                         "'final' (V3 4.8); needs --finalize-in")
+    ap.add_argument("--finalize-in", dest="finalize_in", metavar="SID",
+                    help="project or session id whose artifacts/ holds the "
+                         "--finalize-artifact")
+    ap.add_argument("--by", dest="finalize_by", metavar="NAME", default="cli",
+                    help="finalizer identity recorded in status_history")
+    ap.add_argument("--by-human", dest="by_human", action="store_true",
+                    help="mark the finalize as human-authored (required to "
+                         "finalize a requires_human type)")
     ap.add_argument("--doctor", action="store_true", help="print environment report and exit")
     ap.add_argument("--mistakes", action="store_true",
                     help="print the cross-run mistakes-ledger report (per-class/"
@@ -9988,6 +10034,9 @@ def main():
 
     if args.route_artifact:
         return _do_route_push(cfg, args)
+
+    if args.finalize_artifact:
+        return _do_finalize(cfg, args)
 
     if args.fork:
         rc, _forked = fork_session(cfg["root"], args.fork)

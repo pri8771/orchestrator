@@ -38,9 +38,11 @@ class _Base(unittest.TestCase):
             self.orch_dir, on_error=self.errors.append)
         self.assertEqual(self.errors, [])
 
-    def _publish(self, meta, body="the body\n"):
+    def _publish(self, meta, body="the body\n", consensus=True):
+        # consensus=True by default so an auto_final_on_consensus type
+        # (idea/…) lands 'final' and is admissible — the common fixture need.
         return artlib.publish(self.project, body, meta, self.registry,
-                              on_error=self.errors.append)
+                              on_error=self.errors.append, consensus=consensus)
 
     def _entries(self):
         root = artlib.artifacts_root(self.project)
@@ -99,7 +101,7 @@ class TestRegistry(_Base):
             {"types": []},
             {"types": {"idea": {"required": "title"}}},
             {"types": {"idea": {"required": ["title"],
-                                "default_status": "converged"}}},
+                                "max_depth": "not-an-int"}}},
             ["not", "an", "object"],
         ]
         path = os.path.join(self.orch_dir, "artifact_types.json")
@@ -188,7 +190,8 @@ class TestPublish(_Base):
         self.assertEqual(meta["lineage"], [])
         self.assertEqual(meta["content_hash"],
                          hashlib.sha256(body.encode("utf-8")).hexdigest())
-        self.assertEqual(meta["status"], "published")
+        self.assertEqual(meta["status"], "final")   # idea + consensus
+        self.assertEqual(meta["status_history"][0]["status"], "final")
         self.assertEqual(meta["source"]["session"], "chat-01")
         self.assertEqual(meta["keywords"], ["ui", "theme"])
         self.assertEqual(meta["doc_slots"], [])
@@ -241,7 +244,8 @@ class TestPublish(_Base):
         aid2 = self._publish({"type": "idea", "title": "c",
                               "status": "converged"})
         self.assertEqual(artlib.load_meta(self.project, aid2)["status"],
-                         "published", "publishers may not mint 4.3 statuses")
+                         "final", "a publisher-requested status is ignored; "
+                         "policy (auto+consensus) assigns final")
         self.assertEqual(len(self.errors), 1)
 
     def test_same_title_republish_mints_a_new_id(self):
@@ -1306,6 +1310,125 @@ class TestVerificationFindings(_Base):
             artlib.load_meta(self.project, aid)["content_hash"],
             "re-hash of the read body must match content_hash (4.3's "
             "convergence check depends on it)")
+
+
+# ---------------------------------------------------------------------------
+# V3 board 4.8: per-type finalization policy + admission control.
+# ---------------------------------------------------------------------------
+class TestFinalization(_Base):
+    def _status(self, aid):
+        return artlib.load_meta(self.project, aid)["status"]
+
+    def test_shipped_registry_matches_seed_types(self):
+        # The committed artifact_types.json must equal SEED_TYPES (HERE is
+        # the repo root) — real runs load the file, tests use temp seeds.
+        reg = artlib.load_registry(HERE, on_error=self.errors.append)
+        self.assertEqual(self.errors, [])
+        self.assertEqual(reg["types"], artlib.SEED_TYPES,
+                         "committed artifact_types.json drifted from SEED_TYPES")
+        for t, e in artlib.SEED_TYPES.items():
+            self.assertIn(e["finalization"], artlib.FINALIZATION_POLICIES, t)
+
+    def test_policy_matrix(self):
+        # auto_final_on_consensus: final only WITH consensus.
+        self.assertEqual(self._status(self._publish(
+            {"type": "idea", "title": "a"}, consensus=True)), "final")
+        self.assertEqual(self._status(self._publish(
+            {"type": "idea", "title": "b"}, consensus=False)),
+            "pending_review")
+        # requires_review_gate / requires_human: pending_review regardless.
+        self.assertEqual(self._status(self._publish(
+            {"type": "finding_report", "title": "f"}, consensus=True)),
+            "pending_review")
+        self.assertEqual(self._status(self._publish(
+            {"type": "spec_bundle", "title": "s"}, consensus=True)),
+            "pending_review")
+
+    def test_unknown_policy_falls_back_to_requires_human_loudly(self):
+        path = os.path.join(self.orch_dir, "artifact_types.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"schema_version": 1, "types": {"idea": {
+                "required": ["title", "body"],
+                "finalization": "bogus"}}}, fh)
+        reg = artlib.load_registry(self.orch_dir,
+                                   on_error=self.errors.append)
+        self.assertEqual(self.errors, [], "the file itself is not rejected")
+        errs = []
+        aid = artlib.publish(self.project, "b\n",
+                             {"type": "idea", "title": "x"}, reg,
+                             on_error=errs.append, consensus=True)
+        # requires_human → pending_review even WITH consensus; banner fired.
+        self.assertEqual(self._status(aid), "pending_review")
+        self.assertTrue(any("not one of" in e for e in errs))
+
+    def test_finalize_legal_and_history(self):
+        aid = self._publish({"type": "finding_report", "title": "f"},
+                            consensus=True)     # pending_review
+        self.assertEqual(self._status(aid), "pending_review")
+        meta = artlib.finalize(self.project, aid, "qa-gate", self.registry,
+                               at="2026-07-18T00:00:00+00:00",
+                               on_error=self.errors.append)
+        self.assertIsNotNone(meta, self.errors)
+        self.assertEqual(self._status(aid), "final")
+        hist = artlib.load_meta(self.project, aid)["status_history"]
+        self.assertEqual(hist[-1], {"status": "final",
+                                    "at": "2026-07-18T00:00:00+00:00",
+                                    "by": "qa-gate"})
+
+    def test_finalize_illegal_transitions_leave_meta_untouched(self):
+        aid = self._publish({"type": "idea", "title": "a"}, consensus=True)
+        self.assertEqual(self._status(aid), "final")
+        before = json.dumps(artlib.load_meta(self.project, aid),
+                            sort_keys=True)
+        # Re-finalize a final artifact → refused, untouched.
+        self.assertIsNone(artlib.finalize(self.project, aid, "x",
+                                          self.registry,
+                                          on_error=self.errors.append))
+        self.assertEqual(json.dumps(artlib.load_meta(self.project, aid),
+                                    sort_keys=True), before)
+        self.assertTrue(any("already final" in e for e in self.errors))
+        # A converged artifact → refused, never clobbered.
+        r = self._publish({"type": "idea", "title": "Stable"}, body="same\n")
+        conv = artlib.publish(self.project, "same\n",
+                              {"type": "idea", "title": "Stable"},
+                              self.registry, supersedes=r, consensus=True)
+        self.errors.clear()
+        self.assertIsNone(artlib.finalize(self.project, conv, "x",
+                                          self.registry,
+                                          on_error=self.errors.append))
+        self.assertEqual(self._status(conv), "converged")
+
+    def test_draft_can_be_finalized(self):
+        aid = self._publish({"type": "idea", "title": "d", "status": "draft"})
+        self.assertEqual(self._status(aid), "draft")
+        self.assertIsNotNone(artlib.finalize(self.project, aid, "x",
+                                             self.registry))
+        self.assertEqual(self._status(aid), "final")
+
+    def test_requires_human_needs_human_finalizer(self):
+        aid = self._publish({"type": "spec_bundle", "title": "s"},
+                            consensus=True)     # pending_review
+        self.assertIsNone(artlib.finalize(self.project, aid, "cli",
+                                          self.registry, human=False,
+                                          on_error=self.errors.append),
+                          "a requires_human type refuses a non-human")
+        self.assertTrue(any("requires a HUMAN" in e for e in self.errors))
+        self.assertEqual(self._status(aid), "pending_review")
+        self.assertIsNotNone(artlib.finalize(self.project, aid, "human:me",
+                                             self.registry, human=True))
+        self.assertEqual(self._status(aid), "final")
+
+    def test_pending_review_invisible_until_finalized(self):
+        # The gate REALLY gates the bus: a pending_review artifact is
+        # invisible to retrieve; finalize flips it.
+        aid = self._publish({"type": "finding_report", "title": "Cache gap",
+                             "keywords": ["caching"]},
+                            body="caching finding\n", consensus=True)
+        self.assertEqual(artlib.retrieve(self.project, "caching"), "",
+                         "pending_review is invisible to PULL")
+        artlib.finalize(self.project, aid, "qa-gate", self.registry)
+        self.assertIn("caching finding",
+                      artlib.retrieve(self.project, "caching"))
 
 
 if __name__ == "__main__":

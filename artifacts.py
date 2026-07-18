@@ -74,9 +74,22 @@ import unicodedata
 import schemas
 
 # The closed status vocabulary. "superseded" and "converged" are written
-# only by 4.3's lineage machinery; a publisher may set only the first two.
-STATUS = ("draft", "published", "superseded", "converged")
-_PUBLISHER_STATUS = ("draft", "published")
+# only by 4.3's lineage machinery. "published" is RETIRED (V3 4.8): it split
+# into the honest pair {pending_review, final} the bus admission gate reads.
+STATUS = ("draft", "pending_review", "final", "superseded", "converged")
+# The ONLY status a publisher (an agent's artifact-json block) may request is
+# an explicit "draft" hold; every other status is assigned by the type's
+# finalization policy (4.8), never by the publisher.
+_PUBLISHER_STATUS = ("draft",)
+
+# 4.8 per-type finalization policy (in the type registry). auto_final_on_
+# consensus finalizes an artifact published from a CONSENSUS: YES phase;
+# the other two publish 'pending_review' until an explicit finalize().
+FINALIZATION_POLICIES = ("auto_final_on_consensus", "requires_review_gate",
+                         "requires_human")
+# The SAFEST policy — nothing auto-flows. Missing/unknown finalization falls
+# here (never silently to auto): un-reviewed artifacts must not propagate.
+_SAFE_FINALIZATION = "requires_human"
 
 # The 4.2 publication fence. This module may import ONLY schemas, so
 # equality with sections.contract_fence("artifact") is pinned by a test
@@ -100,19 +113,19 @@ REGISTRY_BASENAME = "artifact_types.json"
 # would be broken by design — pinned by a consistency test).
 SEED_TYPES = {
     "idea": {"required": ["title", "body"],
-             "default_status": "published"},
+             "finalization": "auto_final_on_consensus"},
     "research_brief": {"required": ["title", "body", "sources"],
-                       "default_status": "published"},
+                       "finalization": "auto_final_on_consensus"},
     "opportunity_signal": {"required": ["title", "body", "evidence"],
-                           "default_status": "published"},
+                           "finalization": "auto_final_on_consensus"},
     "gap": {"required": ["title", "body", "impact"],
-            "default_status": "published"},
+            "finalization": "auto_final_on_consensus"},
     "reconcile": {"required": ["title", "body", "parents"],
-                  "default_status": "published"},
+                  "finalization": "auto_final_on_consensus"},
     "finding_report": {"required": ["title", "body"],
-                       "default_status": "published"},
+                       "finalization": "requires_review_gate"},
     "spec_bundle": {"required": ["title", "body"],
-                    "default_status": "published"},
+                    "finalization": "requires_human"},
 }
 
 
@@ -172,10 +185,10 @@ def _registry_problem(doc):
         if (not isinstance(required, list)
                 or any(not isinstance(f, str) for f in required)):
             return "type %r 'required' is not a list of strings" % (name,)
-        status = entry.get("default_status", "published")
-        if status not in _PUBLISHER_STATUS:
-            return ("type %r default_status %r is not one of %s"
-                    % (name, status, "/".join(_PUBLISHER_STATUS)))
+        # finalization is validated at READ time (_finalization_policy) with a
+        # per-type SAFE fallback, NOT here — an unknown value must not drop the
+        # user's whole edited registry to seeds (all-or-default), and a mistyped
+        # policy degrades to the SAFEST behavior, unlike a mistyped max_depth.
         cap = entry.get("max_depth", 0)
         if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
             # A mistyped cap silently ignored is a DISABLED loop guard —
@@ -209,6 +222,33 @@ def load_registry(orch_dir, on_error=None):
                  "seed types" % (problem,))
         return _seed_registry_doc()
     return doc
+
+
+# ---------------------------------------------------------------------------
+# 4.8 finalization policy (read-time, per-type, SAFE fallback).
+# ---------------------------------------------------------------------------
+def _finalization_policy(entry, on_error):
+    """A type entry's finalization policy. Absent -> the SAFEST policy,
+    silently (a structural omission in a legacy/user file). Present-but-
+    unknown -> the SAFEST policy WITH a banner (a typo the user must see;
+    fall back SAFE and LOUD, never to auto)."""
+    pol = entry.get("finalization") if isinstance(entry, dict) else None
+    if pol in FINALIZATION_POLICIES:
+        return pol
+    if pol is not None:
+        on_error("finalization policy %r is not one of %s — using the safest "
+                 "(%s)" % (pol, "/".join(FINALIZATION_POLICIES),
+                           _SAFE_FINALIZATION))
+    return _SAFE_FINALIZATION
+
+
+def _initial_status(policy, consensus):
+    """The status a fresh publish gets: auto_final_on_consensus is 'final'
+    ONLY on a consensus phase; every other policy publishes 'pending_review'
+    until an explicit finalize()."""
+    if policy == "auto_final_on_consensus":
+        return "final" if consensus else "pending_review"
+    return "pending_review"
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +444,7 @@ def is_routable(meta):
 
 
 def publish(project_dir, body_text, meta, registry, on_error=None,
-            supersedes=None):
+            supersedes=None, consensus=False):
     """Atomically publish one artifact; return its minted id, or None with
     the reason reported through on_error.
 
@@ -448,14 +488,19 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
     if not isinstance(title, str):
         title = "" if title is None else str(title)
 
-    status = meta.get("status")
-    default_status = entry.get("default_status", "published")
-    if status is None:
-        status = default_status
-    elif status not in _PUBLISHER_STATUS:
-        on_error("publish: status %r is not one of %s — using %r"
-                 % (status, "/".join(_PUBLISHER_STATUS), default_status))
-        status = default_status
+    # 4.8: status is assigned by the type's finalization POLICY (final vs
+    # pending_review), not by the publisher — the ONLY thing a block may
+    # request is an explicit "draft" hold.
+    policy = _finalization_policy(entry, on_error)
+    requested = meta.get("status")
+    if requested == "draft":
+        status = "draft"
+    else:
+        if requested is not None:
+            on_error("publish: status %r is not settable by a publisher — "
+                     "assigning by the %r finalization policy"
+                     % (requested, policy))
+        status = _initial_status(policy, bool(consensus))
 
     # §6.2 never silently discard: caller keys the schema doesn't own land
     # under "fields" verbatim (including smuggled engine-owned ones), and
@@ -615,6 +660,7 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
             try:
                 os.mkdir(tmp)
                 _fsync_write(os.path.join(tmp, "body.md"), body_bytes)
+                ts = _now_iso()
                 record = {
                     "schema_version": schemas.SCHEMA_VERSION,
                     "id": aid,
@@ -631,7 +677,11 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
                     "keywords": keywords,
                     "doc_slots": doc_slots,
                     "status": status,
-                    "ts": _now_iso(),
+                    # 4.8: WHO set each status, WHEN — provenance for the gate.
+                    "status_history": [{"status": status, "at": ts,
+                                        "by": source.get("session")
+                                        or "engine"}],
+                    "ts": ts,
                     "fields": extras,
                 }
                 _fsync_write(
@@ -690,7 +740,7 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
 
 
 def publish_from_output(project_dir, final_output, source, registry,
-                        on_error=None, dedupe_against=None):
+                        on_error=None, dedupe_against=None, consensus=False):
     """Extract every ```artifact-json``` block from a phase's Final
     Output and publish each — the V3 4.2 publication seam. Returns the
     list of published ids (possibly empty; no blocks publishes nothing).
@@ -737,7 +787,8 @@ def publish_from_output(project_dir, final_output, source, registry,
                          "close — skipped (crash-resume dedupe)" % (title,))
                 continue
         meta["source"] = src
-        aid = publish(project_dir, body, meta, registry, on_error=on_error)
+        aid = publish(project_dir, body, meta, registry, on_error=on_error,
+                      consensus=consensus)
         if aid is not None:
             published.append(aid)
     return published
@@ -1063,9 +1114,9 @@ def is_admissible(project_dir, meta, on_error=None, *, index=None):
     if not is_routable(meta):
         on_error("artifact %r is converged — not routable" % (aid,))
         return False
-    if meta.get("status") != "published":
-        on_error("artifact %r status is %r, not 'published' — not "
-                 "admissible" % (aid, meta.get("status")))
+    if meta.get("status") != "final":
+        on_error("artifact %r status is %r, not 'final' — not admissible "
+                 "(finalize it first)" % (aid, meta.get("status")))
         return False
     if is_stale(project_dir, meta, on_error=on_error, index=index):
         on_error("artifact %r is superseded — route the lineage head, "
@@ -1080,6 +1131,102 @@ def is_admissible(project_dir, meta, on_error=None, *, index=None):
                  "(tip is %r)" % (aid, root, tip.get("id")))
         return False
     return True
+
+
+def _rewrite_meta_atomic(project_dir, artifact_id, meta):
+    """Durably replace one artifact's meta.json in place: per-writer tmp
+    beside it, fsync, os.replace, fsync the dir. The tmp lives INSIDE
+    artifacts/<id>/ (not the store root), so publish's _sweep_orphans
+    (which reaps artifacts/.tmp-*) never touches it."""
+    adir = artifact_dir(project_dir, artifact_id)
+    path = os.path.join(adir, "meta.json")
+    tmp = "%s.%d.%x.tmp" % (path, os.getpid(), threading.get_ident())
+    data = json.dumps(meta, indent=2, sort_keys=True).encode("utf-8")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    dfd = os.open(adir, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def finalize(project_dir, artifact_id, by, registry, *, human=False,
+             at=None, on_error=None):
+    """Transition an artifact to 'final', appending a status_history entry.
+    Returns the updated meta, or None (refused, reported). Legal FROM-states
+    are 'pending_review' and 'draft'; 'final' (re-finalize), 'converged' (a
+    4.3 tombstone — never clobbered), and 'superseded' are refused loudly
+    with meta UNTOUCHED. A 'requires_human' type finalizes ONLY when
+    human=True (the review gate for a requires_review_gate type may be any
+    identity). ``at`` is caller-supplied for deterministic provenance."""
+    if on_error is None:
+        on_error = lambda _m: None
+    if not _valid_artifact_id(artifact_id):
+        on_error("finalize rejected: %s is not a valid artifact id"
+                 % (_short(artifact_id),))
+        return None
+    if not isinstance(by, str) or not by.strip():
+        on_error("finalize rejected: a finalizer identity ('by') is required")
+        return None
+    at = at if isinstance(at, str) and at else _now_iso()
+    root = artifacts_root(project_dir)
+    try:
+        guard_fd = os.open(os.path.join(root, ".publish.lock"),
+                           os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        on_error("finalize failed: no artifact store at %s (%s)" % (root, exc))
+        return None
+    try:
+        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        os.close(guard_fd)
+        on_error("finalize failed: cannot lock %s (%s)" % (root, exc))
+        return None
+    try:
+        meta = load_meta(project_dir, artifact_id, on_error=on_error)
+        if meta is None:
+            return None
+        cur = meta.get("status")
+        if cur == "converged":
+            on_error("finalize refused: %r is converged (a 4.3 tombstone) — "
+                     "never finalizable" % (artifact_id,))
+            return None
+        if cur == "final":
+            on_error("finalize refused: %r is already final" % (artifact_id,))
+            return None
+        if cur not in ("pending_review", "draft"):
+            on_error("finalize refused: %r has status %r — only pending_review "
+                     "or draft may be finalized" % (artifact_id, cur))
+            return None
+        types = registry.get("types") if isinstance(registry, dict) else None
+        entry = types.get(meta.get("type")) if isinstance(types, dict) else None
+        policy = _finalization_policy(entry or {}, on_error)
+        if policy == "requires_human" and not human:
+            on_error("finalize refused: type %r requires a HUMAN finalizer "
+                     "(--by-human)" % (meta.get("type"),))
+            return None
+        hist = meta.get("status_history")
+        hist = list(hist) if isinstance(hist, list) else []
+        hist.append({"status": "final", "at": at, "by": by})
+        new_meta = dict(meta)
+        new_meta["status"] = "final"
+        new_meta["status_history"] = hist
+        try:
+            _rewrite_meta_atomic(project_dir, artifact_id, new_meta)
+        except OSError as exc:
+            on_error("finalize failed writing %r meta (%s) — status unchanged"
+                     % (artifact_id, exc))
+            return None
+        return new_meta
+    finally:
+        try:
+            fcntl.flock(guard_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(guard_fd)
 
 
 def _state_path(session_dir):

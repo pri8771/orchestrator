@@ -36,9 +36,10 @@ class _Base(unittest.TestCase):
         if keywords is not None:
             meta["keywords"] = keywords
         meta.update(extra)
+        # consensus=True so an auto type lands 'final' and is retrievable (4.8).
         return artlib.publish(self.project, body, meta, self.registry,
                               on_error=self.errors.append,
-                              supersedes=supersedes)
+                              supersedes=supersedes, consensus=True)
 
     def _retrieve(self, query, **kw):
         kw.setdefault("on_error", self.errors.append)
@@ -111,7 +112,7 @@ class TestRetrieval(_Base):
                              "source": {"section": "ideas",
                                         "session": "chat-1",
                                         "phase": "brainstorm"}},
-                            self.registry, supersedes=v1)
+                            self.registry, supersedes=v1, consensus=True)
         out = self._retrieve("caching")
         self.assertNotIn("caching draft", out, "a draft is excluded")
         self.assertNotIn("caching v1 body", out,
@@ -208,7 +209,7 @@ class TestRetrieval(_Base):
             self.project, "caching child",
             {"type": "idea", "title": "Child", "keywords": ["caching"],
              "source": {"section": "ideas", "session": "c", "phase": "p"}},
-            self.registry, supersedes=r)
+            self.registry, supersedes=r, consensus=True)
         path = os.path.join(artlib.artifact_dir(self.project, child),
                             "meta.json")
         with open(path, encoding="utf-8") as fh:
