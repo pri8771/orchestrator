@@ -173,8 +173,28 @@ def aggregate_mistakes(root):
         names = sorted(os.listdir(root)) if root and os.path.isdir(root) else []
     except OSError:
         names = []
-    for name in names:
-        app_dir = os.path.join(root, name)
+    # Nested sessions (V3 3.0) live two levels under marker dirs; their
+    # ledgers count under the session id.
+    candidates = [(name, os.path.join(root, name)) for name in names]
+    for name in list(names):
+        pdir = os.path.join(root, name)
+        if not os.path.isdir(pdir):
+            continue
+        if not os.path.exists(os.path.join(pdir, ".orch-sections")):
+            continue
+        try:
+            for sec in sorted(os.listdir(pdir)):
+                sdir = os.path.join(pdir, sec)
+                if sec.startswith(".") or not os.path.isdir(sdir):
+                    continue
+                for chat in sorted(os.listdir(sdir)):
+                    if chat.startswith("."):
+                        continue
+                    candidates.append(("%s/%s/%s" % (name, sec, chat),
+                                       os.path.join(sdir, chat)))
+        except OSError:
+            continue
+    for name, app_dir in candidates:
         if not os.path.isdir(app_dir) or not os.path.exists(mistakes_path(app_dir)):
             continue
         per = {"total": 0, "by_class": {}, "by_phase": {}, "by_agent": {}}

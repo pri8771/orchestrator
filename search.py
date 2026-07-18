@@ -243,19 +243,74 @@ def _read_new_lines(path, offset):
 
 
 def _projects(root):
+    """Flat projects AND nested sessions (V3 3.0: project/section/chat) —
+    any dir at either depth with a messages.jsonl. The project column
+    carries the session id verbatim."""
     try:
         names = sorted(os.listdir(root))
     except OSError:
-        return []
+        return None   # scan FAILED — callers must not treat as "empty"
     out = []
+    complete = [True]   # ANY subtree error makes pruning unsafe
+
+    def probe(pid, d):
+        if os.path.isdir(d) and \
+                os.path.exists(os.path.join(d, "messages.jsonl")):
+            out.append((pid, d))
+            return True
+        return False
+
     for name in names:
         if name.startswith("."):
             continue
         app_dir = os.path.join(root, name)
-        if os.path.isdir(app_dir) and \
-                os.path.exists(os.path.join(app_dir, "messages.jsonl")):
-            out.append((name, app_dir))
-    return out
+        if not os.path.isdir(app_dir):
+            continue
+        if probe(name, app_dir):
+            continue
+        if os.path.exists(os.path.join(app_dir, "agent_state.json")):
+            continue   # legacy single-chat project — never recurse
+        try:
+            entries = sorted(os.listdir(app_dir))
+        except OSError:
+            # An unreadable project dir HIDES its sessions from this
+            # scan — verified: pruning on that wiped their index rows.
+            complete[0] = False
+            continue
+        if ".orch-sections" not in entries:
+            continue   # unmarked wrapper dirs are never recursed
+        sections = entries
+        for section in sections:
+            if section.startswith("."):
+                continue
+            sdir = os.path.join(app_dir, section)
+            if not os.path.isdir(sdir):
+                continue
+            try:
+                chats = sorted(os.listdir(sdir))
+            except OSError:
+                complete[0] = False
+                continue
+            for chat in chats:
+                if chat.startswith("."):
+                    continue
+                probe("%s/%s/%s" % (name, section, chat),
+                      os.path.join(sdir, chat))
+    return out, complete[0]
+
+
+def _prune_vanished(conn, root, live_projects):
+    """Migrated/removed sessions must leave the index (R2: a hit that
+    cannot jump is a lie). Cursor keys are project or "ev|project"."""
+    live = set(live_projects)
+    stale = [p for (p,) in conn.execute("SELECT DISTINCT project FROM messages")
+             if p not in live]
+    for p in stale:
+        _delete_project_rows(conn, p)
+        conn.execute("DELETE FROM artifacts WHERE project=?", (p,))
+        conn.execute("DELETE FROM cursors WHERE project IN (?, ?)",
+                     (p, "ev|%s" % p))
+    return len(stale)
 
 
 def _upsert_messages(conn, project, app_dir, rows):
@@ -340,7 +395,21 @@ def index_incremental(root):
     stats = {"status": status, "projects": 0, "new_lines": 0, "rescans": 0,
              "artifacts": 0}
     try:
-        for project, app_dir in _projects(root):
+        scan = _projects(root)
+        if scan is None:
+            # A transient listdir failure must NEVER masquerade as an
+            # empty workspace — pruning on it would wipe the whole index.
+            stats["scan_failed"] = True
+            return stats
+        found, scan_complete = scan
+        if scan_complete:
+            stats["pruned"] = _prune_vanished(conn, root,
+                                              [p for p, _ in found])
+        else:
+            # Partial scan (an unreadable subtree): index what we found,
+            # prune NOTHING — absence is not evidence here.
+            stats["scan_partial"] = True
+        for project, app_dir in found:
             stats["projects"] += 1
             path = os.path.join(app_dir, "messages.jsonl")
             offset, valid = _cursor_valid(conn, project, path)

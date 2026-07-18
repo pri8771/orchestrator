@@ -39,8 +39,10 @@ import time
 import uuid
 
 # Sibling modules (same directory; Python puts the script dir on sys.path[0]).
+import unicodedata
 import urllib.request
 import urllib.error
+import urllib.parse
 
 import backfill as backfilllib
 import events as evlib
@@ -325,7 +327,7 @@ def _app_lock_has_live_owner(app):
     return bool(lock_pid and _pid_alive(lock_pid))
 
 
-def _is_stale_running_state(app_dir, state, stale_seconds=5400):
+def _is_stale_running_state(app_dir, state, stale_seconds=5400, app=None):
     """Conservatively detect a state that is marked running but no longer active.
 
     Recovery is intentionally limited: only clear runtime metadata when we can
@@ -338,7 +340,11 @@ def _is_stale_running_state(app_dir, state, stale_seconds=5400):
     if state.get("done") or state.get("error") or state.get("awaiting_approval") or \
        state.get("blocked_conflict"):
         return False
-    app = os.path.basename(app_dir)
+    # Nested sessions: basename(app_dir) is just the chat segment — the
+    # caller passes the full session id so the REAL encoded lock is
+    # consulted (verified failure: the probe read c.lock, not the
+    # p%2Fs%2Fc.<hash>.lock a live run held).
+    app = app or os.path.basename(app_dir)
     pid = _parse_state_pid(state)
     if pid and _pid_alive(pid):
         # Known live process from state is authoritative enough to trust.
@@ -359,8 +365,44 @@ def _is_stale_running_state(app_dir, state, stale_seconds=5400):
 
 
 # Per-app locks: different apps run concurrently; one app can't run twice.
+def encode_lock_name(session_id):
+    """Lock filename stem for a session id (V3 board 3.0).
+
+    Flat names stay RAW — a running flat run's lock must survive the
+    layout upgrade byte-identically. Nested ids ("project/section/chat")
+    percent-encode every byte outside [A-Za-z0-9_.~-] and append an
+    8-hex sha256 suffix. The suffix is what makes collisions impossible
+    across namespaces: a legal flat dir can literally be named
+    "proj%2Fsection%2Fchat", colliding with the encoded triple — with
+    the hash, an accidental collision cannot happen, and a deliberately
+    mimicking flat dir yields only a loud lock-DENIAL ("already
+    running"), never a shared lock. The GUI must mirror this encoding
+    byte-for-byte — tests/fixtures/lock_encoding.json pins both sides
+    (the Swift half lands with sub-PR B; until then the GUI is flat-only).
+    """
+    sid = str(session_id)
+    if "/" not in sid:
+        return sid
+    # Quote the NFC form: APFS coalesces the session DIRS of NFC/NFD
+    # spellings, but percent-encoding ASCII-fies the bytes so the fs
+    # could never coalesce two differently-normalized lock stems —
+    # verified double-run without this normalization.
+    quoted = urllib.parse.quote(unicodedata.normalize("NFC", sid), safe="")
+    # The digest is computed over the NFC + casefolded id: on a
+    # case/normalization-INSENSITIVE filesystem (macOS APFS default) two
+    # ids the fs maps to ONE session dir also map to ONE lock file (the
+    # quoted parts coalesce at the fs level exactly like flat locks
+    # always did; identical digests keep them coalesced). On a
+    # case-SENSITIVE volume the quoted parts differ, so genuinely
+    # distinct dirs keep distinct locks. Verified: without this, a casing
+    # typo in --app let two orchestrators run one nested session.
+    canon = unicodedata.normalize("NFC", sid).casefold()
+    digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:8]
+    return "%s.%s" % (quoted, digest)
+
+
 def _app_lock_path(app):
-    return os.path.join(LOCKS_DIR, "%s.lock" % app)
+    return os.path.join(LOCKS_DIR, "%s.lock" % encode_lock_name(app))
 
 
 def _pid_looks_like_orchestrator(pid):
@@ -1033,8 +1075,8 @@ def write_call_log(app, phase, rnd, agent, command, stdout, stderr, code):
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     # Local identities may embed a path-ish tag (local:hf.co/org/repo) — keep
     # the log filename flat.
-    fname = "%s__%s__%s__r%s__%s.json" % (ts, app, phase, rnd,
-                                          str(agent).replace("/", "-"))
+    fname = "%s__%s__%s__r%s__%s.json" % (ts, encode_lock_name(app), phase,
+                                          rnd, str(agent).replace("/", "-"))
     record = {
         "timestamp": now_str(),
         "app": app,
@@ -7246,15 +7288,17 @@ def _await_approval(app_dir, phase_key, state, timeout=7200, poll=0.25):
 
 
 def find_apps(root):
-    """Direct-child project discovery.
+    """Project discovery: flat direct children AND nested chat sessions.
 
-    The workspace contract is intentionally flat:
+    Flat (unchanged, forever):   <root>/<project>/initial_prompt/…
+    Nested (V3 board 3.0):       <root>/<project>/<section>/<chat>/initial_prompt/…
+    returned as the session id "project/section/chat" — the one string the
+    engine, events, GUI and search all carry for a nested session.
 
-        <root>/<project>/initial_prompt/initial_prompt.md
-
-    If a user asks for five projects, the root should contain five sibling
-    folders. Nested projects inside a wrapper/batch folder are ignored; the
-    wrapper is not treated as a project unless it has its own initial_prompt.
+    Recursion guards (0.2 back-compat rule): a dir with its OWN
+    initial_prompt/ is a flat project, full stop; a dir with root-level
+    agent_state.json is a legacy single-chat project and is NEVER recursed
+    into; dot-prefixed and .orch_archived dirs are invisible at every level.
     """
     apps = []
     for name in sorted(os.listdir(root)):
@@ -7265,13 +7309,52 @@ def find_apps(root):
         full = os.path.join(root, name)
         if not os.path.isdir(full):
             continue
-        if not os.path.exists(os.path.join(full, "initial_prompt", "initial_prompt.md")):
-            continue
-        # Archived projects (GUI "Remove from list, keep folder") are invisible
-        # to scan/watch/shepherd passes; deleting the marker restores them.
         if os.path.exists(os.path.join(full, ".orch_archived")):
+            # Archived projects (GUI "Remove from list, keep folder") are
+            # invisible to scan/watch/shepherd; deleting the marker restores.
             continue
-        apps.append(name)
+        if os.path.exists(os.path.join(full, "initial_prompt", "initial_prompt.md")):
+            apps.append(name)
+            continue
+        if os.path.exists(os.path.join(full, "agent_state.json")):
+            continue   # legacy single-chat project — never recurse (0.2)
+        if not valid_app_slug(name):
+            continue   # unaddressable project segment — symmetric skip
+        if not os.path.exists(os.path.join(full, SECTIONS_MARKER)):
+            # A wrapper/batch folder a user happened to arrange two levels
+            # deep must NOT suddenly become runnable (the flat contract
+            # promised nested dirs are ignored). Only dirs the engine
+            # itself marked as section containers are recursed —
+            # create_session and the migration mint the marker.
+            continue
+        try:
+            sections = sorted(os.listdir(full))
+        except OSError:
+            continue
+        for section in sections:
+            if section.startswith(".") or not valid_app_slug(section):
+                continue
+            sdir = os.path.join(full, section)
+            if (not os.path.isdir(sdir)
+                    or os.path.exists(os.path.join(sdir, ".orch_archived"))):
+                continue
+            try:
+                chats = sorted(os.listdir(sdir))
+            except OSError:
+                continue
+            for chat in chats:
+                # Segment validation keeps discovery and addressing
+                # symmetric: a dir the operator could never address
+                # (e.g. "a..b") must not be discovered either.
+                if chat.startswith(".") or not valid_app_slug(chat):
+                    continue
+                cdir = os.path.join(sdir, chat)
+                if (not os.path.isdir(cdir)
+                        or os.path.exists(os.path.join(cdir, ".orch_archived"))):
+                    continue
+                if os.path.exists(os.path.join(
+                        cdir, "initial_prompt", "initial_prompt.md")):
+                    apps.append("%s/%s/%s" % (name, section, chat))
     return apps
 
 
@@ -7291,6 +7374,164 @@ def valid_app_slug(name):
     n = str(name or "")
     return bool(n) and ".." not in n and not n.startswith(".") \
         and "/" not in n and "\\" not in n and os.sep not in n
+
+
+# Dirs the engine may recurse into for nested sessions carry this marker
+# (minted by create_session / the migration) — see find_apps.
+SECTIONS_MARKER = ".orch-sections"
+
+
+def _nested_parent_conflict(root, project):
+    """Why the <root>/<project> level cannot host nested sessions, or None.
+    Nesting inside an existing FLAT project (own initial_prompt/) or a
+    legacy project (root agent_state.json) would make the session
+    permanently invisible to discovery — the never-recurse rules would
+    hide it (verified: migration into a flat project erased the session
+    from every discovery surface AND its search index). A plain file
+    blocks makedirs outright."""
+    pdir = os.path.join(root, project)
+    if not os.path.exists(pdir):
+        return None
+    if not os.path.isdir(pdir):
+        return "a file blocks the project dir"
+    if os.path.exists(os.path.join(pdir, "initial_prompt",
+                                   "initial_prompt.md")):
+        return "existing flat project"
+    if os.path.exists(os.path.join(pdir, "agent_state.json")):
+        return "existing legacy project"
+    if not os.path.exists(os.path.join(pdir, SECTIONS_MARKER)):
+        try:
+            occupied = any(not e.startswith(".") for e in os.listdir(pdir))
+        except OSError:
+            return "project dir unreadable"
+        if occupied:
+            # Minting the marker on a user's wrapper dir would convert
+            # every depth-2 initial_prompt dir inside it into runnable
+            # sessions (verified: an archived project became discoverable).
+            return "existing unmarked directory"
+    return None
+
+
+def parse_session_id(value):
+    """Validate operator-supplied --app/--project/--resume input for BOTH
+    layouts (V3 board 3.0): a flat name (one segment) or a nested session
+    id (exactly project/section/chat). Every segment must pass the
+    UNCHANGED valid_app_slug rules, so traversal ('..'), absolute paths,
+    separators inside a segment and hidden segments are all impossible.
+    Returns the normalized id, or None when invalid."""
+    s = str(value or "").strip()
+    if s.startswith("/") or s.endswith("/"):
+        return None
+    parts = s.split("/")
+    if len(parts) not in (1, 3):
+        return None
+    if not all(valid_app_slug(p) for p in parts):
+        return None
+    return "/".join(parts)
+
+
+def create_session(root, session_id, prompt, workflow=None):
+    """Mint a session dir (nested or flat) with the same per-dir file
+    contract as flat apps: initial_prompt/initial_prompt.md (+ workflow.txt
+    when given). Refuses an existing dir. Returns the app_dir path."""
+    sid = parse_session_id(session_id)
+    if sid is None:
+        raise AppError("invalid session id %r" % session_id)
+    app_dir = os.path.join(root, sid)
+    if os.path.exists(app_dir):
+        raise AppError("session %r already exists" % sid)
+    if "/" in sid:
+        conflict = _nested_parent_conflict(root, sid.split("/")[0])
+        if conflict:
+            raise AppError(
+                "cannot nest %r under %r (%s) — the session would be "
+                "invisible to discovery" % (sid, sid.split("/")[0], conflict))
+    try:
+        os.makedirs(os.path.join(app_dir, "initial_prompt"))
+        if "/" in sid:
+            open(os.path.join(root, sid.split("/")[0], SECTIONS_MARKER),
+                 "w").close()
+    except OSError as exc:
+        raise AppError("cannot create session %r: %s" % (sid, exc))
+    with open(os.path.join(app_dir, "initial_prompt", "initial_prompt.md"),
+              "w", encoding="utf-8") as fh:
+        fh.write(prompt if prompt.endswith("\n") else prompt + "\n")
+    if workflow:
+        with open(os.path.join(app_dir, "workflow.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(workflow + "\n")
+    return app_dir
+
+
+def migrate_layout(root, apply=False, out=print):
+    """One-shot flat->nested chat migration (V3 board 3.0). DRY-RUN by
+    default — the confirmation channel is the --apply flag, never stdin
+    (this runs headless under the GUI). A flat dir migrates only when its
+    name splits as <slug>--<slug>--<slug> exactly AND it has
+    initial_prompt/; anything else is reported, never silently skipped.
+    A live-locked session is refused (SKIP (running)); a stale lock file
+    is renamed with its dir so resume offers keep working. Apply is one
+    os.rename per dir — atomic on the same volume; a failed rename leaves
+    the source untouched. Idempotent: a second run matches nothing."""
+    counts = {"migrate": 0, "skip": 0}
+    for name in sorted(os.listdir(root)):
+        if name.startswith(".") or "--" not in name:
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isdir(full):
+            continue
+        parts = name.split("--")
+        if len(parts) != 3 or not all(valid_app_slug(p) for p in parts):
+            out("SKIP (ambiguous): %s" % name)
+            counts["skip"] += 1
+            continue
+        if not os.path.exists(os.path.join(full, "initial_prompt",
+                                           "initial_prompt.md")):
+            out("SKIP (not a session): %s" % name)
+            counts["skip"] += 1
+            continue
+        dest_id = "/".join(parts)
+        dest = os.path.join(root, dest_id)
+        conflict = _nested_parent_conflict(root, parts[0])
+        if conflict:
+            out("SKIP (project-level conflict — %s): %s" % (conflict, name))
+            counts["skip"] += 1
+            continue
+        if os.path.exists(dest):
+            out("SKIP (destination exists): %s -> %s" % (name, dest_id))
+            counts["skip"] += 1
+            continue
+        old_lock = os.path.join(root, ".orch-locks", "%s.lock" % name)
+        if os.path.exists(old_lock) and _app_lock_has_live_owner(name):
+            out("SKIP (running): %s" % name)
+            counts["skip"] += 1
+            continue
+        out("MIGRATE: %s -> %s" % (name, dest_id))
+        if os.path.exists(old_lock):
+            out("LOCK: %s.lock -> %s.lock" % (name, encode_lock_name(dest_id)))
+        counts["migrate"] += 1
+        if not apply:
+            continue
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            open(os.path.join(root, parts[0], SECTIONS_MARKER), "w").close()
+            os.rename(full, dest)
+        except OSError as exc:
+            out("WARN could not migrate %s (%s) — source left untouched"
+                % (name, exc))
+            counts["migrate"] -= 1
+            counts["skip"] += 1
+            continue
+        if os.path.exists(old_lock):
+            try:
+                os.rename(old_lock,
+                          os.path.join(root, ".orch-locks",
+                                       "%s.lock" % encode_lock_name(dest_id)))
+            except OSError as exc:
+                out("WARN could not rename stale lock for %s: %s" % (name, exc))
+    out("migration %s: %d to migrate, %d skipped"
+        % ("applied" if apply else "dry-run", counts["migrate"], counts["skip"]))
+    return counts
 
 
 def process_app(cfg, root, app):
@@ -7928,7 +8169,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # live state dict on cfg (both per-app; cfg is copied per app/worker).
     tctx.app_dir = app_dir
     tctx.state = state
-    if _is_stale_running_state(app_dir, state):
+    if _is_stale_running_state(app_dir, state, app=app):
         emit("App '%s': detected stale 'running' state — recovering and resuming"
              % app)
         state.setdefault("phase_outputs", {})
@@ -7939,7 +8180,9 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         state["next_agent"] = None
         state["runner_pid"] = os.getpid()
         save_state(app_dir, state)
-    root = os.path.dirname(app_dir)
+    # Nested sessions live two levels down — dirname(app_dir) is NOT the
+    # workspace root for them; cfg["root"] is authoritative.
+    root = cfg.get("root") or os.path.dirname(app_dir)
     tctx.original_prompt = prompt
 
     # Resolve the workflow FIRST (so an audit target folds into change detection).
@@ -8679,7 +8922,7 @@ def prepare_resume(root, slug):
     if st.get("done") and not st.get("error"):
         emit("--resume: project '%s' is already complete — nothing to resume." % slug)
         return 0, None
-    if _is_stale_running_state(os.path.join(root, slug), st):
+    if _is_stale_running_state(os.path.join(root, slug), st, app=slug):
         emit("--resume: project '%s' had a stale 'running' state; clearing it for resume." % slug)
         st["error"] = None
         st["blocked_conflict"] = None
@@ -8999,6 +9242,17 @@ def main():
     ap.add_argument("--resume", metavar="SLUG",
                     help="resume an existing project from its saved state, clearing "
                          "any recorded abort error first (V2 spec §27)")
+    ap.add_argument("--new-session", metavar="ID",
+                    help="mint a session dir (flat name or nested "
+                         "project/section/chat); reads the prompt from stdin; "
+                         "prints CREATED: <id>")
+    ap.add_argument("--session-workflow", metavar="NAME",
+                    help="workflow.txt content for --new-session")
+    ap.add_argument("--migrate-layout", action="store_true",
+                    help="flat->nested chat-dir migration; DRY-RUN unless "
+                         "--apply is also given")
+    ap.add_argument("--migrate-apply", action="store_true",
+                    help="execute the --migrate-layout plan (default: dry-run)")
     ap.add_argument("--fork", metavar="SLUG",
                     help="fork a session: copy the dir minus agent threads, "
                          "locks, approvals and inbox; prints FORKED: <name>")
@@ -9108,10 +9362,13 @@ def main():
     # An app/project name is a single folder under the root — refuse anything
     # that would traverse out of it when joined (orchestrator.py never treats
     # these as paths, only as folder names).
-    for _slug in (args.app, args.project, args.resume):
-        if _slug and not valid_app_slug(_slug):
-            ap.error("invalid project name %r — use a single folder name under the "
-                     "workspace root (no path separators, '..', or leading '.')" % _slug)
+    for _slug in (args.app, args.project, args.resume,
+                  args.fork, args.promote):
+        if _slug and parse_session_id(_slug) is None:
+            ap.error("invalid project name %r — use a single folder name under "
+                     "the workspace root, or a nested session id "
+                     "project/section/chat (no '..', hidden or empty segments)"
+                     % _slug)
 
     if args.continue_with:
         # Validate the combination before any slug is processed.
@@ -9154,6 +9411,21 @@ def main():
             print(json.dumps(rep, indent=2))
         else:
             print_mistakes_report(rep)
+        return 0
+
+    if args.new_session:
+        try:
+            create_session(cfg["root"], args.new_session,
+                           sys.stdin.read().strip() or "(no prompt)",
+                           workflow=args.session_workflow)
+        except AppError as exc:
+            emit("--new-session: %s" % exc)
+            return 2
+        print("CREATED: %s" % parse_session_id(args.new_session))
+        return 0
+
+    if args.migrate_layout:
+        migrate_layout(cfg["root"], apply=args.migrate_apply)
         return 0
 
     if args.fork:

@@ -1,0 +1,49 @@
+{
+  "_note": "V3 board 3.0 lock-encoding contract. Flat ids map RAW; nested ids: percent-encode the NFC-NORMALIZED id (unreserved A-Za-z0-9_.~-) + '.' + 8-hex sha256 of the NFC+casefolded id — locks coalesce exactly when a case/normalization-insensitive filesystem coalesces the session dirs. Python (orchestrator.encode_lock_name) and Swift (the GUI mirror, sub-PR B) must reproduce every pair byte-identically.",
+  "cases": [
+    {
+      "id": "gloam",
+      "lock": "gloam"
+    },
+    {
+      "id": "proj--section--chat",
+      "lock": "proj--section--chat"
+    },
+    {
+      "id": "proj%2Fsection%2Fchat",
+      "lock": "proj%2Fsection%2Fchat"
+    },
+    {
+      "id": "gloam/ideas/first-chat",
+      "lock": "gloam%2Fideas%2Ffirst-chat.9eb4b8d6"
+    },
+    {
+      "id": "proj/section/chat",
+      "lock": "proj%2Fsection%2Fchat.5d68349d"
+    },
+    {
+      "id": "my-app/deep--research/chat-2",
+      "lock": "my-app%2Fdeep--research%2Fchat-2.f59f6928"
+    },
+    {
+      "id": "app/s/c",
+      "lock": "app%2Fs%2Fc.81a9afed"
+    },
+    {
+      "id": "unicodé/секция/chat",
+      "lock": "unicod%C3%A9%2F%D1%81%D0%B5%D0%BA%D1%86%D0%B8%D1%8F%2Fchat.cf57849f"
+    },
+    {
+      "id": "Gloam/Ideas/First-Chat",
+      "lock": "Gloam%2FIdeas%2FFirst-Chat.9eb4b8d6"
+    },
+    {
+      "id": "café/section/chat",
+      "lock": "caf%C3%A9%2Fsection%2Fchat.61d535d9"
+    },
+    {
+      "id": "café/section/chat",
+      "lock": "caf%C3%A9%2Fsection%2Fchat.61d535d9"
+    }
+  ]
+}
