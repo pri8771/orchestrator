@@ -5614,253 +5614,36 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
     return closure
 
 
-def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
-                  state, phase_index=0):
+def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
+                       prior_outputs, state, *,
+                       md_path, transcript, extra, personas, active, coord,
+                       rounds_iter, resuming, unit, is_build, is_verify_repair,
+                       unlimited_rounds, max_rounds, independent_first,
+                       quality_repair_limit, step_in_marker,
+                       consensus, final_output):
+    """The sequential round-barrier debate loop, extracted VERBATIM from
+    process_phase (V3 board 2.2a). Everything inside the for-loop is a pure
+    lift — behavior, save_state ordering, and transcript bytes are contract
+    (tests/test_transcript_golden.py). Seam notes:
+    - consensus/final_output arrive as IN/OUT seeds: an enabled parallel
+      build has already produced them and flows through here with
+      rounds_iter=[] (zero iterations) exactly as it flowed through the
+      inline loop scaffolding before the extraction.
+    - rounds_iter is BUILT BY THE CALLER and iterated exactly once here;
+      process_phase still truthiness-checks the same object afterward
+      (three shapes: [] for builds, range for budgeted phases — falsy when
+      resume lands past the budget — and infinite itertools.count).
+    - state/cfg cross by IDENTITY: current_round/next_agent/
+      phase_resolutions and _noted_indep_grader must land in the caller's
+      objects; the per-thread dict(cfg) copies inside stay put (2.3 relies
+      on those exact copy points).
+    - any_agent_output starts as `resuming`: a resumed phase has real
+      output on disk even if every agent is down on the first resumed
+      round — the caller's no-output guard must not fire then.
+    """
     key, folder, fname, _purpose = phasedef
-    # V2 routing: everything below (roster, coordinator, build lanes, every
-    # agent turn) sees this phase's model overrides through the scoped copy.
-    cfg = _apply_phase_routing(cfg, key)
-    # A phase that writes files is a "build" phase, regardless of its name — this
-    # is what lets non-app workflows (e.g. productionize) have their own build.
-    is_build = bool(phasedef.get("writes", False)) if hasattr(phasedef, "get") \
-        else (key == "build_coordination")
-    verify_spec = (phasedef.get("verify") if hasattr(phasedef, "get") else None)
-    # A non-build phase with a verify spec is a verification/repair phase: it
-    # discusses the current app_build output, then runs the same real verifier and
-    # bounded repair loop without starting another parallel build iteration.
-    is_verify_repair = bool(verify_spec) and not is_build
-    # Per-phase round budget now lives in the workflow (GUI-editable); fall back
-    # to the legacy config `rounds:` block, then a small default. A per-project
-    # routing override (Plan tab) beats them all; its 0 = unlimited.
-    raw_rounds = (phasedef.get("rounds") if hasattr(phasedef, "get") else None)
-    if cfg.get("_routed_rounds") is not None:
-        raw_rounds = cfg["_routed_rounds"]
-    max_rounds = int(raw_rounds if raw_rounds is not None else cget(cfg, "rounds.%s" % key, 3))
-    unlimited_rounds = max_rounds <= 0
-    # V2 §7.2: completeness profile scales the round budget (min 1 for any included
-    # phase — structurally-required phases must still get at least one round).
-    _rmult = cfg.get("_round_multiplier")
-    if _rmult and not unlimited_rounds:
-        max_rounds = max(1, int(round(max_rounds * float(_rmult))))
-    # Sprint/time-budget mode: tighten the per-turn timeout (short for chat, longer
-    # for building) so a single hung turn can't eat the whole budget. Cleared to
-    # None when the workflow declares no budget (every non-sprint workflow).
-    _bud = cfg.get("_budget")
-    cfg["_turn_timeout"] = cfg.get("_routed_turn_timeout") or \
-        (int(_bud.get("build_turn_timeout", 480)
-             if (is_build or is_verify_repair)
-             else _bud.get("chat_turn_timeout", 150)) if _bud else None)
-    active = enabled_agents(cfg)
-    if not active:
-        raise AppError("No agents enabled in config.")
-    # Prefer an installed agent as coordinator so the decision turn actually runs
-    # even when some enabled CLIs aren't logged in yet.
-    coord = _pick_coordinator(cfg, active)
-
-    # Hand each active agent a (role, personality) for THIS phase. Personalities
-    # rotate every phase so no agent is ever stuck to one voice.
-    speaking = ordered_agents(active)
-    phase_roles = phasedef.get("roles") if hasattr(phasedef, "get") else None
-    personas = roleslib.assign_personas(
-        phase_index, speaking, cfg.get("_personalities", roleslib.DEFAULT_PERSONALITIES),
-        cfg.get("_roles", roleslib.DEFAULT_ROLES), phase_roles,
-        cfg.get("_agent_role_overrides", {}), cfg.get("_role_by_id"))
-    if personas:
-        emit("Personas — " + "; ".join(
-            "%s: %s" % (DISPLAY[a], roleslib.persona_label(personas[a])) for a in speaking))
-
-    # Verification gate (§16): a requires_verification phase (e.g. final review) is
-    # fed the real persisted verification result as context. Set-or-CLEAR each phase.
-    _needs_vlabel = (bool(phasedef.get("requires_verification", False)) if hasattr(phasedef, "get")
-                     else False) or key == "final_review"
-    if _needs_vlabel:
-        _vr = verifylib.load_verify_results(app_dir)
-        _latest = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
-        cfg["_verify_context"] = (
-            "\n\n===== VERIFICATION RESULTS (structured, authoritative) =====\n"
-            + verifylib.summarize_verify_results(_vr, _latest)
-            + "\nThe final VERIFICATION label is derived by the orchestrator from this "
-              "result, not chosen by you — explain it, don't override it.")
-    else:
-        cfg["_verify_context"] = ""
-
-    # Retrieve curated domain knowledge relevant to this phase and stash it so
-    # build_context injects it into every turn this phase (the RAG "specialist").
-    # Few-shot exemplar (fleet learning): a rated-good project's output for
-    # THIS phase key, if one has been exported to knowledge/exemplars/.
-    cfg["_phase_exemplar"] = _load_phase_exemplar(key)
-    cfg["_phase_playbook"] = phaseruleslib.render_phase_playbook(
-        HERE, cfg.get("_workflow_target", "app"), key)
-    if cfg["_phase_playbook"]:
-        emit("Injected phase playbook into phase '%s'." % key)
-    cfg["_knowledge"] = ""
-    if knowlib.should_inject(key):
-        domain = knowlib.domain_for(cget(cfg, "knowledge.domain", ""),
-                                    cfg.get("_workflow_target", "app"),
-                                    original_prompt, phasedef.purpose if hasattr(phasedef, "purpose") else _purpose)
-        cfg["_knowledge"] = knowlib.retrieve(
-            HERE, domain,
-            "%s %s" % (_purpose, original_prompt),
-            max_chars=int(cget(cfg, "knowledge.max_chars", 6000)),
-            top_k=int(cget(cfg, "knowledge.top_k", 3)))
-        if cfg["_knowledge"]:
-            emit("Injected %s knowledge (%d chars) into phase '%s'."
-                 % (domain, len(cfg["_knowledge"]), key))
-
-    # During an enabled build phase, agents work (and write files) directly in a
-    # persistent build folder; otherwise no writes are allowed.
-    allow_writes = (is_build or is_verify_repair) and \
-        bool(cget(cfg, "runtime.build_code_changes_enabled", False))
-    cfg["_allow_writes"] = allow_writes
-    cfg["_build_dir"] = os.path.join(app_dir, "app_build") if allow_writes else None
-    if allow_writes and cfg.get("_workflow_target", "app") == "app" \
-            and bool(cget(cfg, "runtime.golden_scaffold_enabled", True)):
-        _seed_golden_scaffold(cfg["_build_dir"])
-    # Session map must exist on the ORIGINAL cfg before any per-thread shallow
-    # copies are taken, or each copy would grow its own map and lose sessions.
-    cfg.setdefault("_claude_sessions", {})
-    cfg.setdefault("_codex_sessions", {})
-    # Stable per-app cwd for resumed claude sessions (sessions are keyed by cwd,
-    # so the default ephemeral temp dir would orphan them each turn). Discussion
-    # phases stay read-only regardless — acceptEdits is only granted in builds.
-    cfg["_session_cwd"] = None
-    if not allow_writes and bool(cget(cfg, "runtime.claude_session_reuse", True)):
-        cfg["_session_cwd"] = os.path.join(app_dir, ".agent_cwd")
-    # Trim the planning-transcript payload for build turns (see build_context).
-    cfg["_prior_disc_cap"] = int(cget(
-        cfg, "runtime.build_max_prior_discussion_chars", 30000)) if allow_writes else None
-    if allow_writes:
-        os.makedirs(cfg["_build_dir"], exist_ok=True)
-        if is_verify_repair:
-            emit("VERIFY/REPAIR phase: agents may make bounded fixes in %s"
-                 % cfg["_build_dir"])
-        else:
-            emit("BUILD phase: agents may write files in %s" % cfg["_build_dir"])
-
-    # Audit read channel. When a phase reads the target, inject the read-only digest
-    # into every turn; and (only if runtime.audit_live_read_cwd) additionally point
-    # codex/claude's cwd at the target read-only. Set-or-CLEAR on every phase so an
-    # audit read channel can never leak into a later phase or another app.
-    reads = bool(phasedef.get("reads_target", False)) if hasattr(phasedef, "get") else False
-    _portfolio = cfg.get("_target_paths") or []
-    if reads and len(_portfolio) > 0:
-        # library_mining: a combined digest of the whole portfolio.
-        cfg["_target_digest"] = cfg.get("_target_digest") or build_portfolio_digest(_portfolio)
-        cfg["_read_dir"] = None
-        emit("PORTFOLIO phase '%s': %d repos, %d-char digest."
-             % (key, len(_portfolio), len(cfg["_target_digest"])))
-    elif reads and cfg.get("_target_path"):
-        cfg["_target_digest"] = cfg.get("_target_digest") or build_target_digest(cfg["_target_path"])
-        live = (not allow_writes
-                and bool(cget(cfg, "runtime.audit_live_read_cwd", False)))
-        cfg["_read_dir"] = cfg["_target_path"] if live else None
-        emit("AUDIT phase '%s': read-only target %s (%d-char digest%s)."
-             % (key, cfg["_target_path"], len(cfg["_target_digest"]),
-                "; live cwd" if live else ""))
-    else:
-        cfg["_target_digest"] = ""
-        cfg["_read_dir"] = None
-
-    phase_dir = os.path.join(app_dir, folder)
-    os.makedirs(phase_dir, exist_ok=True)
-    md_path = os.path.join(phase_dir, fname)
-
-    unit = "iteration" if is_build else "round"
-    round_desc = "unlimited %ss until consensus" % unit if unlimited_rounds \
-        else "up to %d %s(s)" % (max_rounds, unit)
-    emit("=== Phase '%s' for %s — %s; agents=%s; coordinator=%s ==="
-         % (key, app, round_desc, ",".join(active), coord))
-    live_log(app_dir, key, "orchestrator", "phase_started",
-             "phase '%s' started — %s, coordinator %s"
-             % (key, round_desc, coord))
-    evlib.emit_event(app_dir, "phase_started", project=app, phase=key,
-                     agents=",".join(active), coordinator=coord,
-                     rounds=(0 if unlimited_rounds else max_rounds))
-
-    # Round-level crash resume: scoped to the SEQUENTIAL round loop (plain
-    # discussion/verify-repair phases, and a "build" phase with code changes
-    # disabled) — NOT the parallel build loop (is_build and allow_writes),
-    # whose iterations already land in a git-versioned app_build repo (see
-    # ensure_build_repo) with its own crash-recovery path via that history,
-    # and whose concurrent per-lane worker/worktree state makes a safe
-    # mid-iteration resume a materially harder problem than resuming a
-    # strictly-sequential round.
-    #
-    # The pipeline is strictly sequential (see the phase while-loop in run():
-    # a phase is only entered after every earlier one is in completed_phases,
-    # and process_phase is never called concurrently for two phases), so a
-    # single state["current_phase"] + state["current_round"] pair unambiguously
-    # describes at most one in-flight phase — no per-phase-keyed dict needed.
-    #
-    # "Resuming" requires ALL of: this phase is not in completed_phases
-    # (guaranteed by the caller — it never calls process_phase for a completed
-    # phase), the loaded state says THIS phase was the one in flight
-    # (current_phase == key: set at the start of an earlier, crashed attempt
-    # at this exact phase and never cleared because that attempt didn't
-    # finish — a genuinely fresh phase would see the PREVIOUS phase's key
-    # here instead), and current_round > 0 (at least one round was entered).
-    # The actual resume point is then derived from the .md file itself, not
-    # from current_round directly — see _resume_round_state's docstring for
-    # why the counter alone is not trustworthy.
-    #
-    # V3 board 1.1: conversational phases branch BEFORE the resume/truncate
-    # block below — _resume_round_state's coordinator heuristic would return
-    # resume_round=1 for a coordinator-less transcript, making the else-branch
-    # write_md() TRUNCATE the entire conversation on every re-entry. The
-    # conversational runner owns its own append-only resume.
-    if bool(phasedef.get("conversational", False) if hasattr(phasedef, "get") else False):
-        return _run_conversational_phase(
-            cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
-            state, md_path, personas, active)
-    resume_round, resuming = 1, False
-    if not (is_build and allow_writes) and state.get("current_phase") == key \
-            and int(state.get("current_round") or 0) > 0:
-        try:
-            with open(md_path, encoding="utf-8") as fh:
-                _existing = fh.read()
-        except OSError:
-            _existing = ""
-        if _existing.strip():
-            resume_round, _kept, _header_end = _resume_round_state(_existing)
-            resuming = resume_round > 1
-    if resuming:
-        # Preserve the on-disk transcript (write_md would TRUNCATE it) except
-        # for a trailing incomplete round, which is dropped and redone.
-        write_md(md_path, _kept)
-        transcript = _kept[_header_end:]
-        emit("Phase '%s': resuming a crashed run at round %d (%d completed "
-             "round(s), %d char(s) of transcript recovered)."
-             % (key, resume_round, resume_round - 1, len(transcript)))
-    else:
-        write_md(md_path, phase_header(app, phasedef, original_prompt))
-        transcript = ""
-    extra = phase_extra(cfg, key)
-
-    state["current_phase"] = key
-    save_state(app_dir, state)
-
-    consensus = False
-    final_output = ""
     quality_failures = 0
     _quality_escalation_logged = False   # see _maybe_escalate; scoped to this phase call
-    quality_repair_limit = max(0, int(cget(cfg, "runtime.phase_quality_repair_rounds", 1) or 0))
-    independent_first = _independent_first_enabled(cfg, is_build or is_verify_repair)
-    if independent_first:
-        emit("Phase '%s': independent first round enabled." % key)
-    if _phase_quality_gate_enabled(cfg, is_build or is_verify_repair):
-        emit("Phase '%s': quality gate enabled (%d repair round%s allowed)."
-             % (key, quality_repair_limit, "" if quality_repair_limit == 1 else "s"))
-
-    # An enabled build phase fans the agents out to build IN PARALLEL (each owns a
-    # lane) with an integrator turn between iterations. Every other phase — and a
-    # build phase with code changes off — stays a sequential, turn-by-turn chat.
-    if is_build and allow_writes:
-        consensus, final_output, transcript = _run_parallel_build(
-            cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
-            state, md_path, max_rounds, transcript, extra, personas=personas)
-    rounds_iter = [] if (is_build and allow_writes) else (
-        itertools.count(resume_round) if unlimited_rounds
-        else range(resume_round, max_rounds + 1))
     # A resumed phase already has real agent output on disk (recovered into
     # `transcript` above) even before this loop produces anything new — the
     # "no enabled agent could produce output" guard below must not fire just
@@ -5869,7 +5652,6 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     empty_round_streak = 0   # consecutive rounds where NO agent spoke
     _seen_chars = {}   # per-agent transcript offset for session delta prompts
     last_substantive = {}   # per-agent newest non-PASS post (vote-tally source)
-    step_in_marker = os.path.join(app_dir, ".step_in")
     for rnd in rounds_iter:
         # Sprint watchdog: if this phase's time slice is spent, finalize with the
         # best output so far instead of starting another round.
@@ -6182,6 +5964,268 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
                 break
             emit("CONSENSUS reached in phase '%s' at %s %d." % (key, unit, rnd))
             break
+
+    return consensus, final_output, transcript, last_substantive, any_agent_output
+
+
+def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
+                  state, phase_index=0):
+    key, folder, fname, _purpose = phasedef
+    # V2 routing: everything below (roster, coordinator, build lanes, every
+    # agent turn) sees this phase's model overrides through the scoped copy.
+    cfg = _apply_phase_routing(cfg, key)
+    # A phase that writes files is a "build" phase, regardless of its name — this
+    # is what lets non-app workflows (e.g. productionize) have their own build.
+    is_build = bool(phasedef.get("writes", False)) if hasattr(phasedef, "get") \
+        else (key == "build_coordination")
+    verify_spec = (phasedef.get("verify") if hasattr(phasedef, "get") else None)
+    # A non-build phase with a verify spec is a verification/repair phase: it
+    # discusses the current app_build output, then runs the same real verifier and
+    # bounded repair loop without starting another parallel build iteration.
+    is_verify_repair = bool(verify_spec) and not is_build
+    # Per-phase round budget now lives in the workflow (GUI-editable); fall back
+    # to the legacy config `rounds:` block, then a small default. A per-project
+    # routing override (Plan tab) beats them all; its 0 = unlimited.
+    raw_rounds = (phasedef.get("rounds") if hasattr(phasedef, "get") else None)
+    if cfg.get("_routed_rounds") is not None:
+        raw_rounds = cfg["_routed_rounds"]
+    max_rounds = int(raw_rounds if raw_rounds is not None else cget(cfg, "rounds.%s" % key, 3))
+    unlimited_rounds = max_rounds <= 0
+    # V2 §7.2: completeness profile scales the round budget (min 1 for any included
+    # phase — structurally-required phases must still get at least one round).
+    _rmult = cfg.get("_round_multiplier")
+    if _rmult and not unlimited_rounds:
+        max_rounds = max(1, int(round(max_rounds * float(_rmult))))
+    # Sprint/time-budget mode: tighten the per-turn timeout (short for chat, longer
+    # for building) so a single hung turn can't eat the whole budget. Cleared to
+    # None when the workflow declares no budget (every non-sprint workflow).
+    _bud = cfg.get("_budget")
+    cfg["_turn_timeout"] = cfg.get("_routed_turn_timeout") or \
+        (int(_bud.get("build_turn_timeout", 480)
+             if (is_build or is_verify_repair)
+             else _bud.get("chat_turn_timeout", 150)) if _bud else None)
+    active = enabled_agents(cfg)
+    if not active:
+        raise AppError("No agents enabled in config.")
+    # Prefer an installed agent as coordinator so the decision turn actually runs
+    # even when some enabled CLIs aren't logged in yet.
+    coord = _pick_coordinator(cfg, active)
+
+    # Hand each active agent a (role, personality) for THIS phase. Personalities
+    # rotate every phase so no agent is ever stuck to one voice.
+    speaking = ordered_agents(active)
+    phase_roles = phasedef.get("roles") if hasattr(phasedef, "get") else None
+    personas = roleslib.assign_personas(
+        phase_index, speaking, cfg.get("_personalities", roleslib.DEFAULT_PERSONALITIES),
+        cfg.get("_roles", roleslib.DEFAULT_ROLES), phase_roles,
+        cfg.get("_agent_role_overrides", {}), cfg.get("_role_by_id"))
+    if personas:
+        emit("Personas — " + "; ".join(
+            "%s: %s" % (DISPLAY[a], roleslib.persona_label(personas[a])) for a in speaking))
+
+    # Verification gate (§16): a requires_verification phase (e.g. final review) is
+    # fed the real persisted verification result as context. Set-or-CLEAR each phase.
+    _needs_vlabel = (bool(phasedef.get("requires_verification", False)) if hasattr(phasedef, "get")
+                     else False) or key == "final_review"
+    if _needs_vlabel:
+        _vr = verifylib.load_verify_results(app_dir)
+        _latest = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
+        cfg["_verify_context"] = (
+            "\n\n===== VERIFICATION RESULTS (structured, authoritative) =====\n"
+            + verifylib.summarize_verify_results(_vr, _latest)
+            + "\nThe final VERIFICATION label is derived by the orchestrator from this "
+              "result, not chosen by you — explain it, don't override it.")
+    else:
+        cfg["_verify_context"] = ""
+
+    # Retrieve curated domain knowledge relevant to this phase and stash it so
+    # build_context injects it into every turn this phase (the RAG "specialist").
+    # Few-shot exemplar (fleet learning): a rated-good project's output for
+    # THIS phase key, if one has been exported to knowledge/exemplars/.
+    cfg["_phase_exemplar"] = _load_phase_exemplar(key)
+    cfg["_phase_playbook"] = phaseruleslib.render_phase_playbook(
+        HERE, cfg.get("_workflow_target", "app"), key)
+    if cfg["_phase_playbook"]:
+        emit("Injected phase playbook into phase '%s'." % key)
+    cfg["_knowledge"] = ""
+    if knowlib.should_inject(key):
+        domain = knowlib.domain_for(cget(cfg, "knowledge.domain", ""),
+                                    cfg.get("_workflow_target", "app"),
+                                    original_prompt, phasedef.purpose if hasattr(phasedef, "purpose") else _purpose)
+        cfg["_knowledge"] = knowlib.retrieve(
+            HERE, domain,
+            "%s %s" % (_purpose, original_prompt),
+            max_chars=int(cget(cfg, "knowledge.max_chars", 6000)),
+            top_k=int(cget(cfg, "knowledge.top_k", 3)))
+        if cfg["_knowledge"]:
+            emit("Injected %s knowledge (%d chars) into phase '%s'."
+                 % (domain, len(cfg["_knowledge"]), key))
+
+    # During an enabled build phase, agents work (and write files) directly in a
+    # persistent build folder; otherwise no writes are allowed.
+    allow_writes = (is_build or is_verify_repair) and \
+        bool(cget(cfg, "runtime.build_code_changes_enabled", False))
+    cfg["_allow_writes"] = allow_writes
+    cfg["_build_dir"] = os.path.join(app_dir, "app_build") if allow_writes else None
+    if allow_writes and cfg.get("_workflow_target", "app") == "app" \
+            and bool(cget(cfg, "runtime.golden_scaffold_enabled", True)):
+        _seed_golden_scaffold(cfg["_build_dir"])
+    # Session map must exist on the ORIGINAL cfg before any per-thread shallow
+    # copies are taken, or each copy would grow its own map and lose sessions.
+    cfg.setdefault("_claude_sessions", {})
+    cfg.setdefault("_codex_sessions", {})
+    # Stable per-app cwd for resumed claude sessions (sessions are keyed by cwd,
+    # so the default ephemeral temp dir would orphan them each turn). Discussion
+    # phases stay read-only regardless — acceptEdits is only granted in builds.
+    cfg["_session_cwd"] = None
+    if not allow_writes and bool(cget(cfg, "runtime.claude_session_reuse", True)):
+        cfg["_session_cwd"] = os.path.join(app_dir, ".agent_cwd")
+    # Trim the planning-transcript payload for build turns (see build_context).
+    cfg["_prior_disc_cap"] = int(cget(
+        cfg, "runtime.build_max_prior_discussion_chars", 30000)) if allow_writes else None
+    if allow_writes:
+        os.makedirs(cfg["_build_dir"], exist_ok=True)
+        if is_verify_repair:
+            emit("VERIFY/REPAIR phase: agents may make bounded fixes in %s"
+                 % cfg["_build_dir"])
+        else:
+            emit("BUILD phase: agents may write files in %s" % cfg["_build_dir"])
+
+    # Audit read channel. When a phase reads the target, inject the read-only digest
+    # into every turn; and (only if runtime.audit_live_read_cwd) additionally point
+    # codex/claude's cwd at the target read-only. Set-or-CLEAR on every phase so an
+    # audit read channel can never leak into a later phase or another app.
+    reads = bool(phasedef.get("reads_target", False)) if hasattr(phasedef, "get") else False
+    _portfolio = cfg.get("_target_paths") or []
+    if reads and len(_portfolio) > 0:
+        # library_mining: a combined digest of the whole portfolio.
+        cfg["_target_digest"] = cfg.get("_target_digest") or build_portfolio_digest(_portfolio)
+        cfg["_read_dir"] = None
+        emit("PORTFOLIO phase '%s': %d repos, %d-char digest."
+             % (key, len(_portfolio), len(cfg["_target_digest"])))
+    elif reads and cfg.get("_target_path"):
+        cfg["_target_digest"] = cfg.get("_target_digest") or build_target_digest(cfg["_target_path"])
+        live = (not allow_writes
+                and bool(cget(cfg, "runtime.audit_live_read_cwd", False)))
+        cfg["_read_dir"] = cfg["_target_path"] if live else None
+        emit("AUDIT phase '%s': read-only target %s (%d-char digest%s)."
+             % (key, cfg["_target_path"], len(cfg["_target_digest"]),
+                "; live cwd" if live else ""))
+    else:
+        cfg["_target_digest"] = ""
+        cfg["_read_dir"] = None
+
+    phase_dir = os.path.join(app_dir, folder)
+    os.makedirs(phase_dir, exist_ok=True)
+    md_path = os.path.join(phase_dir, fname)
+
+    unit = "iteration" if is_build else "round"
+    round_desc = "unlimited %ss until consensus" % unit if unlimited_rounds \
+        else "up to %d %s(s)" % (max_rounds, unit)
+    emit("=== Phase '%s' for %s — %s; agents=%s; coordinator=%s ==="
+         % (key, app, round_desc, ",".join(active), coord))
+    live_log(app_dir, key, "orchestrator", "phase_started",
+             "phase '%s' started — %s, coordinator %s"
+             % (key, round_desc, coord))
+    evlib.emit_event(app_dir, "phase_started", project=app, phase=key,
+                     agents=",".join(active), coordinator=coord,
+                     rounds=(0 if unlimited_rounds else max_rounds))
+
+    # Round-level crash resume: scoped to the SEQUENTIAL round loop (plain
+    # discussion/verify-repair phases, and a "build" phase with code changes
+    # disabled) — NOT the parallel build loop (is_build and allow_writes),
+    # whose iterations already land in a git-versioned app_build repo (see
+    # ensure_build_repo) with its own crash-recovery path via that history,
+    # and whose concurrent per-lane worker/worktree state makes a safe
+    # mid-iteration resume a materially harder problem than resuming a
+    # strictly-sequential round.
+    #
+    # The pipeline is strictly sequential (see the phase while-loop in run():
+    # a phase is only entered after every earlier one is in completed_phases,
+    # and process_phase is never called concurrently for two phases), so a
+    # single state["current_phase"] + state["current_round"] pair unambiguously
+    # describes at most one in-flight phase — no per-phase-keyed dict needed.
+    #
+    # "Resuming" requires ALL of: this phase is not in completed_phases
+    # (guaranteed by the caller — it never calls process_phase for a completed
+    # phase), the loaded state says THIS phase was the one in flight
+    # (current_phase == key: set at the start of an earlier, crashed attempt
+    # at this exact phase and never cleared because that attempt didn't
+    # finish — a genuinely fresh phase would see the PREVIOUS phase's key
+    # here instead), and current_round > 0 (at least one round was entered).
+    # The actual resume point is then derived from the .md file itself, not
+    # from current_round directly — see _resume_round_state's docstring for
+    # why the counter alone is not trustworthy.
+    #
+    # V3 board 1.1: conversational phases branch BEFORE the resume/truncate
+    # block below — _resume_round_state's coordinator heuristic would return
+    # resume_round=1 for a coordinator-less transcript, making the else-branch
+    # write_md() TRUNCATE the entire conversation on every re-entry. The
+    # conversational runner owns its own append-only resume.
+    if bool(phasedef.get("conversational", False) if hasattr(phasedef, "get") else False):
+        return _run_conversational_phase(
+            cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
+            state, md_path, personas, active)
+    resume_round, resuming = 1, False
+    if not (is_build and allow_writes) and state.get("current_phase") == key \
+            and int(state.get("current_round") or 0) > 0:
+        try:
+            with open(md_path, encoding="utf-8") as fh:
+                _existing = fh.read()
+        except OSError:
+            _existing = ""
+        if _existing.strip():
+            resume_round, _kept, _header_end = _resume_round_state(_existing)
+            resuming = resume_round > 1
+    if resuming:
+        # Preserve the on-disk transcript (write_md would TRUNCATE it) except
+        # for a trailing incomplete round, which is dropped and redone.
+        write_md(md_path, _kept)
+        transcript = _kept[_header_end:]
+        emit("Phase '%s': resuming a crashed run at round %d (%d completed "
+             "round(s), %d char(s) of transcript recovered)."
+             % (key, resume_round, resume_round - 1, len(transcript)))
+    else:
+        write_md(md_path, phase_header(app, phasedef, original_prompt))
+        transcript = ""
+    extra = phase_extra(cfg, key)
+
+    state["current_phase"] = key
+    save_state(app_dir, state)
+
+    consensus = False
+    final_output = ""
+    quality_repair_limit = max(0, int(cget(cfg, "runtime.phase_quality_repair_rounds", 1) or 0))
+    independent_first = _independent_first_enabled(cfg, is_build or is_verify_repair)
+    if independent_first:
+        emit("Phase '%s': independent first round enabled." % key)
+    if _phase_quality_gate_enabled(cfg, is_build or is_verify_repair):
+        emit("Phase '%s': quality gate enabled (%d repair round%s allowed)."
+             % (key, quality_repair_limit, "" if quality_repair_limit == 1 else "s"))
+
+    # An enabled build phase fans the agents out to build IN PARALLEL (each owns a
+    # lane) with an integrator turn between iterations. Every other phase — and a
+    # build phase with code changes off — stays a sequential, turn-by-turn chat.
+    if is_build and allow_writes:
+        consensus, final_output, transcript = _run_parallel_build(
+            cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
+            state, md_path, max_rounds, transcript, extra, personas=personas)
+    rounds_iter = [] if (is_build and allow_writes) else (
+        itertools.count(resume_round) if unlimited_rounds
+        else range(resume_round, max_rounds + 1))
+    step_in_marker = os.path.join(app_dir, ".step_in")
+    consensus, final_output, transcript, last_substantive, any_agent_output = \
+        _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
+                           prior_outputs, state,
+                           md_path=md_path, transcript=transcript, extra=extra,
+                           personas=personas, active=active, coord=coord,
+                           rounds_iter=rounds_iter, resuming=resuming, unit=unit,
+                           is_build=is_build, is_verify_repair=is_verify_repair,
+                           unlimited_rounds=unlimited_rounds, max_rounds=max_rounds,
+                           independent_first=independent_first,
+                           quality_repair_limit=quality_repair_limit,
+                           step_in_marker=step_in_marker,
+                           consensus=consensus, final_output=final_output)
 
     # A discussion phase that produced nothing at all means every enabled CLI is
     # unavailable — surface that clearly rather than writing an empty decision.
