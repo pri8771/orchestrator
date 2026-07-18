@@ -254,6 +254,48 @@ final class StoreGoldenPathTests: XCTestCase {
                        ?? false, "a dead-pid lock must never render running")
     }
 
+    func testNestedSessionDiscoveryStopAndDeadLock() throws {
+        // V3 3.0 sub-PR B acceptance: a nested session renders and stops
+        // exactly like a flat project — lock under the ENCODED name,
+        // appLocks keyed by the session id via the scanLocks decode.
+        let nested = root.appendingPathComponent("gloam/ideas/chat-one")
+        try FileManager.default.createDirectory(
+            at: nested.appendingPathComponent("initial_prompt"),
+            withIntermediateDirectories: true)
+        FileManager.default.createFile(
+            atPath: root.appendingPathComponent("gloam/.orch-sections").path,
+            contents: Data())
+        try Data("chat".utf8).write(to: nested.appendingPathComponent(
+            "initial_prompt/initial_prompt.md"))
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["300"]
+        let died = expectation(description: "nested child terminated")
+        child.terminationHandler = { _ in died.fulfill() }
+        try child.run()
+        addTeardownBlock {
+            if child.isRunning { child.terminate() }
+            child.waitUntilExit()
+        }
+        let locks = root.appendingPathComponent(".orch-locks")
+        try FileManager.default.createDirectory(
+            at: locks, withIntermediateDirectories: true)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let stem = SessionLayout.encodeLockName("gloam/ideas/chat-one")
+        try Data("pid=\(child.processIdentifier)\nstarted=\(fmt.string(from: Date()))\n".utf8)
+            .write(to: locks.appendingPathComponent("\(stem).lock"))
+        let store = makeStore()
+        refreshAndWait(store)
+        XCTAssertTrue(store.projects.map(\.name).contains("gloam/ideas/chat-one"),
+                      "nested discovery must surface the session id")
+        XCTAssertEqual(store.appLocks["gloam/ideas/chat-one"]?.pid,
+                       child.processIdentifier,
+                       "scanLocks must decode the encoded stem to the id")
+        store.stopRun("gloam/ideas/chat-one")
+        wait(for: [died], timeout: 5)
+    }
+
     // MARK: - Chat history
 
     func testChatHistoryRoundTripsAcrossStoreInstances() {

@@ -99,18 +99,71 @@ enum ChatSessionMint {
     // on both sides, and a shepherd relaunch would run a full build debate on
     // the chat). Name collisions are suffixed -2, -3, … per GLOSSARY — never
     // refused, never overwritten.
+    enum MintError: LocalizedError {
+        case projectConflict(String)
+        var errorDescription: String? {
+            switch self {
+            case .projectConflict(let why):
+                return "can't nest a chat there: \(why)"
+            }
+        }
+    }
+
+    /// Why <root>/<project> cannot host nested sessions, or nil — the
+    /// exact mirror of the engine's _nested_parent_conflict (a session
+    /// nested under a flat/legacy project would be invisible to every
+    /// discovery surface; minting the marker on a user's occupied
+    /// wrapper dir would convert its contents into runnable sessions).
+    static func parentConflict(rootURL: URL, project: String) -> String? {
+        let fm = FileManager.default
+        let pdir = rootURL.appendingPathComponent(project)
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: pdir.path, isDirectory: &isDir) else {
+            return nil
+        }
+        if !isDir.boolValue { return "a file blocks the project dir" }
+        if fm.fileExists(atPath: pdir.appendingPathComponent(
+                "initial_prompt/initial_prompt.md").path) {
+            return "existing flat project"
+        }
+        if fm.fileExists(atPath: pdir.appendingPathComponent(
+                "agent_state.json").path) {
+            return "existing legacy project"
+        }
+        if !fm.fileExists(atPath: pdir.appendingPathComponent(
+                SessionLayout.sectionsMarker).path) {
+            let entries = (try? fm.contentsOfDirectory(atPath: pdir.path)) ?? []
+            if entries.contains(where: { !$0.hasPrefix(".") }) {
+                return "existing unmarked directory"
+            }
+        }
+        return nil
+    }
+
     static func mintChatDir(rootURL: URL, project: String, section: String,
                             title: String, workflow: String,
                             firstMessage: String) throws -> Minted {
         let fm = FileManager.default
-        let base = flatName(project: project, section: section, title: title)
-        var name = base
+        let p = OrchestratorStore.slugify(project)
+        let s = OrchestratorStore.slugify(section)
+        if let why = parentConflict(rootURL: rootURL, project: p) {
+            throw MintError.projectConflict(why)
+        }
+        let t = OrchestratorStore.slugify(title)
+        var name = "\(p)/\(s)/\(t)"
         var n = 2
         while fm.fileExists(atPath: rootURL.appendingPathComponent(name).path) {
-            name = "\(base)-\(n)"
+            name = "\(p)/\(s)/\(t)-\(n)"
             n += 1
         }
         let dir = rootURL.appendingPathComponent(name)
+        try fm.createDirectory(at: rootURL.appendingPathComponent(p),
+                               withIntermediateDirectories: true)
+        // The engine-recognised section-container marker: without it,
+        // find_apps never recurses (wrapper dirs stay inert).
+        fm.createFile(atPath: rootURL.appendingPathComponent(p)
+            .appendingPathComponent(SessionLayout.sectionsMarker).path,
+            contents: Data())
         let promptDir = dir.appendingPathComponent("initial_prompt")
         try fm.createDirectory(at: promptDir, withIntermediateDirectories: true)
         try firstMessage.write(to: promptDir.appendingPathComponent("initial_prompt.md"),

@@ -6,18 +6,8 @@ import SwiftUI
 
 private enum BackgroundProjectLoader {
     static func discoverApps(rootURL: URL) -> [String] {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: rootURL.path) else { return [] }
-        var apps: [String] = []
-        for name in items.sorted() {
-            if name.hasPrefix(".") { continue }
-            let dir = rootURL.appendingPathComponent(name)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { continue }
-            let prompt = dir.appendingPathComponent("initial_prompt/initial_prompt.md")
-            if fm.fileExists(atPath: prompt.path) { apps.append(name) }
-        }
-        return apps
+        // V3 3.0: flat + nested (marker-gated) — one shared implementation.
+        SessionLayout.discoverApps(rootURL: rootURL)
     }
 
     static func loadProjects(names: [String],
@@ -407,7 +397,9 @@ enum FactoryScanner {
         guard let items = try? fm.contentsOfDirectory(atPath: dir.path) else { return [:] }
         var out: [String: AppLockInfo] = [:]
         for f in items where f.hasSuffix(".lock") {
-            let app = String(f.dropLast(".lock".count))
+            // Nested stems decode back to the session id (hash-verified);
+            // flat stems pass through raw — appLocks keys == Project.name.
+            let app = SessionLayout.decodeLockStem(String(f.dropLast(".lock".count)))
             let p = dir.appendingPathComponent(f)
             let text = (try? String(contentsOf: p, encoding: .utf8)) ?? ""
             let pid = text.split(whereSeparator: { $0 == " " || $0 == "\n" })
@@ -1301,7 +1293,9 @@ final class OrchestratorStore: ObservableObject {
                     self.runLog += out
                     return
                 }
-                let parts = name.components(separatedBy: "--")
+                let parts = name.contains("/")
+                    ? name.components(separatedBy: "/")
+                    : name.components(separatedBy: "--")
                 self.chatSessions[name] = ChatSession(
                     id: name,
                     project: parts.count == 3 ? parts[0] : name,
@@ -2853,17 +2847,7 @@ final class OrchestratorStore: ObservableObject {
     }
 
     private func discoverApps() -> [String] {
-        guard let items = try? fm.contentsOfDirectory(atPath: rootURL.path) else { return [] }
-        var apps: [String] = []
-        for name in items.sorted() {
-            if name.hasPrefix(".") { continue }
-            let dir = rootURL.appendingPathComponent(name)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { continue }
-            let prompt = dir.appendingPathComponent("initial_prompt/initial_prompt.md")
-            if fm.fileExists(atPath: prompt.path) { apps.append(name) }
-        }
-        return apps
+        SessionLayout.discoverApps(rootURL: rootURL)
     }
 
     private func loadProject(_ name: String) -> Project? {
@@ -3599,7 +3583,7 @@ final class OrchestratorStore: ObservableObject {
             // the same file; the engine-local path is the legacy location.
             // Only delete a lock the STOPPED run (or a dead process) owns — a
             // relaunch within this 5s grace may already hold a fresh lock.
-            for lockURL in [self.rootURL.appendingPathComponent(".orch-locks/\(name).lock"),
+            for lockURL in [SessionLayout.lockURL(rootURL: self.rootURL, id: name),
                             self.orchDirURL.appendingPathComponent("locks/\(name).lock")] {
                 guard let text = try? String(contentsOf: lockURL, encoding: .utf8) else { continue }
                 let ownerPid = text.split(separator: " ")
@@ -3875,7 +3859,7 @@ final class OrchestratorStore: ObservableObject {
             stopProject(name)
             return
         }
-        let lockURL = rootURL.appendingPathComponent(".orch-locks/\(name).lock")
+        let lockURL = SessionLayout.lockURL(rootURL: rootURL, id: name)
         manualStops[name] = Date()
         guard let pid = appLocks[name]?.pid, pid > 0 else {
             clearLockFile(lockURL, name)

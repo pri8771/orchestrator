@@ -114,7 +114,9 @@ final class ChatSessionLifecycleTests: XCTestCase {
         let minted = try ChatSessionMint.mintChatDir(
             rootURL: tmp, project: "nimbus", section: "ideas", title: "brainstorm",
             workflow: "chat_ideas", firstMessage: "let's think")
-        XCTAssertEqual(minted.name, "nimbus--ideas--brainstorm")
+        // V3 3.0: chats mint NESTED (project/section/chat); the flat
+        // "--" convention survives only as legacy data.
+        XCTAssertEqual(minted.name, "nimbus/ideas/brainstorm")
         let prompt = minted.dirURL.appendingPathComponent("initial_prompt/initial_prompt.md")
         XCTAssertEqual(try String(contentsOf: prompt, encoding: .utf8), "let's think")
         // workflow.txt is ALWAYS written: a chat dir without it resolves to
@@ -136,7 +138,7 @@ final class ChatSessionLifecycleTests: XCTestCase {
             rootURL: tmp, project: "p", section: "s", title: "t",
             workflow: "chat_ideas", firstMessage: "three")
         XCTAssertEqual([first.name, second.name, third.name],
-                       ["p--s--t", "p--s--t-2", "p--s--t-3"])
+                       ["p/s/t", "p/s/t-2", "p/s/t-3"])
         // The originals are untouched.
         let firstPrompt = first.dirURL.appendingPathComponent("initial_prompt/initial_prompt.md")
         XCTAssertEqual(try String(contentsOf: firstPrompt, encoding: .utf8), "one")

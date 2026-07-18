@@ -1,5 +1,5 @@
 {
-  "_note": "V3 board 3.0 lock-encoding contract. Flat ids map RAW; nested ids: percent-encode the NFC-NORMALIZED id (unreserved A-Za-z0-9_.~-) + '.' + 8-hex sha256 of the NFC+casefolded id — locks coalesce exactly when a case/normalization-insensitive filesystem coalesces the session dirs. Python (orchestrator.encode_lock_name) and Swift (the GUI mirror, sub-PR B) must reproduce every pair byte-identically.",
+  "_note": "V3 board 3.0 lock-encoding contract. Flat ids map RAW; nested ids: percent-encode the NFC-NORMALIZED id (unreserved A-Za-z0-9_.~-, uppercase hex, UTF-8 bytes) + '.' + first 8 hex of sha256 of the NFC-normalized LOWERCASED id (str.lower / Swift lowercased — NOT full casefold; the two implementations must agree byte-for-byte). Locks coalesce exactly when a case/normalization-insensitive filesystem coalesces the session dirs. Python: orchestrator.encode_lock_name; Swift: SessionLayout.encodeLockName. Neither side may 'adjust' this file to pass — that is by definition an encoding bug.",
   "cases": [
     {
       "id": "gloam",
@@ -44,6 +44,10 @@
     {
       "id": "café/section/chat",
       "lock": "caf%C3%A9%2Fsection%2Fchat.61d535d9"
+    },
+    {
+      "id": "Straße/S/C",
+      "lock": "Stra%C3%9Fe%2FS%2FC.97b1e256"
     }
   ]
 }

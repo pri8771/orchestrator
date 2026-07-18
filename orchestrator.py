@@ -396,7 +396,11 @@ def encode_lock_name(session_id):
     # case-SENSITIVE volume the quoted parts differ, so genuinely
     # distinct dirs keep distinct locks. Verified: without this, a casing
     # typo in --app let two orchestrators run one nested session.
-    canon = unicodedata.normalize("NFC", sid).casefold()
+    # .lower() not .casefold(): Swift has no full case folding, and the
+    # two sides MUST agree byte-for-byte (Python str.lower == Swift
+    # lowercased() under Unicode default case conversion). Residual: APFS
+    # may fold pairs .lower() does not (ss/ß) — accepted and documented.
+    canon = unicodedata.normalize("NFC", sid).lower()
     digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:8]
     return "%s.%s" % (quoted, digest)
 
