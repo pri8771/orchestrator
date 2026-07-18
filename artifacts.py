@@ -65,6 +65,7 @@ import hashlib
 import json
 import os
 import re
+import reprlib
 import shutil
 import threading
 import unicodedata
@@ -291,6 +292,49 @@ def _lineage_lock_path(project_dir, root_id):
                         ".lineage-%s.lock" % root_id)
 
 
+# One bad meta.json must never blind the store or crash a reader (the
+# house rule: reported via on_error, never raised). These helpers coerce
+# the lineage fields off disk to their intended types, so a hand-edited
+# or upgrade-era corrupt value degrades to documented legacy behavior
+# instead of poisoning sort keys, lock names, or the derivation math.
+def _int_field(value, fallback):
+    return value if isinstance(value, int) and not isinstance(value, bool) \
+        else fallback
+
+
+def _lineage_list(meta, on_error):
+    """meta.lineage as a list of str ancestor ids; a non-list is reported
+    and treated as legacy-empty, non-string members are dropped."""
+    lin = meta.get("lineage")
+    if isinstance(lin, list):
+        return [x for x in lin if isinstance(x, str)]
+    if lin is not None:
+        on_error("artifact %r: lineage is not a list — treating as legacy "
+                 "(empty)" % (meta.get("id"),))
+    return []
+
+
+def _meta_root(meta):
+    """The lineage root id of any member meta (lineage[0], else self)."""
+    lin = meta.get("lineage")
+    if isinstance(lin, list) and lin and isinstance(lin[0], str):
+        return lin[0]
+    return meta.get("id")
+
+
+# Bounded rendering of untrusted values in refusal/error messages: an
+# agent-emitted parents bomb (200k ids) or a megabyte id must not inflate
+# the WARN/event stream, which the call site caps at [:300] downstream.
+_CLIP = reprlib.Repr()
+_CLIP.maxstring = 200
+_CLIP.maxlist = 10
+_CLIP.maxother = 200
+
+
+def _short(value):
+    return _CLIP.repr(value)
+
+
 def _derivation_plan(project_dir, pid, body_bytes, type_name, title,
                      entry, source_section, on_error):
     """The lineage fields for a supersedes=<pid> publish, computed UNDER
@@ -304,10 +348,8 @@ def _derivation_plan(project_dir, pid, body_bytes, type_name, title,
         on_error("publish rejected: cannot derive from CONVERGED %r — a "
                  "convergence tombstone ends its loop" % (pid,))
         return None
-    plineage = parent.get("lineage") or []
-    pdepth = parent.get("depth")
-    if not isinstance(pdepth, int) or isinstance(pdepth, bool):
-        pdepth = len(plineage)  # legacy metas: derive
+    plineage = _lineage_list(parent, on_error)
+    pdepth = _int_field(parent.get("depth"), len(plineage))
     cap = entry.get("max_depth", DEFAULT_MAX_DEPTH)
     if type_name != "reconcile" and pdepth + 1 > cap:
         on_error("publish REFUSED: deriving from %r would exceed the "
@@ -328,11 +370,8 @@ def _derivation_plan(project_dir, pid, body_bytes, type_name, title,
                          "content is already published as %r"
                          % (m.get("id"),))
                 return None
-    pver = parent.get("version") if isinstance(parent.get("version"),
-                                               int) else 1
-    phops = parent.get("hop_count")
-    if not isinstance(phops, int) or isinstance(phops, bool):
-        phops = 0
+    pver = _int_field(parent.get("version"), 1)
+    phops = _int_field(parent.get("hop_count"), 0)
     psection = ((parent.get("source") or {}).get("section")
                 if isinstance(parent.get("source"), dict) else "") or ""
     hop = 0 if (source_section and source_section == psection) else 1
@@ -477,18 +516,54 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
     # lineage holds that lineage's lock, so the derivation plan computed
     # under it can never go stale.
     lin_fd = None
+    lroot = None
+    parents = None
     if supersedes is not None:
+        if type_name == "reconcile":
+            on_error("publish rejected: a reconcile merges via its "
+                     "'parents' list — it may not also supersede")
+            return None
         if not _valid_artifact_id(supersedes):
-            on_error("publish rejected: supersedes %r is not a valid "
-                     "artifact id" % (supersedes,))
+            on_error("publish rejected: supersedes %s is not a valid "
+                     "artifact id" % (_short(supersedes),))
             return None
         pre = load_meta(project_dir, supersedes, on_error=on_error)
         if pre is None:
-            on_error("publish rejected: cannot derive — parent %r is "
-                     "missing or unreadable" % (supersedes,))
+            on_error("publish rejected: cannot derive — parent %s is "
+                     "missing or unreadable" % (_short(supersedes),))
             return None
-        plin = pre.get("lineage") or []
+        plin = _lineage_list(pre, on_error)
         lroot = plin[0] if plin else supersedes
+    elif type_name == "reconcile":
+        # Merge declaration: >=2 distinct valid ids sharing ONE root
+        # (the root names the lock; head-set equality is re-checked
+        # under it). Per-element validity is checked BEFORE set(), so an
+        # unhashable list/dict member (valid JSON an agent could emit)
+        # takes the refusal path instead of raising TypeError.
+        raw = extras.get("parents")
+        if (not isinstance(raw, list) or len(raw) < 2
+                or any(not _valid_artifact_id(p) for p in raw)
+                or len(set(raw)) != len(raw)):
+            on_error("publish rejected: reconcile 'parents' must be a "
+                     "list of >=2 distinct artifact ids, got %s"
+                     % (_short(raw),))
+            return None
+        parents = list(raw)
+        roots = set()
+        for pid in parents:
+            m = load_meta(project_dir, pid, on_error=on_error)
+            if m is None:
+                on_error("publish rejected: reconcile parent %s is "
+                         "missing or unreadable" % (_short(pid),))
+                return None
+            roots.add(_meta_root(m))
+        if len(roots) != 1:
+            on_error("publish rejected: reconcile parents span %d "
+                     "lineages (%s) — a reconcile merges ONE lineage"
+                     % (len(roots), sorted(map(repr, roots))))
+            return None
+        lroot = roots.pop()
+    if lroot is not None:
         try:
             lin_fd = os.open(_lineage_lock_path(project_dir, lroot),
                              os.O_CREAT | os.O_RDWR, 0o644)
@@ -511,6 +586,12 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
                 return None
             if plan["forced_status"] is not None:
                 status = plan["forced_status"]
+        elif parents is not None:
+            plan = _reconcile_plan(project_dir, parents,
+                                   source["section"], on_error)
+            if plan is None:
+                return None
+            extras["parents"] = plan.pop("parents_sorted")
         try:
             guard_fd = os.open(os.path.join(root, ".publish.lock"),
                                os.O_CREAT | os.O_RDWR, 0o644)
@@ -669,7 +750,7 @@ def load_meta(project_dir, artifact_id, on_error=None):
     if on_error is None:
         on_error = lambda _msg: None
     if not _valid_artifact_id(artifact_id):
-        on_error("artifact %r has an invalid id" % (artifact_id,))
+        on_error("artifact %s has an invalid id" % (_short(artifact_id),))
         return None
     path = os.path.join(artifact_dir(project_dir, artifact_id), "meta.json")
     try:
@@ -692,7 +773,7 @@ def read_body(project_dir, artifact_id, on_error=None):
     if on_error is None:
         on_error = lambda _msg: None
     if not _valid_artifact_id(artifact_id):
-        on_error("artifact %r has an invalid id" % (artifact_id,))
+        on_error("artifact %s has an invalid id" % (_short(artifact_id),))
         return None
     path = os.path.join(artifact_dir(project_dir, artifact_id), "body.md")
     try:
@@ -738,3 +819,209 @@ def list_artifacts(project_dir, type=None, status=None, on_error=None):
             continue
         out.append(meta)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 4.3 read side: the lineage index, head computation, latest_final,
+# staleness. House style holds: reported via on_error, never raised.
+# ---------------------------------------------------------------------------
+def lineage_index(project_dir, on_error=None):
+    """One O(N) scan powering every lineage read helper — pass it via
+    index= to lineage_heads/latest_final/is_stale when badging a whole
+    store (4.9), so N artifacts cost one scan, not N."""
+    idx = {"children": {}, "reconciled": {}, "by_id": {}}
+    metas = list_artifacts(project_dir, on_error=on_error)
+    for m in metas:
+        idx["by_id"][m["id"]] = m
+        parent = m.get("supersedes")
+        if isinstance(parent, str):
+            idx["children"].setdefault(parent, []).append(m)
+    # Reconcile edges are added in a SECOND pass, and ONLY when the
+    # reconcile shares the head's lineage root. A reconcile whose parents
+    # name a foreign lineage (a 4.2-era store wrote `parents` unvalidated,
+    # so real upgrade data can carry this) must never splice two lineages
+    # together and make latest_final silently return a foreign artifact.
+    for m in metas:
+        if m.get("type") != "reconcile":
+            continue
+        declared = (m.get("fields") or {}).get("parents") \
+            if isinstance(m.get("fields"), dict) else None
+        if not isinstance(declared, list):
+            continue
+        mroot = _meta_root(m)
+        for head in declared:
+            if not isinstance(head, str):
+                continue
+            hm = idx["by_id"].get(head)
+            if hm is not None and _meta_root(hm) == mroot:
+                idx["reconciled"].setdefault(head, []).append(m)
+    return idx
+
+
+def _members_from(idx, root_id):
+    """Every member of a lineage reachable from its root via supersedes
+    edges and reconcile merges. The visited set bounds hand-edited
+    cycles — the walk always terminates."""
+    members = set()
+    frontier = [root_id]
+    while frontier:
+        cur = frontier.pop()
+        if cur in members:
+            continue
+        members.add(cur)
+        frontier.extend(c["id"] for c in idx["children"].get(cur, []))
+        frontier.extend(r["id"] for r in idx["reconciled"].get(cur, []))
+    return members
+
+
+def _branch_label(meta):
+    """Display label for refusal messages: the ""-branch head is 'a'
+    when named alongside siblings (v3-a/v3-b per the card)."""
+    return meta.get("branch") or "a"
+
+
+def lineage_heads(project_dir, root, on_error=None, *, index=None):
+    """The unreconciled live head metas of ``root``'s lineage (root may
+    be ANY member id), sorted by (version, branch, id). None only for an
+    unknown id. Converged tombstones are pruned (they are always
+    leaves), so a converged tip resolves to its live ancestor; a node
+    is consumed by a reconcile that lists it. No refusal semantics here
+    — latest_final layers those on."""
+    if on_error is None:
+        on_error = lambda _msg: None
+    if not isinstance(root, str):
+        # An unhashable/non-str id must report like any other unknown id,
+        # never raise at the dict lookup below (readers never raise).
+        on_error("lineage %s: unknown artifact" % (_short(root),))
+        return None
+    idx = index if index is not None else lineage_index(
+        project_dir, on_error=on_error)
+    meta = idx["by_id"].get(root)
+    if meta is None:
+        on_error("lineage %r: unknown artifact" % (root,))
+        return None
+    root_id = _meta_root(meta)
+    members = _members_from(idx, root_id)
+    heads = []
+    for mid in members:
+        m = idx["by_id"].get(mid)
+        if m is None or m.get("status") == "converged":
+            continue
+        live_kids = [c for c in idx["children"].get(mid, [])
+                     if c.get("status") != "converged"
+                     and c["id"] in members]
+        if live_kids:
+            continue
+        if [r for r in idx["reconciled"].get(mid, [])
+                if r["id"] in members]:
+            continue
+        heads.append(m)
+    # Type-safe sort key: a hand-edited/upgrade meta with "version":"2"
+    # or a numeric branch must not raise a str/int comparison TypeError —
+    # exactly the branched (>=2 heads) case latest_final exists to
+    # referee. m["id"] is always the directory-name str (list_artifacts
+    # forces it). Never drop a mistyped head: that would let latest_final
+    # silently pick a winner.
+    def _head_key(m):
+        return (_int_field(m.get("version"), 0),
+                m.get("branch") if isinstance(m.get("branch"), str) else "",
+                m["id"])
+    heads.sort(key=_head_key)
+    return heads
+
+
+def latest_final(project_dir, root, on_error=None, *, index=None):
+    """The resolved tip meta of a lineage, or None with the reason
+    reported. On a branched, unreconciled lineage this REFUSES, naming
+    every head — it never silently picks a winner (R2). After a valid
+    reconcile it returns the reconcile artifact; a superseded reconcile
+    resolves to its child; a branched reconcile refuses again,
+    recursively, from the same head computation."""
+    if on_error is None:
+        on_error = lambda _msg: None
+    idx = index if index is not None else lineage_index(
+        project_dir, on_error=on_error)
+    heads = lineage_heads(project_dir, root, on_error=on_error, index=idx)
+    if heads is None:
+        return None
+    if len(heads) == 1:
+        return heads[0]
+    if not heads:
+        on_error("lineage %r is unresolvable (no live head — cycle or "
+                 "corruption)" % (root,))
+        return None
+    named = ", ".join("%s (v%s-%s)" % (m["id"],
+                                       _int_field(m.get("version"), 0),
+                                       _branch_label(m))
+                      for m in heads)
+    on_error("lineage %r is branched: heads %s — publish a 'reconcile' "
+             "artifact listing all heads" % (root, named))
+    return None
+
+
+def _reconcile_plan(project_dir, parents, source_section, on_error):
+    """Under the lineage lock: the parent set must EQUAL the current
+    unreconciled head set (a reconcile naming one head, a non-head
+    interior node, a subset, or stale heads is refused, naming the
+    difference). Reconciles are cap-EXEMPT — they are the mandated exit
+    from a branched state, and refusing one would wedge latest_final
+    forever."""
+    idx = lineage_index(project_dir, on_error=on_error)
+    metas = []
+    for pid in parents:
+        m = idx["by_id"].get(pid)
+        if m is None:
+            on_error("publish rejected: reconcile parent %s vanished "
+                     "before the lineage lock" % (_short(pid),))
+            return None
+        metas.append(m)
+    heads = lineage_heads(project_dir, metas[0]["id"],
+                          on_error=on_error, index=idx) or []
+    head_ids = sorted(h["id"] for h in heads)
+    if sorted(parents) != head_ids:
+        on_error("publish rejected: reconcile parents %s must equal the "
+                 "lineage's current unreconciled head set %s"
+                 % (sorted(parents), head_ids))
+        return None
+    chains = [_lineage_list(m, on_error) + [m["id"]] for m in metas]
+    lcp = []
+    for step in zip(*chains):
+        if all(v == step[0] for v in step):
+            lcp.append(step[0])
+        else:
+            break
+    depths = [_int_field(m.get("depth"), len(_lineage_list(m, on_error)))
+              for m in metas]
+    hops = [_int_field(m.get("hop_count"), 0) for m in metas]
+    versions = [_int_field(m.get("version"), 1) for m in metas]
+    sections = [(m.get("source") or {}).get("section") or ""
+                for m in metas if isinstance(m.get("source"), dict)]
+    inc = 0 if (source_section
+                and source_section in [s for s in sections if s]) else 1
+    return {"supersedes": None, "lineage": lcp,
+            "version": max(versions) + 1, "branch": "",
+            "depth": max(depths) + 1, "hop_count": max(hops) + inc,
+            "forced_status": None, "parents_sorted": sorted(parents)}
+
+
+def is_stale(project_dir, meta, on_error=None, *, index=None):
+    """True iff this artifact has an AUTHORITATIVE successor: exactly
+    one non-converged superseding child (the linear next version), or
+    any reconcile listing it as a parent. Rival unreconciled branch
+    heads do NOT make their parent stale — there is no authoritative
+    successor yet, and a stale badge would push consumers toward the
+    exact guess latest_final refuses. A converged child never stales
+    its parent (the parent IS the live content). Shared by 4.9's badge
+    and 4.7's retrieval preference."""
+    if not isinstance(meta, dict):
+        return False
+    mid = meta.get("id")
+    if not isinstance(mid, str):
+        return False
+    idx = index if index is not None else lineage_index(
+        project_dir, on_error=on_error)
+    if idx["reconciled"].get(mid):
+        return True
+    live = [c for c in idx["children"].get(mid, [])
+            if c.get("status") != "converged"]
+    return len(live) == 1

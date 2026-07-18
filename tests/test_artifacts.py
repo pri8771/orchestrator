@@ -853,6 +853,321 @@ class TestLineagePublish(_Base):
 
 
 # ---------------------------------------------------------------------------
+# V3 board 4.3 (commit 2): resolvers + reconcile + staleness.
+# ---------------------------------------------------------------------------
+class TestLineageResolvers(_Base):
+    def _root(self, title="Root", body="v1\n"):
+        return self._publish({"type": "idea", "title": title,
+                              "source": {"section": "ideas"}}, body=body)
+
+    def _derive(self, parent, body, title="Derived"):
+        return artlib.publish(
+            self.project, body, {"type": "idea", "title": title,
+                                 "source": {"section": "ideas"}},
+            self.registry, on_error=self.errors.append, supersedes=parent)
+
+    def _reconcile(self, parents, body="merged\n", title="Merge"):
+        return artlib.publish(
+            self.project, body,
+            {"type": "reconcile", "title": title, "parents": parents,
+             "source": {"section": "ideas"}},
+            self.registry, on_error=self.errors.append)
+
+    def _branched(self):
+        r = self._root()
+        a = self._derive(r, "path a\n", title="Alpha")
+        b = self._derive(r, "path b\n", title="Beta")
+        self.assertEqual(self.errors, [])
+        return r, a, b
+
+    def test_linear_chain_resolves_to_the_tip(self):
+        r = self._root()
+        c = self._derive(r, "v2\n")
+        for member in (r, c):
+            got = artlib.latest_final(self.project, member,
+                                      on_error=self.errors.append)
+            self.assertEqual(got["id"], c,
+                             "any member id resolves, incl. mid-chain")
+        self.assertEqual(self.errors, [])
+
+    def test_branched_lineage_refuses_naming_every_head(self):
+        r, a, b = self._branched()
+        errs = []
+        self.assertIsNone(artlib.latest_final(self.project, r,
+                                              on_error=errs.append))
+        self.assertEqual(len(errs), 1)
+        msg = errs[0]
+        for frag in (a, b, "v2-a", "v2-b", "reconcile"):
+            self.assertIn(frag, msg, msg)
+        heads = artlib.lineage_heads(self.project, r)
+        self.assertEqual([h["id"] for h in heads], sorted([a, b]))
+
+    def test_reconcile_restores_latest_final(self):
+        r, a, b = self._branched()
+        rec = self._reconcile([b, a])   # order-insensitive, stored sorted
+        self.assertIsNotNone(rec, self.errors)
+        self.assertEqual(self.errors, [])
+        meta = artlib.load_meta(self.project, rec)
+        self.assertEqual(meta["fields"]["parents"], sorted([a, b]))
+        self.assertEqual(meta["supersedes"], None)
+        self.assertEqual(meta["lineage"], [r])
+        self.assertEqual(meta["depth"], 2)
+        got = artlib.latest_final(self.project, r,
+                                  on_error=self.errors.append)
+        self.assertEqual(got["id"], rec,
+                         "after reconcile, THE acceptance criterion")
+        self.assertEqual(self.errors, [])
+
+    def test_reconcile_refusals_name_the_difference(self):
+        r, a, b = self._branched()
+        cases = [
+            [a],                       # one head
+            [a, r],                    # interior node instead of a head
+            "not-a-list",
+            [a, a],                    # duplicates
+        ]
+        for parents in cases:
+            self.errors.clear()
+            self.assertIsNone(self._reconcile(parents), repr(parents))
+            self.assertGreaterEqual(len(self.errors), 1, repr(parents))
+        # Subset of three heads: the message names the head set.
+        c = self._derive(r, "path c\n", title="Gamma")
+        self.errors.clear()
+        self.assertIsNone(self._reconcile([a, b]))
+        self.assertIn(c, self.errors[-1],
+                      "the refusal must name what is missing")
+
+    def test_cross_root_reconcile_refused(self):
+        _r1, a, b = self._branched()
+        other = self._publish({"type": "idea", "title": "Elsewhere",
+                               "source": {"section": "ideas"}},
+                              body="other\n")
+        self.errors.clear()
+        self.assertIsNone(self._reconcile([a, other]))
+        self.assertIn("ONE lineage", self.errors[-1])
+        self.assertIsNone(self._reconcile([a, b, other]))
+
+    def test_reconcile_once_born_is_ordinary(self):
+        r, a, b = self._branched()
+        rec = self._reconcile([a, b])
+        nxt = self._derive(rec, "beyond the merge\n", title="Post")
+        self.assertEqual(
+            artlib.latest_final(self.project, r)["id"], nxt,
+            "a superseded reconcile resolves to its child")
+        sib = self._derive(rec, "rival\n", title="Rival")
+        errs = []
+        self.assertIsNone(artlib.latest_final(self.project, r,
+                                              on_error=errs.append))
+        self.assertIn(sib, errs[0])
+        self.assertIn(nxt, errs[0])
+
+    def test_converged_tip_resolves_to_its_live_ancestor(self):
+        r = self._root(body="stable\n")
+        c = self._derive(r, "stable\n")   # converged tombstone
+        got = artlib.latest_final(self.project, r,
+                                  on_error=self.errors.append)
+        self.assertEqual(got["id"], r,
+                         "the tombstone is pruned, the ancestor is live")
+        self.assertEqual(artlib.load_meta(self.project, c)["status"],
+                         "converged")
+        # A converged child alongside a real one never demands reconcile.
+        real = self._derive(r, "progress\n", title="Real")
+        self.assertEqual(artlib.latest_final(self.project, r)["id"], real)
+
+    def test_is_stale_matrix(self):
+        r, a, b = self._branched()
+        rm = artlib.load_meta(self.project, r)
+        self.assertFalse(
+            artlib.is_stale(self.project, rm),
+            "rival unreconciled branch heads do NOT stale the parent")
+        rec = self._reconcile([a, b])
+        self.assertTrue(artlib.is_stale(self.project,
+                                        artlib.load_meta(self.project, a)),
+                        "a reconciled head IS stale")
+        r2 = self._root(title="Linear", body="l1\n")
+        c2 = self._derive(r2, "l2\n", title="Linear next")
+        self.assertTrue(artlib.is_stale(
+            self.project, artlib.load_meta(self.project, r2)),
+            "exactly one live child = authoritative successor")
+        r3 = self._root(title="Stable base", body="s\n")
+        self._derive(r3, "s\n", title="Tomb")   # converged child
+        self.assertFalse(artlib.is_stale(
+            self.project, artlib.load_meta(self.project, r3)),
+            "a converged child never stales its parent")
+        self.assertIsNotNone(rec)
+        self.assertIsNotNone(c2)
+
+    def test_unknown_id_and_cycle_terminate_with_reports(self):
+        errs = []
+        self.assertIsNone(artlib.latest_final(self.project, "ghost",
+                                              on_error=errs.append))
+        self.assertEqual(len(errs), 1)
+        # Hand-edited 2-cycle: a supersedes b, b supersedes a.
+        a = self._root(title="Cycle A")
+        b = self._root(title="Cycle B")
+        for x, y in ((a, b), (b, a)):
+            path = os.path.join(artlib.artifact_dir(self.project, x),
+                                "meta.json")
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            doc["supersedes"] = y
+            doc["lineage"] = [y]
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+        errs = []
+        self.assertIsNone(artlib.latest_final(self.project, a,
+                                              on_error=errs.append))
+        self.assertIn("unresolvable", errs[-1])
+
+    def test_shared_index_is_reused(self):
+        r = self._root()
+        c = self._derive(r, "v2\n")
+        idx = artlib.lineage_index(self.project)
+        self.assertEqual(
+            artlib.latest_final(self.project, r, index=idx)["id"], c)
+        self.assertTrue(artlib.is_stale(
+            self.project, idx["by_id"][r], index=idx))
+
+    def test_reconcile_is_cap_exempt(self):
+        # Drive a lineage to the cap, branch it there, reconcile: the
+        # reconcile's depth EXCEEDS the cap and must still publish.
+        aid = self._root()
+        for i in range(3):
+            aid = self._derive(aid, "v%d\n" % (i + 2))
+        x = self._derive(aid, "x\n", title="X")     # depth 4 == cap
+        y = self._derive(aid, "y\n", title="Y")     # branch at cap
+        self.assertEqual(self.errors, [])
+        rec = self._reconcile([x, y])
+        self.assertIsNotNone(rec, "reconcile is the mandated exit — "
+                                  "cap-refusing it wedges the lineage")
+        self.assertEqual(artlib.load_meta(self.project, rec)["depth"], 5)
+
+
+# ---------------------------------------------------------------------------
+# V3 board 4.3: regressions from the lineage-machinery verification pass —
+# each pins an execution-confirmed defect (readers must never raise; a
+# reconcile must never splice foreign lineages).
+# ---------------------------------------------------------------------------
+class TestLineageRobustness(_Base):
+    def _root(self, title="Root", body="v1\n"):
+        return self._publish({"type": "idea", "title": title,
+                              "source": {"section": "ideas"}}, body=body)
+
+    def _derive(self, parent, body, title="Derived"):
+        return artlib.publish(
+            self.project, body, {"type": "idea", "title": title,
+                                 "source": {"section": "ideas"}},
+            self.registry, on_error=self.errors.append, supersedes=parent)
+
+    def _corrupt(self, aid, **fields):
+        path = os.path.join(artlib.artifact_dir(self.project, aid),
+                            "meta.json")
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        doc.update(fields)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+
+    def test_unhashable_reconcile_parents_refuse_never_raise(self):
+        # THE critical one: an agent-emitted reconcile block whose parents
+        # carries a nested list/dict is valid JSON — publish must refuse,
+        # not raise a TypeError that crashes the whole phase close.
+        for hostile in ([["nested"], "x"], [{"k": 1}, "y"], [["a"], ["b"]]):
+            self.errors.clear()
+            aid = artlib.publish(
+                self.project, "body\n",
+                {"type": "reconcile", "title": "Bad", "parents": hostile,
+                 "source": {"section": "ideas"}},
+                self.registry, on_error=self.errors.append)
+            self.assertIsNone(aid, repr(hostile))
+            self.assertEqual(len(self.errors), 1, repr(hostile))
+            self.assertIn("distinct artifact ids", self.errors[0])
+
+    def test_malformed_reconcile_block_lets_siblings_publish(self):
+        # publish_from_output must not lose sibling artifacts when one
+        # block is a malformed reconcile (the phase-close loss path).
+        out = "\n".join([
+            "```artifact-json\n%s\n```" % json.dumps(
+                {"type": "reconcile", "title": "Bad",
+                 "parents": [["unhashable"]], "body": "m"}),
+            "```artifact-json\n%s\n```" % json.dumps(
+                {"type": "idea", "title": "Survivor", "body": "ok"}),
+        ])
+        ids = artlib.publish_from_output(self.project, out, {},
+                                         self.registry,
+                                         on_error=self.errors.append)
+        self.assertEqual(ids, ["survivor"])
+
+    def test_cross_lineage_reconcile_never_splices(self):
+        # A reconcile whose parents name a FOREIGN lineage (reachable in
+        # 4.2-era stores that wrote parents unvalidated) must not make
+        # latest_final silently return a foreign artifact.
+        x = self._root(title="Solo", body="solo\n")
+        r = self._root(title="Base")
+        a = self._derive(r, "a\n", title="A")
+        b = self._derive(r, "b\n", title="B")
+        rec = artlib.publish(
+            self.project, "merged\n",
+            {"type": "reconcile", "title": "M", "parents": [a, b],
+             "source": {"section": "ideas"}},
+            self.registry, on_error=self.errors.append)
+        # Hand-poison the stored reconcile to also claim the foreign head.
+        self._corrupt(rec, fields=dict(
+            artlib.load_meta(self.project, rec)["fields"], parents=[a, b, x]))
+        errs = []
+        got = artlib.latest_final(self.project, x, on_error=errs.append)
+        self.assertEqual(got["id"], x,
+                         "the solo lineage still resolves to itself")
+        self.assertFalse(artlib.is_stale(self.project,
+                                         artlib.load_meta(self.project, x)))
+
+    def test_corrupt_version_does_not_crash_the_branched_referee(self):
+        r = self._root()
+        a = self._derive(r, "a\n", title="A")
+        b = self._derive(r, "b\n", title="B")
+        self._corrupt(b, version="2")   # string, not int
+        errs = []
+        got = artlib.latest_final(self.project, r, on_error=errs.append)
+        self.assertIsNone(got, "still refuses, does not raise")
+        self.assertEqual(len(errs), 1)
+        self.assertIn("branched", errs[0])
+        self.assertIsNotNone(a)
+
+    def test_non_list_lineage_degrades_to_legacy(self):
+        r = self._root()
+        self._corrupt(r, lineage="not-a-list")
+        errs = []
+        c = artlib.publish(self.project, "v2\n",
+                           {"type": "idea", "title": "Child",
+                            "source": {"section": "ideas"}},
+                           self.registry, on_error=errs.append,
+                           supersedes=r)
+        self.assertIsNotNone(c, "a corrupt parent lineage must not crash "
+                                "the derivation")
+        self.assertTrue(any("lineage is not a list" in e for e in errs))
+
+    def test_readers_tolerate_unhashable_id_arguments(self):
+        errs = []
+        self.assertIsNone(artlib.latest_final(self.project, ["x"],
+                                              on_error=errs.append))
+        self.assertIsNone(artlib.lineage_heads(self.project, {"k": 1},
+                                               on_error=errs.append))
+        self.assertFalse(artlib.is_stale(self.project, {"id": ["x"]}))
+        self.assertGreaterEqual(len(errs), 2)
+
+    def test_hostile_parents_do_not_flood_the_message(self):
+        bomb = [str(i) for i in range(200000)]
+        self.errors.clear()
+        self.assertIsNone(artlib.publish(
+            self.project, "b\n",
+            {"type": "reconcile", "title": "Bomb", "parents": bomb,
+             "source": {"section": "ideas"}},
+            self.registry, on_error=self.errors.append))
+        self.assertLess(len(self.errors[0]), 2000,
+                        "a parents bomb must not inflate the WARN stream")
+
+
+# ---------------------------------------------------------------------------
 # Regressions from the pre-commit adversarial verification pass — each test
 # pins an execution-confirmed defect in the first draft of this module.
 # ---------------------------------------------------------------------------
