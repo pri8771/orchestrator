@@ -68,6 +68,22 @@ M1 exit gate: scripted end-to-end demo — new Ideas chat, converse, "let
 them discuss", watch 3 agents debate live, "step in", reach consensus —
 on the current engine, all existing workflows still green.
 
+✅ **GATE PASSED 2026-07-18** (live, real CLIs, no stubs): chat round 1 in
+20s → follow-up conversed in round 2 → `--promote --to answer_question`
+ended the live chat and seeded the debate with the carried transcript →
+step-in joined at round 1 ("agents respond next round") → both debate
+phases reached genuine CONSENSUS: YES; the step-in constraint ("must work
+fully offline") appeared 24× in the agents' next round and 13× in the
+final answer. State honest throughout (chat non-consensus + ended-by-user,
+no stale markers, no errors). Two demo-harness bugs found and noted (a
+heredoc-in-poll-loop auto-pass; a word-match check hitting the human's own
+message) — the pass above is verified from artifacts, not the harness.
+Operational note for later seed tuning: the fleet config seats 3 local
+Ollama models in chat rosters; concurrently they stretch a round barrier
+past 10 minutes on one Mac (demo used a cloud-only routing overlay). The
+chat seeds may deserve a leaner default cast — revisit with 8.10 (JIT
+lifecycle).
+
 ## M2 — Engine seams (under the shipped chat product)
 
 | # | Task | Files | Gate | Size | Model |
