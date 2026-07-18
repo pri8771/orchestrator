@@ -8411,6 +8411,131 @@ def prepare_continue(root, slug, workflow_name):
     return 0, slug
 
 
+# 'Let them discuss' (V3 board 1.8): source chat workflow -> default debate
+# workflow. Data, and only a DEFAULT — --to overrides.
+_CHAT_PROMOTE_TARGETS = {"chat_ideas": "brainstorm", "chat_research": "research"}
+# Bound on the transcript carried into state: recent-first tail-keep. The
+# per-entry context budget (runtime.max_prior_output_chars) applies its own
+# tail-keep at render time anyway — for a chat, the RECENT exchange is the
+# right bias — so this only bounds agent_state.json growth, honestly labeled.
+_PROMOTE_TRANSCRIPT_CAP = 60000
+
+
+def promote_chat(root, slug, to_workflow=None, wait_seconds=600):
+    """'Let them discuss' (V3 board 1.8): promote a conversational chat
+    session into an auto debate workflow in the SAME dir.
+
+    The seam is carryover_outputs, NOT phase_outputs/completed_phases: run()'s
+    prior-output assembly only reads keys of the CURRENT workflow's phase
+    list, and the conversational finalizer deliberately stores a one-line
+    closure note as phase_outputs — so the transcript is read from the phase
+    .md itself (the source of truth) and carried under a key no workflow
+    declares ('chat_transcript'), which the carryover loop always injects.
+
+    A LIVE session is ended via the 1.1 contract (approvals/<key>.ok) and the
+    promotion then WAITS for the engine lock's owner to actually die — the
+    .ok isn't consumed until the current round's replies finish, so 'bounded'
+    genuinely means minutes; state surgery against a live engine would be
+    clobbered by its later save_state calls.
+
+    Returns (exit_code, target_app); target_app None means exit exit_code.
+    Exit 3 = still running after the wait (try again)."""
+    app_dir = os.path.join(root, slug)
+    if not os.path.isdir(app_dir):
+        emit("--promote: no project '%s' under %s" % (slug, root))
+        return 2, None
+    if not os.path.exists(state_path(app_dir)):
+        emit("--promote: '%s' has never run — there is no chat to promote." % slug)
+        return 2, None
+    cur_wf = wflib.resolve_workflow_for_app(app_dir, orch_dir=HERE)
+    conv_phases = [p for p in cur_wf.phases if p.get("conversational", False)]
+    if not conv_phases:
+        st = load_state(app_dir)
+        if st.get("promoted_from_chat"):
+            emit("--promote: '%s' was already promoted (from %s) — nothing to do."
+                 % (slug, st["promoted_from_chat"].get("workflow")))
+            return 0, None
+        emit("--promote: '%s' runs workflow '%s', which has no conversational "
+             "phase — only chats can be promoted." % (slug, cur_wf.name))
+        return 2, None
+    phasedef = conv_phases[0]
+    phase_key = phasedef.key
+    target = to_workflow or _CHAT_PROMOTE_TARGETS.get(cur_wf.name, "brainstorm")
+    available = wflib.list_workflows(HERE)
+    if target not in available:
+        emit("--promote: unknown target workflow '%s' (available: %s)"
+             % (target, ", ".join(available)))
+        return 2, None
+    target_wf = wflib.load_workflow(target, HERE)
+    if any(p.get("conversational", False) for p in target_wf.phases):
+        emit("--promote: target '%s' is itself conversational — promotion "
+             "means handing the chat to an AUTO debate." % target)
+        return 2, None
+
+    if _app_lock_has_live_owner(slug):
+        end_file = os.path.join(app_dir, "approvals", "%s.ok" % phase_key)
+        os.makedirs(os.path.dirname(end_file), exist_ok=True)
+        try:
+            open(end_file, "w", encoding="utf-8").close()
+        except OSError as exc:
+            emit("--promote: could not write the end command: %s" % exc)
+            return 2, None
+        emit("--promote: '%s' is live — chat end requested; waiting up to %ds "
+             "for the current round to finish…" % (slug, int(wait_seconds)))
+        deadline = time.time() + wait_seconds
+        while _app_lock_has_live_owner(slug) and time.time() < deadline:
+            time.sleep(1.0)
+        if _app_lock_has_live_owner(slug):
+            emit("--promote: '%s' is still running after %ds — the end command "
+                 "stays queued; run --promote again once the chat stops."
+                 % (slug, int(wait_seconds)))
+            return 3, None
+
+    st = load_state(app_dir)
+    md_path = os.path.join(app_dir, phasedef.folder, phasedef.file)
+    transcript = ""
+    try:
+        with open(md_path, encoding="utf-8") as fh:
+            transcript = fh.read().strip()
+    except OSError:
+        pass
+    kept_note = ""
+    if len(transcript) > _PROMOTE_TRANSCRIPT_CAP:
+        transcript = ("[earlier chat trimmed — the most recent %d characters "
+                      "follow]\n" % _PROMOTE_TRANSCRIPT_CAP) \
+            + transcript[-_PROMOTE_TRANSCRIPT_CAP:]
+        kept_note = " (tail-kept at %d chars)" % _PROMOTE_TRANSCRIPT_CAP
+    if transcript:
+        carry = dict(st.get("carryover_outputs") or {})
+        carry["chat_transcript"] = transcript
+        st["carryover_outputs"] = carry
+    st["promoted_from_chat"] = {"workflow": cur_wf.name, "phase": phase_key,
+                                "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    st["done"] = False
+    st["error"] = None
+    st["blocked_conflict"] = None
+    st["awaiting_approval"] = None
+    st["awaiting_human"] = None
+    st["workflow"] = target
+    save_state(app_dir, st)
+    try:
+        with open(os.path.join(app_dir, "workflow.txt"), "w", encoding="utf-8") as fh:
+            fh.write(target + "\n")
+    except OSError as exc:
+        emit("--promote: could not write workflow.txt for '%s': %s" % (slug, exc))
+        return 2, None
+    # A leftover end command must not linger: in the promoted project the
+    # same file name is a checkpoint-approval decision.
+    try:
+        os.remove(os.path.join(app_dir, "approvals", "%s.ok" % phase_key))
+    except OSError:
+        pass
+    emit("--promote: '%s' promoted %s -> %s; %d transcript char(s) carried as "
+         "context%s. The agents take it from here."
+         % (slug, cur_wf.name, target, len(transcript), kept_note))
+    return 0, slug
+
+
 def run_once(cfg):
     root = cfg["root"]
     if not os.path.isdir(root):
@@ -8450,6 +8575,13 @@ def main():
     ap.add_argument("--resume", metavar="SLUG",
                     help="resume an existing project from its saved state, clearing "
                          "any recorded abort error first (V2 spec §27)")
+    ap.add_argument("--promote", metavar="SLUG",
+                    help="'Let them discuss': promote a conversational chat "
+                         "session to an auto debate workflow in the same dir "
+                         "(default target per chat workflow; see --to)")
+    ap.add_argument("--to", dest="promote_to", metavar="WORKFLOW",
+                    help="target workflow for --promote (default: "
+                         "chat_ideas->brainstorm, chat_research->research)")
     ap.add_argument("--continue-with", dest="continue_with", metavar="WORKFLOW",
                     help="with --app/--project: re-open the project under this "
                          "workflow, carrying prior phase outputs forward as "
@@ -8596,6 +8728,13 @@ def main():
         else:
             print_mistakes_report(rep)
         return 0
+
+    if args.promote:
+        rc, promoted = promote_chat(cfg["root"], args.promote,
+                                    to_workflow=args.promote_to)
+        if promoted is None:
+            return rc
+        target_app = promoted
 
     if args.continue_with:
         rc, target_app = prepare_continue(cfg["root"], target_app,

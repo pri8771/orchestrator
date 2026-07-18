@@ -1148,6 +1148,34 @@ final class OrchestratorStore: ObservableObject {
         }
     }
 
+    // V3 board 1.8 ("Let them discuss"): promote a chat session to an auto
+    // debate. A LIVE chat is ended first (pendingPromote defers the handoff
+    // to the termination reducer); the promotion itself runs through the
+    // engine CLI (--promote does the state surgery, then the SAME process
+    // runs the debate), launched via the ordinary tracked project path — so
+    // from this moment the dir is a plain project: the ChatSession entry is
+    // removed and the run surface takes over (never the chat reducer's
+    // .ended dead-end).
+    private var pendingPromote: Set<String> = []
+
+    func promoteChatSession(_ id: String) {
+        guard let s = chatSessions[id] else { return }
+        if s.state.isAlive {
+            pendingPromote.insert(id)
+            endChatSession(id)
+            return
+        }
+        performPromotion(id)
+    }
+
+    private func performPromotion(_ id: String) {
+        pendingPromote.remove(id)
+        chatSessions.removeValue(forKey: id)
+        launch(args: ["orchestrator.py", "--root", rootURL.path, "--promote", id],
+               project: id)
+        refresh()
+    }
+
     // Termination reducer entry (from launch()'s terminationHandler): reads
     // the FINAL agent_state.json to distinguish ended (done=true) from
     // stopped — the pure mapping lives in ChatSessionState.afterTermination.
@@ -1168,9 +1196,16 @@ final class OrchestratorStore: ObservableObject {
             wasStopping: wasStopping, stateDone: done, conversationEnd: endReason)
         chatSessions[name]?.state = next
         if case .crashed(let code, let wasSignal) = next {
+            // A crash cancels a pending promotion — promoting a half-written
+            // chat must be the user's explicit second decision, not automatic.
+            pendingPromote.remove(name)
             surfaceError(wasSignal
                 ? "Chat '\(name)' was killed by signal \(code)."
                 : "Chat '\(name)' crashed with exit code \(code).")
+            return
+        }
+        if pendingPromote.contains(name) {
+            performPromotion(name)
         }
     }
 

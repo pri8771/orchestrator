@@ -59,6 +59,7 @@ struct ChatSessionView: View {
     @State private var transcript = PhaseTranscript()
     @State private var loadedID = ""
     @State private var lastCount = 0
+    @Environment(\.dismiss) private var dismiss
 
     private var session: ChatSession? { store.chatSessions[sessionID] }
     // The background scan discovers the minted dir on its next tick; until
@@ -139,16 +140,29 @@ struct ChatSessionView: View {
             Button("Start chat") { store.startChatSession(sessionID) }
         case .stopped, .crashed:
             Button("Relaunch") { store.startChatSession(sessionID) }
+            discussButton(label: "Let them discuss")
         case .running, .waitingForHuman:
+            discussButton(label: "End & discuss")
             Button("End chat") { store.endChatSession(sessionID) }
             Button("Stop") { store.stopChatSession(sessionID) }
         case .launching, .relaunching, .stopping:
             EmptyView()
         case .ended:
-            // The engine skips done apps — a Relaunch here would be a dead
-            // control (§16). Ended chats offer nothing.
-            EmptyView()
+            // The engine skips done apps — a Relaunch would be a dead control
+            // (§16). Promotion is the one meaningful verb left.
+            discussButton(label: "Let them discuss")
         }
+    }
+
+    // V3 board 1.8: hand the chat to an auto debate. The session leaves the
+    // chat surface entirely (the dir becomes a plain project) — dismiss and
+    // let the run view take over.
+    private func discussButton(label: String) -> some View {
+        Button(label) {
+            store.promoteChatSession(sessionID)
+            dismiss()
+        }
+        .help("Promote this chat to a multi-agent auto debate seeded with the transcript")
     }
 
     // MARK: messages
