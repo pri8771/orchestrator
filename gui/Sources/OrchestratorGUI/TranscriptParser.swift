@@ -27,7 +27,7 @@ enum TranscriptParser {
     // launch (transcript files never bring the app down, per the module's
     // own header comment for the rest of this parser).
     private static let headerRegex = try? NSRegularExpression(
-        pattern: #"^\*\*\s*(Codex|Claude|Gemini|Coordinator|Integrator|Repair|You|Human)\b.*\*\*$"#)
+        pattern: #"^\*\*\s*(Codex|Claude|Gemini|Local|Ollama|Coordinator|Integrator|Repair|You|Human)\b.*\*\*$"#)
 
     static func parse(_ text: String) -> PhaseTranscript {
         var t = PhaseTranscript()
@@ -96,9 +96,15 @@ enum TranscriptParser {
     // "Codex (Product Strategist · Skeptic) — Round 1" -> "Product Strategist · Skeptic".
     // For a coordinator ("Coordinator (Gemini) — …") it yields the model name.
     private static func extractPersona(_ header: String) -> String {
-        guard let open = header.firstIndex(of: "("),
-              let close = header[open...].firstIndex(of: ")") else { return "" }
-        let inner = header[header.index(after: open)..<close]
+        // Persona parens sit BEFORE the em-dash separator ("Codex (Skeptic) —
+        // Round 1"); anything after it is an annotation, not a persona — the
+        // skipped-turn header "Codex — Round 1 (skipped: CLI unavailable)"
+        // must never grow a "skipped: CLI unavailable" persona chip.
+        let scope = header.range(of: " — ").map { header[..<$0.lowerBound] }
+            ?? header[...]
+        guard let open = scope.firstIndex(of: "("),
+              let close = scope[open...].firstIndex(of: ")") else { return "" }
+        let inner = scope[scope.index(after: open)..<close]
             .trimmingCharacters(in: .whitespaces)
         return inner
     }

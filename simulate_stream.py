@@ -109,12 +109,109 @@ def save_state(app_dir, state):
     os.replace(tmp, os.path.join(app_dir, "agent_state.json"))
 
 
+PERSONAS = {"codex": "Pragmatist", "claude": "Skeptic", "gemini": "Visionary"}
+CHAT_SAY = {
+    "codex": "Concretely: a menu-bar water-intake tracker is a weekend build — "
+             "one window, one HealthKit write, no accounts.",
+    "claude": "Push back gently: intake trackers are crowded. The wedge is the "
+              "REMINDER quality — tie prompts to calendar gaps, not timers.",
+    "gemini": "Building on both: ship the tracker skeleton, but make the "
+              "calendar-aware nudge the hero feature of the store listing.",
+}
+
+
+def run_conversational(args):
+    """V3 board 1.6: demo a CONVERSATIONAL session with no CLIs — mints the
+    flat chat dir (initial_prompt + workflow.txt=chat_ideas, the engine/GUI
+    discovery contract), writes chat/chat.md in the exact conversational
+    format (human blocks, persona hats, a Local (Ollama) turn, NO
+    coordinator), and flips next_agent ('+'-joined roster) / awaiting_human
+    in agent_state.json so the surface shows replying + waiting states."""
+    app_dir = os.path.join(args.root, args.app)
+    prompt_dir = os.path.join(app_dir, "initial_prompt")
+    os.makedirs(prompt_dir, exist_ok=True)
+    seed_p = os.path.join(prompt_dir, "initial_prompt.md")
+    if not os.path.exists(seed_p):
+        with open(seed_p, "w", encoding="utf-8") as fh:
+            fh.write("Brainstorm a weekend-sized iOS utility.\n")
+    with open(os.path.join(app_dir, "workflow.txt"), "w", encoding="utf-8") as fh:
+        fh.write("chat_ideas\n")
+
+    phase_dir = os.path.join(app_dir, "chat")
+    os.makedirs(phase_dir, exist_ok=True)
+    md = os.path.join(phase_dir, "chat.md")
+    if not os.path.exists(md):
+        append(md, header(args.app, "Ideas Chat"))
+
+    state = load_state(app_dir)
+    lock = lock_path(args.app)
+    touch_lock(lock)
+    roster = ["codex", "claude", "gemini"]
+    human_msgs = ["What's a tiny iOS utility I could ship this weekend?",
+                  "Which of those survives App Review most easily?"]
+    try:
+        for rnd, human in enumerate(human_msgs, start=1):
+            state["current_phase"] = "chat"
+            state["current_round"] = rnd
+            state["awaiting_human"] = None
+            state["next_agent"] = "+".join(roster)
+            save_state(app_dir, state)
+            append(md, "\n### Round %d\n\n" % rnd)
+            append(md, "\n**You (human) — Round %d**\n\n%s\n" % (rnd, human))
+            print("  Round %d: human message posted; panel replying…" % rnd)
+            time.sleep(args.delay)
+            for agent in roster:
+                block = "**%s (%s) — Round %d**\n\n%s\n\n%s\n" % (
+                    DISPLAY[agent], PERSONAS[agent], rnd, CHAT_SAY[agent],
+                    SIGNATURE[agent])
+                append(md, "\n" + block)
+            # One local-model turn: the header the parser must not swallow.
+            append(md, "\n**Local (Ollama) — Round %d**\n\nCheap second "
+                       "opinion: both ideas fit in a weekend; the reminder "
+                       "angle differentiates.\n" % rnd)
+            # Panel done -> the engine would now block in _await_inbox.
+            state["next_agent"] = None
+            state["awaiting_human"] = "chat"
+            save_state(app_dir, state)
+            print("  Round %d complete — waiting for you…" % rnd)
+            time.sleep(args.delay * 2)
+
+        closure = ("Conversation closed after %d round(s): ended by user. The "
+                   "transcript above is the record of this chat." % len(human_msgs))
+        append(md, "\n## Coordinator Decision\n\n_No coordinator — "
+                   "conversational phase; ended by user._\n")
+        append(md, "\n## Final Output\n\n%s\n" % closure)
+        append(md, "\n---\n\nENDED BY USER\n")
+        state["awaiting_human"] = None
+        state["next_agent"] = None
+        state["current_round"] = 0
+        state.setdefault("completed_phases", []).append("chat")
+        state["phase_outputs"]["chat"] = closure
+        state["consensus_status"]["chat"] = False
+        state.setdefault("conversation_end", {})["chat"] = "ended by user"
+        state["done"] = True
+        save_state(app_dir, state)
+        print("Conversation ended (ENDED BY USER); state done.")
+    finally:
+        if os.path.exists(lock):
+            try:
+                os.remove(lock)
+            except OSError:
+                pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", required=True)
     ap.add_argument("--root", default=ROOT_DEFAULT)
     ap.add_argument("--delay", type=float, default=2.5)
+    ap.add_argument("--conversational", action="store_true",
+                    help="demo a chat session (mints the dir; no CLIs needed)")
     args = ap.parse_args()
+
+    if args.conversational:
+        run_conversational(args)
+        return
 
     app_dir = os.path.join(args.root, args.app)
     if not os.path.isdir(app_dir):

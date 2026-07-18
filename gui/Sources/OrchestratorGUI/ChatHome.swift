@@ -76,6 +76,7 @@ struct ChatHomeView: View {
     @EnvironmentObject var store: OrchestratorStore
     let onOpenProject: (String) -> Void
     let onNewApp: () -> Void
+    @State private var openChat: ChatSession? = nil
 
 
     var body: some View {
@@ -97,6 +98,11 @@ struct ChatHomeView: View {
                                 .accessibilityLabel("Start a new chat")
                             }
                         }
+                        // V3 board 1.6: engine-backed chat sessions (live
+                        // multi-agent rooms) — a different thing from the
+                        // one-shot concierge below, which keeps conciergeAsk
+                        // ONLY for this Home helper conversation.
+                        chatSessionsStrip
                         if store.chatMessages.isEmpty { modeCards }
                         ForEach(store.chatMessages) { m in
                             ConciergeBubble(message: m) { suggestion in
@@ -297,5 +303,85 @@ private struct ConciergeBubble: View {
                       : AnyShapeStyle(.quaternary.opacity(0.5))))
             if message.role == .concierge { Spacer(minLength: 60) }
         }
+    }
+}
+
+// MARK: - V3 board 1.6: engine-backed chat sessions strip
+
+extension ChatHomeView {
+    var chatSessionsStrip: some View {
+        Group {
+            let sessions = store.chatSessions.values.sorted { $0.id < $1.id }
+            if sessions.isEmpty {
+                HStack { newLiveChatButton; Spacer() }
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(sessions) { s in sessionChip(s) }
+                        newLiveChatButton
+                    }
+                }
+            }
+        }
+        .sheet(item: $openChat) { s in
+            ChatSessionView(sessionID: s.id)
+                .environmentObject(store)
+                .frame(minWidth: 720, minHeight: 520)
+        }
+    }
+
+    private func sessionChip(_ s: ChatSession) -> some View {
+        Button { openChat = s } label: {
+            HStack(spacing: 5) {
+                Image(systemName: chipSymbol(s.state))
+                Text(s.slug).lineLimit(1)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityLabel("Open chat \(s.slug), \(chipWord(s.state))")
+    }
+
+    private func chipSymbol(_ state: ChatSessionState) -> String {
+        switch state {
+        case .running: return "dot.radiowaves.left.and.right"
+        case .waitingForHuman: return "person.wave.2"
+        case .ended: return "checkmark.circle"
+        case .crashed: return "exclamationmark.triangle"
+        case .stopped, .stopping: return "pause.circle"
+        case .idle, .launching, .relaunching: return "circle.dotted"
+        }
+    }
+
+    private func chipWord(_ state: ChatSessionState) -> String {
+        switch state {
+        case .running: return "live"
+        case .waitingForHuman: return "waiting for you"
+        case .ended: return "ended"
+        case .crashed: return "crashed"
+        case .stopped, .stopping: return "stopped"
+        case .idle, .launching, .relaunching: return "starting"
+        }
+    }
+
+    private var newLiveChatButton: some View {
+        Button {
+            let seed = store.chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = seed.isEmpty ? "Let's brainstorm." : seed
+            let title = seed.isEmpty ? "brainstorm" : String(seed.prefix(32))
+            if let s = store.mintChatSession(project: "home", section: "ideas",
+                                             title: title, workflow: "chat_ideas",
+                                             firstMessage: text) {
+                if !seed.isEmpty { store.chatInput = "" }
+                store.startChatSession(s.id)
+                openChat = store.chatSessions[s.id] ?? s
+            }
+        } label: {
+            Label("Live agent chat", systemImage: "person.3")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Start a live multi-agent chat (chat_ideas) seeded with your typed message")
+        .accessibilityLabel("Start a live agent chat")
     }
 }
