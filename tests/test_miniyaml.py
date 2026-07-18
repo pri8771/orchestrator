@@ -100,8 +100,16 @@ class TestConfigYamlScalarShapes(unittest.TestCase):
 
     def test_top_level_rounds_map(self):
         # A whole nested map whose every value is the same int scalar shape.
-        self.assertEqual(self.cfg["rounds"]["prompt_contract"], 9)
-        self.assertTrue(all(isinstance(v, int) for v in self.cfg["rounds"].values()))
+        # The per-phase counts are an operator tunable — a "speed profile" may
+        # drop them all from 9 to 2 — so pin the SHAPE (a non-empty str->int
+        # map carrying the known phase keys), not a literal count. This is a
+        # miniyaml scalar-parsing regression test, not a config-values test.
+        rounds = self.cfg["rounds"]
+        self.assertIsInstance(rounds, dict)
+        self.assertTrue(rounds, "rounds parsed as an empty map")
+        self.assertIn("prompt_contract", rounds)
+        self.assertTrue(all(isinstance(k, str) for k in rounds))
+        self.assertTrue(all(isinstance(v, int) for v in rounds.values()))
 
     def test_loads_via_orchestrator_load_config(self):
         # End-to-end: the real loader orchestrator.py uses at startup.
