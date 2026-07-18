@@ -1,0 +1,5 @@
+{
+  "_comment": "Optional structured-output contract overlay. Entries with the same (phase_key, contract) replace the shipped defaults; new pairs add.",
+  "schema_version": 1,
+  "contracts": []
+}

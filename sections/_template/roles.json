@@ -1,0 +1,4 @@
+{
+  "_comment": "Optional cast override. A valid 'personalities' or 'roles' pool REPLACES that pool for sessions under this section; absent pools inherit.",
+  "agent_role_overrides": {}
+}

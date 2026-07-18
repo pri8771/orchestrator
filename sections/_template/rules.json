@@ -1,0 +1,5 @@
+{
+  "_comment": "Per-phase playbook overlay (whole-entry precedence over project/global). Same schema as phase_rules.json minus global_app_rules.",
+  "schema_version": 1,
+  "phases": {}
+}

@@ -322,3 +322,120 @@ class TestShippedSections(unittest.TestCase):
         for key in ("gather", "security", "app_features", "recon"):
             self.assertIn(key, rules["phases"],
                           "global entries must NOT be removed this milestone")
+
+
+class TestScaffoldAndLint(unittest.TestCase):
+    """V3 board 3.7: scaffold from _template; lint shares the loaders'
+    validation so exit 2 exactly equals the runtime-banner set."""
+
+    HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def setUp(self):
+        self.orch = tempfile.mkdtemp(prefix="orch_lint_")
+        self.addCleanup(shutil.rmtree, self.orch, True)
+        # a private engine dir with the real template + workflows
+        shutil.copytree(os.path.join(self.HERE, "sections", "_template"),
+                        os.path.join(self.orch, "sections", "_template"))
+        wflib.ensure_seeded(self.orch)
+
+    def _mutate(self, name, fn, obj_or_text):
+        path = os.path.join(self.orch, "sections", name, fn)
+        with open(path, "w", encoding="utf-8") as fh:
+            if isinstance(obj_or_text, str):
+                fh.write(obj_or_text)
+            else:
+                json.dump(obj_or_text, fh)
+
+    def test_scaffold_lints_clean_and_loads_bannerless(self):
+        dest = seclib.scaffold_section("my-studio", self.orch)
+        self.assertTrue(os.path.isdir(dest))
+        report = seclib.lint_section("my-studio", self.orch)
+        self.assertEqual(report, [], "a fresh scaffold must lint clean")
+        self.assertEqual(seclib.lint_exit_code(report), 0)
+        app_dir = tempfile.mkdtemp(prefix="orch_lint_app_")
+        self.addCleanup(shutil.rmtree, app_dir, True)
+        s = seclib.load_section("my-studio", self.orch, app_dir=app_dir)
+        self.assertEqual(s.id, "my-studio")
+        self.assertEqual(s.title, "My Studio")
+        self.assertEqual(
+            evlib.read_events(app_dir, kinds=["config_fallback"]), [],
+            "exit 0 must guarantee a bannerless load (R2)")
+
+    def test_scaffold_refuses_existing_and_bad_names(self):
+        seclib.scaffold_section("dup", self.orch)
+        with self.assertRaises(ValueError):
+            seclib.scaffold_section("dup", self.orch)
+        for bad in ("", "a/b", "..", ".hidden", "_template"):
+            with self.assertRaises(ValueError):
+                seclib.scaffold_section(bad, self.orch)
+
+    def test_name_rules_mirror_valid_app_slug(self):
+        import orchestrator as orch
+        for name in ("ok", "a--b", "a.b", ".h", "a/b", "a..b", ""):
+            self.assertEqual(seclib._valid_section_name(name),
+                             orch.valid_app_slug(name), name)
+
+    def test_each_defect_class_is_named_specifically(self):
+        seclib.scaffold_section("s", self.orch)
+        cases = [
+            ("section.json", "{broken", "error", "section.json"),
+            ("section.json", {"id": "s", "workflow": "brainstorm"},
+             "error", "title"),
+            ("section.json", {"id": "s", "title": "S",
+                              "workflow": "no-such-wf"}, "error",
+             "no-such-wf"),
+            ("roles.json", {"personalities": [{"name": "no id"}]},
+             "error", "personalities"),
+            ("contracts.json", {"contracts": [{"fence_tag": "x"}]},
+             "error", "prompt_snippet"),
+            ("rules.json", {"phases": "not a dict"}, "error", "phases"),
+            ("routing.json", "{broken", "warning", "routing.json"),
+        ]
+        for fn, payload, severity, needle in cases:
+            seclib_dir = os.path.join(self.orch, "sections", "s")
+            backup = {}
+            for f in os.listdir(seclib_dir):
+                with open(os.path.join(seclib_dir, f), encoding="utf-8") as fh:
+                    backup[f] = fh.read()
+            self._mutate("s", fn, payload)
+            report = seclib.lint_section("s", self.orch)
+            hits = [e for e in report if e["severity"] == severity
+                    and (needle in e["file"] or needle in e["field"]
+                         or needle in e["message"])]
+            self.assertTrue(hits, "defect in %s not reported specifically: "
+                                  "%r" % (fn, report))
+            for f, text in backup.items():
+                with open(os.path.join(seclib_dir, f), "w",
+                          encoding="utf-8") as fh:
+                    fh.write(text)
+
+    def test_dangling_cross_section_ref_is_an_error(self):
+        seclib.scaffold_section("s", self.orch)
+        # a workflow with a dangling ref, referenced inline
+        wf = wflib.load_workflow("brainstorm", self.orch).to_json()
+        wf["phases"][0]["roles"] = ["ghost:missing"]
+        self._mutate("s", "section.json",
+                     {"id": "s", "title": "S", "workflow": wf})
+        report = seclib.lint_section("s", self.orch)
+        errs = [e for e in report if "ghost:missing" in e["message"]]
+        self.assertTrue(errs)
+        self.assertEqual(seclib.lint_exit_code(report), 2)
+
+    def test_exit_codes(self):
+        seclib.scaffold_section("s", self.orch)
+        self.assertEqual(
+            seclib.lint_exit_code(seclib.lint_section("s", self.orch)), 0)
+        self._mutate("s", "routing.json", "{broken")
+        self.assertEqual(
+            seclib.lint_exit_code(seclib.lint_section("s", self.orch)), 1,
+            "corrupt routing is runnable-but-ignored -> warnings-only")
+        self._mutate("s", "rules.json", "{broken")
+        self.assertEqual(
+            seclib.lint_exit_code(seclib.lint_section("s", self.orch)), 2)
+
+    def test_shipped_sections_lint_clean(self):
+        for name in ("ideas", "research", "qa", "planning"):
+            report = seclib.lint_section(name, self.HERE)
+            self.assertEqual([e for e in report
+                              if e["severity"] == "error"], [],
+                             "%s must lint error-free: %r" % (name, report))

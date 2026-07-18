@@ -9247,6 +9247,13 @@ def main():
                          "prints CREATED: <id>")
     ap.add_argument("--session-workflow", metavar="NAME",
                     help="workflow.txt content for --new-session")
+    ap.add_argument("--new-section", metavar="NAME",
+                    help="scaffold sections/<NAME>/ from sections/_template/")
+    ap.add_argument("--lint-section", metavar="NAME",
+                    help="lint a section dir; exit 0 clean / 1 warnings / "
+                         "2 errors (would banner-fallback at runtime)")
+    ap.add_argument("--lint-json", action="store_true",
+                    help="emit the --lint-section report as JSON")
     ap.add_argument("--migrate-layout", action="store_true",
                     help="flat->nested chat-dir migration; DRY-RUN unless "
                          "--apply is also given")
@@ -9309,7 +9316,7 @@ def main():
     # terminal printing up front, before anything below (workflow seeding,
     # resolve_models' gemini probe, etc.) can print a log line ahead of it.
     # emit() still writes to orchestrator.log either way.
-    if args.json:
+    if args.json or args.lint_json:
         global _QUIET
         _QUIET = True
 
@@ -9411,6 +9418,29 @@ def main():
         else:
             print_mistakes_report(rep)
         return 0
+
+    if args.new_section:
+        # Thin hook by design (3.7): all validation lives in sections.py.
+        try:
+            dest = seclib.scaffold_section(args.new_section, HERE)
+        except ValueError as exc:
+            emit("--new-section: %s" % exc)
+            return 2
+        print("SCAFFOLDED: %s" % dest)
+        return 0
+
+    if args.lint_section:
+        report = seclib.lint_section(args.lint_section, HERE)
+        if args.lint_json:
+            print(json.dumps({"section": args.lint_section,
+                              "report": report}))
+        else:
+            for e in report:
+                print("%s %s %s: %s" % (e["severity"].upper(), e["file"],
+                                        e["field"], e["message"]))
+            if not report:
+                print("clean: sections/%s/" % args.lint_section)
+        return seclib.lint_exit_code(report)
 
     if args.new_session:
         try:

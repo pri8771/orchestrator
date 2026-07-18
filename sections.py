@@ -409,3 +409,193 @@ def contract_fence(name, contracts=None):
         if e.get("contract") == name:
             return e.get("fence_tag"), e.get("required_fields")
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# Scaffold + lint (V3 board 3.7). All logic lives HERE — orchestrator.py
+# carries only the argparse hook and the exit-code mapping.
+# ---------------------------------------------------------------------------
+
+TEMPLATE_DIRNAME = "_template"
+
+
+def _valid_section_name(name):
+    """Mirror of the engine's valid_app_slug rules (pinned equal by test —
+    sections.py cannot import orchestrator without a cycle): plain folder
+    name, no separators, no '..', not hidden."""
+    n = str(name or "")
+    return bool(n) and ".." not in n and not n.startswith(".") \
+        and "/" not in n and "\\" not in n and os.sep not in n
+
+
+def scaffold_section(name, orch_dir):
+    """Create sections/<name>/ from sections/_template/, substituting the
+    identity fields. Refuses an invalid name or an existing dir — never
+    overwrites. Returns the new section dir path; raises ValueError on
+    refusal (the CLI maps it to a specific error message)."""
+    if not _valid_section_name(name) or name == TEMPLATE_DIRNAME:
+        raise ValueError("invalid section name %r — use a plain folder name "
+                         "(no separators, '..', or leading '.')" % name)
+    src = os.path.join(_sections_dir(orch_dir), TEMPLATE_DIRNAME)
+    if not os.path.isdir(src):
+        raise ValueError("sections/_template/ is missing from the engine dir")
+    dest = os.path.join(_sections_dir(orch_dir), name)
+    if os.path.exists(dest):
+        raise ValueError("sections/%s/ already exists — refusing to "
+                         "overwrite (edit it in place, or pick another "
+                         "name)" % name)
+    os.makedirs(dest)
+    for fn in sorted(os.listdir(src)):
+        with open(os.path.join(src, fn), encoding="utf-8") as fh:
+            text = fh.read()
+        text = text.replace("__NAME__", name)
+        text = text.replace("__TITLE__", name.replace("-", " ").title())
+        with open(os.path.join(dest, fn), "w", encoding="utf-8") as fh:
+            fh.write(text)
+    return dest
+
+
+def _lint_entry(severity, file, field, message):
+    return {"severity": severity, "file": file, "field": field,
+            "message": message}
+
+
+def lint_section(name, orch_dir):
+    """Structured lint report [{severity, file, field, message}].
+
+    severity 'error' is EXACTLY the set of defects that would emit a
+    runtime config_fallback banner (lint and the loaders share validation
+    code, so they cannot drift); 'warning' marks runnable-but-ignored
+    configuration (e.g. a corrupt routing overlay, which the runtime
+    routing loader fails open on today)."""
+    import roles as roleslib
+
+    report = []
+    sdir = os.path.join(_sections_dir(orch_dir), name)
+    if not os.path.isdir(sdir):
+        return [_lint_entry("error", "-", "-",
+                            "sections/%s/ does not exist" % name)]
+
+    def parse(fn):
+        path = os.path.join(sdir, fn)
+        if not os.path.exists(path):
+            return None, False
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh), True
+        except (OSError, ValueError) as exc:
+            report.append(_lint_entry(
+                "error" if fn != "routing.json" else "warning",
+                fn, "-", "does not parse as JSON: %s" % exc))
+            return None, True
+
+    # section.json — shares _from_raw with the loader.
+    raw, present = parse(SECTION_FILENAME)
+    workflow_names = wflib.list_workflows(orch_dir)
+    if not present:
+        report.append(_lint_entry("error", SECTION_FILENAME, "-",
+                                  "missing — the section would load the "
+                                  "built-in default with a banner"))
+    elif raw is not None:
+        try:
+            _from_raw(name, raw, orch_dir, path="(lint)", app_dir=None,
+                      allow_banner=False)
+        except (ValueError, KeyError, TypeError) as exc:
+            report.append(_lint_entry("error", SECTION_FILENAME,
+                                      "-", str(exc)))
+        wf_field = raw.get("workflow") if isinstance(raw, dict) else None
+        if isinstance(wf_field, str) and wf_field.strip() \
+                and wf_field.strip() not in workflow_names:
+            report.append(_lint_entry(
+                "error", SECTION_FILENAME, "workflow",
+                "workflow %r not found — the run would banner and fall "
+                "back to %r" % (wf_field.strip(), wflib.DEFAULT_WORKFLOW)))
+
+    # roles.json — pool validity via the same _valid_pool the loader uses.
+    raw, present = parse("roles.json")
+    if raw is not None and isinstance(raw, dict):
+        for field, keys in (("personalities", ("id", "name", "style")),
+                            ("roles", ("id", "name", "focus"))):
+            pool = raw.get(field)
+            if pool is not None and not roleslib._valid_pool(pool, keys):
+                report.append(_lint_entry(
+                    "error", "roles.json", field,
+                    "invalid pool — every entry needs %s; the runtime "
+                    "falls through with a banner" % (keys,)))
+    elif raw is not None:
+        report.append(_lint_entry("error", "roles.json", "-",
+                                  "must be a JSON object"))
+
+    # contracts.json — entry shape + fence-tag collisions.
+    raw, present = parse(CONTRACTS_FILENAME)
+    if raw is not None:
+        entries = raw.get("contracts") if isinstance(raw, dict) else None
+        if not isinstance(entries, list):
+            report.append(_lint_entry(
+                "error", CONTRACTS_FILENAME, "contracts",
+                "must be an object with a 'contracts' list"))
+        else:
+            fences = {}
+            for i, e in enumerate(entries):
+                if not isinstance(e, dict) or "phase_key" not in e \
+                        or "prompt_snippet" not in e:
+                    report.append(_lint_entry(
+                        "error", CONTRACTS_FILENAME,
+                        "contracts[%d]" % i,
+                        "each entry needs phase_key and prompt_snippet"))
+                    continue
+                tag = e.get("fence_tag")
+                cname = e.get("contract")
+                if tag and fences.get(tag, cname) != cname:
+                    report.append(_lint_entry(
+                        "warning", CONTRACTS_FILENAME,
+                        "contracts[%d].fence_tag" % i,
+                        "fence tag %r used by two different contracts — "
+                        "extraction cannot tell them apart" % tag))
+                if tag:
+                    fences[tag] = cname
+
+    # rules.json — the same shape _load_layer enforces.
+    raw, present = parse("rules.json")
+    if raw is not None and (not isinstance(raw, dict)
+                            or not isinstance(raw.get("phases"), dict)):
+        report.append(_lint_entry(
+            "error", "rules.json", "phases",
+            "must be an object with a 'phases' object — the runtime "
+            "overlay banners and falls through"))
+
+    # routing.json parse handled by parse() (warning severity: the runtime
+    # routing loader fails open today, no banner).
+    parse("routing.json")
+
+    # cross-section refs in the workflow's phase role lists (3.5 syntax).
+    try:
+        section = load_section(name, orch_dir)
+        for ph in section.workflow.phases:
+            ids = ph.get("roles") if hasattr(ph, "get") else None
+            if not ids:
+                continue
+            misses = []
+            roleslib.resolve_phase_role_refs(
+                ids, _sections_dir(orch_dir),
+                on_missing=lambda ref, why: misses.append((ref, why)))
+            for ref, why in misses:
+                report.append(_lint_entry(
+                    "error", "workflow:%s" % section.workflow_name,
+                    "phases[%s].roles" % ph.key,
+                    "dangling cast reference %r (%s) — the runtime "
+                    "banners and drops it" % (ref, why)))
+    except Exception as exc:  # noqa: BLE001 - lint must never crash
+        report.append(_lint_entry("warning", "-", "-",
+                                  "cross-section ref check skipped: %s" % exc))
+    return report
+
+
+def lint_exit_code(report):
+    """0 clean, 1 warnings-only (runnable), 2 errors (the section would
+    banner-fallback at runtime)."""
+    if any(e["severity"] == "error" for e in report):
+        return 2
+    if report:
+        return 1
+    return 0

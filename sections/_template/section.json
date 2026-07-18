@@ -1,0 +1,10 @@
+{
+  "_comment": "Section identity. id/title are substituted by --new-section; 'workflow' names a workflows/*.json (or inline a full workflow object).",
+  "id": "__NAME__",
+  "title": "__TITLE__",
+  "workflow": "brainstorm",
+  "default_mode": "manual",
+  "artifact_types_emitted": [],
+  "artifact_types_accepted": [],
+  "dod_tier": "standard"
+}
