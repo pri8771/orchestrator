@@ -22,27 +22,49 @@ import re
 import unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCANNED = ("orchestrator.py", "visualqa.py", "urlfetch.py")
+SCANNED = ("orchestrator.py", "visualqa.py", "urlfetch.py", "uicrawl.py")
 
 # Single leading underscore only: __dunder__ keys are round-offset dict
 # entries (_seen_chars["__coord__"], _lane_seen["__integrator__"]), not
 # cfg state.
-_WRITE_RE = re.compile(r'\w+\[\s*"(_[a-z0-9][a-z0-9_]*)"\s*\]\s*=(?!=)')
-_REF_RE = re.compile(r'(?:\[\s*"(_[a-z0-9][a-z0-9_]*)"\s*\]|\.get\(\s*"(_[a-z0-9][a-z0-9_]*)")')
+#
+# 2.3(b) scanner amendment — the (a) regexes had four verified blind spots:
+# setdefault() writes (the _claude_sessions/_codex_sessions maps were
+# invisible), tuple-unpack targets (only the LAST target counted, so
+# _personalities was misfiled as read-only), pop() lifecycle sites, and the
+# ONE dynamic-key write ('_%s_sessions' % agent, orchestrator.py:1574 area)
+# which no literal scanner can attribute — recorded under the synthetic
+# name below so the inventory names it instead of hiding it.
+_KEY = r'"(_[a-z0-9][a-z0-9_]*)"'
+_SUB_RE = re.compile(r'\[\s*' + _KEY + r'\s*\]')
+_SETDEFAULT_RE = re.compile(r'\.setdefault\(\s*' + _KEY)
+_POP_RE = re.compile(r'\.pop\(\s*' + _KEY)
+_GET_RE = re.compile(r'\.get\(\s*' + _KEY)
+_ASSIGN_SPLIT_RE = re.compile(r'(?<![=!<>+\-*/])=(?![=])')
+_DYNAMIC_RE = re.compile(r'\.setdefault\(\s*"_%s')
+DYNAMIC_SENTINEL = "_<dynamic>_%s_sessions"
 
-# The frozen inventory (2.3a baseline). Shrink freely as TurnContext absorbs
-# keys; grow ONLY with a reviewed reason recorded in the commit.
+# The frozen inventory (2.3a baseline, regenerated ONCE in 2.3b when the
+# scanner amendment surfaced four keys the old regex could not see —
+# _claude_sessions/_codex_sessions (setdefault), _personalities (first
+# tuple-unpack target), and the dynamic-sessions sentinel. That growth is
+# the gate becoming honest, not new state; the monotonic rule applies from
+# THIS baseline). Shrink freely as TurnContext absorbs keys; grow ONLY with
+# a reviewed reason recorded in the commit.
 ALLOWED_WRITTEN_KEYS = {
+    DYNAMIC_SENTINEL,
     "_agent_health", "_agent_role_overrides", "_allow_writes",
     "_app_dir", "_autonomy", "_base_models",
     "_base_resolved", "_budget", "_build_dir",
-    "_checked_any_agent_runnable", "_claude_model_override", "_completeness",
+    "_checked_any_agent_runnable", "_claude_model_override",
+    "_claude_sessions", "_codex_sessions", "_completeness",
     "_deadline", "_drop_prior_discussions", "_explicit_app",
     "_gemini_disabled_reason", "_gemini_unavailable", "_health_key",
     "_installed_ollama_models", "_iter_verify_toolchain_absent", "_knowledge",
     "_new_session_id", "_noted_indep_grader", "_noted_local_active_limit",
     "_noted_local_lane_skip", "_noted_local_ram_gate", "_noted_ollama_sprint_skip",
-    "_noted_ollama_uninstalled_skip", "_original_prompt", "_phase_deadline",
+    "_noted_ollama_uninstalled_skip", "_original_prompt", "_personalities",
+    "_phase_deadline",
     "_phase_exemplar", "_phase_instructions", "_phase_key",
     "_phase_playbook", "_prior_disc_cap", "_prior_discussions",
     "_read_dir", "_resolved", "_role_by_id",
@@ -57,28 +79,85 @@ ALLOWED_WRITTEN_KEYS = {
 
 
 def scan(root=HERE, files=SCANNED):
-    """Return {key: {"writes": [(file, line)], "reads": [(file, line)]}}."""
+    """Return {key: {"writes": [(file, line)], "reads": [(file, line)]}}.
+
+    Writes: every subscript key on the LHS of an assignment (tuple-unpack
+    targets included), every setdefault(), every pop() (a mutation site the
+    migration must account for), and the dynamic-key sentinel. Reads: .get()
+    everywhere plus subscripts on the RHS / in non-assignment lines."""
     inv = {}
+
+    def add(kind, key, site):
+        inv.setdefault(key, {"writes": [], "reads": []})[kind].append(site)
+
     for fn in files:
         path = os.path.join(root, fn)
         if not os.path.exists(path):
             continue
-        for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
+        with open(path, encoding="utf-8") as fh:
+            file_lines = fh.readlines()
+        for lineno, line in enumerate(file_lines, 1):
             code = line.split("#", 1)[0]   # comments are not sites
-            for m in _WRITE_RE.finditer(code):
-                inv.setdefault(m.group(1), {"writes": [], "reads": []})[
-                    "writes"].append((fn, lineno))
-            for m in _REF_RE.finditer(code):
-                key = m.group(1) or m.group(2)
-                # A write line also matches the subscript ref pattern; only
-                # count it once, as a write.
-                if _WRITE_RE.search(code) and any(
-                        w == (fn, lineno)
-                        for w in inv.get(key, {}).get("writes", [])):
-                    continue
-                inv.setdefault(key, {"writes": [], "reads": []})[
-                    "reads"].append((fn, lineno))
+            site = (fn, lineno)
+            if _DYNAMIC_RE.search(code):
+                add("writes", DYNAMIC_SENTINEL, site)
+            for m in _SETDEFAULT_RE.finditer(code):
+                add("writes", m.group(1), site)
+            for m in _POP_RE.finditer(code):
+                add("writes", m.group(1), site)
+            for m in _GET_RE.finditer(code):
+                add("reads", m.group(1), site)
+            m_assign = _ASSIGN_SPLIT_RE.search(code)
+            if m_assign:
+                lhs, rhs = code[:m_assign.start()], code[m_assign.end():]
+                for m in _SUB_RE.finditer(lhs):
+                    add("writes", m.group(1), site)
+                for m in _SUB_RE.finditer(rhs):
+                    add("reads", m.group(1), site)
+            else:
+                for m in _SUB_RE.finditer(code):
+                    add("reads", m.group(1), site)
     return inv
+
+
+class TestScannerAmendment(unittest.TestCase):
+    """2.3(b): each formerly-blind write shape must be detected. Every case
+    here was sabotage-validated against the 2.3(a) regex (which missed all
+    four) before landing."""
+
+    def _scan_snippet(self, text):
+        import tempfile
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "probe.py"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return scan(root=d, files=("probe.py",))
+
+    def test_setdefault_is_a_write(self):
+        inv = self._scan_snippet('cfg.setdefault("_sess_map", {})\n')
+        self.assertEqual([("probe.py", 1)], inv["_sess_map"]["writes"])
+
+    def test_tuple_unpack_targets_are_all_writes(self):
+        inv = self._scan_snippet('cfg["_pa"], cfg["_pb"] = load()\n')
+        self.assertTrue(inv["_pa"]["writes"], "first tuple target missed")
+        self.assertTrue(inv["_pb"]["writes"], "second tuple target missed")
+
+    def test_pop_is_a_mutation_site(self):
+        inv = self._scan_snippet('cfg.pop("_gone", None)\n')
+        self.assertEqual([("probe.py", 1)], inv["_gone"]["writes"])
+
+    def test_dynamic_key_records_the_sentinel(self):
+        inv = self._scan_snippet('c.setdefault("_%s_sessions" % agent, {})\n')
+        self.assertEqual([("probe.py", 1)], inv[DYNAMIC_SENTINEL]["writes"])
+
+    def test_rhs_subscript_still_reads_and_comparison_not_a_write(self):
+        inv = self._scan_snippet(
+            'x = cfg["_r1"]\nif cfg["_r2"] == 3:\n    pass\n')
+        self.assertFalse(inv["_r1"]["writes"])
+        self.assertFalse(inv["_r2"]["writes"])
+        self.assertTrue(inv["_r1"]["reads"] and inv["_r2"]["reads"])
+
+    def test_uicrawl_is_scanned(self):
+        self.assertIn("uicrawl.py", SCANNED)
 
 
 class TestCfgKeyGate(unittest.TestCase):
