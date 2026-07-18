@@ -5362,6 +5362,103 @@ def _maybe_escalate(cfg, app, app_dir, key, coord, attempt_no, already_logged):
 _CONV_ROUND_RE = re.compile(r"\n### Round \d+\n")
 
 
+def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
+                      prior_outputs, *,
+                      rnd, round_agents, personas, extra, md_path,
+                      transcript, ctx_transcript, _seen_chars,
+                      last_substantive, unit, is_build,
+                      independent_first, conversational):
+    """One round of roster turns — the machinery BOTH loops share
+    (V3 board 2.2d): concurrent turns against a frozen context,
+    roster-order append with the PASS protocol and skipped-unavailable
+    notes. The callers own everything around it (debate: step-in
+    barrier, coordinator, consensus; chat: drains, waits, retry).
+    ctx_transcript is the SEMANTIC seam: debate passes the round-open
+    frozen view (empty on an independent-first round 1, so delta
+    offsets deliberately restart at 0 and round 2 re-covers it);
+    conversational passes the live post-drain transcript so the human
+    block rides the claude delta. One string feeds all three uses —
+    build_context, the delta slice, and the offset update.
+    last_substantive collects in BOTH modes (chat hands a throwaway
+    dict — no vote in a chat; a mode branch here isn't worth it).
+    """
+    key, folder, fname, _purpose = phasedef
+    round_produced = 0
+    parallel_rounds = bool(cget(cfg, "runtime.parallel_discussion_rounds", True)) \
+        and len(round_agents) > 1
+
+    def _roster_turn(agent):
+        acfg = dict(cfg)   # per-thread copy: session/health flags must not race
+        acfg["_health_key"] = agent
+        ctx = build_context(acfg, app, phasedef, original_prompt, prior_outputs,
+                            ctx_transcript)
+        persona_text = roleslib.persona_preamble(personas.get(agent))
+        prompt = prompt_discuss(acfg, agent, ctx, phasedef, rnd, extra=extra,
+                                persona=persona_text,
+                                independent_first=(independent_first and rnd == 1),
+                                conversational=conversational)
+        delta = _delta_discuss_prompt(
+            acfg, agent, ctx_transcript[_seen_chars.get(agent, 0):],
+            rnd, extra=extra, persona=persona_text) if agent == "claude" else None
+        _seen_chars[agent] = len(ctx_transcript)
+        return call_agent_sessioned(acfg, app, key, rnd, agent, prompt,
+                                    delta_prompt=delta,
+                                    session_key="%s:%s:discuss" % (key, agent))
+
+    results_by_agent = {}
+    if parallel_rounds:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(round_agents)) as ex:
+            futs = {ex.submit(_roster_turn, a): a for a in round_agents}
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    results_by_agent[futs[fut]] = (fut.result(), None)
+                except AgentError as exc:
+                    results_by_agent[futs[fut]] = (None, str(exc))
+                except Exception as exc:  # noqa: BLE001 - one turn must not kill the phase
+                    results_by_agent[futs[fut]] = (None, "unexpected turn error: %s" % exc)
+    else:
+        for agent in round_agents:
+            try:
+                results_by_agent[agent] = (_roster_turn(agent), None)
+            except AgentError as exc:
+                results_by_agent[agent] = (None, str(exc))
+    # Append in roster order so the transcript stays deterministic.
+    for agent in round_agents:
+        resp, aerr = results_by_agent.get(agent, (None, "no result"))
+        plabel = roleslib.persona_label(personas.get(agent))
+        hat = " (%s)" % plabel if plabel else ""
+        if aerr:
+            # Resilient: an unavailable/logged-out agent is skipped with a note
+            # so the phase keeps going with whoever IS available (they join
+            # back the moment their CLI is logged in). Not fabricated — absent.
+            emit("%s unavailable in %s %d: %s" % (DISPLAY[agent], unit, rnd, aerr))
+            block = "**%s — %s %d (skipped: CLI unavailable)**\n\n_%s_\n" % (
+                DISPLAY[agent], "Iteration" if is_build else "Round", rnd, aerr)
+        elif not is_build and rnd > 1 \
+                and (resp or "").strip().upper().rstrip(".!").strip() == "PASS":
+            # PASS protocol: an honest abstention is recorded as one line,
+            # keeps the round alive (everyone passing signals convergence
+            # for the coordinator), and shrinks every later turn's context.
+            round_produced += 1
+            block = "**%s%s — Round %d**\n\n_PASS — nothing new to add._\n" % (
+                DISPLAY[agent], hat, rnd)
+            live_log(app_dir, key, agent, "agent_turn_completed", "PASS")
+            emit("%s passed in round %d (nothing new)." % (DISPLAY[agent], rnd))
+        else:
+            round_produced += 1
+            # Each agent's newest substantive (non-PASS) post is what a
+            # deterministic vote tally adopts as the winning proposal.
+            last_substantive[agent] = resp
+            block = "**%s%s — %s %d**\n\n%s\n" % (DISPLAY[agent], hat,
+                                                "Iteration" if is_build else "Round", rnd, resp)
+            live_log(app_dir, key, agent, "agent_turn_completed", resp)
+            emit("Appended %s response to %s/%s" % (DISPLAY[agent], folder, fname))
+        append_md(md_path, "\n" + block)
+        transcript += "\n" + block
+    return transcript, round_produced
+
+
 def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
                               prior_outputs, state, md_path, personas, active):
     """V3 board 1.1: human-paced chat phase — no coordinator/consensus/vote.
@@ -5427,6 +5524,7 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
     end_reason = None
     rounds_run = resume_round - 1
     _seen_chars = {}
+    _last_substantive = {}   # collected but unused — no vote in a chat
     # V3 board 1.11: a mid-chat model swap edits <chat>/model_routing.json;
     # the once-per-run routing cache would ignore it. Conversational phases
     # ONLY re-resolve routing at each round open when the file's stat
@@ -5465,60 +5563,13 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
         state["next_agent"] = "+".join(round_agents)
         save_state(app_dir, state)
 
-        def _conv_turn(agent):
-            acfg = dict(cfg)   # per-thread copy: session/health flags must not race
-            acfg["_health_key"] = agent
-            ctx = build_context(acfg, app, phasedef, original_prompt,
-                                prior_outputs, transcript)
-            persona_text = roleslib.persona_preamble(personas.get(agent))
-            prompt = prompt_discuss(acfg, agent, ctx, phasedef, rnd, extra=extra,
-                                    persona=persona_text, conversational=True)
-            delta = _delta_discuss_prompt(
-                acfg, agent, transcript[_seen_chars.get(agent, 0):],
-                rnd, extra=extra, persona=persona_text) if agent == "claude" else None
-            _seen_chars[agent] = len(transcript)
-            return call_agent_sessioned(acfg, app, key, rnd, agent, prompt,
-                                        delta_prompt=delta,
-                                        session_key="%s:%s:discuss" % (key, agent))
-
-        results_by_agent = {}
-        if bool(cget(cfg, "runtime.parallel_discussion_rounds", True)) \
-                and len(round_agents) > 1:
-            with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=len(round_agents)) as ex:
-                futs = {ex.submit(_conv_turn, a): a for a in round_agents}
-                for fut in concurrent.futures.as_completed(futs):
-                    try:
-                        results_by_agent[futs[fut]] = (fut.result(), None)
-                    except AgentError as exc:
-                        results_by_agent[futs[fut]] = (None, str(exc))
-                    except Exception as exc:  # noqa: BLE001 - one turn must not kill the chat
-                        results_by_agent[futs[fut]] = (None, "unexpected turn error: %s" % exc)
-        else:
-            for agent in round_agents:
-                try:
-                    results_by_agent[agent] = (_conv_turn(agent), None)
-                except AgentError as exc:
-                    results_by_agent[agent] = (None, str(exc))
-        for agent in round_agents:
-            resp, aerr = results_by_agent.get(agent, (None, "no result"))
-            plabel = roleslib.persona_label(personas.get(agent))
-            hat = " (%s)" % plabel if plabel else ""
-            if aerr:
-                emit("%s unavailable in round %d: %s" % (DISPLAY[agent], rnd, aerr))
-                block = "**%s — Round %d (skipped: CLI unavailable)**\n\n_%s_\n" % (
-                    DISPLAY[agent], rnd, aerr)
-            elif rnd > 1 and (resp or "").strip().upper().rstrip(".!").strip() == "PASS":
-                block = "**%s%s — Round %d**\n\n_PASS — nothing new to add._\n" % (
-                    DISPLAY[agent], hat, rnd)
-                live_log(app_dir, key, agent, "agent_turn_completed", "PASS")
-                emit("%s passed in round %d (nothing new)." % (DISPLAY[agent], rnd))
-            else:
-                block = "**%s%s — Round %d**\n\n%s\n" % (DISPLAY[agent], hat, rnd, resp)
-                live_log(app_dir, key, agent, "agent_turn_completed", resp)
-                emit("Appended %s response to %s/%s" % (DISPLAY[agent], folder, fname))
-            append_md(md_path, "\n" + block)
-            transcript += "\n" + block
+        transcript, _produced = _run_roster_turns(
+            cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
+            rnd=rnd, round_agents=round_agents, personas=personas, extra=extra,
+            md_path=md_path, transcript=transcript, ctx_transcript=transcript,
+            _seen_chars=_seen_chars, last_substantive=_last_substantive,
+            unit="round", is_build=False, independent_first=False,
+            conversational=True)
         rounds_run = rnd
 
         decision, _payload = _await_inbox(cfg, app, app_dir, key, state,
@@ -5621,10 +5672,14 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
                        unlimited_rounds, max_rounds, independent_first,
                        quality_repair_limit, step_in_marker,
                        consensus, final_output):
-    """The sequential round-barrier debate loop, extracted VERBATIM from
-    process_phase (V3 board 2.2a). Everything inside the for-loop is a pure
-    lift — behavior, save_state ordering, and transcript bytes are contract
-    (tests/test_transcript_golden.py). Seam notes:
+    """The sequential round-barrier debate loop, extracted from
+    process_phase (V3 board 2.2a; roster-turn machinery further shared with
+    the conversational loop via _run_roster_turns in 2.2d — the one
+    post-extraction edit: any_agent_output is now derived from
+    round_produced at the call site, provably equivalent because the two
+    were incremented in lockstep). Behavior, save_state ordering, and
+    transcript bytes are contract (tests/test_transcript_golden.py).
+    Seam notes:
     - consensus/final_output arrive as IN/OUT seeds: an enabled parallel
       build has already produced them and flows through here with
       rounds_iter=[] (zero iterations) exactly as it flowed through the
@@ -5683,7 +5738,6 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
         append_md(md_path, "\n### %s %d\n\n" % ("Iteration" if is_build else "Round", rnd))
 
         unit_label = "%s %d" % ("Iteration" if is_build else "Round", rnd)
-        round_produced = 0
         _pre_drain_len = len(transcript)
         transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label)
         human_joined = len(transcript) > _pre_drain_len
@@ -5716,79 +5770,15 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
         # supposed to be reacting to (V3 board 1.7 review).
         round_ctx_transcript = "" if (independent_first and rnd == 1
                                       and not human_joined) else transcript
-        parallel_rounds = bool(cget(cfg, "runtime.parallel_discussion_rounds", True)) \
-            and len(round_agents) > 1
-
-        def _discussion_turn(agent):
-            acfg = dict(cfg)   # per-thread copy: session/health flags must not race
-            acfg["_health_key"] = agent
-            ctx = build_context(acfg, app, phasedef, original_prompt, prior_outputs,
-                                round_ctx_transcript)
-            persona_text = roleslib.persona_preamble(personas.get(agent))
-            prompt = prompt_discuss(acfg, agent, ctx, phasedef, rnd, extra=extra,
-                                    persona=persona_text,
-                                    independent_first=(independent_first and rnd == 1))
-            delta = _delta_discuss_prompt(
-                acfg, agent, round_ctx_transcript[_seen_chars.get(agent, 0):],
-                rnd, extra=extra, persona=persona_text) if agent == "claude" else None
-            _seen_chars[agent] = len(round_ctx_transcript)
-            return call_agent_sessioned(acfg, app, key, rnd, agent, prompt,
-                                        delta_prompt=delta,
-                                        session_key="%s:%s:discuss" % (key, agent))
-
-        results_by_agent = {}
-        if parallel_rounds:
-            with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=len(round_agents)) as ex:
-                futs = {ex.submit(_discussion_turn, a): a for a in round_agents}
-                for fut in concurrent.futures.as_completed(futs):
-                    try:
-                        results_by_agent[futs[fut]] = (fut.result(), None)
-                    except AgentError as exc:
-                        results_by_agent[futs[fut]] = (None, str(exc))
-                    except Exception as exc:  # noqa: BLE001 - one turn must not kill the phase
-                        results_by_agent[futs[fut]] = (None, "unexpected turn error: %s" % exc)
-        else:
-            for agent in round_agents:
-                try:
-                    results_by_agent[agent] = (_discussion_turn(agent), None)
-                except AgentError as exc:
-                    results_by_agent[agent] = (None, str(exc))
-        # Append in roster order so the transcript stays deterministic.
-        for agent in round_agents:
-            resp, aerr = results_by_agent.get(agent, (None, "no result"))
-            plabel = roleslib.persona_label(personas.get(agent))
-            hat = " (%s)" % plabel if plabel else ""
-            if aerr:
-                # Resilient: an unavailable/logged-out agent is skipped with a note
-                # so the phase keeps going with whoever IS available (they join
-                # back the moment their CLI is logged in). Not fabricated — absent.
-                emit("%s unavailable in %s %d: %s" % (DISPLAY[agent], unit, rnd, aerr))
-                block = "**%s — %s %d (skipped: CLI unavailable)**\n\n_%s_\n" % (
-                    DISPLAY[agent], "Iteration" if is_build else "Round", rnd, aerr)
-            elif not is_build and rnd > 1 \
-                    and (resp or "").strip().upper().rstrip(".!").strip() == "PASS":
-                # PASS protocol: an honest abstention is recorded as one line,
-                # keeps the round alive (everyone passing signals convergence
-                # for the coordinator), and shrinks every later turn's context.
-                round_produced += 1
-                any_agent_output = True
-                block = "**%s%s — Round %d**\n\n_PASS — nothing new to add._\n" % (
-                    DISPLAY[agent], hat, rnd)
-                live_log(app_dir, key, agent, "agent_turn_completed", "PASS")
-                emit("%s passed in round %d (nothing new)." % (DISPLAY[agent], rnd))
-            else:
-                round_produced += 1
-                any_agent_output = True
-                # Each agent's newest substantive (non-PASS) post is what a
-                # deterministic vote tally adopts as the winning proposal.
-                last_substantive[agent] = resp
-                block = "**%s%s — %s %d**\n\n%s\n" % (DISPLAY[agent], hat,
-                                                    "Iteration" if is_build else "Round", rnd, resp)
-                live_log(app_dir, key, agent, "agent_turn_completed", resp)
-                emit("Appended %s response to %s/%s" % (DISPLAY[agent], folder, fname))
-            append_md(md_path, "\n" + block)
-            transcript += "\n" + block
+        transcript, round_produced = _run_roster_turns(
+            cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
+            rnd=rnd, round_agents=round_agents, personas=personas, extra=extra,
+            md_path=md_path, transcript=transcript,
+            ctx_transcript=round_ctx_transcript, _seen_chars=_seen_chars,
+            last_substantive=last_substantive, unit=unit, is_build=is_build,
+            independent_first=independent_first, conversational=False)
+        if round_produced:
+            any_agent_output = True
 
         # Resilience: one empty round must NOT abort the phase — agents recover
         # from cooldowns and rate limits between rounds. Skip the coordinator
