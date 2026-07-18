@@ -83,6 +83,12 @@ struct ChatSessionView: View {
             composer(state)
         }
         .task(id: "\(sessionID)/\(phaseKey)") { await poll() }
+        .onAppear {
+            if session?.state.isAlive == true { store.setFocusedLivePane(sessionID) }
+        }
+        .onDisappear {
+            if store.focusedLivePane == sessionID { store.setFocusedLivePane(nil) }
+        }
     }
 
     // MARK: header
@@ -140,6 +146,7 @@ struct ChatSessionView: View {
             Button("Start chat") { store.startChatSession(sessionID) }
         case .stopped, .crashed:
             Button("Relaunch") { store.startChatSession(sessionID) }
+            Button("Fork") { store.forkChatSession(sessionID) }
             discussButton(label: "Let them discuss")
         case .running, .waitingForHuman:
             discussButton(label: "End & discuss")
@@ -149,7 +156,8 @@ struct ChatSessionView: View {
             EmptyView()
         case .ended:
             // The engine skips done apps — a Relaunch would be a dead control
-            // (§16). Promotion is the one meaningful verb left.
+            // (§16). Fork and promotion are the meaningful verbs left.
+            Button("Fork") { store.forkChatSession(sessionID) }
             discussButton(label: "Let them discuss")
         }
     }
@@ -320,7 +328,11 @@ struct ChatSessionView: View {
                 }
                 if t != transcript { transcript = t }
             }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            // V3 board 1.10: fast tick only while this chat is alive AND
+            // focused (the sheet is up) — never for ended/stopped chats.
+            let fast = store.focusedLivePane == sessionID
+                && (session?.state.isAlive ?? false)
+            try? await Task.sleep(nanoseconds: fast ? 500_000_000 : 1_500_000_000)
         }
     }
 }

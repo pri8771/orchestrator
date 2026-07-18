@@ -76,6 +76,10 @@ struct TranscriptView: View {
             inputBar
         }
         .task(id: transcriptID) { await pollTranscript() }
+        .onAppear { if project.running { store.setFocusedLivePane(project.name) } }
+        .onDisappear {
+            if store.focusedLivePane == project.name { store.setFocusedLivePane(nil) }
+        }
         .onChange(of: store.eventsByProject[project.name] ?? []) { _, events in
             guard let last = events.last(where: {
                 $0.kind.hasPrefix("step_in") && $0.phase == phaseKey
@@ -107,7 +111,10 @@ struct TranscriptView: View {
                 loadedID = transcriptID
             }
             if t != transcript { transcript = t }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            // V3 board 1.10: 500ms while this pane is the focused LIVE one;
+            // a stopped project never earns the fast tick.
+            let fast = store.focusedLivePane == project.name && project.running
+            try? await Task.sleep(nanoseconds: fast ? 500_000_000 : 1_500_000_000)
         }
     }
 

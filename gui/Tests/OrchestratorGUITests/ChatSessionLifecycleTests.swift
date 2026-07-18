@@ -142,3 +142,11 @@ final class ChatSessionLifecycleTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: firstPrompt, encoding: .utf8), "one")
     }
 }
+
+// V3 board 1.10: cadence derivation — pure, no store instantiation.
+final class RefreshCadenceTests: XCTestCase {
+    func testFocusedLivePaneEarnsTheFastTick() {
+        XCTAssertEqual(OrchestratorStore.refreshInterval(focusedLive: true), 0.5)
+        XCTAssertEqual(OrchestratorStore.refreshInterval(focusedLive: false), 1.5)
+    }
+}

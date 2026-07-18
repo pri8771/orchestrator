@@ -835,11 +835,43 @@ final class OrchestratorStore: ObservableObject {
         // root view's onAppear. Without this guard we'd stack a second 1.5s timer
         // every reopen, each doing a full disk rescan. One timer, ever.
         guard timer == nil else { return }
-        let t = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        scheduleRefreshTimer()
+    }
+
+    // V3 board 1.10: one timer, ever — but its cadence follows focus. 500ms
+    // while a LIVE session pane is focused (render latency the user is
+    // actively watching), 1.5s otherwise. Cadence parameter ONLY: the
+    // refresh coalescing / generation guard / watchdog machinery is
+    // untouched, and time-based throttles inside refresh (shepherd poll,
+    // routing-cache TTL) stay time-based so 3x ticks never mean 3x work.
+    private(set) var focusedLivePane: String? = nil
+
+    nonisolated static func refreshInterval(focusedLive: Bool) -> Double {
+        focusedLive ? 0.5 : 1.5
+    }
+
+    func setFocusedLivePane(_ name: String?) {
+        guard focusedLivePane != name else { return }
+        let before = Self.refreshInterval(focusedLive: focusedLivePane != nil)
+        focusedLivePane = name
+        let after = Self.refreshInterval(focusedLive: focusedLivePane != nil)
+        if before != after { rescheduleRefreshTimer() }
+    }
+
+    private func scheduleRefreshTimer() {
+        let interval = Self.refreshInterval(focusedLive: focusedLivePane != nil)
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+    }
+
+    private func rescheduleRefreshTimer() {
+        guard timer != nil else { return }   // start() not reached yet
+        timer?.invalidate()
+        timer = nil
+        scheduleRefreshTimer()   // preserves the one-timer invariant
     }
 
     // First launch on a machine that never ran the engine: materialize the
@@ -1157,6 +1189,52 @@ final class OrchestratorStore: ObservableObject {
     // removed and the run surface takes over (never the chat reducer's
     // .ended dead-end).
     private var pendingPromote: Set<String> = []
+
+    // V3 board 1.9: fork a (not-running) chat session via the engine CLI,
+    // which strips agent threads/locks/approvals/inbox; the printed
+    // "FORKED: <name>" line names the new dir, which is registered as an
+    // idle ChatSession so it appears in the strip immediately.
+    func forkChatSession(_ id: String) {
+        guard let s = chatSessions[id], !s.state.isAlive else {
+            surfaceError("Stop the chat before forking — a mid-write copy could tear a round in half.")
+            return
+        }
+        let py = resolvePython()
+        let engine = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let root = rootURL.path
+        let workflow = s.workflow
+        Task.detached { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.arguments = [engine, "--root", root, "--fork", id]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = pipe
+            try? proc.run()
+            proc.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                             encoding: .utf8) ?? ""
+            let name = out.split(separator: "\n")
+                .first { $0.hasPrefix("FORKED: ") }
+                .map { String($0.dropFirst("FORKED: ".count)) }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard proc.terminationStatus == 0, let name else {
+                    self.surfaceError("Fork failed — see the run log.")
+                    self.runLog += out
+                    return
+                }
+                let parts = name.components(separatedBy: "--")
+                self.chatSessions[name] = ChatSession(
+                    id: name,
+                    project: parts.count == 3 ? parts[0] : name,
+                    section: parts.count == 3 ? parts[1] : "",
+                    slug: parts.count == 3 ? parts[2] : name,
+                    workflow: workflow)
+                self.refresh()
+            }
+        }
+    }
 
     func promoteChatSession(_ id: String) {
         guard let s = chatSessions[id] else { return }

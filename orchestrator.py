@@ -8411,6 +8411,76 @@ def prepare_continue(root, slug, workflow_name):
     return 0, slug
 
 
+def fork_session(root, src_slug, new_slug=None):
+    """V3 board 1.9: fork = a copy of a session dir with every continuity and
+    coordination carrier stripped.
+
+    Excluded from the copy, each for a concrete reason:
+    - `.agent_cwd/` — the stable cwd the claude CLI keys its session store by:
+      the on-disk agent-thread carrier. Cloning it would resume the SOURCE's
+      threads from the fork; `codex exec resume` always runs workspace-write
+      regardless of the original sandbox, so a cloned thread id can silently
+      upgrade a read-only discussion's sandbox (GLOSSARY, agent thread).
+    - `*.lock` files — locks name a RUN, never content.
+    - `approvals/` — pending decision files would instantly answer the fork's
+      first checkpoint (or end its first conversational round).
+    - `human_inbox.txt` / `.step_in` — an undrained message must not deliver
+      twice, once in each timeline.
+    agent_state.json is then sanitized: runner_pid/next_agent/awaiting/error
+    markers cleared; completed_phases and phase_outputs are content and stay.
+
+    Returns (exit_code, new_slug); 3 = source is live (refused: a mid-write
+    copy could tear a round in half)."""
+    src = os.path.join(root, src_slug)
+    if not os.path.isdir(src):
+        emit("--fork: no project '%s' under %s" % (src_slug, root))
+        return 2, None
+    if _app_lock_has_live_owner(src_slug):
+        emit("--fork: '%s' is running — stop it first (a fork of a mid-write "
+             "dir could tear a round in half)." % src_slug)
+        return 3, None
+    base = new_slug or (src_slug + "-fork")
+    name, n = base, 2
+    while os.path.exists(os.path.join(root, name)):
+        name = "%s-%d" % (base, n)
+        n += 1
+    dst = os.path.join(root, name)
+
+    def _ignore(_dirpath, entries):
+        return {e for e in entries
+                if e in (".agent_cwd", "approvals", "human_inbox.txt", ".step_in")
+                or e.endswith(".lock")}
+
+    try:
+        shutil.copytree(src, dst, ignore=_ignore)
+    except OSError as exc:
+        emit("--fork: copy failed: %s" % exc)
+        return 2, None
+    if os.path.exists(state_path(dst)):
+        # Direct write, NOT save_state: save_state stamps runner_pid with the
+        # CURRENT process (runtime bookkeeping for a live engine) — a fork has
+        # no runner, and a dead-looking pid here would trip staleness probes.
+        st = load_state(dst)
+        st["runner_pid"] = None
+        st["next_agent"] = None
+        st["awaiting_approval"] = None
+        st["awaiting_human"] = None
+        st["error"] = None
+        st["blocked_conflict"] = None
+        tmp = state_path(dst) + ".fork.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(st, fh, indent=2)
+            os.replace(tmp, state_path(dst))
+        except OSError as exc:
+            emit("--fork: state sanitize failed: %s" % exc)
+            return 2, None
+    emit("--fork: '%s' forked to '%s' (transcripts/state copied; agent "
+         "threads, locks, approvals and inbox deliberately NOT)." % (src_slug, name))
+    print("FORKED: %s" % name)
+    return 0, name
+
+
 # 'Let them discuss' (V3 board 1.8): source chat workflow -> default debate
 # workflow. Data, and only a DEFAULT — --to overrides.
 _CHAT_PROMOTE_TARGETS = {"chat_ideas": "brainstorm", "chat_research": "research"}
@@ -8575,6 +8645,9 @@ def main():
     ap.add_argument("--resume", metavar="SLUG",
                     help="resume an existing project from its saved state, clearing "
                          "any recorded abort error first (V2 spec §27)")
+    ap.add_argument("--fork", metavar="SLUG",
+                    help="fork a session: copy the dir minus agent threads, "
+                         "locks, approvals and inbox; prints FORKED: <name>")
     ap.add_argument("--promote", metavar="SLUG",
                     help="'Let them discuss': promote a conversational chat "
                          "session to an auto debate workflow in the same dir "
@@ -8728,6 +8801,10 @@ def main():
         else:
             print_mistakes_report(rep)
         return 0
+
+    if args.fork:
+        rc, _forked = fork_session(cfg["root"], args.fork)
+        return rc
 
     if args.promote:
         rc, promoted = promote_chat(cfg["root"], args.promote,
