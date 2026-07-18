@@ -454,13 +454,31 @@ struct AppShellView: View {
                     .foregroundStyle(DS.status.warning.color)
             case .populated(let metas):
                 ForEach(metas) { meta in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(meta.title).font(DS.font.body)
-                        Text(SectionRailLogic.statusLine(
-                                section: meta.id, projects: store.projects))
-                            .font(DS.font.caption)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
+                    HStack(spacing: DS.space.xs) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(meta.title).font(DS.font.body)
+                            Text(SectionRailLogic.statusLine(
+                                    section: meta.id, projects: store.projects))
+                                .font(DS.font.caption)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        // Lint badge (3.7's report): errors red, warnings
+                        // amber; absent = not linted or clean.
+                        if let summary = store.sectionLint[meta.id] ?? nil,
+                           summary.errors + summary.warnings > 0 {
+                            Image(systemName: summary.errors > 0
+                                  ? "xmark.octagon.fill"
+                                  : "exclamationmark.triangle.fill")
+                                .font(DS.font.caption)
+                                .foregroundStyle(summary.errors > 0
+                                                 ? DS.status.error.color
+                                                 : DS.status.warning.color)
+                                .help("\(summary.errors) error(s), "
+                                      + "\(summary.warnings) warning(s) — "
+                                      + "open Section Settings › Lint")
+                        }
                     }
                     .tag(ShellSelection.section(meta.id))
                 }

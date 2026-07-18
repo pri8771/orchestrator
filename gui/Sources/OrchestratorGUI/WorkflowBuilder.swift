@@ -22,6 +22,9 @@ struct WorkflowBuilderSheet: View {
     @EnvironmentObject var store: OrchestratorStore
     @Environment(\.dismiss) private var dismiss
 
+    /// V3 3.8: the section Settings sheet opens the builder on the
+    /// section's own workflow.
+    var initialSelection: String? = nil
     @State private var files: [RawWorkflowFile] = []
     @State private var selectedName: String?
 
@@ -51,7 +54,7 @@ struct WorkflowBuilderSheet: View {
         }
         .frame(width: 900, height: 640)
         .background(DS.windowBg)
-        .onAppear { reload(select: nil) }
+        .onAppear { reload(select: initialSelection) }
     }
 
     private var header: some View {

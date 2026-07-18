@@ -20,6 +20,7 @@ import UniformTypeIdentifiers
 enum RoutingScope: Equatable {
     case fleet
     case project(name: String)
+    case section(name: String)   // V3 3.8: sections/<name>/routing.json
 
     var isFleet: Bool { self == .fleet }
     var projectName: String {
@@ -253,6 +254,10 @@ struct RoutingGridView: View {
         case .project(let name):
             return store.rootURL.appendingPathComponent(name)
                 .appendingPathComponent("model_routing.json")
+        case .section(let name):
+            // The 3.4 session layer: fleet -> project -> section overlay.
+            return store.orchDirURL.appendingPathComponent(
+                "sections/\(name)/routing.json")
         }
     }
 

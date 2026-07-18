@@ -633,6 +633,10 @@ final class OrchestratorStore: ObservableObject {
     // V3 3.8: the section rail (explicit R4 state) + selected section.
     @Published var sectionRail: SectionRailState = .loading
     @Published var selectedSection: String?
+    // Per-section lint: missing key = not yet run; .some(nil) = the lint
+    // run FAILED (surfaced as unavailable, never as "clean"); .some(.some)
+    // = a parsed report.
+    @Published var sectionLint: [String: SectionLintSummary?] = [:]
     private var launchingName: String?      // just-launched, not yet seen as running
     private var launchingAt: Date?
     // Pre-refresh seed must match the engine default (local model OFF) so the
@@ -2860,6 +2864,30 @@ final class OrchestratorStore: ObservableObject {
         sectionRail = SectionRailLogic.discover(
             sectionsDirURL: orchDirURL.appendingPathComponent(
                 "sections", isDirectory: true))
+    }
+
+    /// Run --lint-section --lint-json off-main and publish the summary;
+    /// a failed run publishes nil (unavailable, not clean — R2).
+    func lintSection(_ name: String) {
+        let py = resolvePython()
+        let engine = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let root = rootURL.path
+        Task.detached { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.arguments = [engine, "--root", root,
+                              "--lint-section", name, "--lint-json"]
+            let out = Pipe()
+            proc.standardOutput = out
+            proc.standardError = Pipe()
+            try? proc.run()
+            proc.waitUntilExit()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let summary = SectionLintParser.parse(data)
+            await MainActor.run { [weak self] in
+                self?.sectionLint[name] = summary
+            }
+        }
     }
 
     /// The empty state's "seed defaults" action: any engine invocation

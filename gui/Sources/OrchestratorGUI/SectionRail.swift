@@ -94,6 +94,7 @@ struct SectionChatsView: View {
     @EnvironmentObject var store: OrchestratorStore
     let section: String
     let onOpenChat: (String) -> Void
+    @State private var showSettings = false
 
     private var chats: [Project] {
         store.projects.filter {
@@ -141,5 +142,20 @@ struct SectionChatsView: View {
             }
         }
         .navigationTitle(section.capitalized)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showSettings = true
+                } label: {
+                    Label("Section Settings", systemImage: "slider.horizontal.3")
+                }
+                .help("Edit this section's phases, models, and rules")
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SectionSettingsSheet(section: SectionMeta(
+                id: section, title: section.capitalized))
+                .environmentObject(store)
+        }
     }
 }
