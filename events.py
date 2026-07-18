@@ -24,6 +24,9 @@ Event kinds emitted by orchestrator.py:
     message_produced    (agent, model_used, status — one per DELIVERED reply)
     message_appended    (turn_id, content_path — one per messages.jsonl index
                          line; ids+paths only, the body lives in the phase .md)
+    config_fallback     (section, file, error — a default was substituted for
+                         a missing/corrupt user config; ground rule 4: every
+                         fallback is VISIBLE, never silent)
     artifact_published  (artifact_id, type, version, path)
     artifact_routed     (route_id, artifact_id, target)
     artifact_consumed   (artifact_id, consumer, phase)
@@ -94,6 +97,10 @@ KINDS = (
     "message_appended",
     "artifact_published", "artifact_routed", "artifact_consumed",
     "route_proposed", "route_approved",
+    # V3 board 3.1: a default replaced a missing/corrupt user config file
+    # — the visible-fallback banner kind (sections.py is the first
+    # emitter; every future config loader reuses it).
+    "config_fallback",
 )
 
 _MAX_FIELD_CHARS = 500
