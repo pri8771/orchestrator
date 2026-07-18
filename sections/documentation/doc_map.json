@@ -1,0 +1,419 @@
+{
+  "schema_version": 1,
+  "docs": [
+    {
+      "doc_id": "prd",
+      "title": "Product Requirements (PRD)",
+      "filename": "PRD.md",
+      "kind": "composed",
+      "intro": "_Deterministic render of the discovery/scoping phases' final decisions. Non-AI; missing phases are N/A, never invented._",
+      "sources": [
+        "prompt_contract",
+        "product_research",
+        "portfolio_selection",
+        "initial_discussion",
+        "per_app_product_brief",
+        "next_steps_small",
+        "detailed_discussion",
+        "app_features"
+      ]
+    },
+    {
+      "doc_id": "technical_architecture",
+      "title": "Technical Architecture",
+      "filename": "TECHNICAL_ARCHITECTURE.md",
+      "kind": "composed",
+      "intro": "_Deterministic render of the design/spec/planning phases' final decisions. Non-AI; missing phases are N/A, never invented._",
+      "sources": [
+        "design_discussion",
+        "design_handoff",
+        "ios_architecture_review",
+        "tech_specs",
+        "project_plan",
+        "implementation_readiness_gate"
+      ]
+    },
+    {
+      "doc_id": "qa_report",
+      "title": "QA Report",
+      "filename": "QA_REPORT.md",
+      "kind": "qa",
+      "intro": "_Deterministic render of the review phase's decision and the real verification result. Non-AI; nothing here is fabricated._",
+      "sources": [
+        "build_verification",
+        "human_qa_checklist",
+        "app_store_readiness",
+        "final_review",
+        "portfolio_audit"
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "category_id": "ideas",
+      "title": "Ideas"
+    },
+    {
+      "category_id": "research",
+      "title": "Research"
+    },
+    {
+      "category_id": "planning_spec",
+      "title": "Planning & Spec"
+    },
+    {
+      "category_id": "design",
+      "title": "Design"
+    },
+    {
+      "category_id": "build",
+      "title": "Build (Prototype & Engineering)"
+    },
+    {
+      "category_id": "qa_redteam",
+      "title": "QA & Red Team"
+    },
+    {
+      "category_id": "documentation",
+      "title": "Documentation"
+    },
+    {
+      "category_id": "gtm",
+      "title": "Go-to-Market"
+    },
+    {
+      "category_id": "legal_compliance",
+      "title": "Legal & Compliance"
+    },
+    {
+      "category_id": "execution_ops",
+      "title": "Execution & Operations"
+    },
+    {
+      "category_id": "library_knowledge",
+      "title": "Library & Knowledge"
+    }
+  ],
+  "slots": [
+    {
+      "slot_id": "problem_statement",
+      "category": "ideas",
+      "title": "Problem Statement",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "target_user",
+      "category": "ideas",
+      "title": "Target User",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "value_proposition",
+      "category": "ideas",
+      "title": "Value Proposition",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "market_landscape",
+      "category": "research",
+      "title": "Market Landscape",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "competitor_analysis",
+      "category": "research",
+      "title": "Competitor Analysis",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "user_research",
+      "category": "research",
+      "title": "User Research",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "technical_feasibility",
+      "category": "research",
+      "title": "Technical Feasibility",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "product_requirements",
+      "category": "planning_spec",
+      "title": "Product Requirements",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "scope_tiers",
+      "category": "planning_spec",
+      "title": "Scope Tiers",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "feature_list",
+      "category": "planning_spec",
+      "title": "Feature List",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "task_graph",
+      "category": "planning_spec",
+      "title": "Task Graph",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "success_metrics",
+      "category": "planning_spec",
+      "title": "Success Metrics",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "user_flows",
+      "category": "design",
+      "title": "User Flows",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "information_architecture",
+      "category": "design",
+      "title": "Information Architecture",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "design_language",
+      "category": "design",
+      "title": "Design Language",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "copy_voice",
+      "category": "design",
+      "title": "Copy & Voice",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "technical_architecture",
+      "category": "build",
+      "title": "Technical Architecture",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "data_model",
+      "category": "build",
+      "title": "Data Model",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "api_contracts",
+      "category": "build",
+      "title": "API Contracts",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "build_plan",
+      "category": "build",
+      "title": "Build Plan",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "dependency_map",
+      "category": "build",
+      "title": "Dependency Map",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "test_plan",
+      "category": "qa_redteam",
+      "title": "Test Plan",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "qa_report",
+      "category": "qa_redteam",
+      "title": "QA Report",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "known_limitations",
+      "category": "qa_redteam",
+      "title": "Known Limitations",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "security_review",
+      "category": "qa_redteam",
+      "title": "Security Review",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "overview",
+      "category": "documentation",
+      "title": "Overview",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "changelog",
+      "category": "documentation",
+      "title": "Changelog",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "glossary",
+      "category": "documentation",
+      "title": "Glossary",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "positioning",
+      "category": "gtm",
+      "title": "Positioning",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "pricing",
+      "category": "gtm",
+      "title": "Pricing",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "launch_plan",
+      "category": "gtm",
+      "title": "Launch Plan",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "marketing_channels",
+      "category": "gtm",
+      "title": "Marketing Channels",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "privacy_policy",
+      "category": "legal_compliance",
+      "title": "Privacy Policy",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "terms_of_service",
+      "category": "legal_compliance",
+      "title": "Terms of Service",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "app_store_compliance",
+      "category": "legal_compliance",
+      "title": "App Store Compliance",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "release_checklist",
+      "category": "execution_ops",
+      "title": "Release Checklist",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "runbook",
+      "category": "execution_ops",
+      "title": "Runbook",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "postmortem_template",
+      "category": "execution_ops",
+      "title": "Postmortem Template",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "reusable_components",
+      "category": "library_knowledge",
+      "title": "Reusable Components",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    },
+    {
+      "slot_id": "lessons_learned",
+      "category": "library_knowledge",
+      "title": "Lessons Learned",
+      "sources": [],
+      "owner_section": null,
+      "min_chars": null
+    }
+  ]
+}

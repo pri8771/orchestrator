@@ -226,5 +226,135 @@ class TestSpecDocs(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.app_dir, "docs", "PRD.md")))
 
 
+class TestDocMap(unittest.TestCase):
+    """V3 board 5.1: docs' source tuples are externalized to
+    sections/documentation/doc_map.json — the built-in default renders
+    byte-identically, disk wins, a corrupt file falls back loudly."""
+    HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "fixtures", "doc_render_frozen.json")
+
+    def _keel(self):
+        with open(self.FIXTURE, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _render_via_map(self, dm, keel):
+        ordered = [tuple(x) for x in keel["ordered"]]
+        po, vsum = keel["phase_outputs"], keel["verify_summary"]
+        out = {}
+        for e in dm["docs"]:
+            if e.get("kind") == "qa":
+                md = docs.render_qa_report("TeaTimer", ordered, po, vsum,
+                                           sources=e["sources"], intro=e["intro"],
+                                           doc_title=e["title"])
+            else:
+                md = docs.render_composed_doc("TeaTimer", e["title"], e["sources"],
+                                              ordered, po, intro=e["intro"])
+            out[e["filename"]] = md
+        return out
+
+    def test_default_map_render_is_byte_identical_to_frozen(self):
+        # The keel: a single-char change to any source tuple or intro breaks this.
+        keel = self._keel()
+        rendered = self._render_via_map(docs._default_doc_map(), keel)
+        for fn in ("PRD.md", "TECHNICAL_ARCHITECTURE.md", "QA_REPORT.md"):
+            self.assertEqual(rendered[fn], keel["cases"][fn], "byte drift in " + fn)
+
+    def test_committed_doc_map_equals_builtin_default(self):
+        # The shipped file must be the verbatim dump of _default_doc_map() — edit
+        # a source tuple without regenerating and this fails (single source truth).
+        path = os.path.join(self.HERE, "sections", "documentation", "doc_map.json")
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(),
+                             json.dumps(docs._default_doc_map(), indent=2))
+
+    def test_absent_map_is_seeded_then_disk_wins_silently(self):
+        tmp = tempfile.mkdtemp()
+        warns = []
+        dm = docs.load_doc_map(tmp, on_warn=warns.append)
+        seeded = os.path.join(tmp, "sections", "documentation", "doc_map.json")
+        self.assertTrue(os.path.exists(seeded), "absent → seed to disk")
+        self.assertEqual(dm, docs._default_doc_map())
+        with open(seeded, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(),
+                             json.dumps(docs._default_doc_map(), indent=2))
+        self.assertFalse(warns, "a healthy seed banners nothing")
+
+    def test_disk_map_overrides_sources_without_code_change(self):
+        tmp = tempfile.mkdtemp()
+        docs.load_doc_map(tmp)  # seed
+        seeded = os.path.join(tmp, "sections", "documentation", "doc_map.json")
+        data = json.loads(open(seeded, encoding="utf-8").read())
+        data["docs"][0]["sources"] = ["app_features"]
+        with open(seeded, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data))
+        self.assertEqual(docs.load_doc_map(tmp)["docs"][0]["sources"],
+                         ["app_features"], "on-disk edit must win")
+
+    def test_corrupt_map_falls_back_loudly_and_is_not_clobbered(self):
+        tmp = tempfile.mkdtemp()
+        d = os.path.join(tmp, "sections", "documentation")
+        os.makedirs(d)
+        with open(os.path.join(d, "doc_map.json"), "w") as fh:
+            fh.write("{ not json")
+        warns = []
+        dm = docs.load_doc_map(tmp, on_warn=warns.append)
+        self.assertEqual(dm, docs._default_doc_map(), "corrupt → built-in default")
+        self.assertTrue(warns and "unreadable" in warns[0], "must fire on_warn")
+        with open(os.path.join(d, "doc_map.json")) as fh:
+            self.assertEqual(fh.read(), "{ not json",
+                             "corrupt user file must NOT be clobbered")
+
+    def test_structurally_invalid_map_falls_back_loudly(self):
+        tmp = tempfile.mkdtemp()
+        d = os.path.join(tmp, "sections", "documentation")
+        os.makedirs(d)
+        # valid JSON, but a doc entry is missing its filename
+        with open(os.path.join(d, "doc_map.json"), "w") as fh:
+            fh.write(json.dumps({"docs": [{"title": "x", "sources": []}]}))
+        warns = []
+        dm = docs.load_doc_map(tmp, on_warn=warns.append)
+        self.assertEqual(dm, docs._default_doc_map())
+        self.assertTrue(warns, "malformed entry must fire on_warn")
+
+    def test_blueprint_ships_40_slots_11_categories_inert(self):
+        dm = docs._default_doc_map()
+        self.assertEqual(len(dm["categories"]), 11)
+        self.assertEqual(len(dm["slots"]), 40)
+        cat_ids = {c["category_id"] for c in dm["categories"]}
+        self.assertEqual(len({s["slot_id"] for s in dm["slots"]}), 40,
+                         "slot ids unique")
+        for s in dm["slots"]:
+            self.assertIn(s["category"], cat_ids, "no orphan slot category")
+            # 5.1 ships the scaffold inert — 5.2/5.3/5.4 populate these.
+            self.assertEqual((s["sources"], s["owner_section"], s["min_chars"]),
+                             ([], None, None))
+
+    def test_write_project_docs_honors_disk_map_and_banners_on_corrupt(self):
+        # End-to-end through write_project_docs + the orch_dir/on_warn wiring.
+        tmp = tempfile.mkdtemp()
+        app_dir = tempfile.mkdtemp()
+        docs.load_doc_map(tmp)  # seed
+        seeded = os.path.join(tmp, "sections", "documentation", "doc_map.json")
+        with open(seeded, "w") as fh:
+            fh.write("{ corrupt")
+        phases = [("final_review", "Final Review")]
+        warns = []
+        written = docs.write_project_docs(
+            app_dir, "Demo", phases, {"final_review": "Ship it."},
+            verify_summary="VERIFIED", orch_dir=tmp, on_warn=warns.append)
+        # QA renders from the built-in fallback (final_review is a QA source)…
+        self.assertIn("docs/QA_REPORT.md", written)
+        # …and the fallback announced itself (R2: the interface must not lie).
+        self.assertTrue(warns, "corrupt doc_map must banner through write path")
+
+    def test_docs_module_stays_stdlib_only(self):
+        # docs.py must not pull in orchestrator/evlib (import-light contract).
+        import docs as _d
+        src = open(_d.__file__, encoding="utf-8").read()
+        for banned in ("import orchestrator", "import events", "import evlib"):
+            self.assertNotIn(banned, src, banned + " leaked into docs.py")
+
+
 if __name__ == "__main__":
     unittest.main()

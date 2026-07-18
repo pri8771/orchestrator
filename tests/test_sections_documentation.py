@@ -23,9 +23,10 @@ DOC_DIR = os.path.join(HERE, "sections", "documentation")
 
 
 class TestManifestsParse(unittest.TestCase):
-    def test_exactly_the_four_manifests_exist_and_parse(self):
+    def test_exactly_the_shipped_manifests_exist_and_parse(self):
+        # 5.0 shipped four manifests; 5.1 added doc_map.json (the doc blueprint).
         names = sorted(n for n in os.listdir(DOC_DIR) if n.endswith(".json"))
-        self.assertEqual(names, ["contracts.json", "roles.json",
+        self.assertEqual(names, ["contracts.json", "doc_map.json", "roles.json",
                                  "routing.json", "section.json"])
         for n in names:
             with open(os.path.join(DOC_DIR, n), encoding="utf-8") as fh:

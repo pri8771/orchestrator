@@ -1,0 +1,43 @@
+{
+  "_note": "Pre-5.1 byte-frozen renders — externalized doc_map must reproduce these EXACTLY.",
+  "ordered": [
+    [
+      "prompt_contract",
+      "Prompt Contract"
+    ],
+    [
+      "product_research",
+      "Product Research"
+    ],
+    [
+      "design_discussion",
+      "Design Discussion"
+    ],
+    [
+      "tech_specs",
+      "Tech Specs"
+    ],
+    [
+      "final_review",
+      "Final Review"
+    ],
+    [
+      "build_verification",
+      "Build Verification"
+    ]
+  ],
+  "phase_outputs": {
+    "prompt_contract": "We will build a tea timer.\n\nScope: MVP.",
+    "product_research": "Market: crowded but shallow.",
+    "design_discussion": "",
+    "tech_specs": "SwiftUI + TimerService.",
+    "final_review": "Ship it. No blockers."
+  },
+  "verify_summary": "VERIFIED (build ok; 8/8 flows)",
+  "cases": {
+    "PRD.md": "# TeaTimer — Product Requirements (PRD)\n\n_Deterministic render of the discovery/scoping phases' final decisions. Non-AI; missing phases are N/A, never invented._\n\n## Prompt Contract\n\nWe will build a tea timer.\n\nScope: MVP.\n\n## Product Research\n\nMarket: crowded but shallow.\n",
+    "TECHNICAL_ARCHITECTURE.md": "# TeaTimer — Technical Architecture\n\n_Deterministic render of the design/spec/planning phases' final decisions. Non-AI; missing phases are N/A, never invented._\n\n## Design Discussion\n\n_N/A — this phase did not run._\n\n## Tech Specs\n\nSwiftUI + TimerService.\n",
+    "QA_REPORT.md": "# TeaTimer — QA Report\n\n_Deterministic render of the review phase's decision and the real verification result. Non-AI; nothing here is fabricated._\n\n## Build Verification\n\n_N/A — this phase did not run._\n\n## Final Review\n\nShip it. No blockers.\n## Build Verification\n\nVERIFIED (build ok; 8/8 flows)\n",
+    "all_sources_absent_returns_none": null
+  }
+}

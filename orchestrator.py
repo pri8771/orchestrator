@@ -9192,7 +9192,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 workflow_name=workflow.name, verify_summary=_vsum,
                 findings=load_docs_findings(app_dir),
                 blocked_conflict=state.get("blocked_conflict"),
-                conversation_end=state.get("conversation_end", {}))
+                conversation_end=state.get("conversation_end", {}),
+                orch_dir=HERE, on_warn=lambda m: emit("WARN " + m))
             written += docslib.write_project_archive(
                 app_dir, app, phases, prompt, state,
                 workflow_name=workflow.name, verify_summary=_vsum,

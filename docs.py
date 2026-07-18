@@ -458,6 +458,167 @@ QA_SOURCES = ("build_verification", "human_qa_checklist", "app_store_readiness",
 
 _NA = "_N/A — this phase did not run._"
 
+# The three composed docs' intros, byte-frozen. Extracted to named constants so
+# the doc_map (below) and any fallback render share ONE copy — a change here is
+# a change everywhere, and tests/fixtures/doc_render_frozen.json pins the bytes.
+_PRD_INTRO = ("_Deterministic render of the discovery/scoping phases' final "
+              "decisions. Non-AI; missing phases are N/A, never invented._")
+_ARCH_INTRO = ("_Deterministic render of the design/spec/planning phases' final "
+               "decisions. Non-AI; missing phases are N/A, never invented._")
+_QA_INTRO = ("_Deterministic render of the review phase's decision and the real "
+             "verification result. Non-AI; nothing here is fabricated._")
+
+# V3 board 5.1: the doc blueprint is data (sections/documentation/doc_map.json),
+# not hardcoded tuples. The App Factory 11-category / 40-section handoff standard
+# ships as the built-in default; PRD_SOURCES/ARCH_SOURCES/QA_SOURCES above stay
+# the SINGLE source of truth that feeds both the seed and the corrupt-file
+# fallback (never a second copy). The 40 blueprint slots are inert scaffold at
+# this stage (owner_section / min_chars / sources left empty) — boards 5.2-5.4
+# extend THIS file, they never fork a new one.
+DOC_MAP_FILENAME = "doc_map.json"
+_ORCH_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# The 11-category standard = the section taxonomy (orchestrator-v3-sections-plan
+# §2). Categories are the top-level buckets of the 40-section handoff blueprint.
+_BLUEPRINT_CATEGORIES = [
+    {"category_id": "ideas", "title": "Ideas"},
+    {"category_id": "research", "title": "Research"},
+    {"category_id": "planning_spec", "title": "Planning & Spec"},
+    {"category_id": "design", "title": "Design"},
+    {"category_id": "build", "title": "Build (Prototype & Engineering)"},
+    {"category_id": "qa_redteam", "title": "QA & Red Team"},
+    {"category_id": "documentation", "title": "Documentation"},
+    {"category_id": "gtm", "title": "Go-to-Market"},
+    {"category_id": "legal_compliance", "title": "Legal & Compliance"},
+    {"category_id": "execution_ops", "title": "Execution & Operations"},
+    {"category_id": "library_knowledge", "title": "Library & Knowledge"},
+]
+
+# The 40-section handoff blueprint, grouped 1:1 under the 11 categories above.
+# owner_section (5.3) and min_chars (5.4) are declared-but-inert here; sources[]
+# stays empty until 5.2 wires artifact→slot ingestion. This is a template, never
+# project content — nothing here is a fabricated fact.
+_BLUEPRINT_SLOT_SEED = [
+    ("ideas", "problem_statement", "Problem Statement"),
+    ("ideas", "target_user", "Target User"),
+    ("ideas", "value_proposition", "Value Proposition"),
+    ("research", "market_landscape", "Market Landscape"),
+    ("research", "competitor_analysis", "Competitor Analysis"),
+    ("research", "user_research", "User Research"),
+    ("research", "technical_feasibility", "Technical Feasibility"),
+    ("planning_spec", "product_requirements", "Product Requirements"),
+    ("planning_spec", "scope_tiers", "Scope Tiers"),
+    ("planning_spec", "feature_list", "Feature List"),
+    ("planning_spec", "task_graph", "Task Graph"),
+    ("planning_spec", "success_metrics", "Success Metrics"),
+    ("design", "user_flows", "User Flows"),
+    ("design", "information_architecture", "Information Architecture"),
+    ("design", "design_language", "Design Language"),
+    ("design", "copy_voice", "Copy & Voice"),
+    ("build", "technical_architecture", "Technical Architecture"),
+    ("build", "data_model", "Data Model"),
+    ("build", "api_contracts", "API Contracts"),
+    ("build", "build_plan", "Build Plan"),
+    ("build", "dependency_map", "Dependency Map"),
+    ("qa_redteam", "test_plan", "Test Plan"),
+    ("qa_redteam", "qa_report", "QA Report"),
+    ("qa_redteam", "known_limitations", "Known Limitations"),
+    ("qa_redteam", "security_review", "Security Review"),
+    ("documentation", "overview", "Overview"),
+    ("documentation", "changelog", "Changelog"),
+    ("documentation", "glossary", "Glossary"),
+    ("gtm", "positioning", "Positioning"),
+    ("gtm", "pricing", "Pricing"),
+    ("gtm", "launch_plan", "Launch Plan"),
+    ("gtm", "marketing_channels", "Marketing Channels"),
+    ("legal_compliance", "privacy_policy", "Privacy Policy"),
+    ("legal_compliance", "terms_of_service", "Terms of Service"),
+    ("legal_compliance", "app_store_compliance", "App Store Compliance"),
+    ("execution_ops", "release_checklist", "Release Checklist"),
+    ("execution_ops", "runbook", "Runbook"),
+    ("execution_ops", "postmortem_template", "Postmortem Template"),
+    ("library_knowledge", "reusable_components", "Reusable Components"),
+    ("library_knowledge", "lessons_learned", "Lessons Learned"),
+]
+
+
+def _default_doc_map():
+    """The built-in doc blueprint: the three composed docs (PRD/ARCH/QA) in
+    render order, assembled FROM the source-of-truth tuples so this can never
+    drift from them, plus the 11-category / 40-section handoff scaffold. This
+    feeds both the on-disk seed and the corrupt-file fallback."""
+    return {
+        "schema_version": schemas.SCHEMA_VERSION,
+        "docs": [
+            {"doc_id": "prd", "title": "Product Requirements (PRD)",
+             "filename": "PRD.md", "kind": "composed",
+             "intro": _PRD_INTRO, "sources": list(PRD_SOURCES)},
+            {"doc_id": "technical_architecture", "title": "Technical Architecture",
+             "filename": "TECHNICAL_ARCHITECTURE.md", "kind": "composed",
+             "intro": _ARCH_INTRO, "sources": list(ARCH_SOURCES)},
+            {"doc_id": "qa_report", "title": "QA Report",
+             "filename": "QA_REPORT.md", "kind": "qa",
+             "intro": _QA_INTRO, "sources": list(QA_SOURCES)},
+        ],
+        "categories": [dict(c) for c in _BLUEPRINT_CATEGORIES],
+        "slots": [{"slot_id": sid, "category": cat, "title": title,
+                   "sources": [], "owner_section": None, "min_chars": None}
+                  for (cat, sid, title) in _BLUEPRINT_SLOT_SEED],
+    }
+
+
+def _doc_map_path(orch_dir):
+    return os.path.join(orch_dir, "sections", "documentation", DOC_MAP_FILENAME)
+
+
+def _valid_doc_map(data):
+    """A loaded map is usable only if it is a dict with a docs[] list whose every
+    entry carries a filename and a sources LIST (the two fields the renderer
+    dereferences). Anything else is treated as corrupt → built-in fallback."""
+    if not isinstance(data, dict) or not isinstance(data.get("docs"), list):
+        return False
+    for e in data["docs"]:
+        if not isinstance(e, dict) or not e.get("filename") \
+                or not isinstance(e.get("sources"), list):
+            return False
+    return True
+
+
+def load_doc_map(orch_dir, on_warn=None):
+    """The doc blueprint for a render (V3 board 5.1). Seed-then-disk-wins, exactly
+    like workflows.ensure_seeded / sections.load_contracts:
+
+      * absent    → materialize the built-in default to disk (best-effort) and
+                    use it — a fresh install writes its seed once, silently.
+      * present   → the on-disk map WINS (a founder's edit is authoritative and
+                    is never clobbered by re-seeding — §6.2).
+      * corrupt   → built-in default AND one on_warn banner. Never silent, never
+                    overwrites the user's file.
+
+    on_warn(msg) defaults to a no-op so docs.py stays stdlib-only and import-light
+    (it has no emit channel of its own — the orchestrator call site wires one)."""
+    default = _default_doc_map()
+    path = _doc_map_path(orch_dir)
+    if not os.path.exists(path):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            _write(path, json.dumps(default, indent=2))
+        except OSError:
+            pass  # a read-only install still renders from the built-in default
+        return default
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not _valid_doc_map(data):
+            raise ValueError("doc_map.json must be an object with a docs[] list "
+                             "of entries each having a filename and a sources list")
+        return data
+    except (OSError, ValueError, TypeError) as exc:
+        if on_warn:
+            on_warn("doc_map.json at %s is unreadable (%s) — falling back to the "
+                    "built-in default blueprint." % (path, exc))
+        return default
+
 
 def render_composed_doc(app, doc_title, source_keys, ordered_phases,
                         phase_outputs, intro=""):
@@ -478,12 +639,15 @@ def render_composed_doc(app, doc_title, source_keys, ordered_phases,
     return "\n".join(lines)
 
 
-def render_qa_report(app, ordered_phases, phase_outputs, verify_summary=""):
-    """QA_REPORT.md: the final review phase plus the structured verify result."""
+def render_qa_report(app, ordered_phases, phase_outputs, verify_summary="",
+                     sources=None, intro=None, doc_title="QA Report"):
+    """QA_REPORT.md: the final review phase plus the structured verify result.
+    sources / intro / doc_title default to the built-in QA doc so direct callers
+    are unaffected; the doc_map path supplies them from the loaded blueprint."""
     md = render_composed_doc(
-        app, "QA Report", QA_SOURCES, ordered_phases, phase_outputs,
-        intro="_Deterministic render of the review phase's decision and the real "
-              "verification result. Non-AI; nothing here is fabricated._")
+        app, doc_title,
+        QA_SOURCES if sources is None else sources, ordered_phases, phase_outputs,
+        intro=_QA_INTRO if intro is None else intro)
     if md is None:
         return None
     return (md + "## Build Verification\n\n"
@@ -549,7 +713,7 @@ def render_known_limitations(app, ordered_phases, phase_outputs, consensus_statu
 def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                        consensus_status=None, workflow_name="app_build",
                        verify_summary="", findings=None, blocked_conflict=None,
-                       conversation_end=None):
+                       conversation_end=None, orch_dir=None, on_warn=None):
     """Render + persist the full doc set (§24) into <app_dir>/docs/:
     PROJECT_DOCUMENTATION.md, LAUNCH_READINESS.md, phase_outputs.json, plus
     PRD.md / TECHNICAL_ARCHITECTURE.md / QA_REPORT.md when their source phases
@@ -570,26 +734,29 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                                        consensus_status, verify_summary,
                                        findings=findings))
         written.append("docs/LAUNCH_READINESS.md")
-        prd = render_composed_doc(
-            app, "Product Requirements (PRD)", PRD_SOURCES, ordered_phases,
-            phase_outputs,
-            intro="_Deterministic render of the discovery/scoping phases' final "
-                  "decisions. Non-AI; missing phases are N/A, never invented._")
-        if prd is not None:
-            _write(os.path.join(docs_dir, "PRD.md"), prd)
-            written.append("docs/PRD.md")
-        arch = render_composed_doc(
-            app, "Technical Architecture", ARCH_SOURCES, ordered_phases,
-            phase_outputs,
-            intro="_Deterministic render of the design/spec/planning phases' final "
-                  "decisions. Non-AI; missing phases are N/A, never invented._")
-        if arch is not None:
-            _write(os.path.join(docs_dir, "TECHNICAL_ARCHITECTURE.md"), arch)
-            written.append("docs/TECHNICAL_ARCHITECTURE.md")
-        qa = render_qa_report(app, ordered_phases, phase_outputs, verify_summary)
-        if qa is not None:
-            _write(os.path.join(docs_dir, "QA_REPORT.md"), qa)
-            written.append("docs/QA_REPORT.md")
+        # V3 board 5.1: the composed docs (PRD / TECHNICAL_ARCHITECTURE / QA) are
+        # driven by the loaded doc_map instead of hardcoded tuples. Iterating the
+        # map's docs[] in its stored order preserves the historical write order
+        # (PRD.md, TECHNICAL_ARCHITECTURE.md, QA_REPORT.md); a doc whose sources
+        # are all absent still returns None and is skipped, never fabricated.
+        doc_map = load_doc_map(orch_dir or _ORCH_DIR, on_warn)
+        for entry in doc_map.get("docs", []):
+            filename = entry.get("filename")
+            if not filename:
+                continue
+            title = entry.get("title") or entry.get("doc_id") or ""
+            intro = entry.get("intro", "")
+            sources = entry.get("sources") or []
+            if entry.get("kind") == "qa":
+                md = render_qa_report(app, ordered_phases, phase_outputs,
+                                      verify_summary, sources=sources,
+                                      intro=intro, doc_title=title)
+            else:
+                md = render_composed_doc(app, title, sources, ordered_phases,
+                                         phase_outputs, intro=intro)
+            if md is not None:
+                _write(os.path.join(docs_dir, filename), md)
+                written.append("docs/" + filename)
         _write(os.path.join(docs_dir, "KNOWN_LIMITATIONS.md"),
                render_known_limitations(app, ordered_phases, phase_outputs,
                                         consensus_status, verify_summary,
