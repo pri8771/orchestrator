@@ -12,6 +12,11 @@ struct TranscriptView: View {
     // the previous project/phase's content while the first load is in flight.
     @State private var transcript = PhaseTranscript()
     @State private var loadedID = ""
+    // V3 board 1.7: step-in surface state. `stepInPending` flips on send
+    // during a live debate and clears ONLY on engine acknowledgment
+    // (step_in_joined/step_in_missed events) — never on a timer (R2).
+    @State private var stepInPending = false
+    @State private var stepInNote: String? = nil
 
     private var def: PhaseDef? {
         store.phases(for: project).first { $0.key == phaseKey }
@@ -67,9 +72,27 @@ struct TranscriptView: View {
             }
             .frame(maxHeight: .infinity)
             Divider()
+            stepInStatus
             inputBar
         }
         .task(id: transcriptID) { await pollTranscript() }
+        .onChange(of: store.eventsByProject[project.name] ?? []) { _, events in
+            guard let last = events.last(where: {
+                $0.kind.hasPrefix("step_in") && $0.phase == phaseKey
+            }) else { return }
+            switch last.kind {
+            case "step_in_joined":
+                stepInPending = false
+                stepInNote = nil
+            case "step_in_missed" where stepInPending:
+                stepInPending = false
+                stepInNote = last.detail.contains("preserved")
+                    ? "The debate ended before you joined — your message stays queued for what runs next."
+                    : "The debate moved on before you joined."
+            default:
+                break
+            }
+        }
     }
 
     // Poll the store's async transcript accessor (disk IO + parse happen in a
@@ -124,8 +147,43 @@ struct TranscriptView: View {
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        if isActivePhase && project.running {
+            // Live debate: marker first (the engine's short wait covers the
+            // gap), then the message — it will be drained at the next round
+            // barrier and the agents respond to it that round.
+            store.requestStepIn(project)
+            stepInPending = true
+            stepInNote = nil
+        }
         store.sendHumanMessage(project, text)
         draft = ""
+    }
+
+    // Symbol + word, evidence-based: the countdown derives from persisted
+    // round state and clears only on engine events (never a timer).
+    @ViewBuilder
+    private var stepInStatus: some View {
+        if stepInPending {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("You'll join at round \(project.currentRound + 1) — the agents will respond to you.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .accessibilityLabel("Joining the debate at round \(project.currentRound + 1)")
+        } else if let note = stepInNote {
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                Text(note).font(.caption)
+                Spacer()
+                Button("Dismiss") { stepInNote = nil }
+                    .buttonStyle(.plain).font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+        }
     }
 
     private func header(_ t: PhaseTranscript) -> some View {

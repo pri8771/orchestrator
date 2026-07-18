@@ -5801,6 +5801,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     empty_round_streak = 0   # consecutive rounds where NO agent spoke
     _seen_chars = {}   # per-agent transcript offset for session delta prompts
     last_substantive = {}   # per-agent newest non-PASS post (vote-tally source)
+    step_in_marker = os.path.join(app_dir, ".step_in")
     for rnd in rounds_iter:
         # Sprint watchdog: if this phase's time slice is spent, finalize with the
         # best output so far instead of starting another round.
@@ -5809,13 +5810,50 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             break
         if _SHUTDOWN.is_set():
             break
+        # V3 board 1.7 ("Step in"): the marker check + wait sit BEFORE the
+        # round header/drain, deliberately — while waiting, the human's
+        # message stays safely in the inbox, so a crash during the pause
+        # loses nothing (resume re-enters this barrier and re-honors the
+        # marker). Draining first and then waiting would let a crash truncate
+        # the round (coordinator-less) AND find the inbox already emptied.
+        stepping_in = os.path.exists(step_in_marker)
+        if stepping_in:
+            evlib.emit_event(app_dir, "step_in_requested", project=app,
+                             phase=key, round=rnd)
+            if not _read_nonblank(os.path.join(app_dir, "human_inbox.txt")):
+                # The GUI writes the marker FIRST, then the message — this
+                # wait only covers that one-file-write race, so its timeout
+                # is seconds, never the 2h approval timeout.
+                emit("Step-in requested — waiting briefly for your message "
+                     "before %s %d." % ("iteration" if is_build else "round", rnd))
+                _await_step_in(cfg, app_dir,
+                               timeout=float(cget(cfg, "runtime.step_in_wait_seconds", 20) or 20))
         state["current_round"] = rnd
         save_state(app_dir, state)
         append_md(md_path, "\n### %s %d\n\n" % ("Iteration" if is_build else "Round", rnd))
 
         unit_label = "%s %d" % ("Iteration" if is_build else "Round", rnd)
         round_produced = 0
+        _pre_drain_len = len(transcript)
         transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label)
+        human_joined = len(transcript) > _pre_drain_len
+        if stepping_in:
+            try:
+                os.remove(step_in_marker)
+            except OSError:
+                pass
+            if human_joined:
+                evlib.emit_event(app_dir, "step_in_joined", project=app,
+                                 phase=key, round=rnd)
+                emit("You joined the conversation at %s %d." %
+                     ("iteration" if is_build else "round", rnd))
+            else:
+                # Stale marker / empty inbox after the bounded wait: proceed
+                # honestly instead of stalling the debate (never a deadlock).
+                evlib.emit_event(app_dir, "step_in_missed", project=app,
+                                 phase=key, round=rnd, detail="no message arrived")
+                emit("Step-in marker had no message — continuing %s %d."
+                     % ("iteration" if is_build else "round", rnd))
         round_agents = ordered_agents(active)
         state["next_agent"] = "+".join(round_agents)
         save_state(app_dir, state)
@@ -5823,7 +5861,11 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         # as it stood when the round OPENED (rounds 2+ include everyone's last-
         # round posts and the coordinator's decision), so the turns run
         # CONCURRENTLY — round wall-clock is the slowest agent, not the sum.
-        round_ctx_transcript = "" if (independent_first and rnd == 1) else transcript
+        # A freshly drained human block overrides independent-first hiding:
+        # round 1's blank-room rule must never hide the human the agents are
+        # supposed to be reacting to (V3 board 1.7 review).
+        round_ctx_transcript = "" if (independent_first and rnd == 1
+                                      and not human_joined) else transcript
         parallel_rounds = bool(cget(cfg, "runtime.parallel_discussion_rounds", True)) \
             and len(round_agents) > 1
 
@@ -5915,7 +5957,27 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         empty_round_streak = 0
 
         # Coordinator turn
+        _pre_coord_len = len(transcript)
         transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label)
+        # V3 board 1.7: a step-in message can land while agents were talking —
+        # this pre-coordinator drain then folds it a round early. That IS the
+        # join (the message is in the transcript; the marker is consumed), but
+        # only the coordinator has seen it, so consensus THIS round is
+        # suppressed (below) — the next round's agents must genuinely respond
+        # before the phase may close. Exception: the final budgeted round
+        # falls through to the forced vote rather than overrunning the budget.
+        _step_joined_pre_coord = False
+        if not is_build and len(transcript) > _pre_coord_len \
+                and os.path.exists(step_in_marker):
+            try:
+                os.remove(step_in_marker)
+            except OSError:
+                pass
+            _step_joined_pre_coord = unlimited_rounds or rnd < max_rounds
+            evlib.emit_event(app_dir, "step_in_joined", project=app, phase=key,
+                             round=rnd)
+            emit("You joined the conversation at %s %d (agents respond next %s)."
+                 % ("iteration" if is_build else "round", rnd, unit))
         state["next_agent"] = coord
         save_state(app_dir, state)
         ctx = build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript)
@@ -5974,6 +6036,18 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         # phase never ends with an empty result (matters for single-agent runs
         # where no forced vote runs).
         final_output = cresp
+        if _step_joined_pre_coord and CONSENSUS_RE.search(cresp):
+            # V3 board 1.7: the human's message arrived after this round's
+            # agents spoke — only the coordinator saw it. A consensus now
+            # would close the phase without any agent responding to the human;
+            # defer it exactly one round (never past the round budget — the
+            # guard above leaves _step_joined_pre_coord False on the final
+            # round, falling through to the forced vote).
+            emit("Consensus deferred for %s %d — you just joined; the agents "
+                 "respond next %s before this phase can close." % (unit, rnd, unit))
+            append_md(md_path, "\n_Consensus deferred one %s — the human just "
+                               "joined and the agents respond first._\n" % unit)
+            continue
         if CONSENSUS_RE.search(cresp):
             consensus = True
             if _phase_quality_gate_enabled(cfg, is_build or is_verify_repair):
@@ -6046,6 +6120,26 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     if rounds_iter and not is_build and not any_agent_output:
         raise AgentError("No enabled agent could produce output in phase '%s' — are "
                          "the agent CLIs installed and logged in? See logs/." % key)
+
+    # V3 board 1.7: the phase is completing — a still-armed step-in can no
+    # longer be honored HERE, and a stale marker would pause the NEXT phase's
+    # first round against an empty inbox. Delete it and say so honestly; the
+    # user's message (if any) stays in the inbox and the next phase's
+    # round-open drain folds it in (§5.5/§6.2 — never silently lost). Crash
+    # and error exits deliberately KEEP the marker: resume re-enters the
+    # round barrier and honors the join there.
+    if not is_build and os.path.exists(step_in_marker):
+        try:
+            os.remove(step_in_marker)
+        except OSError:
+            pass
+        _pending = _read_nonblank(os.path.join(app_dir, "human_inbox.txt"))
+        evlib.emit_event(app_dir, "step_in_missed", project=app, phase=key,
+                         detail=("phase ended before the join; message preserved "
+                                 "in inbox") if _pending else "phase ended before the join")
+        emit("Phase '%s' ended before your step-in was honored — %s" %
+             (key, "your message stays queued for whatever runs next."
+              if _pending else "nothing was lost (the inbox was empty)."))
 
     vote = {}
     available_active = [a for a in active if _agent_available(a, cfg)]
@@ -6644,6 +6738,38 @@ def _read_nonblank(path):
             return bool(fh.read().strip())
     except OSError:
         return False
+
+
+def _await_step_in(cfg, app_dir, timeout=20.0, poll=0.25):
+    """V3 board 1.7: the tiny wait between a step-in marker landing and the
+    message it announces (the GUI writes the marker FIRST, so this covers a
+    one-file-write race — seconds, never the 2h approval timeout).
+
+    Deliberately NOT _await_inbox: that helper consumes approvals/<key>.ok,
+    which in a debate phase is the CHECKPOINT-APPROVAL decision file — eating
+    it here would swallow a real approval click racing a phase end. It also
+    must not set state['awaiting_human'] (a debate is not a chat; the GUI's
+    chat machinery keys on that marker). Watches only the inbox, stat-gated,
+    with the standard shutdown/deadline escapes."""
+    inbox = os.path.join(app_dir, "human_inbox.txt")
+    deadline = time.time() + timeout
+    _last_stat = ()
+    while time.time() < deadline:
+        if _SHUTDOWN.is_set():
+            return "shutdown"
+        if cfg.get("_phase_deadline") and time.time() >= cfg["_phase_deadline"]:
+            return "deadline"
+        try:
+            _s = os.stat(inbox)
+            _st = (_s.st_mtime_ns, _s.st_size)
+        except OSError:
+            _st = None
+        if _st is not None and _st != _last_stat:
+            _last_stat = _st
+            if _read_nonblank(inbox):
+                return "message"
+        time.sleep(poll)
+    return "timeout"
 
 
 def _await_inbox(cfg, app, app_dir, phase_key, state, timeout=7200, poll=0.25):

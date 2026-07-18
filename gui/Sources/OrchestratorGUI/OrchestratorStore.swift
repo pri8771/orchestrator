@@ -2977,6 +2977,14 @@ final class OrchestratorStore: ObservableObject {
     // Queue a human message. A live run folds it into the conversation on the
     // next turn (orchestrator drains this file); if nothing is running it stays
     // queued and shown as pending until the next run picks it up.
+    // V3 board 1.7: ask a LIVE auto debate to pause at the next round barrier.
+    // Marker-FIRST ordering is load-bearing: the engine's short step-in wait
+    // only has to cover the gap between this write and sendHumanMessage's
+    // inbox append (seconds), never a long approval-style timeout.
+    func requestStepIn(_ project: Project) {
+        try? Data().write(to: project.dirURL.appendingPathComponent(".step_in"))
+    }
+
     func sendHumanMessage(_ project: Project, _ text: String) {
         let msg = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !msg.isEmpty else { return }

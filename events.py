@@ -58,6 +58,11 @@ KINDS = (
     # V3 board 1.1 (conversational phases): a chat round opened, and the
     # engine is blocked waiting for the human's next message / end command.
     "conversation_round", "awaiting_human",
+    # V3 board 1.7 ("Step in"): a human asked to join a live debate at the
+    # next round barrier; joined = their message was folded into the round;
+    # missed = the marker could not be honored (stale, or the phase ended
+    # first — detail says whether a message is still queued).
+    "step_in_requested", "step_in_joined", "step_in_missed",
 )
 
 _MAX_FIELD_CHARS = 500
