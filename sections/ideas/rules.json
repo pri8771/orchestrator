@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "prompt_contract": {
+      "rules": [
+        "Preserve the user's original prompt before interpreting it.",
+        "Convert the prompt into hard requirements, non-goals, output shape, quality bar, and decision rules.",
+        "Resolve conflicts by naming the assumption, not by silently changing the assignment."
+      ],
+      "required_output": [
+        "Original prompt excerpt or full prompt reference.",
+        "Hard requirements.",
+        "Non-goals.",
+        "Production-readiness definition.",
+        "Decision rules for later phases.",
+        "A NUMBERED list of testable requirements extracted from the user's prompt \u2014 each one verifiable by using the app."
+      ],
+      "acceptance_checks": [
+        "A later phase can tell whether it is violating the user's prompt.",
+        "Multi-app quantity/category requirements are explicit.",
+        "Production-ready means more than a prototype or spec.",
+        "Every promise in the original prompt maps to a numbered requirement; nothing is silently dropped."
+      ]
+    },
+    "product_research": {
+      "rules": [
+        "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
+        "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
+        "Decide what would make the app feel native and valuable on iPhone, not just technically possible.",
+        "Every factual claim cites its source (URL from the prompt's fetched context, or is marked ASSUMPTION).",
+        "Include a concrete competitor comparison (names, what they do well, the gap this app exploits)."
+      ],
+      "required_output": [
+        "Audience and use context.",
+        "Comparable apps or patterns to learn from.",
+        "Platform-specific opportunities.",
+        "Major assumptions and risks.",
+        "Implications for the first build."
+      ],
+      "acceptance_checks": [
+        "The next phase can use the output without repeating discovery.",
+        "At least three concrete risks or unknowns are named.",
+        "The research points toward a shippable first version.",
+        "No unsourced factual claims \u2014 each is cited or explicitly marked ASSUMPTION."
+      ]
+    },
+    "initial_discussion": {
+      "rules": [
+        "Turn the user's prompt into one precise product promise.",
+        "Name the primary user, the job-to-be-done, the core loop, and the non-goals.",
+        "Resolve ambiguity decisively when the prompt is underspecified."
+      ],
+      "required_output": [
+        "One-sentence product promise.",
+        "Primary user and scenario.",
+        "Core loop.",
+        "Hard scope boundaries.",
+        "Measurable success criteria."
+      ],
+      "acceptance_checks": [
+        "A developer could explain the app in one sentence.",
+        "The scope is small enough to build in one pass.",
+        "Out-of-scope items are explicit."
+      ]
+    }
+  }
+}

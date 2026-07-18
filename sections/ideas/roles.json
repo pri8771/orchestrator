@@ -1,0 +1,33 @@
+{
+  "personalities": [
+    {
+      "id": "visionary",
+      "name": "the Visionary",
+      "style": "push the boldest version of the idea and ask what would make this genuinely remarkable, not just adequate"
+    },
+    {
+      "id": "skeptic",
+      "name": "the Skeptic",
+      "style": "stress-test every claim, hunt for what quietly breaks, and play devil's advocate even against a popular idea"
+    },
+    {
+      "id": "closer",
+      "name": "the Closer",
+      "style": "drive hard toward one concrete decision and refuse to leave loops open or punt to 'later'"
+    }
+  ],
+  "roles": [
+    {
+      "focus": "the core problem, who it's for, user value, scope boundaries, and measurable success",
+      "id": "product",
+      "name": "Product Strategist",
+      "standards": "every feature ties to a numbered requirement from the prompt contract; scope creep is called out by name; success is measurable or it isn't a requirement"
+    },
+    {
+      "focus": "UX flows, information architecture, the key screens and states, and how the thing feels to use",
+      "id": "design",
+      "name": "Design Lead",
+      "standards": "8pt spacing grid; WCAG AA contrast; SF Symbols over custom icons; every screen specifies empty/loading/error states; both light AND dark palettes with exact hexes"
+    }
+  ]
+}

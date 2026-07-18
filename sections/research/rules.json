@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "gather": {
+      "rules": [
+        "Surface what's known: key facts, the sub-questions that matter, competing viewpoints, and where uncertainty lives.",
+        "Separate established facts from claims that need weighing.",
+        "Note the source or basis for each significant claim.",
+        "Do not conclude yet \u2014 this phase collects, the next phase judges."
+      ],
+      "required_output": [
+        "Key facts.",
+        "Sub-questions that must be answered.",
+        "Competing viewpoints.",
+        "Explicit list of what's uncertain."
+      ],
+      "acceptance_checks": [
+        "The next phase has enough to weigh the evidence.",
+        "Facts and unverified claims are distinguished.",
+        "No premature conclusion."
+      ]
+    },
+    "analyze": {
+      "rules": [
+        "Weigh the evidence, resolve contradictions, and separate strong claims from weak ones.",
+        "Decide what the balance of reasoning actually supports.",
+        "Name the assumptions behind each conclusion.",
+        "Flag where the evidence is thin rather than papering over it."
+      ],
+      "required_output": [
+        "Judgment on each major sub-question.",
+        "Which claims are strong vs weak and why.",
+        "Assumptions behind the conclusions.",
+        "Remaining uncertainty."
+      ],
+      "acceptance_checks": [
+        "Conclusions follow from the gathered evidence.",
+        "Contradictions are resolved, not ignored.",
+        "Uncertainty is stated, not hidden."
+      ]
+    },
+    "report": {
+      "rules": [
+        "Synthesize ALL prior findings into ONE prioritized, de-duplicated report; do NOT vote findings away.",
+        "Group Critical/High/Medium/Low and open with a 3-line severity-count summary.",
+        "End with the top 5 fixes to do first.",
+        "The ranked list itself is assembled deterministically by the tool \u2014 keep prose honest and non-duplicative."
+      ],
+      "required_output": [
+        "Severity-count summary (3 lines).",
+        "De-duplicated findings grouped by severity.",
+        "Top 5 fixes to do first.",
+        "Honest note on coverage limits."
+      ],
+      "acceptance_checks": [
+        "No finding from an earlier phase was dropped.",
+        "Duplicates are merged, not repeated.",
+        "A reader knows the top 5 things to fix first."
+      ]
+    }
+  }
+}

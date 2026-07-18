@@ -45,25 +45,65 @@ SECTION_FILENAME = "section.json"
 DEFAULT_MODE = "manual"
 DEFAULT_DOD_TIER = "standard"
 
-# Placeholder shipped manifests (3.6 ships the real set — machinery only).
+# Shipped section manifests (V3 3.6): Ideas<-brainstorm,
+# Research<-research, QA<-audit, Planning<-app_spec. MUST
+# match sections/<name>/section.json byte-for-byte (the
+# consistency test pins it); the repo dirs are the source,
+# this literal only seeds App-Support engine copies.
 _BUILTINS = {
     "ideas": {
         "id": "ideas",
         "title": "Ideas",
-        "workflow": "chat_ideas",
+        "workflow": "brainstorm",
         "default_mode": "manual",
-        "artifact_types_emitted": ["idea_batch"],
-        "artifact_types_accepted": ["research_report"],
-        "dod_tier": "standard",
+        "artifact_types_emitted": [
+                "idea"
+        ],
+        "artifact_types_accepted": [
+                "opportunity_signal"
+        ],
+        "dod_tier": "standard"
     },
     "research": {
         "id": "research",
         "title": "Research",
-        "workflow": "chat_research",
+        "workflow": "research",
         "default_mode": "manual",
-        "artifact_types_emitted": ["research_report"],
-        "artifact_types_accepted": ["idea_batch"],
-        "dod_tier": "standard",
+        "artifact_types_emitted": [
+                "research_brief",
+                "opportunity_signal"
+        ],
+        "artifact_types_accepted": [
+                "idea"
+        ],
+        "dod_tier": "standard"
+    },
+    "qa": {
+        "id": "qa",
+        "title": "QA",
+        "workflow": "audit",
+        "default_mode": "manual",
+        "artifact_types_emitted": [
+                "finding_report"
+        ],
+        "artifact_types_accepted": [
+                "any"
+        ],
+        "dod_tier": "strict"
+    },
+    "planning": {
+        "id": "planning",
+        "title": "Planning",
+        "workflow": "app_spec",
+        "default_mode": "manual",
+        "artifact_types_emitted": [
+                "spec_bundle"
+        ],
+        "artifact_types_accepted": [
+                "idea",
+                "research_brief"
+        ],
+        "dod_tier": "strict"
     },
 }
 

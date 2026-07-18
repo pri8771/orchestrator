@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "prompt_contract": {
+      "rules": [
+        "Preserve the user's original prompt before interpreting it.",
+        "Convert the prompt into hard requirements, non-goals, output shape, quality bar, and decision rules.",
+        "Resolve conflicts by naming the assumption, not by silently changing the assignment."
+      ],
+      "required_output": [
+        "Original prompt excerpt or full prompt reference.",
+        "Hard requirements.",
+        "Non-goals.",
+        "Production-readiness definition.",
+        "Decision rules for later phases.",
+        "A NUMBERED list of testable requirements extracted from the user's prompt \u2014 each one verifiable by using the app."
+      ],
+      "acceptance_checks": [
+        "A later phase can tell whether it is violating the user's prompt.",
+        "Multi-app quantity/category requirements are explicit.",
+        "Production-ready means more than a prototype or spec.",
+        "Every promise in the original prompt maps to a numbered requirement; nothing is silently dropped."
+      ]
+    },
+    "product_research": {
+      "rules": [
+        "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
+        "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
+        "Decide what would make the app feel native and valuable on iPhone, not just technically possible.",
+        "Every factual claim cites its source (URL from the prompt's fetched context, or is marked ASSUMPTION).",
+        "Include a concrete competitor comparison (names, what they do well, the gap this app exploits)."
+      ],
+      "required_output": [
+        "Audience and use context.",
+        "Comparable apps or patterns to learn from.",
+        "Platform-specific opportunities.",
+        "Major assumptions and risks.",
+        "Implications for the first build."
+      ],
+      "acceptance_checks": [
+        "The next phase can use the output without repeating discovery.",
+        "At least three concrete risks or unknowns are named.",
+        "The research points toward a shippable first version.",
+        "No unsourced factual claims \u2014 each is cited or explicitly marked ASSUMPTION."
+      ]
+    },
+    "initial_discussion": {
+      "rules": [
+        "Turn the user's prompt into one precise product promise.",
+        "Name the primary user, the job-to-be-done, the core loop, and the non-goals.",
+        "Resolve ambiguity decisively when the prompt is underspecified."
+      ],
+      "required_output": [
+        "One-sentence product promise.",
+        "Primary user and scenario.",
+        "Core loop.",
+        "Hard scope boundaries.",
+        "Measurable success criteria."
+      ],
+      "acceptance_checks": [
+        "A developer could explain the app in one sentence.",
+        "The scope is small enough to build in one pass.",
+        "Out-of-scope items are explicit."
+      ]
+    },
+    "detailed_discussion": {
+      "rules": [
+        "Enumerate edge cases before features expand.",
+        "Identify privacy, data-loss, offline, notification, and permission concerns where relevant.",
+        "Convert open questions into assumptions or explicit exclusions."
+      ],
+      "required_output": [
+        "Resolved requirements.",
+        "Edge cases.",
+        "Data and privacy implications.",
+        "Risk register.",
+        "Final assumptions."
+      ],
+      "acceptance_checks": [
+        "No major ambiguity remains for design or architecture.",
+        "Risks have concrete mitigations or are named as limitations."
+      ]
+    },
+    "app_features": {
+      "rules": [
+        "Prioritize ruthlessly with must/should/could/won't.",
+        "Every must-have feature needs a user story and acceptance criteria.",
+        "Do not include features that cannot fit the chosen build size."
+      ],
+      "required_output": [
+        "Must-have feature list.",
+        "Should/could list.",
+        "Won't-build list.",
+        "Acceptance criteria per must-have.",
+        "requirements-json machine contract: the numbered, testable requirements this build will be graded against (the adherence gate reads it directly)."
+      ],
+      "acceptance_checks": [
+        "All must-have features support the product promise.",
+        "The build phase can complete the must-have list."
+      ]
+    },
+    "design_discussion": {
+      "rules": [
+        "Name a design language for THIS app (e.g. 'warm paper journal', 'precision instrument dark') with a one-line rationale; 'clean and modern' is a rejection-worthy non-answer.",
+        "State the emotional target: how the user should feel on the main screen, in one sentence.",
+        "Pick one signature interaction (a hero moment of motion, layout, or feedback) that expresses the design language.",
+        "Describe the default-looking version of this app (plain List, stock chrome, system accent) and explicitly reject it, naming at least three concrete differences.",
+        "Design real screens and states, not vague UX language.",
+        "Make navigation, empty states, errors, onboarding, and persistence visible.",
+        "Use iOS-native patterns unless the prompt clearly demands otherwise."
+      ],
+      "required_output": [
+        "Named design language with rationale.",
+        "Emotional target.",
+        "Signature interaction.",
+        "Rejected default option and the concrete differences from it.",
+        "Screen inventory.",
+        "Primary user flow.",
+        "State model per screen.",
+        "Accessibility notes."
+      ],
+      "acceptance_checks": [
+        "The design language is specific to this app; swapping in a different app's name would make it wrong.",
+        "The default-looking option is explicitly rejected with named differences, not just adjectives.",
+        "A SwiftUI developer can create the view hierarchy from this output.",
+        "Every required user workflow has a screen/state path."
+      ]
+    },
+    "tech_specs": {
+      "rules": [
+        "Choose the simplest architecture that supports the MVP and tests.",
+        "Specify data models, services, persistence, concurrency boundaries, and error handling.",
+        "Prefer Apple frameworks and permissive dependencies only.",
+        "Emit the required interfaces-json block.",
+        "The Red Team's job here: name at least one requirement or edge case the spec missed before closing."
+      ],
+      "required_output": [
+        "Architecture overview.",
+        "File/module layout.",
+        "Data models.",
+        "Persistence strategy.",
+        "Testing strategy.",
+        "interfaces-json contract."
+      ],
+      "acceptance_checks": [
+        "Parallel build lanes can work without inventing incompatible types.",
+        "The spec names how the app will be built and verified."
+      ]
+    },
+    "project_plan": {
+      "rules": [
+        "Sequence work by dependency, not by role preference.",
+        "Keep the plan aligned to the actual build lanes.",
+        "Include verification and repair time as first-class work."
+      ],
+      "required_output": [
+        "Milestones.",
+        "Dependencies.",
+        "Risk mitigations.",
+        "Verification plan."
+      ],
+      "acceptance_checks": [
+        "The plan is executable by the task assignment phase.",
+        "Testing and integration are not left to the end as vague polish."
+      ]
+    },
+    "final_review": {
+      "rules": [
+        "Judge the app against the original prompt, the MVP slice, and verification results.",
+        "Do not hide unfinished work.",
+        "Separate launch blockers from nice-to-have follow-up."
+      ],
+      "required_output": [
+        "What was built.",
+        "Verification status.",
+        "Prompt coverage.",
+        "Known limitations.",
+        "Top follow-ups."
+      ],
+      "acceptance_checks": [
+        "The review is honest enough for a user to decide whether to run or iterate.",
+        "Every blocker has an owner or a concrete next step."
+      ]
+    }
+  }
+}

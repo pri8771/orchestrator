@@ -1,0 +1,13 @@
+{
+  "id": "qa",
+  "title": "QA",
+  "workflow": "audit",
+  "default_mode": "manual",
+  "artifact_types_emitted": [
+    "finding_report"
+  ],
+  "artifact_types_accepted": [
+    "any"
+  ],
+  "dod_tier": "strict"
+}

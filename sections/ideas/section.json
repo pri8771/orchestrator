@@ -1,0 +1,13 @@
+{
+  "id": "ideas",
+  "title": "Ideas",
+  "workflow": "brainstorm",
+  "default_mode": "manual",
+  "artifact_types_emitted": [
+    "idea"
+  ],
+  "artifact_types_accepted": [
+    "opportunity_signal"
+  ],
+  "dod_tier": "standard"
+}

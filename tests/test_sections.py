@@ -82,7 +82,7 @@ class TestAllOrDefault(SectionBase):
         self.write_manifest("ideas", "{not json at all")
         s = seclib.load_section("ideas", self.orch, app_dir=self.app_dir)
         self.assertEqual(s.title, "Ideas", "the FULL built-in default")
-        self.assertEqual(s.workflow_name, "chat_ideas")
+        self.assertEqual(s.workflow_name, "brainstorm")
         evts = self.banners()
         self.assertEqual(len(evts), 1, "exactly one banner per substitution")
         self.assertEqual(evts[0]["section"], "ideas")
@@ -248,3 +248,77 @@ class TestSectionRoles(SectionBase):
         merged = roleslib.load_agent_role_overrides_layered(
             section_dir=self._sdir())
         self.assertEqual(merged.get("codex"), "sec-role")
+
+
+class TestShippedSections(unittest.TestCase):
+    """V3 board 3.6: the four shipped sections load clean, match their
+    builtins, and serve their layers end-to-end from JSON alone."""
+
+    HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    NAMES = ("ideas", "research", "qa", "planning")
+
+    def test_all_four_load_with_zero_banners(self):
+        app_dir = tempfile.mkdtemp(prefix="orch_shipped_")
+        self.addCleanup(shutil.rmtree, app_dir, True)
+        for name in self.NAMES:
+            s = seclib.load_section(name, self.HERE, app_dir=app_dir)
+            self.assertEqual(s.id, name)
+            self.assertTrue(s.workflow.phases, "workflow must resolve")
+        self.assertEqual(
+            evlib.read_events(app_dir, kinds=["config_fallback"]), [],
+            "shipped manifests must load with ZERO banners")
+
+    def test_builtins_match_the_shipped_files(self):
+        for name in self.NAMES:
+            with open(os.path.join(self.HERE, "sections", name,
+                                   "section.json"), encoding="utf-8") as fh:
+                disk = json.load(fh)
+            self.assertEqual(seclib._BUILTINS[name], disk,
+                             "%s builtin drifted from the shipped file" % name)
+
+    def test_ideas_keeps_app_target_for_global_rules(self):
+        s = seclib.load_section("ideas", self.HERE)
+        self.assertEqual(s.workflow.target, "app",
+                         "brainstorm behavior must match today exactly")
+
+    def test_planning_contracts_are_byte_equal_to_defaults(self):
+        with open(os.path.join(self.HERE, "sections", "planning",
+                               "contracts.json"), encoding="utf-8") as fh:
+            shipped = {(e["phase_key"], e["contract"]): e["prompt_snippet"]
+                       for e in json.load(fh)["contracts"]}
+        defaults = {(e["phase_key"], e["contract"]): e["prompt_snippet"]
+                    for e in seclib.DEFAULT_CONTRACTS
+                    if e["phase_key"] in ("app_features", "tech_specs",
+                                          "task_assignments")}
+        self.assertEqual(shipped, defaults)
+
+    def test_section_rules_serve_through_the_layered_lookup(self):
+        import phase_rules as pr
+        for name, phase in (("research", "gather"), ("qa", "security")):
+            layer = os.path.join(self.HERE, "sections", name, "rules.json")
+            layered = pr.render_phase_playbook(self.HERE, "research", phase,
+                                               layers=[layer])
+            flat = pr.render_phase_playbook(self.HERE, "research", phase)
+            self.assertEqual(layered, flat,
+                             "seeded rules copy the global entries — the "
+                             "layer must serve identical text (deletion of "
+                             "global entries is 8.8, not this card)")
+            self.assertTrue(layered, "the section layer must serve rules")
+
+    def test_section_cast_serves_through_the_layered_loader(self):
+        import roles as roleslib
+        p, r = roleslib.load_roles_layered(
+            self.HERE,
+            section_dir=os.path.join(self.HERE, "sections", "qa"))
+        self.assertEqual([x["id"] for x in p],
+                         ["skeptic", "pragmatist", "systems_thinker"])
+        self.assertEqual([x["id"] for x in r],
+                         ["qa", "security", "red_team"],
+                         "QA debates with the red-team cast")
+
+    def test_global_phase_rules_entries_survive(self):
+        import phase_rules as pr
+        rules = pr.load_rules(self.HERE)
+        for key in ("gather", "security", "app_features", "recon"):
+            self.assertIn(key, rules["phases"],
+                          "global entries must NOT be removed this milestone")

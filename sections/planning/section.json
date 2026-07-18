@@ -1,0 +1,14 @@
+{
+  "id": "planning",
+  "title": "Planning",
+  "workflow": "app_spec",
+  "default_mode": "manual",
+  "artifact_types_emitted": [
+    "spec_bundle"
+  ],
+  "artifact_types_accepted": [
+    "idea",
+    "research_brief"
+  ],
+  "dod_tier": "strict"
+}

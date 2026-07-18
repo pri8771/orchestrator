@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "recon": {
+      "rules": [
+        "Map the target READ-ONLY before hunting; never propose edits in this phase.",
+        "Identify languages/framework versions, dependency manifests, entry points, external inputs, and trust boundaries.",
+        "Locate where secrets, persistence, and network I/O live, and rank the highest-risk surfaces.",
+        "Emit NO findings here \u2014 this phase only produces the shared map later phases build on."
+      ],
+      "required_output": [
+        "Architecture + attack-surface summary.",
+        "Languages/frameworks and their versions.",
+        "Entry points and external inputs (routes/handlers/CLI/URL schemes).",
+        "Trust boundaries and where secrets/persistence live.",
+        "Ranked list of highest-risk areas to investigate."
+      ],
+      "acceptance_checks": [
+        "A later phase can find each risky surface from this map alone.",
+        "No finding-json blocks were emitted yet.",
+        "Dependency manifests and versions are enumerated, not guessed."
+      ]
+    },
+    "security": {
+      "rules": [
+        "Hunt real vulnerabilities: injection, broken authn/authz, insecure storage, weak TLS, over-broad permissions, vulnerable deps, PII leaks.",
+        "Cite file:line for every claim; a finding without a location is a guess.",
+        "Give a concrete exploit scenario and a safe, minimal fix per finding.",
+        "Emit each finding as a finding-json block with severity, category, confidence, file, title, fix."
+      ],
+      "required_output": [
+        "One finding-json block per vulnerability.",
+        "Severity (Critical/High/Med/Low) and confidence per finding.",
+        "Exploit scenario and concrete fix per finding.",
+        "file:line for each."
+      ],
+      "acceptance_checks": [
+        "Every finding is reproducible from its file:line + scenario.",
+        "No finding restates a guess as fact.",
+        "Severity reflects real exploitability, not theoretical risk."
+      ]
+    },
+    "bugs": {
+      "rules": [
+        "Find correctness/reliability bugs: races, swallowed errors, unhandled edges (nil/empty/off-by-one/overflow/timezone), lifecycle/leak issues, logic errors.",
+        "State the input or state that triggers the wrong behavior.",
+        "Cite file:line and give a minimal fix.",
+        "Emit each as a finding-json block."
+      ],
+      "required_output": [
+        "One finding-json block per bug.",
+        "Triggering input/state per finding.",
+        "Minimal fix per finding.",
+        "file:line for each."
+      ],
+      "acceptance_checks": [
+        "Each bug has a concrete trigger, not just a code smell.",
+        "Fixes are minimal and don't drop features.",
+        "Severity matches real user/data impact."
+      ]
+    },
+    "modernization": {
+      "rules": [
+        "Identify outdated/abandoned deps, deprecated APIs, worthwhile modern-idiom refactors, dead code, and performance issues.",
+        "Give current-vs-recommended and the migration effort/risk.",
+        "Do not propose churn for its own sake \u2014 tie each item to a concrete benefit.",
+        "Emit each as a finding-json block."
+      ],
+      "required_output": [
+        "One finding-json block per update.",
+        "Current vs recommended per item.",
+        "Effort/risk estimate per item.",
+        "file:line for each."
+      ],
+      "acceptance_checks": [
+        "Each recommendation names a concrete benefit.",
+        "Breaking-change risk is called out where it exists.",
+        "No pure-style churn without payoff."
+      ]
+    },
+    "report": {
+      "rules": [
+        "Synthesize ALL prior findings into ONE prioritized, de-duplicated report; do NOT vote findings away.",
+        "Group Critical/High/Medium/Low and open with a 3-line severity-count summary.",
+        "End with the top 5 fixes to do first.",
+        "The ranked list itself is assembled deterministically by the tool \u2014 keep prose honest and non-duplicative."
+      ],
+      "required_output": [
+        "Severity-count summary (3 lines).",
+        "De-duplicated findings grouped by severity.",
+        "Top 5 fixes to do first.",
+        "Honest note on coverage limits."
+      ],
+      "acceptance_checks": [
+        "No finding from an earlier phase was dropped.",
+        "Duplicates are merged, not repeated.",
+        "A reader knows the top 5 things to fix first."
+      ]
+    }
+  }
+}

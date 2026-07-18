@@ -1,0 +1,14 @@
+{
+  "id": "research",
+  "title": "Research",
+  "workflow": "research",
+  "default_mode": "manual",
+  "artifact_types_emitted": [
+    "research_brief",
+    "opportunity_signal"
+  ],
+  "artifact_types_accepted": [
+    "idea"
+  ],
+  "dod_tier": "standard"
+}
