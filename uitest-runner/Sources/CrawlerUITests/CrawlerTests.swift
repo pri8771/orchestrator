@@ -134,6 +134,11 @@ final class CrawlerTests: XCTestCase {
         for e in app.cells.allElementsBoundByIndex.prefix(25) { add("cell", e) }
         for e in app.links.allElementsBoundByIndex.prefix(15) { add("link", e) }
         for e in app.textFields.allElementsBoundByIndex.prefix(10) { add("field", e) }
+        // SwiftUI Toggle surfaces as .switch — signature() always counted
+        // them, but the crawler could neither tap nor locate one, so a flow
+        // declaring a toggle's identifier failed "no tappable element" even
+        // when the control existed with the exact identifier (seen live).
+        for e in app.switches.allElementsBoundByIndex.prefix(15) { add("switch", e) }
         return out
     }
 
@@ -145,6 +150,7 @@ final class CrawlerTests: XCTestCase {
         case "cell": query = app.cells
         case "link": query = app.links
         case "field": query = app.textFields
+        case "switch": query = app.switches
         default: query = app.buttons
         }
         let byId = t.identifier.isEmpty ? nil
@@ -380,9 +386,31 @@ final class CrawlerTests: XCTestCase {
                     }
                     field.tap(); app.typeText(text); settle()
                 } else if let label = step["assert_exists"] as? String {
-                    if !(locate(app, label, purpose: .assertExists)?
-                            .waitForExistence(timeout: 5) ?? false)
-                        && !app.staticTexts[label].waitForExistence(timeout: 2) {
+                    // Optional per-step "timeout" (seconds, clamped 1…180):
+                    // a state that arrives after an app-determined delay — a
+                    // steep timer hitting "Ready" — is unreachable inside the
+                    // default ~5s window, and the flow schema had no way to
+                    // wait (seen live: a 90s tea vs a 5s assert). A declared
+                    // timeout polls locate() until the deadline; the DEFAULT
+                    // path is unchanged, so undeclared asserts fail as fast as
+                    // before and an absent element still fails — slower only
+                    // when the flow explicitly asked to wait.
+                    let declared = (step["timeout"] as? NSNumber)?.doubleValue
+                    let ok: Bool
+                    if let t = declared {
+                        let deadline = Date().addingTimeInterval(min(max(t, 1), 180))
+                        var found = locate(app, label, purpose: .assertExists) != nil
+                        while !found && Date() < deadline {
+                            Thread.sleep(forTimeInterval: 1)
+                            found = locate(app, label, purpose: .assertExists) != nil
+                        }
+                        ok = found
+                    } else {
+                        ok = (locate(app, label, purpose: .assertExists)?
+                                .waitForExistence(timeout: 5) ?? false)
+                            || app.staticTexts[label].waitForExistence(timeout: 2)
+                    }
+                    if !ok {
                         failure = "step \(i + 1): expected ‘\(label)’ on screen"; break
                     }
                 } else if step["back"] != nil {
@@ -404,7 +432,7 @@ final class CrawlerTests: XCTestCase {
                         purpose: MatchPurpose = .tap) -> XCUIElement? {
         let queries = kinds ?? [app.buttons, app.cells, app.tabBars.buttons,
                                 app.navigationBars.buttons, app.links,
-                                app.staticTexts, app.textFields]
+                                app.staticTexts, app.textFields, app.switches]
         // PASS 1 — EXACT (byte-identical to the original matcher): identifier,
         // then label. Every currently-green flow keeps matching here; the fuzzy
         // PASS 2 runs ONLY when PASS 1 found nothing (a step that would already
@@ -438,11 +466,13 @@ final class CrawlerTests: XCTestCase {
             // assert_exists may match a static text — an asserted string is
             // often user-visible content, not an interactive control.
             queries = [app.buttons, app.cells, app.tabBars.buttons,
-                       app.navigationBars.buttons, app.links, app.staticTexts]
+                       app.navigationBars.buttons, app.links, app.staticTexts,
+                       app.switches]
         } else {
             // a tap/type target must be an interactive control, never a label.
             queries = [app.buttons, app.cells, app.tabBars.buttons,
-                       app.navigationBars.buttons, app.links, app.textFields]
+                       app.navigationBars.buttons, app.links, app.textFields,
+                       app.switches]
         }
         let requireHittable = (purpose != .assertExists)
         var matches: [XCUIElement] = []
