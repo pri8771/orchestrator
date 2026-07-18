@@ -2721,22 +2721,21 @@ def _resume_round_state(existing_md_text):
     return last_complete_round + 1, existing_md_text[:last_complete_end], header_end
 
 
-def drain_human_inbox(app_dir, md_path, transcript, section_label,
-                      phase_key=None, rnd=None, slot=""):
-    """If the human dropped a message into <app>/human_inbox.txt (e.g. from the
-    GUI text box), fold it into the live conversation so the agents see and
-    respond to it, then clear the inbox. Returns the (possibly extended)
-    transcript. phase_key/rnd/slot feed the messages.jsonl index line; the
-    slot is STRUCTURAL (open/coord/closing) because one debate round drains
-    twice and counting drains would not survive a resume."""
+def _drain_inbox_message(app_dir, md_path, transcript, section_label,
+                         phase_key=None, rnd=None, slot=""):
+    """Worker for drain_human_inbox that ALSO returns the raw drained
+    message (or None) so the conversational loop can act on the SAME bytes
+    it folded — e.g. parse an @-mention delegation (V3 4.6) without a second
+    read of the append-mode inbox. Byte-identical to the historical drain
+    for every folded message."""
     inbox = os.path.join(app_dir, "human_inbox.txt")
     try:
         with open(inbox, encoding="utf-8") as fh:
             msg = fh.read().strip()
     except OSError:
-        return transcript
+        return transcript, None
     if not msg:
-        return transcript
+        return transcript, None
     try:
         open(inbox, "w", encoding="utf-8").close()  # drained
     except OSError:
@@ -2747,7 +2746,303 @@ def drain_human_inbox(app_dir, md_path, transcript, section_label,
         msglib.append_message(app_dir, phase_key, "human", "human", md_path,
                               rnd=rnd or 0, slot=slot)
     emit("Human joined the conversation: %s" % msg.replace("\n", " ")[:100])
+    return transcript + "\n" + block, msg
+
+
+def drain_human_inbox(app_dir, md_path, transcript, section_label,
+                      phase_key=None, rnd=None, slot=""):
+    """If the human dropped a message into <app>/human_inbox.txt (e.g. from the
+    GUI text box), fold it into the live conversation so the agents see and
+    respond to it, then clear the inbox. Returns the (possibly extended)
+    transcript. phase_key/rnd/slot feed the messages.jsonl index line; the
+    slot is STRUCTURAL (open/coord/closing) because one debate round drains
+    twice and counting drains would not survive a resume."""
+    transcript, _msg = _drain_inbox_message(
+        app_dir, md_path, transcript, section_label,
+        phase_key=phase_key, rnd=rnd, slot=slot)
+    return transcript
+
+
+# ---------------------------------------------------------------------------
+# V3 board 4.6: @-mention delegation from a chat composer. A human line that
+# begins "@<Section> [<tier>[ token=<hex>]] <question>" fires either a
+# Quick-take (one guest-persona turn in THIS session — an opinion, no
+# artifact) or a Deep-dive (a 4.4-minted sub-session running the target
+# section's real workflow; the reply card returns via 4.4's inbox edge).
+# The parser is pure; execution rides the conversational drain boundary, so
+# a session that never @-mentions is transcript-byte-identical.
+# ---------------------------------------------------------------------------
+_AT_RE = re.compile(r"^\s*@(.*)", re.DOTALL)
+_FIRST_TOKEN_RE = re.compile(r"(\w[\w-]*)[ \t]*(.*)", re.DOTALL)
+_TIER_RE = re.compile(
+    r"^\[\s*(deep-dive|quick-take)(?:\s+token=([0-9a-zA-Z_-]+))?\s*\]\s*(.*)",
+    re.DOTALL | re.IGNORECASE)
+
+
+def parse_delegation(msg, known_sections):
+    """Parse a leading '@<Section> [<tier>[ token=<hex>]] <question>' chat
+    line. Returns None unless '@' is the first non-whitespace char (so
+    "email me @foo later" never triggers, and every normal chat line is a
+    no-op). known_sections maps lowercased id/title -> canonical id; a
+    MULTI-WORD title is matched by longest known-key prefix (boundary-
+    terminated, so "@researcher" never matches "research"). An
+    absent/unknown tier defaults to the SAFE tier (quick-take: no mint)."""
+    if not msg:
+        return None
+    m = _AT_RE.match(msg)
+    if not m:
+        return None
+    after = m.group(1)
+    canonical = raw_section = rest = None
+    for keyname in sorted(known_sections, key=len, reverse=True):
+        n = len(keyname)
+        if (after[:n].lower() == keyname
+                and (len(after) == n or after[n] in " \t[")):
+            canonical = known_sections[keyname]
+            raw_section = after[:n]
+            rest = after[n:].lstrip(" \t")
+            break
+    if canonical is None:
+        tm = _FIRST_TOKEN_RE.match(after)
+        if not tm:
+            return None                # a bare "@" is not a delegation
+        raw_section, rest = tm.group(1), tm.group(2)
+    tier, token, question = "quick-take", None, rest
+    tm = _TIER_RE.match(rest)
+    if tm:
+        # .lower() because group(1) preserves case but the dispatcher and
+        # req["tier"] compare against the lowercase literal.
+        tier, token, question = tm.group(1).lower(), tm.group(2), tm.group(3)
+    return {"tier": tier, "section": canonical, "raw_section": raw_section,
+            "question": question.strip(), "token": token,
+            "known": canonical is not None}
+
+
+def _known_sections_map():
+    """{lowercased id AND title -> canonical id} for every available
+    section. Built only when a message actually starts with '@'."""
+    out = {}
+    for sid in seclib.list_sections(HERE):
+        out[sid.lower()] = sid
+        try:
+            out[seclib.load_section(sid, HERE).title.lower()] = sid
+        except Exception:  # noqa: BLE001 — a broken manifest must not crash chat
+            pass
+    return out
+
+
+def _section_guest_ref(target):
+    """A cross-section guest-persona ref ("<section>:<id>") that ACTUALLY
+    resolves for a Quick-take. Candidates in order: the manifest's optional
+    "guest_persona", then every role, then every personality in the
+    section's roles.json — each validated against the SAME resolver
+    _run_quick_take uses, so a typo'd guest_persona or a roles-less
+    (personalities-only) section still yields a working voice. None only if
+    nothing resolves."""
+    sroot = os.path.join(HERE, "sections")
+
+    def _resolves(gid):
+        if not (isinstance(gid, str) and gid):
+            return None
+        ref = "%s:%s" % (target, gid)
+        _kept, guests = roleslib.resolve_phase_role_refs(
+            [ref], sroot, on_missing=lambda r, why: None)
+        return ref if guests else None
+
+    candidates = []
+    try:
+        sec = seclib.load_section(target, HERE)
+        if isinstance(sec.extra, dict):
+            candidates.append(sec.extra.get("guest_persona"))
+    except Exception:  # noqa: BLE001 — a broken manifest must not crash chat
+        pass
+    try:
+        with open(os.path.join(sroot, target, "roles.json"),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+        for pool in ("roles", "personalities"):
+            for r in (doc.get(pool) or []):
+                if isinstance(r, dict):
+                    candidates.append(r.get("id"))
+    except (OSError, ValueError):
+        pass
+    for gid in candidates:
+        ref = _resolves(gid)
+        if ref:
+            return ref
+    return None
+
+
+def _delegation_warn(app_dir, md_path, transcript, key, rnd, text):
+    """Fold one visible System warning block (never silently drop, never
+    crash) — shared by the unknown-section and dangling-guest paths."""
+    block = "**System — Round %d**\n\n_%s_\n" % (rnd, text)
+    append_md(md_path, "\n" + block)
+    msglib.append_message(app_dir, key, "warning", "system", md_path, rnd=rnd)
+    emit("Delegation: %s" % text)
     return transcript + "\n" + block
+
+
+def _deep_dive_delegate(cfg, app, app_dir, key, rnd, md_path, transcript,
+                        parsed):
+    """Mint a sub-session running the target section's real workflow (the
+    question rides its initial_prompt), spawn it, and fold an honest
+    in-flight block. reply_to=this chat, so 4.4's return edge delivers the
+    brief card back here. Idempotent: a UI resend with the same token mints
+    the same dir (4.4 key) and we only spawn a freshly-pending one."""
+    target = parsed["section"]
+    project, _sec = _session_coords(cfg)
+    if not project:
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "Deep dive needs a nested chat session — not available here.")
+    try:
+        sec = seclib.load_section(target, HERE)
+        title = sec.title
+    except Exception:  # noqa: BLE001
+        sec, title = None, target
+    # A section-scoped sub-session resolves its workflow by NAME (workflow.txt).
+    # An INLINE workflow has no name, so it would silently fall through to the
+    # default (app_build) — run the WRONG process. Refuse loudly instead of
+    # lying about what ran (R2). Every shipped section names its workflow.
+    wf = getattr(sec, "workflow_name", None)
+    if not isinstance(wf, str) or wf == "(inline)":
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "Deep dive into %s isn't available — its workflow is inline "
+            "(not addressable by name)." % title)
+    token = parsed["token"] or hashlib.sha256(
+        ("%s|%s" % (target, parsed["question"])).encode("utf-8")
+    ).hexdigest()[:12]
+    req = {"title": parsed["question"][:60] or target,
+           "prompt": parsed["question"],
+           "workflow": wf, "section": target,
+           "origin_session": os.path.relpath(app_dir, cfg["root"]),
+           "tier": "deep-dive", "send_token": token}
+    sess = seslib.mint_delegation_session(
+        cfg["root"], project, target, req, reply_to=app_dir,
+        create_session=create_session,
+        on_error=lambda m: emit("DELEGATION: %s" % m))
+    if not sess:
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "Could not start a %s deep dive (see log)." % title)
+    rec = seslib.read_delegation(sess, on_error=lambda m: emit(
+        "DELEGATION: %s" % m))
+    # Only a FRESH mint (status 'pending') spawns AND announces. An
+    # idempotent resend hits the same 4.4 dir already 'running'/'failed'/
+    # 'replied' — re-folding the block or re-emitting delegation_spawned
+    # would duplicate the visible in-flight state and the GUI's pending-card
+    # trigger, so it is a clean no-op.
+    if not rec or rec.get("status") != "pending":
+        return transcript
+    pid = seslib.spawn_run(sess, root=cfg["root"],
+                           on_error=lambda m: emit("DELEGATION: %s" % m))
+    if pid is None:
+        # spawn_run set status='failed'. Tell the truth rather than promise
+        # a brief that can never arrive (§12.1 / R2).
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "Could not launch the %s deep dive (see log)." % title)
+    evlib.emit_event(app_dir, "delegation_spawned", target=target,
+                     session=os.path.relpath(sess, cfg["root"]),
+                     tier="deep-dive")
+    block = ("**System — Round %d**\n\n_Deep dive delegated to %s — running "
+             "as a sub-session; its brief returns here when ready._\n"
+             % (rnd, title))
+    append_md(md_path, "\n" + block)
+    msglib.append_message(app_dir, key, "delegation", "system", md_path,
+                          rnd=rnd)
+    return transcript + "\n" + block
+
+
+def _run_quick_take(cfg, app, app_dir, phasedef, key, rnd, original_prompt,
+                    prior_outputs, personas, active, transcript, md_path,
+                    parsed, extra=""):
+    """One guest-persona turn in the CURRENT session (an OPINION), modeled
+    on the retry path: a single labeled block, no round advance, no vote,
+    NO sub-session, NO artifact. The distinct "Quick take (guest: …)" label
+    + persona chip make it impossible to mistake for the section's real
+    process (§13.1)."""
+    target = parsed["section"]
+    ref = _section_guest_ref(target)
+    if not ref:
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "Section %s has no guest persona to answer a quick take."
+            % target)
+    _kept, guests = roleslib.resolve_phase_role_refs(
+        [ref], os.path.join(HERE, "sections"),
+        on_missing=lambda r, why: None)
+    if not guests:
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "Quick-take guest %r could not be resolved — treated as chat."
+            % ref)
+    speaking = ordered_agents(active)
+    if not speaking:
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "No agent available to give a quick take right now.")
+    agent = speaking[0]
+    persona = {"role": guests[0], "personality": {}}
+    label = roleslib.persona_label(persona)
+    try:
+        title = seclib.load_section(target, HERE).title
+    except Exception:  # noqa: BLE001
+        title = target
+    acfg = tcxlib.TurnContext(cfg).thread_copy(health_key=agent,
+                                               stateless=True)
+    qctx = build_context(acfg, app, phasedef, original_prompt, prior_outputs,
+                         transcript)
+    qextra = ((extra + "\n\n") if extra else "") + (
+        "A teammate asked for a QUICK TAKE from a %s guest voice. Answer "
+        "'%s' as that guest — a single opinion, and be explicit that it is "
+        "your opinion, not researched fact." % (title, parsed["question"]))
+    qprompt = prompt_discuss(acfg, agent, qctx, phasedef, rnd, extra=qextra,
+                             persona=roleslib.persona_preamble(persona),
+                             conversational=True)
+    try:
+        resp = call_agent(acfg, app, key, rnd, agent, qprompt)
+    except AgentError as exc:
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "Quick take from %s failed: %s" % (title, exc))
+    block = ("**%s — Quick take (guest: %s · %s)**\n\n%s\n"
+             % (DISPLAY.get(agent, agent), title, label, resp))
+    append_md(md_path, "\n" + block)
+    msglib.append_message(app_dir, key, "quicktake", agent, md_path,
+                          persona=label, rnd=rnd)
+    emit("Quick take: %s answered as a %s guest." % (
+        DISPLAY.get(agent, agent), title))
+    return transcript + "\n" + block
+
+
+def _handle_chat_delegation(cfg, app, app_dir, phasedef, key, rnd,
+                            original_prompt, prior_outputs, personas,
+                            active, transcript, md_path, raw_msg, extra=""):
+    """Dispatch a drained chat message: an @-mention fires Quick-take or
+    Deep-dive; anything else is a pure no-op (golden-safe). The cheap
+    leading-'@' check runs before any section load, so normal chat pays
+    nothing."""
+    if not raw_msg or not raw_msg.lstrip().startswith("@"):
+        return transcript
+    known = _known_sections_map()
+    parsed = parse_delegation(raw_msg, known)
+    if parsed is None:
+        return transcript
+    if not parsed["known"]:
+        return _delegation_warn(
+            app_dir, md_path, transcript, key, rnd,
+            "No section named “%s”. Treated as a normal chat "
+            "message. Known sections: %s."
+            % (parsed["raw_section"], ", ".join(sorted(set(known.values())))))
+    if parsed["tier"] == "deep-dive":
+        return _deep_dive_delegate(cfg, app, app_dir, key, rnd, md_path,
+                                   transcript, parsed)
+    return _run_quick_take(cfg, app, app_dir, phasedef, key, rnd,
+                           original_prompt, prior_outputs, personas, active,
+                           transcript, md_path, parsed, extra)
 
 
 # ---------------------------------------------------------------------------
@@ -5693,8 +5988,16 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
         append_md(md_path, "\n### Round %d\n\n" % rnd)
         evlib.emit_event(app_dir, "conversation_round", project=app, phase=key,
                          round=rnd)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label,
-                                       phase_key=key, rnd=rnd, slot="open")
+        transcript, _drained = _drain_inbox_message(
+            app_dir, md_path, transcript, unit_label,
+            phase_key=key, rnd=rnd, slot="open")
+        # V3 4.6: an @<Section> line fires Quick-take / Deep-dive; anything
+        # else is a pure no-op, so a chat that never @-mentions stays
+        # transcript-byte-identical.
+        transcript = _handle_chat_delegation(
+            cfg, app, app_dir, phasedef, key, rnd, original_prompt,
+            prior_outputs, personas, active, transcript, md_path, _drained,
+            extra=extra)
         round_agents = ordered_agents(active)
         state["next_agent"] = "+".join(round_agents)
         save_state(app_dir, state)

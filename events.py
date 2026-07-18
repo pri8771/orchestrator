@@ -30,6 +30,9 @@ Event kinds emitted by orchestrator.py:
     artifact_published  (artifact_id, type, version, path)
     artifact_routed     (route_id, artifact_id, target)
     artifact_consumed   (artifact_id, consumer, phase)
+    delegation_spawned  (target, session, tier — a chat @-mention minted a
+                         Deep-dive sub-session; the GUI keys its pending card
+                         off this + delegation.json status)
     route_proposed      (route_id, artifact_id, target)
     route_approved      (route_id, artifact_id, target)
 
@@ -96,7 +99,7 @@ KINDS = (
     # route_proposed/_approved = the M7 Conductor.
     "message_appended",
     "artifact_published", "artifact_routed", "artifact_consumed",
-    "route_proposed", "route_approved",
+    "route_proposed", "route_approved", "delegation_spawned",
     # V3 board 3.1: a default replaced a missing/corrupt user config file
     # — the visible-fallback banner kind (sections.py is the first
     # emitter; every future config loader reuses it).
