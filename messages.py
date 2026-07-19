@@ -33,11 +33,14 @@ turn_id is deterministic: "<phase>:<token>:<author>:<kind>[.<slot>][:<seq>]"
     "final.<contract-kind>"), round = 0.
   * POST-ROUND kinds (repair, vote, tally, contract) get an automatic
     dedupe suffix (":2", ":3", …) when the base id already exists in the
-    file. This is how a crash-resume stays honest: the engine's resume
-    truncation KEEPS post-round blocks (the last complete round's segment
-    extends to end-of-file), and the resumed run re-appends a second
-    Repair/Forced-Vote section to the .md — so the index must carry BOTH
-    sets under distinct ids, exactly mirroring the transcript.
+    file. This keeps a crash-resume honest whenever a post-round stage IS
+    re-run while its old block still survives in the .md — e.g. a
+    phase-close hook (contract / verify-repair) whose block a crash landed
+    just after: the index then carries BOTH sets under distinct ids,
+    exactly mirroring the transcript. (A crash-left FORCED VOTE no longer
+    reaches this path: the engine recovers a COMPLETE vote's decision
+    without re-voting and drops a PARTIAL vote's stale lines before
+    re-casting — see orchestrator._recover_forced_vote.)
 
 Contract (mirrors events.py): appends are best-effort and NEVER raise —
 the markdown transcript must complete regardless of this index; one
@@ -47,17 +50,20 @@ fields are secret-redacted and capped. Each successful append emits one
 message_appended event (ids+paths only).
 
 reconcile_messages() is the resume-consistency half, and its drop
-predicate MIRRORS _resume_round_state's truncation semantics — no more,
-no less. A resume-truncate cuts ONLY a trailing incomplete round (an
-incomplete round means the crash was mid-rounds, so no post-round blocks
-exist yet; when post-round blocks DO exist, all rounds completed and the
-truncation keeps the whole file): reconcile therefore drops only
-round-scoped lines at or above the resume round, never post-round kinds.
-A fresh-start rewrite (write_md of a new header, incl. the skipped-phase
-path) truncates EVERYTHING: reconcile drops every line of the phase
-(drop_post_round=True). Atomic via temp file + os.replace; crashing
-between the .md truncate and the rewrite is safe because both steps are
-idempotent re-entered in md-first order.
+predicate MIRRORS the engine's truncation semantics — no more, no less.
+The common resume-truncate cuts ONLY a trailing incomplete round (crash
+mid-rounds, so no post-round blocks exist yet; when post-round blocks DO
+exist, all rounds completed and the truncation keeps the whole file):
+reconcile then drops only round-scoped lines at or above the resume round,
+never post-round kinds. The one post-round exception is a trailing PARTIAL
+forced-vote stage (header/ballots, no tally): the engine drops that whole
+section, so reconcile is called with drop_post_round=True AND
+keep_below_round=resume_round — the rounds stay, the orphaned ballot/tally
+lines go. A fresh-start rewrite (write_md of a new header, incl. the
+skipped-phase path) truncates EVERYTHING: reconcile drops every line of
+the phase (drop_post_round=True, keep_below_round=1). Atomic via temp file
++ os.replace; crashing between the .md truncate and the rewrite is safe
+because both steps are idempotent re-entered in md-first order.
 
 Standard library only. This module imports schemas/events only — never
 turncontext and never cfg: it is an I/O sink, peer of events.py.

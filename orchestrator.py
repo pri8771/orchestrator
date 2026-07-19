@@ -2735,6 +2735,58 @@ def _resume_round_state(existing_md_text):
     return last_complete_round + 1, existing_md_text[:last_complete_end], header_end
 
 
+# --- Forced-vote resume reconciliation (V3 2.4) -----------------------------
+# A forced vote is a phase's TERMINAL stage, not a round: its "### Forced Vote"
+# header is not a _ROUND_HDR_RE boundary, so _resume_round_state folds a
+# crash-left vote section into the last complete round's segment (it runs to
+# EOF). Re-entering process_phase after such a crash finds an empty rounds loop
+# and — without this reconciliation — re-runs _run_forced_vote, appending a
+# SECOND "### Forced Vote" section (and a second footer). The strings below are
+# whole-line anchored to exactly what _run_forced_vote / the phase footer write
+# (see orchestrator ~6446/6499/6519/7225), so an agent's own prose that merely
+# mentions a vote can never be mistaken for the real stage markers — the same
+# discipline _ROUND_HDR_RE uses.
+_FORCED_VOTE_HDR_RE = re.compile(r"\n### Forced Vote \(max \w+ reached\)\n")
+_DET_TALLY_MARK = "\n**Deterministic vote tally**\n\n"
+_LLM_TALLY_RE = re.compile(
+    r"\n\*\*Coordinator \(.+?\) — vote tally & decision\*\*\n\n")
+# The phase footer written AFTER the vote stage; its heading bounds a completed
+# vote section (a partial vote never reaches a footer). Non-conversational
+# phases write this heading nowhere else (the _run_conversational_phase variant
+# returns before the resume gate), so it is an unambiguous section terminator.
+_PHASE_FOOTER_MARK = "\n## Coordinator Decision\n"
+
+
+def _recover_forced_vote(section):
+    """Reconstruct what a crashed forced-vote stage would have carried into the
+    phase footer, from the on-disk vote section alone.
+
+    `section` is the text from the "### Forced Vote" header through its tally
+    (the caller strips any trailing phase footer first). Returns
+    (final_output, vote) when a tally block is present — the completed decision,
+    to be adopted WITHOUT re-voting — or None when only the header/ballots made
+    it to disk (a partial vote the caller must discard and re-cast; re-running a
+    finished vote loses last_substantive and can even flip the outcome).
+
+    final_output is the tally block verbatim; the footer re-strips it, so a
+    strip-match reproduces the crashed run's bytes. Completeness keys on the
+    tally LABEL, never on VOTE_DECISION (a finished LLM tally may legitimately
+    decide NO); `decided` is derived separately so the footer marker and the
+    undecided bookkeeping stay faithful. The dict carries only what
+    vote_results consumers read (truthiness + decided) — winner/ballots are
+    read nowhere, so they are not reconstructed."""
+    i = section.find(_DET_TALLY_MARK)
+    if i != -1:
+        body = section[i + len(_DET_TALLY_MARK):]
+    else:
+        m = _LLM_TALLY_RE.search(section)
+        if not m:
+            return None
+        body = section[m.end():]
+    return body, {"decided": bool(VOTE_RE.search(body)),
+                  "by": "resume-recovered", "method": "recovered"}
+
+
 def _drain_inbox_message(app_dir, md_path, transcript, section_label,
                          phase_key=None, rnd=None, slot=""):
     """Worker for drain_human_inbox that ALSO returns the raw drained
@@ -7340,6 +7392,7 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             state, md_path, personas, active)
     resume_round, resuming = 1, False
+    _recovered_vote = None
     if not (is_build and allow_writes) and state.get("current_phase") == key \
             and int(state.get("current_round") or 0) > 0:
         try:
@@ -7351,10 +7404,31 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             resume_round, _kept, _header_end = _resume_round_state(_existing)
             resuming = resume_round > 1
     if resuming:
+        # A crash during/after the forced-vote stage (its ballots/tally are on
+        # disk) but before this phase's state was flushed re-enters here with an
+        # empty rounds loop, which would blindly re-run _run_forced_vote and
+        # append a SECOND vote section (and footer). Reconcile the stale stage:
+        #   * COMPLETE vote (tally present) — adopt its decision, keep the
+        #     section, and drop any footer that followed so the footer re-writes
+        #     exactly once (idempotent); the vote is NOT re-run.
+        #   * PARTIAL vote (header/ballots, no tally) — discard the whole
+        #     section AND its post-round index lines, then cast cleanly.
+        _drop_post_round = False
+        _fv = _FORCED_VOTE_HDR_RE.search(_kept, _header_end)
+        if _fv:
+            _foot = _kept.find(_PHASE_FOOTER_MARK, _fv.end())
+            _vote_end = _foot if _foot != -1 else len(_kept)
+            _recovered_vote = _recover_forced_vote(_kept[_fv.start() + 1:_vote_end])
+            if _recovered_vote is not None:
+                _kept = _kept[:_vote_end]        # keep the vote, drop any footer
+            else:
+                _kept = _kept[:_fv.start()]      # drop the partial vote stage
+                _drop_post_round = True
         # Preserve the on-disk transcript (write_md would TRUNCATE it) except
         # for a trailing incomplete round, which is dropped and redone.
         write_md(md_path, _kept)
-        msglib.reconcile_messages(app_dir, key, keep_below_round=resume_round)
+        msglib.reconcile_messages(app_dir, key, keep_below_round=resume_round,
+                                  drop_post_round=_drop_post_round)
         transcript = _kept[_header_end:]
         emit("Phase '%s': resuming a crashed run at round %d (%d completed "
              "round(s), %d char(s) of transcript recovered)."
@@ -7431,7 +7505,15 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
 
     vote = {}
     available_active = [a for a in active if _agent_available(a, cfg)]
-    if not consensus and not unlimited_rounds and not is_build and len(available_active) >= 2:
+    if _recovered_vote is not None:
+        # Resume of a completed forced vote (reconciled by the gate above):
+        # adopt the recovered decision so the footer writes once. Deliberately
+        # NOT gated on availability — a decision already on disk stands even if
+        # a voter went offline across the crash.
+        final_output, vote = _recovered_vote
+        emit("Phase '%s': recovered the forced-vote decision from a crashed "
+             "run — not re-voting." % key)
+    elif not consensus and not unlimited_rounds and not is_build and len(available_active) >= 2:
         final_output, transcript, vote = _run_forced_vote(
             cfg, app, app_dir, phasedef, original_prompt, prior_outputs, state,
             md_path=md_path, transcript=transcript, unit=unit, coord=coord,
