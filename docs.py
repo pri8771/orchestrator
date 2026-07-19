@@ -11,6 +11,7 @@ output is included under its title. A phase that never ran renders as N/A.
 Standard library only.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -495,9 +496,10 @@ _BLUEPRINT_CATEGORIES = [
 ]
 
 # The 40-section handoff blueprint, grouped 1:1 under the 11 categories above.
-# owner_section (5.3) and min_chars (5.4) are declared-but-inert here; sources[]
-# stays empty until 5.2 wires artifact→slot ingestion. This is a template, never
-# project content — nothing here is a fabricated fact.
+# owner_section is populated (5.3) as the slot's own category — the 11 blueprint
+# categories ARE the section taxonomy, mapped 1:1. min_chars (5.4) stays inert;
+# sources[] stays empty until a doc_map edit wires slot→phase fallbacks. This is
+# a template, never project content — nothing here is a fabricated fact.
 _BLUEPRINT_SLOT_SEED = [
     ("ideas", "problem_statement", "Problem Statement"),
     ("ideas", "target_user", "Target User"),
@@ -562,7 +564,7 @@ def _default_doc_map():
         ],
         "categories": [dict(c) for c in _BLUEPRINT_CATEGORIES],
         "slots": [{"slot_id": sid, "category": cat, "title": title,
-                   "sources": [], "owner_section": None, "min_chars": None}
+                   "sources": [], "owner_section": cat, "min_chars": None}
                   for (cat, sid, title) in _BLUEPRINT_SLOT_SEED],
     }
 
@@ -612,12 +614,34 @@ def load_doc_map(orch_dir, on_warn=None):
         if not _valid_doc_map(data):
             raise ValueError("doc_map.json must be an object with a docs[] list "
                              "of entries each having a filename and a sources list")
+        _lint_slot_ownership(data, on_warn)   # 5.3: lint, not corruption
         return data
     except (OSError, ValueError, TypeError) as exc:
         if on_warn:
             on_warn("doc_map.json at %s is unreadable (%s) — falling back to the "
                     "built-in default blueprint." % (path, exc))
         return default
+
+
+def _lint_slot_ownership(data, on_warn):
+    """5.3 doc-map lint: report slots whose owner_section is missing or names a
+    section the map doesn't declare. A lint, NOT corruption — the slot still
+    renders; it is merely excluded from cross-lineage conflict/gap emission. The
+    built-in default is valid by construction, so a healthy load banners nothing."""
+    if not on_warn:
+        return
+    cats = {c.get("category_id") for c in (data.get("categories") or [])
+            if isinstance(c, dict)}
+    for s in (data.get("slots") or []):
+        if not isinstance(s, dict):
+            continue
+        owner = s.get("owner_section")
+        if owner is None:
+            on_warn("doc_map slot %r has no owner_section — excluded from "
+                    "cross-lineage conflict resolution." % (s.get("slot_id"),))
+        elif owner not in cats:
+            on_warn("doc_map slot %r names unknown owner_section %r — excluded "
+                    "from conflict resolution." % (s.get("slot_id"), owner))
 
 
 def render_composed_doc(app, doc_title, source_keys, ordered_phases,
@@ -820,9 +844,11 @@ def _resolve_slot_artifact(project_dir, reader, idx, slot, on_warn):
     if fills:
         fills.sort(key=lambda tb: (tb[0].get("ts", ""), tb[0].get("id", "")))
         if len(fills) > 1:
-            on_warn("blueprint slot %r matched %d lineages; using %r "
-                    "(cross-section ownership arbitration is 5.3)"
-                    % (slot.get("slot_id"), len(fills), fills[-1][0].get("id")))
+            # V3 5.3: >1 admissible final tip from DISTINCT lineage roots =
+            # cross-lineage contention (disjoint lineages, neither supersedes the
+            # other). NEVER pick a winner (never last-write-wins) — hand every
+            # tip to the caller, which renders a conflict note + emits a gap.
+            return ("contended", [tb[0] for tb in fills], None)
         return ("fill", fills[-1][0], fills[-1][1])
     if conflicts:
         return ("conflict", conflicts[0][0], conflicts[0][1])
@@ -830,19 +856,25 @@ def _resolve_slot_artifact(project_dir, reader, idx, slot, on_warn):
 
 
 def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
-                             project_dir, reader, on_warn=None):
-    """HANDOFF_BLUEPRINT.md (V3 5.2): the 40 blueprint slots grouped under the 11
-    categories, each filled by per-slot precedence artifact > phase-output(slot
+                             project_dir, reader, on_warn=None, contentions=None):
+    """HANDOFF_BLUEPRINT.md (V3 5.2/5.3): the 40 blueprint slots grouped under the
+    11 categories, each filled by per-slot precedence artifact > phase-output(slot
     .sources) > empty — NEVER merged. An artifact fill names its source (id +
-    version); a branched lineage renders an explicit conflict note and stays
-    UNFILLED (never a silent branch-pick); an unfilled slot is visibly unfilled
-    (never invented). Returns the markdown, or None when the map declares no
-    slots. Reader-gated by the caller so reader=None keeps 5.1 byte-identical."""
+    version); a same-lineage branch renders a branch-conflict note; >1 admissible
+    final from DISJOINT lineages is a cross-lineage conflict (5.3) — an explicit
+    note, the slot left UNFILLED, and (when caller-collected) a contention record
+    appended to `contentions` for idempotent gap emission. An unfilled slot is
+    visibly unfilled (never invented). Returns the markdown, or None when the map
+    declares no slots. `contentions` defaults None ⇒ no collection and a string
+    output identical to a 5.2 render. Reader-gated by the caller so reader=None
+    keeps 5.1 byte-identical."""
     if on_warn is None:
         on_warn = lambda _m: None
     slots = doc_map.get("slots") or []
     if not slots:
         return None
+    valid_owners = {c.get("category_id") for c in (doc_map.get("categories") or [])
+                    if isinstance(c, dict)}
     idx = reader.lineage_index(project_dir, on_error=on_warn)
     lines = ["# %s — Handoff Blueprint" % app, "", _BLUEPRINT_INTRO, ""]
     by_cat = {}
@@ -865,6 +897,47 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
                 lines.append("")
                 lines.append("_Source: artifact %s v%s_"
                              % (a.get("id"), a.get("version", 1)))
+            elif kind == "contended":
+                # V3 5.3: cross-lineage conflict. Deterministic (sorted by id) so
+                # the note and any gap are publish-order-independent — never
+                # last-write-wins. A reconcile CANNOT merge disjoint lineages, so
+                # the resolution advice is supersede-to-drop-claim / withdraw.
+                tips = sorted(a, key=lambda m: m.get("id") or "")
+                n = len(tips)
+                owner = s.get("owner_section")
+                ids_vers = ", ".join("%s (v%s)" % (m.get("id"),
+                                                   m.get("version", 1))
+                                     for m in tips)
+                if owner in valid_owners:
+                    lines.append("_Unresolved — cross-lineage ownership conflict "
+                                 "(section '%s'): %s — %d artifacts from disjoint "
+                                 "lineages claim this slot; none supersedes "
+                                 "another, so the engine will not pick a winner. "
+                                 "A 'gap' artifact (reason lineage_conflict) "
+                                 "records it. Slot left unfilled — supersede all "
+                                 "but one lineage's tip to drop its claim, or "
+                                 "withdraw the extra contenders._"
+                                 % (owner, ids_vers, n))
+                    if contentions is not None:
+                        contentions.append({
+                            "slot_id": s.get("slot_id"),
+                            "slot_title": s.get("title") or s.get("slot_id"),
+                            "owner_section": owner,
+                            "contending": [m.get("id") for m in tips],
+                            "content_hashes": [m.get("content_hash")
+                                               for m in tips],
+                            "versions": [m.get("version", 1) for m in tips],
+                            "roots": [_artifact_root(m) for m in tips],
+                        })
+                else:
+                    # Unowned/unknown-owner: still NEVER pick, but no gap (no
+                    # owner to attribute). load_doc_map already linted the owner.
+                    lines.append("_Unresolved — cross-lineage conflict on a slot "
+                                 "with no valid owner_section (%r): %s (%d "
+                                 "lineages) claim it. The engine will not pick a "
+                                 "winner; no gap emitted (fix owner_section in "
+                                 "doc_map.json). Slot left unfilled._"
+                                 % (owner, ids_vers, n))
             elif kind == "conflict":
                 named = ", ".join(_head_label(h) for h in b)
                 lines.append("_Unresolved — lineage '%s' is branched across "
@@ -900,6 +973,94 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
         if cat_id not in seen_cat:            # unknown still renders (honesty)
             _emit(cat_id, cat_id or "Other")
     return "\n".join(lines)
+
+
+def _conflict_dedupe_key(slot_id, content_hashes):
+    """Deterministic idempotency key for a cross-lineage conflict: the slot plus
+    the SORTED content_hashes of the contending tips. Stable across re-renders of
+    the same contention; changes when the contending set changes (a new claimant
+    or a new-content tip) so a genuinely different conflict emits a fresh gap."""
+    payload = (slot_id or "") + "\n" + "\n".join(sorted(
+        h for h in content_hashes if isinstance(h, str)))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _conflict_gap_body(c):
+    """Deterministic, non-AI gap body — every fact is drawn from the contending
+    metas (ids, versions, roots, content_hashes), nothing invented (R3)."""
+    lines = [
+        "# Doc-slot ownership conflict: %s (%s)" % (c["slot_title"],
+                                                    c["slot_id"]),
+        "",
+        "Section '%s' owns this blueprint slot, but %d final artifacts from "
+        "disjoint lineages claim it. The engine will not pick a winner (never "
+        "last-write-wins); the slot is left unfilled until resolved."
+        % (c["owner_section"], len(c["contending"])),
+        "",
+        "Contending artifacts:",
+    ]
+    for aid, ver, root, h in zip(c["contending"], c["versions"],
+                                 c["roots"], c["content_hashes"]):
+        lines.append("- %s v%s (lineage root %s, content_hash %s)"
+                     % (aid, ver, root, h))
+    lines += ["",
+              "Resolution: supersede one lineage's tip so it no longer claims "
+              "this slot, or withdraw one contender. A reconcile cannot merge "
+              "disjoint lineages."]
+    return "\n".join(lines)
+
+
+def _emit_conflict_gaps(project_dir, reader, orch_dir, contentions, on_warn):
+    """Publish one idempotent 'gap' artifact per cross-lineage contention through
+    the injected artifacts reader (docs.py never imports artifacts). Best-effort:
+    a publish failure degrades to the already-rendered conflict note plus a
+    visible warning — it never raises, so a store fault can't fail the render."""
+    warn = on_warn or (lambda _m: None)
+    registry = reader.load_registry(orch_dir, on_error=warn)
+    existing = reader.list_artifacts(project_dir, type="gap", on_error=warn)
+    open_keys = set()
+    for g in (existing or []):
+        f = g.get("fields")
+        if not isinstance(f, dict):
+            continue                       # a corrupt gap meta must not abort the
+                                           # scan (never-raises: §13.3)
+        if (f.get("reason") == "lineage_conflict"
+                and g.get("status") != "converged"
+                and isinstance(f.get("dedupe_key"), str)):
+            open_keys.add(f["dedupe_key"])
+    for c in contentions:
+        key = _conflict_dedupe_key(c["slot_id"], c["content_hashes"])
+        if key in open_keys:
+            continue                       # idempotent: this conflict is recorded
+        hashes = sorted(h for h in c["content_hashes"] if isinstance(h, str))
+        impact = ("Blueprint slot '%s' (owned by section '%s') renders unfilled "
+                  "while %d disjoint-lineage artifacts contend; the handoff is "
+                  "missing this section until one lineage's claim is withdrawn."
+                  % (c["slot_id"], c["owner_section"], len(c["contending"])))
+        meta = {
+            "type": "gap",
+            "title": "Doc-slot conflict: %s" % c["slot_id"],
+            "source": {"section": "documentation"},
+            "impact": impact,
+            "slot_id": c["slot_id"],
+            "owner_section": c["owner_section"],
+            "reason": "lineage_conflict",
+            "contending": sorted(c["contending"]),
+            "content_hashes": hashes,
+            "dedupe_key": key,
+        }
+        gid = None
+        try:
+            gid = reader.publish(project_dir, _conflict_gap_body(c), meta,
+                                 registry, on_error=warn, consensus=True)
+        except Exception as exc:           # publish should report-not-raise;
+            warn("gap publish raised for slot %r (%s) — conflict note stands"
+                 % (c["slot_id"], exc))    # defend anyway
+        if gid is None:
+            warn("gap publish FAILED for slot %r — the conflict note is "
+                 "rendered but no gap artifact was recorded" % (c["slot_id"],))
+        else:
+            open_keys.add(key)             # de-dupe within this pass too
 
 
 def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
@@ -962,12 +1123,19 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
         # and reader=None leaves the doc set byte-identical to 5.1.
         if artifact_reader is not None:
             try:
+                contentions = []
                 bp = render_handoff_blueprint(
                     app, doc_map, ordered_phases, phase_outputs, app_dir,
-                    artifact_reader, on_warn=on_warn)
+                    artifact_reader, on_warn=on_warn, contentions=contentions)
                 if bp is not None:
                     _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), bp)
                     written.append("docs/HANDOFF_BLUEPRINT.md")
+                # 5.3: publish conflict gaps AFTER the .md is on disk, so the
+                # conflict note survives even if gap emission fails.
+                if contentions:
+                    _emit_conflict_gaps(app_dir, artifact_reader,
+                                        orch_dir or _ORCH_DIR, contentions,
+                                        on_warn)
             except Exception as exc:      # never crash the run on a store fault
                 if on_warn:
                     on_warn("HANDOFF_BLUEPRINT render skipped: %s" % exc)

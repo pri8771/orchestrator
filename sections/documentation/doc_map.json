@@ -100,7 +100,7 @@
       "category": "ideas",
       "title": "Problem Statement",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "ideas",
       "min_chars": null
     },
     {
@@ -108,7 +108,7 @@
       "category": "ideas",
       "title": "Target User",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "ideas",
       "min_chars": null
     },
     {
@@ -116,7 +116,7 @@
       "category": "ideas",
       "title": "Value Proposition",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "ideas",
       "min_chars": null
     },
     {
@@ -124,7 +124,7 @@
       "category": "research",
       "title": "Market Landscape",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "research",
       "min_chars": null
     },
     {
@@ -132,7 +132,7 @@
       "category": "research",
       "title": "Competitor Analysis",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "research",
       "min_chars": null
     },
     {
@@ -140,7 +140,7 @@
       "category": "research",
       "title": "User Research",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "research",
       "min_chars": null
     },
     {
@@ -148,7 +148,7 @@
       "category": "research",
       "title": "Technical Feasibility",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "research",
       "min_chars": null
     },
     {
@@ -156,7 +156,7 @@
       "category": "planning_spec",
       "title": "Product Requirements",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "planning_spec",
       "min_chars": null
     },
     {
@@ -164,7 +164,7 @@
       "category": "planning_spec",
       "title": "Scope Tiers",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "planning_spec",
       "min_chars": null
     },
     {
@@ -172,7 +172,7 @@
       "category": "planning_spec",
       "title": "Feature List",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "planning_spec",
       "min_chars": null
     },
     {
@@ -180,7 +180,7 @@
       "category": "planning_spec",
       "title": "Task Graph",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "planning_spec",
       "min_chars": null
     },
     {
@@ -188,7 +188,7 @@
       "category": "planning_spec",
       "title": "Success Metrics",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "planning_spec",
       "min_chars": null
     },
     {
@@ -196,7 +196,7 @@
       "category": "design",
       "title": "User Flows",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "design",
       "min_chars": null
     },
     {
@@ -204,7 +204,7 @@
       "category": "design",
       "title": "Information Architecture",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "design",
       "min_chars": null
     },
     {
@@ -212,7 +212,7 @@
       "category": "design",
       "title": "Design Language",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "design",
       "min_chars": null
     },
     {
@@ -220,7 +220,7 @@
       "category": "design",
       "title": "Copy & Voice",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "design",
       "min_chars": null
     },
     {
@@ -228,7 +228,7 @@
       "category": "build",
       "title": "Technical Architecture",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "build",
       "min_chars": null
     },
     {
@@ -236,7 +236,7 @@
       "category": "build",
       "title": "Data Model",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "build",
       "min_chars": null
     },
     {
@@ -244,7 +244,7 @@
       "category": "build",
       "title": "API Contracts",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "build",
       "min_chars": null
     },
     {
@@ -252,7 +252,7 @@
       "category": "build",
       "title": "Build Plan",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "build",
       "min_chars": null
     },
     {
@@ -260,7 +260,7 @@
       "category": "build",
       "title": "Dependency Map",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "build",
       "min_chars": null
     },
     {
@@ -268,7 +268,7 @@
       "category": "qa_redteam",
       "title": "Test Plan",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "qa_redteam",
       "min_chars": null
     },
     {
@@ -276,7 +276,7 @@
       "category": "qa_redteam",
       "title": "QA Report",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "qa_redteam",
       "min_chars": null
     },
     {
@@ -284,7 +284,7 @@
       "category": "qa_redteam",
       "title": "Known Limitations",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "qa_redteam",
       "min_chars": null
     },
     {
@@ -292,7 +292,7 @@
       "category": "qa_redteam",
       "title": "Security Review",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "qa_redteam",
       "min_chars": null
     },
     {
@@ -300,7 +300,7 @@
       "category": "documentation",
       "title": "Overview",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "documentation",
       "min_chars": null
     },
     {
@@ -308,7 +308,7 @@
       "category": "documentation",
       "title": "Changelog",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "documentation",
       "min_chars": null
     },
     {
@@ -316,7 +316,7 @@
       "category": "documentation",
       "title": "Glossary",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "documentation",
       "min_chars": null
     },
     {
@@ -324,7 +324,7 @@
       "category": "gtm",
       "title": "Positioning",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "gtm",
       "min_chars": null
     },
     {
@@ -332,7 +332,7 @@
       "category": "gtm",
       "title": "Pricing",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "gtm",
       "min_chars": null
     },
     {
@@ -340,7 +340,7 @@
       "category": "gtm",
       "title": "Launch Plan",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "gtm",
       "min_chars": null
     },
     {
@@ -348,7 +348,7 @@
       "category": "gtm",
       "title": "Marketing Channels",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "gtm",
       "min_chars": null
     },
     {
@@ -356,7 +356,7 @@
       "category": "legal_compliance",
       "title": "Privacy Policy",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "legal_compliance",
       "min_chars": null
     },
     {
@@ -364,7 +364,7 @@
       "category": "legal_compliance",
       "title": "Terms of Service",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "legal_compliance",
       "min_chars": null
     },
     {
@@ -372,7 +372,7 @@
       "category": "legal_compliance",
       "title": "App Store Compliance",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "legal_compliance",
       "min_chars": null
     },
     {
@@ -380,7 +380,7 @@
       "category": "execution_ops",
       "title": "Release Checklist",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "execution_ops",
       "min_chars": null
     },
     {
@@ -388,7 +388,7 @@
       "category": "execution_ops",
       "title": "Runbook",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "execution_ops",
       "min_chars": null
     },
     {
@@ -396,7 +396,7 @@
       "category": "execution_ops",
       "title": "Postmortem Template",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "execution_ops",
       "min_chars": null
     },
     {
@@ -404,7 +404,7 @@
       "category": "library_knowledge",
       "title": "Reusable Components",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "library_knowledge",
       "min_chars": null
     },
     {
@@ -412,7 +412,7 @@
       "category": "library_knowledge",
       "title": "Lessons Learned",
       "sources": [],
-      "owner_section": null,
+      "owner_section": "library_knowledge",
       "min_chars": null
     }
   ]

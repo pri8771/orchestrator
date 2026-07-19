@@ -317,7 +317,7 @@ class TestDocMap(unittest.TestCase):
         self.assertEqual(dm, docs._default_doc_map())
         self.assertTrue(warns, "malformed entry must fire on_warn")
 
-    def test_blueprint_ships_40_slots_11_categories_inert(self):
+    def test_blueprint_ships_40_slots_11_categories_owned(self):
         dm = docs._default_doc_map()
         self.assertEqual(len(dm["categories"]), 11)
         self.assertEqual(len(dm["slots"]), 40)
@@ -326,9 +326,12 @@ class TestDocMap(unittest.TestCase):
                          "slot ids unique")
         for s in dm["slots"]:
             self.assertIn(s["category"], cat_ids, "no orphan slot category")
-            # 5.1 ships the scaffold inert — 5.2/5.3/5.4 populate these.
-            self.assertEqual((s["sources"], s["owner_section"], s["min_chars"]),
-                             ([], None, None))
+            # 5.3 populates owner_section (= the slot's category); sources[] and
+            # min_chars stay inert until a doc_map edit / 5.4.
+            self.assertEqual(s["owner_section"], s["category"],
+                             "5.3: every slot owned by its category-section")
+            self.assertIn(s["owner_section"], cat_ids)
+            self.assertEqual((s["sources"], s["min_chars"]), ([], None))
 
     def test_write_project_docs_honors_disk_map_and_banners_on_corrupt(self):
         # End-to-end through write_project_docs + the orch_dir/on_warn wiring.
