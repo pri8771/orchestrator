@@ -196,9 +196,9 @@ class TestReaderNoneParity(unittest.TestCase):
         # appB shares empty_proj as its store — but write_project_docs uses
         # app_dir as project_dir, so point appB at an empty store by using a
         # fresh app_dir that has no artifacts/ dir.
-        wb = docs.write_project_docs(appB, "Demo", phases, po,
-                                     verify_summary="VERIFIED", orch_dir=HERE,
-                                     artifact_reader=artlib)
+        docs.write_project_docs(appB, "Demo", phases, po,
+                                verify_summary="VERIFIED", orch_dir=HERE,
+                                artifact_reader=artlib)
         self.assertNotIn("docs/HANDOFF_BLUEPRINT.md", wa)
         for rel in ("docs/PRD.md", "docs/TECHNICAL_ARCHITECTURE.md",
                     "docs/QA_REPORT.md", "docs/PROJECT_DOCUMENTATION.md",

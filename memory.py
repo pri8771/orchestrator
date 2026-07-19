@@ -38,7 +38,7 @@ _WORD_RE = re.compile(r"[a-z0-9@._+]+")
 MEMORY_HEADER = "\n\n===== FACTORY MEMORY (founder-pinned — binding) ====="
 _SCOPES = ("global", "project", "section")
 # path -> ((mtime_ns, size), fact-or-None): a stat-scan, not a re-read.
-_FACT_CACHE = {}
+_FACT_CACHE: dict = {}
 
 
 def _terms(text):

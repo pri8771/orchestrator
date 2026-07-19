@@ -1469,7 +1469,7 @@ ARTIFACT_CONTEXT_HEADER = "\n\n===== RELEVANT PROJECT ARTIFACTS ====="
 # LRU-bounded (newest wins) so a long-lived / multi-project process cannot
 # accumulate an open-ended body corpus — unlike knowledge.py's fixed-corpus
 # cache, artifact bodies are unbounded over a fleet's lifetime.
-_ART_BODY_CACHE = collections.OrderedDict()
+_ART_BODY_CACHE: collections.OrderedDict = collections.OrderedDict()
 _ART_BODY_CACHE_MAX = 256
 
 
