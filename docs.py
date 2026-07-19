@@ -564,7 +564,8 @@ def _default_doc_map():
         ],
         "categories": [dict(c) for c in _BLUEPRINT_CATEGORIES],
         "slots": [{"slot_id": sid, "category": cat, "title": title,
-                   "sources": [], "owner_section": cat, "min_chars": None}
+                   "sources": [], "owner_section": cat,
+                   "min_chars": DEFAULT_MIN_CHARS}
                   for (cat, sid, title) in _BLUEPRINT_SLOT_SEED],
     }
 
@@ -856,18 +857,26 @@ def _resolve_slot_artifact(project_dir, reader, idx, slot, on_warn):
 
 
 def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
-                             project_dir, reader, on_warn=None, contentions=None):
-    """HANDOFF_BLUEPRINT.md (V3 5.2/5.3): the 40 blueprint slots grouped under the
-    11 categories, each filled by per-slot precedence artifact > phase-output(slot
-    .sources) > empty — NEVER merged. An artifact fill names its source (id +
+                             project_dir, reader, on_warn=None, contentions=None,
+                             coverage=None):
+    """HANDOFF_BLUEPRINT.md (V3 5.2/5.3/5.4): the 40 blueprint slots grouped under
+    the 11 categories, each filled by per-slot precedence artifact > phase-output
+    (slot.sources) > empty — NEVER merged. An artifact fill names its source (id +
     version); a same-lineage branch renders a branch-conflict note; >1 admissible
     final from DISJOINT lineages is a cross-lineage conflict (5.3) — an explicit
     note, the slot left UNFILLED, and (when caller-collected) a contention record
     appended to `contentions` for idempotent gap emission. An unfilled slot is
     visibly unfilled (never invented). Returns the markdown, or None when the map
-    declares no slots. `contentions` defaults None ⇒ no collection and a string
-    output identical to a 5.2 render. Reader-gated by the caller so reader=None
-    keeps 5.1 byte-identical."""
+    declares no slots.
+
+    Two OPTIONAL out-params, both default None ⇒ no collection ⇒ string output
+    byte-identical to a 5.2 render (the slot is resolved exactly once regardless):
+      * `contentions` — 5.3 cross-lineage conflict records (for conflict gaps).
+      * `coverage` (5.4) — ONE record per slot {slot_id, slot_title, category,
+        owner_section, status: filled|thin|empty|conflict, reason: None|thin|
+        empty|lineage_conflict, min_chars, observed_chars, evidence, content_hash}
+        driving GAP_REPORT.md + empty/thin gap emission.
+    Reader-gated by the caller so reader=None keeps 5.1 byte-identical."""
     if on_warn is None:
         on_warn = lambda _m: None
     slots = doc_map.get("slots") or []
@@ -882,6 +891,19 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
         by_cat.setdefault(s.get("category"), []).append(s)
     seen_cat = set()
 
+    def _cov(s, status, reason, observed, evidence, content_hash, min_chars):
+        if coverage is None:
+            return
+        coverage.append({
+            "slot_id": s.get("slot_id"),
+            "slot_title": s.get("title") or s.get("slot_id"),
+            "category": s.get("category"),
+            "owner_section": s.get("owner_section"),
+            "status": status, "reason": reason,
+            "min_chars": min_chars, "observed_chars": observed,
+            "evidence": evidence, "content_hash": content_hash,
+        })
+
     def _emit(cat_id, title):
         seen_cat.add(cat_id)
         group = by_cat.get(cat_id) or []
@@ -890,13 +912,20 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
         lines.append("## %s\n" % (title or cat_id))
         for s in group:
             lines.append("### %s\n" % (s.get("title") or s.get("slot_id")))
+            mc = _slot_min_chars(s)
             kind, a, b = _resolve_slot_artifact(project_dir, reader, idx, s,
                                                 on_warn)
             if kind == "fill":
-                lines.append(str(b).strip())
+                body_s = str(b).strip()
+                lines.append(body_s)
                 lines.append("")
                 lines.append("_Source: artifact %s v%s_"
                              % (a.get("id"), a.get("version", 1)))
+                thin = len(body_s) < mc
+                _cov(s, "thin" if thin else "filled", "thin" if thin else None,
+                     len(body_s),
+                     "%s v%s" % (a.get("id"), a.get("version", 1)),
+                     a.get("content_hash"), mc)
             elif kind == "contended":
                 # V3 5.3: cross-lineage conflict. Deterministic (sorted by id) so
                 # the note and any gap are publish-order-independent — never
@@ -905,6 +934,7 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
                 tips = sorted(a, key=lambda m: m.get("id") or "")
                 n = len(tips)
                 owner = s.get("owner_section")
+                ids = [m.get("id") for m in tips]
                 ids_vers = ", ".join("%s (v%s)" % (m.get("id"),
                                                    m.get("version", 1))
                                      for m in tips)
@@ -923,12 +953,14 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
                             "slot_id": s.get("slot_id"),
                             "slot_title": s.get("title") or s.get("slot_id"),
                             "owner_section": owner,
-                            "contending": [m.get("id") for m in tips],
+                            "contending": ids,
                             "content_hashes": [m.get("content_hash")
                                                for m in tips],
                             "versions": [m.get("version", 1) for m in tips],
                             "roots": [_artifact_root(m) for m in tips],
                         })
+                    _cov(s, "conflict", "lineage_conflict", 0,
+                         ",".join(x for x in ids if x), None, mc)
                 else:
                     # Unowned/unknown-owner: still NEVER pick, but no gap (no
                     # owner to attribute). load_doc_map already linted the owner.
@@ -938,11 +970,19 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
                                  "winner; no gap emitted (fix owner_section in "
                                  "doc_map.json). Slot left unfilled._"
                                  % (owner, ids_vers, n))
+                    _cov(s, "conflict", None, 0,
+                         ",".join(x for x in ids if x), None, mc)
             elif kind == "conflict":
                 named = ", ".join(_head_label(h) for h in b)
                 lines.append("_Unresolved — lineage '%s' is branched across "
                              "heads %s; publish a 'reconcile' artifact. Slot "
                              "left unfilled._" % (a, named))
+                # A same-lineage branch has finals but none RESOLVES (latest_final
+                # refused) — it satisfies the EMPTY predicate ("no final matched")
+                # and must appear in the work queue; evidence names the heads so
+                # the gap body is honest about why it is empty.
+                head_ids = ",".join(h.get("id") or "" for h in (b or []))
+                _cov(s, "empty", "empty", 0, "branch-heads:" + head_ids, "", mc)
             else:
                 # Guard a corrupt slot 'sources' (disk-wins doc_map isn't
                 # validated at the slot level): a string would iterate
@@ -955,16 +995,23 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
                             "ignored" % (s.get("slot_id"),
                                          type(srcs).__name__))
                     srcs = []
-                parts = [(phase_outputs or {}).get(k, "")
-                         for k in (srcs or [])
-                         if isinstance(k, str)
-                         and (phase_outputs or {}).get(k, "").strip()]
+                keys = [k for k in (srcs or [])
+                        if isinstance(k, str)
+                        and (phase_outputs or {}).get(k, "").strip()]
+                parts = [(phase_outputs or {}).get(k, "") for k in keys]
                 if parts:
-                    lines.append(_phase_section(s.get("title") or "",
-                                                "\n\n".join(parts)))
+                    body = "\n\n".join(parts)
+                    lines.append(_phase_section(s.get("title") or "", body))
+                    observed = len(body.strip())
+                    thin = observed < mc
+                    ch = hashlib.sha256(body.encode("utf-8")).hexdigest()
+                    _cov(s, "thin" if thin else "filled",
+                         "thin" if thin else None, observed,
+                         "phase:" + ",".join(keys), ch, mc)
                 else:
                     lines.append("_Unfilled — no artifact or phase output for "
                                  "this slot._")
+                    _cov(s, "empty", "empty", 0, None, "", mc)
             lines.append("")
 
     for c in (doc_map.get("categories") or []):
@@ -973,6 +1020,29 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
         if cat_id not in seen_cat:            # unknown still renders (honesty)
             _emit(cat_id, cat_id or "Other")
     return "\n".join(lines)
+
+
+DEFAULT_MIN_CHARS = 200
+
+
+def _slot_min_chars(slot):
+    """The thinness threshold for a slot: its own min_chars (doc_map data, disk
+    wins) when a sane non-negative int, else the code floor (covers older/hand-
+    edited maps still carrying null). bool is rejected (True/False are ints)."""
+    v = slot.get("min_chars")
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+        return v
+    return DEFAULT_MIN_CHARS
+
+
+def _slot_gap_dedupe_key(slot_id, reason, content_hash):
+    """Idempotency key for an empty/thin gap: slot + reason + the content_hash of
+    the CURRENT fill (or "" for empty). Includes the reason literal so an empty
+    and a later thin gap for the same slot are distinct keys, and so it can never
+    collide with a 5.3 conflict key (those are pure sorted content-hash lines —
+    a reason literal is neither 64 hex chars nor present there)."""
+    payload = (slot_id or "") + "\n" + reason + "\n" + (content_hash or "")
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _conflict_dedupe_key(slot_id, content_hashes):
@@ -1010,10 +1080,75 @@ def _conflict_gap_body(c):
     return "\n".join(lines)
 
 
-def _emit_conflict_gaps(project_dir, reader, orch_dir, contentions, on_warn):
-    """Publish one idempotent 'gap' artifact per cross-lineage contention through
-    the injected artifacts reader (docs.py never imports artifacts). Best-effort:
-    a publish failure degrades to the already-rendered conflict note plus a
+def _slot_gap_meta(r, key):
+    """The meta for an empty/thin gap. THE 7.5 STABILITY CONTRACT — the gap
+    `fields` schema {slot_id, owner_section, reason(empty|thin|lineage_conflict),
+    doc, min_chars, observed_chars, evidence, dedupe_key} is what the Conductor's
+    goal predicate parses. ADDITIVE-ONLY: a new field is fine, but renaming or
+    removing one (or changing `reason`'s enum) is a breaking change that must bump
+    schemas.SCHEMA_VERSION (publish stamps schema_version on every meta)."""
+    reason = r["reason"]
+    impact = ("Blueprint slot '%s' (owned by section '%s') is %s: %d of the "
+              "required %d characters. The handoff is incomplete until the "
+              "owning section fills it."
+              % (r["slot_id"], r["owner_section"], reason,
+                 r["observed_chars"], r["min_chars"]))
+    return {
+        "type": "gap",
+        "title": "Doc gap (%s): %s" % (reason, r["slot_id"]),
+        "source": {"section": "documentation"},
+        "impact": impact,
+        "slot_id": r["slot_id"],
+        "owner_section": r["owner_section"],
+        "reason": reason,
+        "doc": "HANDOFF_BLUEPRINT.md",
+        "min_chars": r["min_chars"],
+        "observed_chars": r["observed_chars"],
+        "evidence": r.get("evidence"),
+        "dedupe_key": key,
+    }
+
+
+def _slot_gap_body(r):
+    """Deterministic, non-AI gap body — every fact from the coverage record."""
+    ev = r.get("evidence") or "none (no artifact or phase output feeds it)"
+    return "\n".join([
+        "# Doc gap (%s): %s (%s)" % (r["reason"], r["slot_title"], r["slot_id"]),
+        "",
+        "Owning section: %s" % r["owner_section"],
+        "Reason: %s — %d of %d required characters."
+        % (r["reason"], r["observed_chars"], r["min_chars"]),
+        "Partial evidence: %s" % ev,
+        "",
+        "Fill this slot by routing it to the owning section (manual Send-to). "
+        "Nothing here is inferred — this reports an observed absence.",
+    ])
+
+
+def _try_publish_gap(reader, project_dir, registry, body, meta, key,
+                     open_keys, warn):
+    """Publish one gap, report-not-raise; on success record the key so the pass
+    de-dupes within itself, on failure warn (the render/report already stand)."""
+    slot = meta.get("slot_id")
+    gid = None
+    try:
+        gid = reader.publish(project_dir, body, meta, registry,
+                             on_error=warn, consensus=True)
+    except Exception as exc:               # publish should report-not-raise;
+        warn("gap publish raised for slot %r (%s) — the report stands"
+             % (slot, exc))                # defend anyway
+    if gid is None:
+        warn("gap publish FAILED for slot %r — the gap is in GAP_REPORT.md but "
+             "no gap artifact was recorded" % (slot,))
+    else:
+        open_keys.add(key)
+
+
+def _emit_gaps(project_dir, reader, orch_dir, coverage, contentions, on_warn):
+    """Publish one idempotent 'gap' artifact per empty/thin slot (from coverage)
+    AND per cross-lineage contention (5.3, from contentions), through the injected
+    artifacts reader (docs.py never imports artifacts). One shared open-key set
+    dedupes all three reasons. Best-effort: a publish failure degrades to a
     visible warning — it never raises, so a store fault can't fail the render."""
     warn = on_warn or (lambda _m: None)
     registry = reader.load_registry(orch_dir, on_error=warn)
@@ -1024,14 +1159,22 @@ def _emit_conflict_gaps(project_dir, reader, orch_dir, contentions, on_warn):
         if not isinstance(f, dict):
             continue                       # a corrupt gap meta must not abort the
                                            # scan (never-raises: §13.3)
-        if (f.get("reason") == "lineage_conflict"
-                and g.get("status") != "converged"
+        if (g.get("status") != "converged"
                 and isinstance(f.get("dedupe_key"), str)):
             open_keys.add(f["dedupe_key"])
-    for c in contentions:
+    for r in (coverage or []):
+        if r.get("reason") not in ("empty", "thin"):
+            continue
+        key = _slot_gap_dedupe_key(r["slot_id"], r["reason"],
+                                   r.get("content_hash"))
+        if key in open_keys:
+            continue                       # idempotent: this state is recorded
+        _try_publish_gap(reader, project_dir, registry, _slot_gap_body(r),
+                         _slot_gap_meta(r, key), key, open_keys, warn)
+    for c in (contentions or []):
         key = _conflict_dedupe_key(c["slot_id"], c["content_hashes"])
         if key in open_keys:
-            continue                       # idempotent: this conflict is recorded
+            continue
         hashes = sorted(h for h in c["content_hashes"] if isinstance(h, str))
         impact = ("Blueprint slot '%s' (owned by section '%s') renders unfilled "
                   "while %d disjoint-lineage artifacts contend; the handoff is "
@@ -1049,18 +1192,46 @@ def _emit_conflict_gaps(project_dir, reader, orch_dir, contentions, on_warn):
             "content_hashes": hashes,
             "dedupe_key": key,
         }
-        gid = None
-        try:
-            gid = reader.publish(project_dir, _conflict_gap_body(c), meta,
-                                 registry, on_error=warn, consensus=True)
-        except Exception as exc:           # publish should report-not-raise;
-            warn("gap publish raised for slot %r (%s) — conflict note stands"
-                 % (c["slot_id"], exc))    # defend anyway
-        if gid is None:
-            warn("gap publish FAILED for slot %r — the conflict note is "
-                 "rendered but no gap artifact was recorded" % (c["slot_id"],))
-        else:
-            open_keys.add(key)             # de-dupe within this pass too
+        _try_publish_gap(reader, project_dir, registry, _conflict_gap_body(c),
+                         meta, key, open_keys, warn)
+
+
+def render_gap_report(app, coverage):
+    """GAP_REPORT.md (V3 5.4): a deterministic, non-AI render of the CURRENT slot
+    scan — per-category coverage counts, then one line per empty/thin/conflicted
+    slot (title, owning section, reason, evidence). It reports OBSERVED absence;
+    it never infers or fabricates content (R3). Rendered from the scan, NOT from
+    list_artifacts, so a stale gap artifact can never make it lie (R2): 'no gaps'
+    means the current scan is clean, which is exactly 7.5's termination signal."""
+    cov = coverage or []
+    total = len(cov)
+    counts = {"filled": 0, "thin": 0, "empty": 0, "conflict": 0}
+    for r in cov:
+        counts[r.get("status", "empty")] = counts.get(r.get("status"), 0) + 1
+    lines = ["# %s — Gap Report" % app, "",
+             "_Honest, non-AI scan of the handoff blueprint. Nothing here is "
+             "inferred; each line reports an observed empty, thin, or conflicted "
+             "slot._", "",
+             "## Coverage", "",
+             "- Filled: %d / %d" % (counts["filled"], total),
+             "- Thin (under min_chars): %d" % counts["thin"],
+             "- Empty: %d" % counts["empty"],
+             "- Lineage conflicts: %d" % counts["conflict"], "",
+             "## Open gaps", ""]
+    rows = [r for r in cov if r.get("status") != "filled"]
+    if not rows:
+        lines.append("- None — every blueprint slot is filled to its minimum. "
+                     "Handoff is complete.")
+    else:
+        for r in rows:
+            reason = r.get("reason") or "conflict (unowned)"
+            ev = r.get("evidence") or "none"
+            lines.append("- **%s** (%s) — %s; %d/%d chars; evidence: %s"
+                         % (r.get("slot_title") or r.get("slot_id"),
+                            r.get("owner_section"), reason,
+                            r.get("observed_chars", 0), r.get("min_chars", 0),
+                            ev))
+    return "\n".join(lines) + "\n"
 
 
 def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
@@ -1123,19 +1294,24 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
         # and reader=None leaves the doc set byte-identical to 5.1.
         if artifact_reader is not None:
             try:
-                contentions = []
+                contentions, coverage = [], []
                 bp = render_handoff_blueprint(
                     app, doc_map, ordered_phases, phase_outputs, app_dir,
-                    artifact_reader, on_warn=on_warn, contentions=contentions)
+                    artifact_reader, on_warn=on_warn, contentions=contentions,
+                    coverage=coverage)
                 if bp is not None:
                     _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), bp)
                     written.append("docs/HANDOFF_BLUEPRINT.md")
-                # 5.3: publish conflict gaps AFTER the .md is on disk, so the
-                # conflict note survives even if gap emission fails.
-                if contentions:
-                    _emit_conflict_gaps(app_dir, artifact_reader,
-                                        orch_dir or _ORCH_DIR, contentions,
-                                        on_warn)
+                    # 5.4: the gap report is scan-derived (never from the bus),
+                    # so it can't surface stale gaps — written even when clean.
+                    _write(os.path.join(docs_dir, "GAP_REPORT.md"),
+                           render_gap_report(app, coverage))
+                    written.append("docs/GAP_REPORT.md")
+                # Publish empty/thin + conflict gaps AFTER the docs are on disk,
+                # so the report survives even if gap emission fails (5.3/5.4).
+                if coverage or contentions:
+                    _emit_gaps(app_dir, artifact_reader, orch_dir or _ORCH_DIR,
+                               coverage, contentions, on_warn)
             except Exception as exc:      # never crash the run on a store fault
                 if on_warn:
                     on_warn("HANDOFF_BLUEPRINT render skipped: %s" % exc)

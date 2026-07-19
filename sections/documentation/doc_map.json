@@ -101,7 +101,7 @@
       "title": "Problem Statement",
       "sources": [],
       "owner_section": "ideas",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "target_user",
@@ -109,7 +109,7 @@
       "title": "Target User",
       "sources": [],
       "owner_section": "ideas",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "value_proposition",
@@ -117,7 +117,7 @@
       "title": "Value Proposition",
       "sources": [],
       "owner_section": "ideas",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "market_landscape",
@@ -125,7 +125,7 @@
       "title": "Market Landscape",
       "sources": [],
       "owner_section": "research",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "competitor_analysis",
@@ -133,7 +133,7 @@
       "title": "Competitor Analysis",
       "sources": [],
       "owner_section": "research",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "user_research",
@@ -141,7 +141,7 @@
       "title": "User Research",
       "sources": [],
       "owner_section": "research",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "technical_feasibility",
@@ -149,7 +149,7 @@
       "title": "Technical Feasibility",
       "sources": [],
       "owner_section": "research",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "product_requirements",
@@ -157,7 +157,7 @@
       "title": "Product Requirements",
       "sources": [],
       "owner_section": "planning_spec",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "scope_tiers",
@@ -165,7 +165,7 @@
       "title": "Scope Tiers",
       "sources": [],
       "owner_section": "planning_spec",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "feature_list",
@@ -173,7 +173,7 @@
       "title": "Feature List",
       "sources": [],
       "owner_section": "planning_spec",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "task_graph",
@@ -181,7 +181,7 @@
       "title": "Task Graph",
       "sources": [],
       "owner_section": "planning_spec",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "success_metrics",
@@ -189,7 +189,7 @@
       "title": "Success Metrics",
       "sources": [],
       "owner_section": "planning_spec",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "user_flows",
@@ -197,7 +197,7 @@
       "title": "User Flows",
       "sources": [],
       "owner_section": "design",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "information_architecture",
@@ -205,7 +205,7 @@
       "title": "Information Architecture",
       "sources": [],
       "owner_section": "design",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "design_language",
@@ -213,7 +213,7 @@
       "title": "Design Language",
       "sources": [],
       "owner_section": "design",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "copy_voice",
@@ -221,7 +221,7 @@
       "title": "Copy & Voice",
       "sources": [],
       "owner_section": "design",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "technical_architecture",
@@ -229,7 +229,7 @@
       "title": "Technical Architecture",
       "sources": [],
       "owner_section": "build",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "data_model",
@@ -237,7 +237,7 @@
       "title": "Data Model",
       "sources": [],
       "owner_section": "build",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "api_contracts",
@@ -245,7 +245,7 @@
       "title": "API Contracts",
       "sources": [],
       "owner_section": "build",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "build_plan",
@@ -253,7 +253,7 @@
       "title": "Build Plan",
       "sources": [],
       "owner_section": "build",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "dependency_map",
@@ -261,7 +261,7 @@
       "title": "Dependency Map",
       "sources": [],
       "owner_section": "build",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "test_plan",
@@ -269,7 +269,7 @@
       "title": "Test Plan",
       "sources": [],
       "owner_section": "qa_redteam",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "qa_report",
@@ -277,7 +277,7 @@
       "title": "QA Report",
       "sources": [],
       "owner_section": "qa_redteam",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "known_limitations",
@@ -285,7 +285,7 @@
       "title": "Known Limitations",
       "sources": [],
       "owner_section": "qa_redteam",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "security_review",
@@ -293,7 +293,7 @@
       "title": "Security Review",
       "sources": [],
       "owner_section": "qa_redteam",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "overview",
@@ -301,7 +301,7 @@
       "title": "Overview",
       "sources": [],
       "owner_section": "documentation",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "changelog",
@@ -309,7 +309,7 @@
       "title": "Changelog",
       "sources": [],
       "owner_section": "documentation",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "glossary",
@@ -317,7 +317,7 @@
       "title": "Glossary",
       "sources": [],
       "owner_section": "documentation",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "positioning",
@@ -325,7 +325,7 @@
       "title": "Positioning",
       "sources": [],
       "owner_section": "gtm",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "pricing",
@@ -333,7 +333,7 @@
       "title": "Pricing",
       "sources": [],
       "owner_section": "gtm",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "launch_plan",
@@ -341,7 +341,7 @@
       "title": "Launch Plan",
       "sources": [],
       "owner_section": "gtm",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "marketing_channels",
@@ -349,7 +349,7 @@
       "title": "Marketing Channels",
       "sources": [],
       "owner_section": "gtm",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "privacy_policy",
@@ -357,7 +357,7 @@
       "title": "Privacy Policy",
       "sources": [],
       "owner_section": "legal_compliance",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "terms_of_service",
@@ -365,7 +365,7 @@
       "title": "Terms of Service",
       "sources": [],
       "owner_section": "legal_compliance",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "app_store_compliance",
@@ -373,7 +373,7 @@
       "title": "App Store Compliance",
       "sources": [],
       "owner_section": "legal_compliance",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "release_checklist",
@@ -381,7 +381,7 @@
       "title": "Release Checklist",
       "sources": [],
       "owner_section": "execution_ops",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "runbook",
@@ -389,7 +389,7 @@
       "title": "Runbook",
       "sources": [],
       "owner_section": "execution_ops",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "postmortem_template",
@@ -397,7 +397,7 @@
       "title": "Postmortem Template",
       "sources": [],
       "owner_section": "execution_ops",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "reusable_components",
@@ -405,7 +405,7 @@
       "title": "Reusable Components",
       "sources": [],
       "owner_section": "library_knowledge",
-      "min_chars": null
+      "min_chars": 200
     },
     {
       "slot_id": "lessons_learned",
@@ -413,7 +413,7 @@
       "title": "Lessons Learned",
       "sources": [],
       "owner_section": "library_knowledge",
-      "min_chars": null
+      "min_chars": 200
     }
   ]
 }

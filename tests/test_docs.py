@@ -326,12 +326,14 @@ class TestDocMap(unittest.TestCase):
                          "slot ids unique")
         for s in dm["slots"]:
             self.assertIn(s["category"], cat_ids, "no orphan slot category")
-            # 5.3 populates owner_section (= the slot's category); sources[] and
-            # min_chars stay inert until a doc_map edit / 5.4.
+            # 5.3 populates owner_section (= the slot's category); 5.4 seeds
+            # min_chars (default 200); sources[] stays inert (a doc_map edit).
             self.assertEqual(s["owner_section"], s["category"],
                              "5.3: every slot owned by its category-section")
             self.assertIn(s["owner_section"], cat_ids)
-            self.assertEqual((s["sources"], s["min_chars"]), ([], None))
+            self.assertEqual(s["min_chars"], docs.DEFAULT_MIN_CHARS,
+                             "5.4: every slot seeds the default thinness floor")
+            self.assertEqual(s["sources"], [])
 
     def test_write_project_docs_honors_disk_map_and_banners_on_corrupt(self):
         # End-to-end through write_project_docs + the orch_dir/on_warn wiring.

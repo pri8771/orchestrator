@@ -200,6 +200,7 @@ class TestReaderNoneParity(unittest.TestCase):
                                 verify_summary="VERIFIED", orch_dir=HERE,
                                 artifact_reader=artlib)
         self.assertNotIn("docs/HANDOFF_BLUEPRINT.md", wa)
+        self.assertNotIn("docs/GAP_REPORT.md", wa)   # 5.4: reader-gated too
         for rel in ("docs/PRD.md", "docs/TECHNICAL_ARCHITECTURE.md",
                     "docs/QA_REPORT.md", "docs/PROJECT_DOCUMENTATION.md",
                     "docs/KNOWN_LIMITATIONS.md", "docs/LAUNCH_READINESS.md"):

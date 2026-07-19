@@ -40,6 +40,13 @@ class OwnershipBase(unittest.TestCase):
             artifact_reader=reader if reader is not None else artlib)
 
     def gaps(self):
+        # 5.4 also emits empty/thin gaps for the other 39 unfilled slots; this
+        # suite is about CONFLICT gaps, so scope to reason=='lineage_conflict'.
+        return [g for g in artlib.list_artifacts(self.app, type="gap")
+                if isinstance(g.get("fields"), dict)
+                and g["fields"].get("reason") == "lineage_conflict"]
+
+    def all_gaps(self):
         return artlib.list_artifacts(self.app, type="gap")
 
     def blueprint(self):
