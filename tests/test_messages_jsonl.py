@@ -354,12 +354,10 @@ class TestCrashResume(ResumeBase):
             if m["kind"] not in msglib.POST_ROUND_KINDS:
                 self.assertIn("Round %d" % m["round"], text)
 
-    def test_vote_crash_resume_keeps_old_lines_and_suffixes_new(self):
-        # The seam the verification pass proved wrong in v1: the .md
-        # truncation KEEPS the first Forced Vote section (all rounds are
-        # complete, the kept segment runs to EOF) and the resumed run
-        # appends a second one. The index must carry both, distinctly.
-        # Two agents: a forced vote never runs single-agent.
+    def _run_two_agent_vote_phase(self, state):
+        # A no-consensus, two-agent debate -> forced vote. The unparseable
+        # "ballot prose" drives the LLM-fallback tally (< 2 parseable ballots);
+        # the tally decides YES.
         def sessioned(cfg, app, phase, rnd, agent, prompt,
                       delta_prompt=None, session_key=None):
             return "go on. CONSENSUS: NO"
@@ -371,33 +369,79 @@ class TestCrashResume(ResumeBase):
         orch._agent_available = lambda a, cfg=None: a in ("codex", "claude")
         cfg = self._cfg()
         cfg["agents"]["claude_enabled"] = True
-        state = self._state()
         orch.process_phase(cfg, "r", self.app_dir,
                            wf.Phase("design_discussion", ".", "d.md", "p",
                                     rounds=2),
                            "p", [], state)
+
+    def test_vote_crash_resume_recovers_decision_without_re_voting(self):
+        # Formerly test_vote_crash_resume_keeps_old_lines_and_suffixes_new: the
+        # v1 harness that PROVED the double-vote bug (the .md kept the first
+        # Forced Vote section — all rounds complete, the kept segment runs to
+        # EOF — and the resumed run appended a SECOND one). Now pins the FIX:
+        # a completed forced vote is RECOVERED on resume, the footer is written
+        # once, and the vote is NOT re-run. Two agents: a vote never runs solo.
+        self._run_two_agent_vote_phase(self._state())
         first = msglib.read_messages(self.app_dir)
         first_votes = [m for m in first
                        if m["kind"] in msglib.FINAL_STAGE_KINDS]
         self.assertTrue(first_votes, "precondition: the vote was indexed")
-        # crash after the vote but before completion: resumable state
-        cfg2 = self._cfg()
-        cfg2["agents"]["claude_enabled"] = True
-        orch.process_phase(cfg2, "r", self.app_dir,
-                           wf.Phase("design_discussion", ".", "d.md", "p",
-                                    rounds=2),
-                           "p", [], self._state(rnd=2))
+        md_after_first = self._md_text()
+        self.assertEqual(md_after_first.count("### Forced Vote"), 1)
+        # crash after the vote but before completion: resumable state (the .md
+        # is a complete transcript incl. footer; only current_round was not
+        # flushed to 0 — exactly the seam _resume_round_state must reconcile).
+        self._run_two_agent_vote_phase(self._state(rnd=2))
         lines = msglib.read_messages(self.app_dir)
         ids = [m["turn_id"] for m in lines]
         self.assertEqual(len(ids), len(set(ids)),
-                         "vote re-run must suffix, not collide")
+                         "no duplicate turn_ids: the vote must not be re-run")
         second_votes = [m for m in lines
                         if m["kind"] in msglib.FINAL_STAGE_KINDS]
-        self.assertEqual(len(second_votes), 2 * len(first_votes),
-                         "both vote sections must be indexed")
+        self.assertEqual(len(second_votes), len(first_votes),
+                         "exactly ONE vote section — no re-vote, no second set")
         for m in first_votes:
             self.assertIn(m["turn_id"], ids,
-                          "the surviving first-vote lines must not be dropped")
+                          "the completed vote's index lines are kept, not dropped")
+        text = self._md_text()
+        self.assertEqual(text.count("### Forced Vote"), 1,
+                         "one Forced Vote section survives the resume")
+        self.assertEqual(text.count("## Coordinator Decision"), 1,
+                         "one phase footer — the resume did not double it")
+        self.assertEqual(text, md_after_first,
+                         "resume is byte-idempotent for a completed vote")
+
+    def test_partial_forced_vote_crash_resume_recasts_once(self):
+        # A crash MID-VOTE (the "### Forced Vote" header + ballots reached disk
+        # but the tally did not) leaves a PARTIAL section. Resume must discard
+        # it — and its now-orphaned index lines — and cast the vote cleanly:
+        # exactly one section, no duplicate/orphan turn_ids.
+        self._run_two_agent_vote_phase(self._state())
+        first_votes = [m for m in msglib.read_messages(self.app_dir)
+                       if m["kind"] in msglib.FINAL_STAGE_KINDS]
+        self.assertTrue(first_votes, "precondition: the vote was indexed")
+        # Truncate the .md to header+ballots (drop the tally block + footer);
+        # the messages.jsonl still carries the stale tally line — the crash seam.
+        md = os.path.join(self.app_dir, "d.md")
+        full = self._md_text()
+        partial = full[:full.rindex("\n**Coordinator (")]   # last == the tally block
+        self.assertIn("### Forced Vote", partial)
+        self.assertNotIn("vote tally & decision", partial)
+        with open(md, "w", encoding="utf-8") as fh:
+            fh.write(partial)
+        self._run_two_agent_vote_phase(self._state(rnd=2))
+        lines = msglib.read_messages(self.app_dir)
+        ids = [m["turn_id"] for m in lines]
+        self.assertEqual(len(ids), len(set(ids)),
+                         "the partial section's stale lines are dropped, re-cast is clean")
+        text = self._md_text()
+        self.assertEqual(text.count("### Forced Vote"), 1,
+                         "the partial section was discarded and re-cast once")
+        self.assertEqual(text.count("## Coordinator Decision"), 1)
+        second_votes = [m for m in lines
+                        if m["kind"] in msglib.FINAL_STAGE_KINDS]
+        self.assertEqual(len(second_votes), len(first_votes),
+                         "one vote section's worth of index lines after re-cast")
 
 
 if __name__ == "__main__":
