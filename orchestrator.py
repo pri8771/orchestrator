@@ -6064,11 +6064,25 @@ def _ensure_build_gitignore(build_dir):
 
 _WORKSPACE_GITIGNORE_RULES = [".orchestrator_runtime/"]
 
+# Applied by the Conductor checkpoint path, not general engine startup. Keeping
+# this layer scoped matters: run.sh deliberately surfaces and refuses a stray
+# secret before telling the operator to ignore it; globally hiding it would
+# silently weaken that warning contract.
+_WORKSPACE_SNAPSHOT_GITIGNORE_RULES = [
+    # V3 7.7 workspace snapshots: transient coordination/runtime state and
+    # secret-shaped files must never enter an autonomous checkpoint.
+    ".conductor/approvals/", ".conductor/rollback_pending.json",
+    "*.lock", ".orch-locks/", ".stream/",
+    "*.pem", "*.key", "*.p12", ".env", ".env.*",
+    "gemini_api_key", "*_api_key",
+]
 
-def _ensure_workspace_gitignore(root):
+
+def _ensure_workspace_gitignore(root, snapshot=False):
     """Write/restore <root>/.gitignore (the factory workspace `run.sh` may
-    `git add -A` + commit) so .orchestrator_runtime/ — worktrees and
-    live_log.jsonl, pure scratch/log content — never lands in that history.
+    `git add -A` + commit) so runtime never lands in that history. The
+    Conductor passes snapshot=True to append its additional coordination and
+    secret exclusions without weakening run.sh's visible secret refusal.
     Same preserve-extra-rules, append-only-missing idiom as
     _ensure_build_gitignore; best-effort, never raises."""
     gi = os.path.join(root, ".gitignore")
@@ -6078,11 +6092,14 @@ def _ensure_workspace_gitignore(root):
             with open(gi, encoding="utf-8") as fh:
                 existing = fh.read()
         have = set(existing.splitlines())
-        missing = [r for r in _WORKSPACE_GITIGNORE_RULES if r not in have]
+        managed = list(_WORKSPACE_GITIGNORE_RULES)
+        if snapshot:
+            managed.extend(_WORKSPACE_SNAPSHOT_GITIGNORE_RULES)
+        missing = [r for r in managed if r not in have]
         if not existing:
             with open(gi, "w", encoding="utf-8") as fh:
                 fh.write("# Managed by the orchestrator — runtime scratch/log content.\n")
-                fh.write("\n".join(_WORKSPACE_GITIGNORE_RULES) + "\n")
+                fh.write("\n".join(managed) + "\n")
         elif missing:
             sep = "" if existing.endswith("\n") else "\n"
             with open(gi, "a", encoding="utf-8") as fh:

@@ -167,6 +167,21 @@ class TestCapabilityGate(_RouteBase):
         recs = [r for r in cond.read_ledger(self.root) if r]
         self.assertTrue(any(r["decision"] == "route_approved" for r in recs))
 
+    def test_approved_effect_snapshots_before_mint(self):
+        state = cond.default_state()
+        self._run(state, lambda *a, **k: None)  # enqueue first
+        action = cp.read_pending(self.root)[0]
+        os.makedirs(cp.approvals_dir(self.root), exist_ok=True)
+        open(os.path.join(cp.approvals_dir(self.root),
+                          action["action_id"] + ".ok"), "w").close()
+        order = []
+        with unittest.mock.patch.object(
+                cond, "snapshot",
+                side_effect=lambda *a, **k: order.append("snapshot") or None):
+            self._run(state, lambda *a, **k: order.append("mint") or "/made")
+        self.assertEqual(["snapshot", "mint"], order,
+                         "the checkpoint must precede the first wave effect")
+
     def test_changes_rejects_without_minting(self):
         state = cond.default_state()
         self._run(state, lambda *a, **k: (_ for _ in ()).throw(

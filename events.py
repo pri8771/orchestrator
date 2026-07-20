@@ -43,6 +43,8 @@ Event kinds emitted by orchestrator.py:
                          output, so a GUI can card it without .md parsing)
     command_unknown     (name, args — an unrecognized '/command'; the banner
                          AND the recoverable text, never silently discarded)
+    snapshot_failed     (reason, error — workspace checkpoint safety net
+                         failed; routing continues but the miss is visible)
 
 Contract:
   * Best-effort by design — emitting an event must NEVER take a run down.
@@ -127,6 +129,9 @@ KINDS = (
     # (name) is the visible banner for an unrecognized command — paired with
     # the text NOT being forwarded as chat (§6.2/§13.3).
     "command_ran", "command_result", "command_unknown",
+    # V3 board 7.7: snapshots are non-gating, so a failed Git checkpoint
+    # needs a visible event in addition to its durable Conductor ledger line.
+    "snapshot_failed",
 )
 
 _MAX_FIELD_CHARS = 500

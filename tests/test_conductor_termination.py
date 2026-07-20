@@ -373,6 +373,26 @@ class TestTerminationWiring(_Base):
         self.assertTrue(report["payload"]["open_gaps"])
         self.assertTrue(report["payload"]["unmet_goal_checks"])
 
+    def test_quiescence_termination_takes_snapshot_after_terminal_ledger(self):
+        app = self._session("p/documentation/c1", {"current_phase": "stuck"})
+        self._gap_report(app)
+        _Store(app).gap("permanent gap")
+        self._manifest({"goal": {"doc_gap_empty": True},
+                        "quiescence_cycles": 1})
+        state = cond.default_state()
+        calls = []
+        with unittest.mock.patch.object(
+                cond, "snapshot",
+                side_effect=lambda root, reason, cursor, emit: calls.append(
+                    (reason, cursor, cond.read_ledger(root)[-1]["decision"]))):
+            for _ in range(4):
+                state = cond.full_poll(self.root, state, emit=_quiet)
+                if calls:
+                    break
+        self.assertEqual("converged_open_items", calls[0][2])
+        self.assertTrue(calls[0][0].startswith("quiescence:"))
+        self.assertEqual(state["ledger_cursor"], calls[0][1])
+
     def test_terminated_session_skipped_by_routing(self):
         self._session("p/documentation/c1", {"current_phase": "done"})
         state = cond.default_state()

@@ -32,10 +32,12 @@ orchestrator.py import (find_apps) is deferred into the function that needs
 it, so orchestrator may some day import conductor without a cycle.
 """
 import argparse
+import datetime
 import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import signal
 import socket
@@ -65,6 +67,17 @@ _TERMINAL_DECISIONS = ("goal_met", "converged_open_items", "stalled")
 # crash between the pipeline_loaded append and its state save (same class of
 # gap 7.5a's termination replay fixed).
 _PIPELINE_DECISIONS = ("pipeline_loaded",)
+# Terminal route decisions rebuild the exactly-once cache from the ledger.
+# Proposed/deferred/enqueue_failed/mint_failed are intentionally absent: they
+# did not complete an effect and must remain eligible after rollback/restart.
+_ROUTED_DECISIONS = (
+    "route_approved", "route_recovered", "route_denied", "denied",
+    "route_suppressed", "do_not_route_added", "kill_session",
+    "converged", "budget_exhausted", "unroutable",
+)
+_SNAPSHOT_TAG_RE = re.compile(r"^conductor/(\d{8}T\d{6}Z)-(\d+)$")
+_SNAPSHOT_SUBJECT_RE = re.compile(
+    r"^conductor-snapshot: (.+) cursor=(\d+) ts=(\d{8}T\d{6}Z)$")
 OVERSIGHT_DIALS = ("full_auto", "suggest_only", "gated", "loops_gated")
 DEFAULT_OVERSIGHT_DIAL = "loops_gated"
 SCHEMA_VERSION = 1
@@ -95,6 +108,125 @@ def state_path(root):
 
 def ledger_path(root):
     return os.path.join(conductor_dir(root), "conductor_ledger.jsonl")
+
+
+def _git(root, *args):
+    """The only Git seam: delegate to orchestrator's timeout-safe helper."""
+    from orchestrator import _git as engine_git
+    return engine_git(root, *args)
+
+
+def ensure_workspace_repo(root):
+    """Idempotently make root snapshot-capable without rewriting history."""
+    from orchestrator import _ensure_workspace_gitignore
+    try:
+        os.makedirs(root, exist_ok=True)
+        _ensure_workspace_gitignore(root, snapshot=True)
+        if os.path.isdir(os.path.join(root, ".git")):
+            return True, ""
+        code, _out, err = _git(root, "init", "-q")
+        if code:
+            return False, err or "git init failed"
+        _ensure_workspace_gitignore(root, snapshot=True)
+        code, _out, err = _git(
+            root, "-c", "user.name=Orchestrator Conductor",
+            "-c", "user.email=conductor@local", "commit", "-q",
+            "--allow-empty", "-m", "conductor: workspace initialized")
+        return code == 0, err if code else ""
+    except Exception as exc:  # safety net must never take the run down
+        return False, str(exc)
+
+
+def _snapshot_failure(root, reason, error, emit=print):
+    message = str(error or "unknown git failure")[:500]
+    try:
+        ledger_append(root, {
+            "v": SCHEMA_VERSION, "ts": time.time(), "stage": "acting",
+            "decision": "snapshot_failed",
+            "detail": {"reason": str(reason)[:200], "error": message}})
+    except Exception:
+        pass
+    try:
+        import events as eventslib
+        eventslib.emit_event(conductor_dir(root), "snapshot_failed",
+                            reason=str(reason), error=message)
+    except Exception:
+        pass
+    emit("conductor: snapshot failed (routing continues): %s" % message)
+
+
+def _latest_snapshot_tag(root):
+    code, out, _err = _git(root, "tag", "--list", "conductor/*",
+                           "--sort=-creatordate")
+    return out.splitlines()[0].strip() if code == 0 and out.strip() else None
+
+
+def snapshot(root, reason, ledger_cursor, emit=print):
+    """Commit+tag one dirty checkpoint; clean/failure paths never raise."""
+    ok, err = ensure_workspace_repo(root)
+    if not ok:
+        _snapshot_failure(root, reason, err, emit)
+        return None
+    try:
+        # Repair the only commit->tag crash gap before considering new work.
+        code, subject, _err = _git(root, "log", "-1", "--format=%s")
+        match = _SNAPSHOT_SUBJECT_RE.match(subject.strip()) if code == 0 else None
+        if match:
+            repair_tag = "conductor/%s-%s" % (match.group(3), match.group(2))
+            if _git(root, "rev-parse", "-q", "--verify",
+                    "refs/tags/%s" % repair_tag)[0] != 0:
+                code, _out, err = _git(
+                    root, "-c", "user.name=Orchestrator Conductor",
+                    "-c", "user.email=conductor@local", "tag", "-a",
+                    repair_tag, "-m", subject.strip())
+                if code:
+                    _snapshot_failure(root, "repair-tag", err, emit)
+                    return None
+
+        code, _out, err = _git(root, "add", "-A")
+        if code:
+            _snapshot_failure(root, reason, err, emit)
+            return None
+        code, _out, err = _git(root, "diff", "--cached", "--quiet")
+        if code == 0:
+            return _latest_snapshot_tag(root)
+        if code != 1:
+            _snapshot_failure(root, reason, err, emit)
+            return None
+
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ")
+        cursor = int(ledger_cursor)
+        stamp_dt = datetime.datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+        tag = "conductor/%s-%d" % (stamp, cursor)
+        # Multiple dirty checkpoints can legitimately share a cursor (for
+        # example two quiescent sessions before another route decision).
+        # Preserve the required timestamp-cursor shape without overwriting.
+        while _git(root, "rev-parse", "-q", "--verify",
+                   "refs/tags/%s" % tag)[0] == 0:
+            stamp_dt += datetime.timedelta(seconds=1)
+            stamp = stamp_dt.strftime("%Y%m%dT%H%M%SZ")
+            tag = "conductor/%s-%d" % (stamp, cursor)
+        subject = "conductor-snapshot: %s cursor=%d ts=%s" % (
+            str(reason).replace("\n", " ")[:120], cursor, stamp)
+        code, _out, err = _git(
+            root, "-c", "user.name=Orchestrator Conductor",
+            "-c", "user.email=conductor@local", "commit", "-q", "-m", subject)
+        if code:
+            _snapshot_failure(root, reason, err, emit)
+            return None
+        code, _out, err = _git(
+            root, "-c", "user.name=Orchestrator Conductor",
+            "-c", "user.email=conductor@local", "tag", "-a", tag,
+            "-m", subject)
+        if code:
+            _snapshot_failure(root, reason, err, emit)
+            return None
+        return tag
+    except Exception as exc:
+        _snapshot_failure(root, reason, exc, emit)
+        return None
 
 
 class ConductorLocked(Exception):
@@ -587,6 +719,11 @@ def reconcile_on_start(root, state, emit=print):
             _remember_do_not_route(state, detail.get("artifact_id"),
                                    detail.get("rule_id"))
             applied += 1
+        rid = rec.get("route_id")
+        if isinstance(rid, str) and rid and \
+                rec.get("decision") in _ROUTED_DECISIONS:
+            state.setdefault("routed", {})[rid] = True
+            applied += 1
     state["ledger_cursor"] = length
     save_conductor_state(root, state)
     emit("conductor: resumed — reconciled %d un-cursored ledger entr%s "
@@ -856,6 +993,10 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
                                                 on_warn=emit)
                 _record_termination(root, state, sid, "converged_open_items",
                                     report, emit)
+                snapshot(root, "quiescence:%s" % sid,
+                         state["ledger_cursor"], emit)
+                # A failed snapshot appends a visible failure decision.
+                state["ledger_cursor"] = ledger_length(root)
     save_conductor_state(root, state)
     return state
 
@@ -939,6 +1080,164 @@ def full_poll(root, state, emit=print, route_engine=None):
     return state
 
 
+def _live_conductor_sessions(root):
+    """Return proven Conductor sessions whose pid is currently alive."""
+    live = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        if seslib.DELEGATION_BASENAME not in filenames:
+            continue
+        delegation = seslib.read_delegation(dirpath, on_error=lambda _m: None)
+        request = delegation.get("request") if isinstance(delegation, dict) else None
+        if not isinstance(request, dict) or not request.get("route_id"):
+            continue
+        pid = seslib.read_pidfile(dirpath)
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            pass
+        except OSError:
+            continue
+        live.append({"session": os.path.relpath(dirpath, root), "pid": pid})
+    return sorted(live, key=lambda item: item["session"])
+
+
+def _parse_snapshot_tag(tag):
+    match = _SNAPSHOT_TAG_RE.match(str(tag or ""))
+    if not match:
+        return None
+    return {"tag": tag, "timestamp": match.group(1),
+            "cursor": int(match.group(2))}
+
+
+def snapshot_tag_before(root, timestamp):
+    """Newest well-formed snapshot tag at/before an ISO-8601 timestamp."""
+    try:
+        wanted = datetime.datetime.fromisoformat(
+            str(timestamp).replace("Z", "+00:00"))
+        if wanted.tzinfo is None:
+            wanted = wanted.replace(tzinfo=datetime.timezone.utc)
+        wanted = wanted.astimezone(datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    code, out, _err = _git(root, "tag", "--list", "conductor/*")
+    if code:
+        return None
+    candidates = []
+    for tag in out.splitlines():
+        parsed = _parse_snapshot_tag(tag.strip())
+        if not parsed:
+            continue
+        stamp = datetime.datetime.strptime(
+            parsed["timestamp"], "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=datetime.timezone.utc)
+        if stamp <= wanted:
+            candidates.append((stamp, tag.strip()))
+    return max(candidates)[1] if candidates else None
+
+
+def _atomic_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(value, fh, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _truncate_ledger(root, cursor):
+    path = ledger_path(root)
+    try:
+        with open(path, "rb") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        lines = []
+    if cursor > len(lines):
+        raise ValueError("tag cursor %d exceeds ledger length %d" %
+                         (cursor, len(lines)))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "wb") as fh:
+        fh.writelines(lines[:cursor])
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _rollback_journal_path(root):
+    return os.path.join(conductor_dir(root), "rollback_pending.json")
+
+
+def repair_pending_rollback(root):
+    """Finish reset->truncate crash gaps from the ignored rollback journal."""
+    path = _rollback_journal_path(root)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+        tag, cursor = record["tag"], int(record["cursor"])
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if _git(root, "reset", "--hard", tag)[0] != 0:
+        return None
+    try:
+        _truncate_ledger(root, cursor)
+        state = reconcile_on_start(root, default_state(), emit=lambda _m: None)
+        save_conductor_state(root, state)
+        os.remove(path)
+        return state
+    except (OSError, ValueError):
+        return None
+
+
+def rollback(root, tag, dry_run=True):
+    """Dry-run by default; apply is crash-resumable and refuses live runs."""
+    parsed = _parse_snapshot_tag(tag)
+    if not parsed or _git(root, "rev-parse", "-q", "--verify",
+                          "refs/tags/%s" % tag)[0] != 0:
+        return {"ok": False, "error": "unknown or malformed snapshot tag",
+                "tag": tag}
+    live = _live_conductor_sessions(root)
+    code, stat, err = _git(root, "diff", "--stat", tag, "--")
+    result = {"ok": code == 0, "dry_run": bool(dry_run), "tag": tag,
+              "cursor": parsed["cursor"], "diffstat": stat.strip(),
+              "live_sessions": live}
+    if code:
+        result.update(ok=False, error=err or "git diff failed")
+        return result
+    if dry_run:
+        return result
+    if live:
+        result.update(ok=False,
+                      error="rollback refused while Conductor sessions are live")
+        return result
+    if parsed["cursor"] > ledger_length(root):
+        result.update(ok=False, error="tag cursor exceeds current ledger")
+        return result
+    journal = _rollback_journal_path(root)
+    try:
+        _atomic_json(journal, {"tag": tag, "cursor": parsed["cursor"],
+                               "started_at": time.time()})
+        if _git(root, "reset", "--hard", tag)[0] != 0:
+            result.update(ok=False, error="git reset failed")
+            return result
+        _truncate_ledger(root, parsed["cursor"])
+        state = reconcile_on_start(root, default_state(), emit=lambda _m: None)
+        save_conductor_state(root, state)
+        os.remove(journal)
+        result["state"] = state
+        return result
+    except (OSError, ValueError) as exc:
+        result.update(ok=False, error=str(exc))
+        return result
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Workspace conductor (V3 7.1 skeleton): observes "
@@ -959,6 +1258,15 @@ def main(argv=None):
                          "run's routing + goal manifest. Validated up front — "
                          "an invalid preset refuses to start rather than "
                          "running with partially-applied config.")
+    rollback_group = ap.add_mutually_exclusive_group()
+    rollback_group.add_argument("--rollback", metavar="TAG",
+                                help="roll back to an exact conductor tag")
+    rollback_group.add_argument(
+        "--rollback-last-night", metavar="TIMESTAMP",
+        help="roll back to the newest conductor tag at/before an ISO-8601 "
+             "timestamp")
+    ap.add_argument("--apply", action="store_true",
+                    help="perform rollback (default is a non-mutating dry-run)")
     args = ap.parse_args(argv)
     root = os.path.abspath(args.root)
     try:
@@ -967,7 +1275,20 @@ def main(argv=None):
         print("conductor: %s" % exc, file=sys.stderr)
         return 2
 
+    repair_pending_rollback(root)
     state = reconcile_on_start(root, load_conductor_state(root))
+    if args.rollback or args.rollback_last_night:
+        tag = args.rollback or snapshot_tag_before(
+            root, args.rollback_last_night)
+        if not tag:
+            print("conductor: no snapshot tag matches the requested time",
+                  file=sys.stderr)
+            release_singleton(lock_fd)
+            return 2
+        result = rollback(root, tag, dry_run=not args.apply)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        release_singleton(lock_fd)
+        return 0 if result.get("ok") else 2
     if args.pipeline:
         preset_path = os.path.abspath(args.pipeline)
         preset, err = pplib.load_preset_file(
@@ -1012,10 +1333,6 @@ def main(argv=None):
         save_conductor_state(root, state)
         release_singleton(lock_fd)
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
 
 
 # --- V3 7.2: production routing adapter ------------------------------------
@@ -1063,6 +1380,16 @@ def route_engine(root, state, sessions, emit=print):
     active_preset = state.get("pipeline")
     classify = _build_classifier(root)
     effected_cache = {}   # (project, section) -> set, scanned once per poll
+    wave_snapshot_taken = False
+
+    def _ensure_wave_snapshot():
+        nonlocal wave_snapshot_taken
+        if wave_snapshot_taken:
+            return
+        snapshot(root, "routing-wave", state["ledger_cursor"], emit)
+        state["ledger_cursor"] = ledger_length(root)
+        save_conductor_state(root, state)
+        wave_snapshot_taken = True
 
     def _ledger_route(root_, base):
         rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "acting"}
@@ -1143,6 +1470,7 @@ def route_engine(root, state, sessions, emit=print):
                                "reason": "provider over daily request quota"}})
                 continue
             else:  # approved -> execute the gated effect now
+                _ensure_wave_snapshot()
                 sdir = seslib_local.mint_delegation_session(
                     root, action["requested_by"].split("/")[0],
                     action["target"], _mint_request(action),
@@ -1329,6 +1657,9 @@ def route_engine(root, state, sessions, emit=print):
                 continue
 
             by_rid = {i.route_id: i for i in allowed_now}
+            if any(i.verdict == crlib.ALLOW and i.target
+                   for i in allowed_now):
+                _ensure_wave_snapshot()
             outcomes = crlib.execute_intents(
                 allowed_now, sid, root, _mint,
                 lambda base: _ledger_route(root, base),
@@ -1341,3 +1672,7 @@ def route_engine(root, state, sessions, emit=print):
                     state["routed"][oc["route_id"]] = True
             save_conductor_state(root, state)
     return state
+
+
+if __name__ == "__main__":
+    sys.exit(main())
