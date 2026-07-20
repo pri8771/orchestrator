@@ -54,14 +54,17 @@ enum RoutePreviewResolver {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return nil }
 
-        // ONLY "artifact_routes" is recognized — the 7.2 routing-rules
-        // contract-to-be. Today's engine writes model-routing overlays
-        // (schema_version/enabled/fallback/phases) and no artifact routes at
-        // all, so on every real installation this returns [:] and the chip
-        // stays hidden (R2: never preview a route no engine would take).
-        // Guessing other key spellings would light the chip from fiction;
-        // 7.2 must update this reader in lockstep with its writer.
+        // ONLY "artifact_routes" is recognized — the routing.json key 7.2
+        // now writes (a flat {type: target} map, or a rule-array the
+        // normalize overload below also accepts). It coexists with the
+        // model-routing "phases" key in the same file; a pure model-routing
+        // overlay (schema_version/enabled/fallback/phases, no
+        // artifact_routes) yields [:] and the chip stays hidden — never a
+        // route no engine would take (R2). The engine's rule objects live
+        // under a sibling "rules" key this resolver deliberately ignores
+        // (the chip previews only the single deterministic target).
         if let raw = root["artifact_routes"] as? [String: Any] { return normalize(raw) }
+        if let raw = root["artifact_routes"] as? [[String: Any]] { return normalize(raw) }
         return [:]
     }
 

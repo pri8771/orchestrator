@@ -324,3 +324,155 @@ class TestReviewRegressions(_Base):
         sizes = {}
         cond.wake_signal(self.root, [sid], sizes)
         self.assertEqual(len(sizes), 1)
+
+
+class TestActingStage(_Base):
+    def test_observe_only_when_no_route_engine(self):
+        # 7.1 behavior preserved: absent route_engine never enters acting.
+        self._mk_session("proj", {"done": False, "status": "running"})
+        stages = []
+        real_set = cond.set_stage
+        with unittest.mock.patch.object(
+                cond, "set_stage",
+                lambda root, st, s: stages.append(s) or real_set(root, st, s)):
+            cond.full_poll(self.root, cond.default_state(), emit=_quiet)
+        self.assertNotIn("acting", stages)
+
+    def test_route_engine_runs_in_acting_and_errors_are_contained(self):
+        self._mk_session("proj", {"done": False, "status": "running"})
+        calls = []
+
+        def boom(root, state, sessions, emit):
+            calls.append(sessions)
+            raise RuntimeError("routing blew up")
+
+        warns = []
+        st = cond.full_poll(self.root, cond.default_state(),
+                            emit=warns.append, route_engine=boom)
+        self.assertEqual(len(calls), 1)               # acting ran
+        self.assertEqual(st["stage"], "idle")         # loop still finished
+        self.assertTrue(any("routing error" in w for w in warns))
+
+    def test_acting_stage_crash_resumes_clean(self):
+        # Extends the crash matrix to the new stage: a kill with stage
+        # persisted as "acting" resumes into a known state, re-polls, idles.
+        self._mk_session("proj", {"current_phase": "p1", "done": False,
+                                  "status": "running"})
+        st = cond.default_state()
+        cond.set_stage(self.root, st, "acting")   # died mid-act
+        reloaded = cond.reconcile_on_start(
+            self.root, cond.load_conductor_state(self.root), emit=_quiet)
+        self.assertIn(reloaded["stage"], cond.STAGES)
+        st2 = cond.full_poll(self.root, reloaded, emit=_quiet)
+        self.assertEqual(st2["stage"], "idle")
+
+
+class TestRouteEngineAdapter(_Base):
+    def test_adapter_mints_admissible_artifact_via_sessions(self):
+        # End-to-end through the real route_engine with the bus + minting
+        # stubbed: an admissible artifact in a nested session routes to its
+        # rule target, minting exactly once through mint_delegation_session.
+        sid = "proj/ideas/chat-1"
+        app_dir = os.path.join(self.root, sid)
+        os.makedirs(app_dir)
+        import conductor_routing as crlib
+        import artifacts as artlib
+        minted = []
+
+        def fake_mint(root, project, section, request, **kw):
+            minted.append((project, section))
+            return os.path.join(root, project, section, "chat-x")
+
+        cfg = crlib.RouteConfig(routes={"idea": "research"})
+        meta = {"id": "a1", "artifact_type": "idea", "content_hash": "h1",
+                "lineage": [], "hop_count": 0, "status": "final"}
+        with unittest.mock.patch.object(crlib, "load_route_config",
+                                        lambda *a, **k: cfg), \
+                unittest.mock.patch.object(artlib, "list_artifacts",
+                                           lambda *a, **k: [meta]), \
+                unittest.mock.patch.object(artlib, "is_admissible",
+                                           lambda *a, **k: True), \
+                unittest.mock.patch.object(artlib, "lineage_index",
+                                           lambda *a, **k: {}), \
+                unittest.mock.patch("sessions.mint_delegation_session",
+                                    fake_mint):
+            cond.route_engine(self.root, cond.default_state(), [sid],
+                              emit=_quiet)
+        self.assertEqual(minted, [("proj", "research")])
+        recs = [r for r in cond.read_ledger(self.root) if r]
+        self.assertTrue(any(r["decision"] == "route_approved" for r in recs))
+
+    def test_adapter_skips_flat_sessions(self):
+        # A flat/legacy session id has no section to source-route from.
+        cond.route_engine(self.root, cond.default_state(), ["flatproj"],
+                          emit=_quiet)
+        self.assertEqual(cond.read_ledger(self.root), [])
+
+
+class TestRoutingReviewFixes(_Base):
+    def test_already_routed_artifact_is_not_re_routed(self):
+        sid = "proj/ideas/chat-1"
+        os.makedirs(os.path.join(self.root, sid))
+        import conductor_routing as crlib
+        import artifacts as artlib
+        mint_calls = []
+
+        def fake_mint(root, project, section, request, **kw):
+            mint_calls.append(section)
+            return os.path.join(root, project, section, "chat-x")
+
+        cfg = crlib.RouteConfig(routes={"idea": "research"})
+        meta = {"id": "a1", "artifact_type": "idea", "content_hash": "h1",
+                "lineage": [], "hop_count": 0, "status": "final"}
+        state = cond.default_state()
+        with unittest.mock.patch.object(crlib, "load_route_config",
+                                        lambda *a, **k: cfg), \
+                unittest.mock.patch.object(artlib, "list_artifacts",
+                                           lambda *a, **k: [meta]), \
+                unittest.mock.patch.object(artlib, "is_admissible",
+                                           lambda *a, **k: True), \
+                unittest.mock.patch.object(artlib, "lineage_index",
+                                           lambda *a, **k: {"by_id": {"a1": meta}}), \
+                unittest.mock.patch("sessions.mint_delegation_session",
+                                    fake_mint):
+            cond.route_engine(self.root, state, [sid], emit=_quiet)
+            cond.route_engine(self.root, state, [sid], emit=_quiet)
+        self.assertEqual(mint_calls, ["research"], "must mint ONCE, not per poll")
+        self.assertIn(cond.route_digest(
+            {"artifact_id": "a1", "content_hash": "h1", "target": "research",
+             "rule_id": "route:idea"}), state["routed"])
+
+    def test_route_ledger_carries_full_session_id(self):
+        sid = "proj/ideas/chat-1"
+        os.makedirs(os.path.join(self.root, sid))
+        import conductor_routing as crlib
+        import artifacts as artlib
+        cfg = crlib.RouteConfig(routes={"idea": "research"})
+        meta = {"id": "a1", "artifact_type": "idea", "content_hash": "h1",
+                "lineage": [], "hop_count": 0, "status": "final"}
+        with unittest.mock.patch.object(crlib, "load_route_config",
+                                        lambda *a, **k: cfg), \
+                unittest.mock.patch.object(artlib, "list_artifacts",
+                                           lambda *a, **k: [meta]), \
+                unittest.mock.patch.object(artlib, "is_admissible",
+                                           lambda *a, **k: True), \
+                unittest.mock.patch.object(artlib, "lineage_index",
+                                           lambda *a, **k: {"by_id": {"a1": meta}}), \
+                unittest.mock.patch("sessions.mint_delegation_session",
+                                    lambda *a, **k: "/d"):
+            cond.route_engine(self.root, cond.default_state(), [sid],
+                              emit=_quiet)
+        route_recs = [r for r in cond.read_ledger(self.root)
+                      if r and r.get("decision") in ("route_proposed",
+                                                     "route_approved")]
+        self.assertTrue(route_recs)
+        self.assertTrue(all(r["session"] == sid for r in route_recs),
+                        "route lines must carry the full sid, not bare project")
+
+    def test_old_state_without_routed_key_loads(self):
+        os.makedirs(cond.conductor_dir(self.root), exist_ok=True)
+        with open(cond.state_path(self.root), "w", encoding="utf-8") as fh:
+            json.dump({"stage": "idle", "ledger_cursor": 0,
+                       "sessions": {}}, fh)   # pre-7.2 shape, no "routed"
+        st = cond.load_conductor_state(self.root)
+        self.assertIn("routed", st)

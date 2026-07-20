@@ -111,6 +111,11 @@ def validate_rule(rule):
     if not targets:
         return None, ("rule for %r has no targets"
                       % (match.get("artifact_type"),))
+    if strategy in ("one", "chain") and len(targets) > 1:
+        return None, ("rule for %r uses strategy %r but names %d targets — "
+                      "one/chain route to a single destination (use 'every' "
+                      "to fan out)" % (match.get("artifact_type"), strategy,
+                                       len(targets)))
     budget = rule.get("hop_budget", DEFAULT_HOP_BUDGET)
     if not isinstance(budget, int) or isinstance(budget, bool) or budget < 1:
         return None, ("rule for %r has invalid hop_budget %r (need int >= 1)"
@@ -167,15 +172,23 @@ def load_route_config(sections_dir, section, project_dir, on_warn=None):
 
     routes = _merge_layer(_normalize_routes(layers[0].get("artifact_routes")),
                           _normalize_routes(layers[1].get("artifact_routes")))
-    rules = []
-    for layer in layers:
+    # Rules override by (artifact_type, source_section): a project rule for
+    # the same match REPLACES the section default, matching the routes map's
+    # non-empty-wins precedence (blind concatenation would let a project only
+    # ADD, never override, a section rule — a silent surprise).
+    by_key = {}
+    order = []
+    for layer in layers:   # section first, then project (project wins)
         for raw in layer.get("rules") or []:
             rule, err = validate_rule(raw)
             if err:
                 warn("routing rule skipped: %s" % err)
                 continue
-            rules.append(rule)
-    return RouteConfig(routes=routes, rules=rules)
+            key = (rule["artifact_type"], rule["source_section"])
+            if key not in by_key:
+                order.append(key)
+            by_key[key] = rule
+    return RouteConfig(routes=routes, rules=[by_key[k] for k in order])
 
 
 def deterministic_target(artifact_type, config):
@@ -232,3 +245,142 @@ def guard_route(meta, lineage_metas, hop_budget=DEFAULT_HOP_BUDGET):
             and hop_count >= hop_budget:
         return BUDGET_EXHAUSTED
     return ALLOW
+
+
+# --- sub-PR (b): planning + execution -------------------------------------
+# Planning is pure (no mint, no model call unless a deterministic target is
+# missing); execution takes injected side-effect callables so the conductor
+# owns no dir-minting code and tests need no real subprocess.
+
+class RouteIntent:
+    """One resolved (artifact -> target-section, strategy) decision, ready
+    to execute. `verdict` is a guard/resolution outcome; only ALLOW intents
+    with a target actually mint. `route_key` carries the 7.3 hash inputs."""
+
+    __slots__ = ("artifact_id", "content_hash", "source_section", "target",
+                 "strategy", "rule_id", "verdict", "reason")
+
+    def __init__(self, artifact_id, content_hash, source_section, target,
+                 strategy, rule_id, verdict, reason=""):
+        self.artifact_id = artifact_id
+        self.content_hash = content_hash
+        self.source_section = source_section
+        self.target = target
+        self.strategy = strategy
+        self.rule_id = rule_id
+        self.verdict = verdict
+        self.reason = reason
+
+    @property
+    def route_key(self):
+        # The stable identity 7.3 will hash for restart-dedup: artifact
+        # content + destination + which rule decided it (two rules to the
+        # same target must not collapse).
+        return {"artifact_id": self.artifact_id,
+                "content_hash": self.content_hash,
+                "target": self.target, "rule_id": self.rule_id}
+
+    def as_ledger_detail(self):
+        return {"artifact_id": self.artifact_id, "target": self.target,
+                "strategy": self.strategy, "rule_id": self.rule_id,
+                "verdict": self.verdict, "reason": self.reason}
+
+
+def plan_routes(meta, source_section, config, lineage_metas, classify=None):
+    """Pure route planning for ONE admissible artifact — the caller has
+    already filtered to admissible, non-branched tips. Returns a list of
+    RouteIntent (one per target for broadcast; one for one/chain; a single
+    non-ALLOW intent when guarded off or unroutable). No side effects except
+    an optional `classify(atype, candidates)` call, invoked ONLY when a type
+    has no deterministic target AND no explicit rule — the single-inference
+    unmapped case.
+
+    `classify` returns a target section from the given closed candidate list,
+    or None (failure -> an `unroutable` intent, never a guessed route)."""
+    atype = meta.get("artifact_type") or meta.get("type")
+    rules = rules_for(atype, source_section, config)
+    aid, chash = meta.get("id"), meta.get("content_hash")
+
+    def guarded(target, strategy, rule_id, hop_budget):
+        verdict = guard_route(meta, lineage_metas, hop_budget)
+        reason = "" if verdict == ALLOW else verdict
+        return RouteIntent(aid, chash, source_section, target, strategy,
+                           rule_id, verdict, reason)
+
+    if rules:
+        intents = []
+        for rule in rules:
+            if rule["strategy"] == "every":
+                for tgt in rule["targets"]:
+                    intents.append(guarded(tgt, "every", rule["rule_id"],
+                                           rule["hop_budget"]))
+            else:  # one | chain -> the rule's first target
+                intents.append(guarded(rule["targets"][0], rule["strategy"],
+                                        rule["rule_id"], rule["hop_budget"]))
+        return intents
+
+    target = deterministic_target(atype, config)
+    if target is None and classify is not None:
+        # The ONLY inference: a closed candidate list, output selects a
+        # label — the model can never emit a free-form target. Candidates
+        # come from every configured destination (routes map AND rule
+        # targets), not just the flat map.
+        candidates = sorted(set(config.routes.values())
+                            | {t for r in config.rules for t in r["targets"]})
+        chosen = classify(atype, candidates) if candidates else None
+        if chosen in candidates:
+            return [guarded(chosen, "one", "classifier:%s" % atype,
+                            DEFAULT_HOP_BUDGET)]
+        return [RouteIntent(aid, chash, source_section, None, "one",
+                            "classifier:%s" % atype, "unroutable",
+                            "no deterministic route and classifier declined")]
+    if target is None:
+        return [RouteIntent(aid, chash, source_section, None, "one", None,
+                            "unroutable", "no route for type %r" % atype)]
+    return [guarded(target, "one", "route:%s" % atype, DEFAULT_HOP_BUDGET)]
+
+
+def execute_intents(intents, project, root, mint, ledger, permit=None):
+    """Execute planned intents with injected side effects, ledger-before-act:
+    for every intent a `route_proposed` line is written FIRST (durable), then
+    only ALLOW+permitted intents mint, then a terminal line records the
+    outcome. `mint(target_section, request_meta) -> session_dir|None` wraps
+    sessions.mint_delegation_session (idempotent, so a TOCTOU re-run adopts
+    the existing dir — exactly one real session per route_key). `permit` is
+    the 7.4 seam: a callable returning True/False, default allow-all. Returns
+    the list of outcome dicts (also ledgered)."""
+    permit = permit or (lambda _intent: True)
+    outcomes = []
+    for intent in intents:
+        ledger({"decision": "route_proposed", "session": project,
+                "route_key": intent.route_key,
+                "detail": intent.as_ledger_detail()})
+        if intent.verdict != ALLOW or not intent.target:
+            outcomes.append({"outcome": intent.verdict, "target": intent.target,
+                             "route_key": intent.route_key})
+            ledger({"decision": intent.verdict, "session": project,
+                    "route_key": intent.route_key,
+                    "detail": intent.as_ledger_detail()})
+            continue
+        if not permit(intent):
+            outcomes.append({"outcome": "denied", "target": intent.target,
+                             "route_key": intent.route_key})
+            ledger({"decision": "denied", "session": project,
+                    "route_key": intent.route_key,
+                    "detail": intent.as_ledger_detail()})
+            continue
+        request = {"title": "route:%s -> %s" % (intent.artifact_id,
+                                                intent.target),
+                   "artifact_id": intent.artifact_id,
+                   "source_section": intent.source_section,
+                   "rule_id": intent.rule_id}
+        session_dir = mint(intent.target, request)
+        outcome = "routed" if session_dir else "mint_failed"
+        outcomes.append({"outcome": outcome, "target": intent.target,
+                         "session_dir": session_dir,
+                         "route_key": intent.route_key})
+        ledger({"decision": "route_approved" if session_dir else "mint_failed",
+                "session": project, "route_key": intent.route_key,
+                "detail": {**intent.as_ledger_detail(),
+                           "session_dir": session_dir}})
+    return outcomes

@@ -31,6 +31,20 @@ final class LegibleAutonomyTests: XCTestCase {
             fleetRouting: Data("{".utf8), projectRouting: nil)))
     }
 
+    func testRealRoutingJsonWithArtifactRoutesResolves() {
+        // 7.2 writes artifact_routes ALONGSIDE the model-routing phases key
+        // in the same file; the chip must resolve the artifact route and
+        // ignore both phases and the engine-only rules array.
+        let data = Data(#"{"phases":{"tech_specs":{"claude":"x"}},"artifact_routes":{"idea":"research"},"rules":[{"match":{"artifact_type":"idea"},"strategy":"every","targets":["a","b"]}]}"#.utf8)
+        XCTAssertEqual(RoutePreviewResolver.resolve(.init(
+            section: "ideas", artifactType: "idea",
+            fleetRouting: data, projectRouting: nil)), "research")
+        // an unmapped type still hides (no fabricated target)
+        XCTAssertNil(RoutePreviewResolver.resolve(.init(
+            section: "ideas", artifactType: "mystery",
+            fleetRouting: data, projectRouting: nil)))
+    }
+
     func testEngineRealModelRoutingOverlayHidesPreview() {
         // The ONLY routing.json the engine writes today (modelrouting.py):
         // phases/model overlays, zero artifact routes. The chip must stay

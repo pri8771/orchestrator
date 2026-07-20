@@ -123,9 +123,17 @@ def release_singleton(fd):
         pass
 
 
+def route_digest(route_key):
+    """Stable digest of a route_key dict for the already-routed set — keyed
+    on content_hash so a new artifact version re-routes but an unchanged one
+    never re-fires (7.3 will build full idempotency on the same inputs)."""
+    blob = json.dumps(route_key, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def default_state():
     return {"schema_version": SCHEMA_VERSION, "stage": "idle",
-            "ledger_cursor": 0, "sessions": {}}
+            "ledger_cursor": 0, "sessions": {}, "routed": {}}
 
 
 def load_conductor_state(root):
@@ -141,7 +149,9 @@ def load_conductor_state(root):
     data.setdefault("schema_version", SCHEMA_VERSION)
     data.setdefault("ledger_cursor", 0)
     data.setdefault("sessions", {})
+    data.setdefault("routed", {})
     if not isinstance(data["sessions"], dict) \
+            or not isinstance(data["routed"], dict) \
             or not isinstance(data["ledger_cursor"], int) \
             or data["ledger_cursor"] < 0:
         return default_state()
@@ -319,10 +329,11 @@ def reconcile_on_start(root, state, emit=print):
     return state
 
 
-def full_poll(root, state, emit=print):
+def full_poll(root, state, emit=print, route_engine=None):
     """One authoritative pass: scan -> evaluate (ledger observations for
     every changed session, APPEND-THEN-CURSOR each) -> idle. The skeleton
-    records observations only; acting is 7.2's stage."""
+    records observations; when route_engine is injected, the acting
+    stage routes this poll's admissible artifacts (7.2)."""
     set_stage(root, state, "scanning")
     sessions = discover_sessions(root)
     # Prune digests for sessions that no longer exist: a long-lived
@@ -351,6 +362,17 @@ def full_poll(root, state, emit=print):
         state["sessions"][sid] = digest
         state["ledger_cursor"] = new_len
         save_conductor_state(root, state)
+    # V3 7.2: act on this poll's admissible newly-final artifacts. Routing
+    # is off unless a .conductor/routing enable + rules exist; the acting
+    # stage owns NO dir-minting — every route mints through sessions
+    # (route_engine is injected so tests need no live bus/subprocess).
+    if route_engine is not None:
+        set_stage(root, state, "acting")
+        try:
+            state = route_engine(root, state, sessions, emit)
+        except Exception as exc:  # noqa: BLE001 - a routing fault must not
+            # wedge the observation loop; it's ledgered and the poll ends.
+            emit("conductor: routing error (loop continues): %s" % exc)
     set_stage(root, state, "idle")
     return state
 
@@ -365,6 +387,12 @@ def main(argv=None):
     ap.add_argument("--interval", type=int, default=30,
                     help="max seconds between full polls (wake may be "
                          "sooner on events.jsonl growth)")
+    ap.add_argument("--route", action="store_true",
+                    help="ENABLE the acting stage: autonomously mint routed "
+                         "sessions per routing.json rules. Off by default — "
+                         "the safety layers (7.4 permissions, 7.5 "
+                         "termination, 7.6 oversight dials) are not built "
+                         "yet, so live routing stays opt-in until they are.")
     args = ap.parse_args(argv)
     root = os.path.abspath(args.root)
     try:
@@ -382,8 +410,15 @@ def main(argv=None):
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
+    # The acting engine runs ONLY under --route: reachable and wired, but not
+    # silently autonomous before permissions/termination/dials land.
+    engine = route_engine if args.route else None
+    if args.route:
+        print("conductor: --route ENABLED — autonomous session minting is on "
+              "(no termination/permission dials yet; supervise this run).",
+              file=sys.stderr)
     try:
-        state = full_poll(root, state)
+        state = full_poll(root, state, route_engine=engine)
         if args.once:
             return 0
         sizes = {}
@@ -394,7 +429,7 @@ def main(argv=None):
             time.sleep(1)
             if wake_signal(root, session_ids, sizes) \
                     or time.time() - last_poll >= args.interval:
-                state = full_poll(root, state)
+                state = full_poll(root, state, route_engine=engine)
                 session_ids = discover_sessions(root)
                 last_poll = time.time()
     finally:
@@ -405,3 +440,89 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# --- V3 7.2: production routing adapter ------------------------------------
+# Bound lazily (deferred imports keep conductor importable standalone and the
+# module a leaf until a poll with routing actually runs). Passed as full_poll's
+# route_engine; observe-only 7.1 behavior is preserved when it's absent.
+
+def _build_classifier(root):
+    """A closed-candidate section classifier backed by one local-model turn
+    with 6.5 schema-constrained decoding. Returns None when no local model
+    is available — plan_routes then ledgers `unroutable` rather than guessing
+    or reaching for a cloud model."""
+    return None   # wired to run_local in a follow-up; skeleton declines safely
+
+
+def route_engine(root, state, sessions, emit=print):
+    """The acting-stage engine: for each session's admissible newly-final
+    artifact, plan routes and execute them, minting through sessions and
+    ledgering every decision on the same append-before-cursor discipline as
+    the observation loop. Reuses THIS poll's `sessions` list — never
+    re-discovers (the O(N^2) trap)."""
+    import conductor_routing as crlib
+    from orchestrator import create_session
+    import artifacts as artlib
+    import sessions as seslib_local
+
+    sections_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "sections")
+    classify = _build_classifier(root)
+
+    def _ledger_route(root_, base):
+        rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "acting"}
+        rec.update(base)
+        new_len = ledger_append(root_, rec)
+        state["ledger_cursor"] = new_len
+        save_conductor_state(root_, state)
+
+    for sid in sessions:
+        parts = sid.split("/")
+        if len(parts) < 2:
+            continue   # flat/legacy dir: no section to source-route from
+        project, section = parts[0], parts[1]
+        project_dir = os.path.join(root, project)
+        app_dir = os.path.join(root, sid)
+        config = crlib.load_route_config(sections_dir, section, project_dir,
+                                         on_warn=emit)
+        if not config.ok or (not config.routes and not config.rules):
+            continue
+        index = artlib.lineage_index(app_dir, on_error=lambda _m: None)
+        # lineage_index already loaded every meta once — reuse its by_id map
+        # for the whole session instead of re-scanning the store per artifact
+        # (the O(finals * artifacts) trap the adversarial review caught).
+        lineage_metas = index.get("by_id", {}) if isinstance(index, dict) else {}
+        for meta in artlib.list_artifacts(app_dir, status="final",
+                                          on_error=lambda _m: None):
+            if not artlib.is_admissible(app_dir, meta, index=index,
+                                        on_error=lambda _m: None):
+                continue
+            intents = crlib.plan_routes(meta, section, config, lineage_metas,
+                                        classify=classify)
+            # Already-routed dedupe: a still-admissible artifact stays
+            # admissible across polls, so without this the same route re-fires
+            # (and re-ledgers) every tick forever. route_digest keys on
+            # content_hash, so a NEW version re-routes correctly.
+            fresh = [i for i in intents
+                     if route_digest(i.route_key) not in state["routed"]]
+            if not fresh:
+                continue
+
+            def _mint(target_section, request, _proj=project):
+                return seslib_local.mint_delegation_session(
+                    root, _proj, target_section, request,
+                    create_session=create_session,
+                    on_error=lambda m: emit("conductor mint: %s" % m))
+
+            outcomes = crlib.execute_intents(
+                fresh, sid, root, _mint,
+                lambda base: _ledger_route(root, base))
+            # Record only routes that actually fired or were terminally
+            # decided (converged/budget/unroutable/denied) — a mint_failed
+            # stays un-recorded so the next poll retries it.
+            for oc in outcomes:
+                if oc["outcome"] != "mint_failed":
+                    state["routed"][route_digest(oc["route_key"])] = True
+            save_conductor_state(root, state)
+    return state
