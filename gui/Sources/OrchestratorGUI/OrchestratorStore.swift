@@ -3076,6 +3076,116 @@ final class OrchestratorStore: ObservableObject {
     private nonisolated static let transcriptReadLimitBytes = 1_500_000
     private nonisolated static let transcriptHeadReadBytes = 256_000
 
+    struct StreamTailCache: Sendable {
+        var path: String
+        var turnID: String
+        var agent: String
+        var offset: UInt64
+        var remainder: Data
+        var text: String
+        var mtime: Date
+        var lastSeq: Int
+    }
+    private var streamTailCache: [String: StreamTailCache] = [:]
+
+    nonisolated static func shouldReadStream(focusedPane: String?, project: String,
+                                             running: Bool, supportsStreams: Bool) -> Bool {
+        focusedPane == project && running && supportsStreams
+    }
+
+    /// Incrementally tail the one stream belonging to `agent`. The focus guard
+    /// executes BEFORE Task.detached and therefore before any directory stat or
+    /// open: background panes and the fleet refresh scan never touch .stream.
+    func streamPreview(for project: Project, agent: String) async -> StreamPreview? {
+        let supports = DS.identity(agent).streams
+        guard Self.shouldReadStream(focusedPane: focusedLivePane,
+                                    project: project.name,
+                                    running: project.running,
+                                    supportsStreams: supports) else {
+            streamTailCache.removeValue(forKey: project.name)
+            return nil
+        }
+        let prior = streamTailCache[project.name]
+        let dir = project.dirURL.appendingPathComponent(".stream", isDirectory: true)
+        let (next, preview) = await Task.detached(priority: .utility) {
+            Self.readStreamTail(in: dir, agent: agent, prior: prior)
+        }.value
+        // Focus may have moved while the detached read was in flight. Never
+        // publish a preview into a now-background pane.
+        guard Self.shouldReadStream(focusedPane: focusedLivePane,
+                                    project: project.name,
+                                    running: project.running,
+                                    supportsStreams: supports) else {
+            streamTailCache.removeValue(forKey: project.name)
+            return nil
+        }
+        if let next { streamTailCache[project.name] = next }
+        else { streamTailCache.removeValue(forKey: project.name) }
+        return preview
+    }
+
+    nonisolated static func readStreamTail(
+        in dir: URL, agent: String, prior: StreamTailCache?
+    ) -> (StreamTailCache?, StreamPreview?) {
+        let fm = FileManager.default
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey,
+                                         .fileSizeKey]
+        guard let files = try? fm.contentsOfDirectory(at: dir,
+                                                       includingPropertiesForKeys: Array(keys),
+                                                       options: [.skipsHiddenFiles]) else {
+            return (nil, nil)
+        }
+        let suffix = ":\(agent):turn"
+        let candidates: [(URL, String, Date, UInt64)] = files.compactMap { url in
+            guard url.pathExtension == "ndjson" else { return nil }
+            let encoded = url.deletingPathExtension().lastPathComponent
+            guard let tid = encoded.removingPercentEncoding, tid.hasSuffix(suffix),
+                  let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true else { return nil }
+            return (url, tid, values.contentModificationDate ?? .distantPast,
+                    UInt64(max(values.fileSize ?? 0, 0)))
+        }
+        guard let selected = candidates.max(by: {
+            if $0.2 != $1.2 { return $0.2 < $1.2 }
+            return $0.0.lastPathComponent < $1.0.lastPathComponent
+        }) else { return (nil, nil) }
+
+        var cache = prior
+        if cache?.path != selected.0.path || cache?.agent != agent
+            || selected.3 < (cache?.offset ?? 0) {
+            cache = StreamTailCache(path: selected.0.path, turnID: selected.1,
+                                    agent: agent, offset: 0, remainder: Data(),
+                                    text: "", mtime: .distantPast, lastSeq: 0)
+        }
+        guard var cache else { return (nil, nil) }
+        if cache.offset == selected.3 && cache.mtime == selected.2 {
+            return (cache, StreamPreview(agent: agent, turnID: cache.turnID,
+                                         text: cache.text))
+        }
+        guard let handle = try? FileHandle(forReadingFrom: selected.0) else {
+            return (nil, nil)
+        }
+        defer { try? handle.close() }
+        do { try handle.seek(toOffset: cache.offset) } catch { return (nil, nil) }
+        let data = handle.readDataToEndOfFile()
+        cache.offset += UInt64(data.count)
+        cache.mtime = selected.2
+        var joined = cache.remainder
+        joined.append(data)
+        let lines = joined.split(separator: 0x0A, omittingEmptySubsequences: false)
+        cache.remainder = Data(lines.last ?? Data.SubSequence())
+        for rawLine in lines.dropLast() where !rawLine.isEmpty {
+            let line = Data(rawLine)
+            guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let seq = obj["seq"] as? Int, seq > cache.lastSeq,
+                  let delta = obj["delta"] as? String else { continue }
+            cache.lastSeq = seq
+            cache.text += delta
+        }
+        return (cache, StreamPreview(agent: agent, turnID: cache.turnID,
+                                     text: cache.text))
+    }
+
     func transcript(for project: Project, phaseKey: String) async -> PhaseTranscript {
         guard let def = phases(for: project).first(where: { $0.key == phaseKey })
                 ?? ALL_PHASES.first(where: { $0.key == phaseKey }) else {
@@ -3092,7 +3202,7 @@ final class OrchestratorStore: ObservableObject {
 
     // fresh == nil means the file hasn't changed since `ifChangedSince` (keep
     // the cached parse). Runs off the main actor — see transcript(for:phaseKey:).
-    private nonisolated static func readAndParseTranscript(
+    nonisolated static func readAndParseTranscript(
         at url: URL, ifChangedSince cachedMtime: Date?
     ) -> (mtime: Date, fresh: PhaseTranscript?) {
         let mtime = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)

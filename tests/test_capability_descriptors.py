@@ -26,16 +26,16 @@ class TestRegistryCompleteness(unittest.TestCase):
         for prefix, caps in orch.DYNAMIC_CAPABILITY_PREFIXES.items():
             self.assertEqual(set(caps), set(FIELDS), prefix)
 
-    def test_no_static_id_claims_streams_or_token_usage(self):
+    def test_only_api_prefix_claims_streams_or_token_usage(self):
         # No CLI runner streams or reports token usage on the formal contract;
         # only the api: prefix rule claims token_usage (6.2 — real usage via
-        # the traces side-channel) and nothing claims streams until 6.3 lands
-        # stream mode. A True here would be a decorative control (§16).
+        # the traces side-channel) and SSE preview lifecycle. A True anywhere
+        # else would be a decorative control (§16).
         for aid, caps in orch.AGENT_CAPABILITIES.items():
             self.assertFalse(caps["streams"], aid)
             self.assertFalse(caps["token_usage"], aid)
-        for prefix, caps in orch.DYNAMIC_CAPABILITY_PREFIXES.items():
-            self.assertFalse(caps["streams"], prefix)
+        self.assertFalse(orch.DYNAMIC_CAPABILITY_PREFIXES["local:"]["streams"])
+        self.assertTrue(orch.DYNAMIC_CAPABILITY_PREFIXES["api:"]["streams"])
 
 
 class TestRunnerRealityPins(unittest.TestCase):
@@ -86,7 +86,7 @@ class TestDynamicResolution(unittest.TestCase):
 
     def test_api_prefix(self):
         caps = orch.resolve_capabilities("api:anthropic:claude-sonnet-5")
-        self.assertEqual(caps, {"streams": False, "token_usage": True,
+        self.assertEqual(caps, {"streams": True, "token_usage": True,
                                 "effort_control": False, "session_resume": False})
 
     def test_unknown_and_degenerate_ids_never_raise(self):

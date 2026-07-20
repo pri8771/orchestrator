@@ -5,6 +5,7 @@ argv, any environ, a URL, a cmd display string, or any persisted sink, and
 the api: paths must spawn no subprocess at all.
 """
 import inspect
+import io
 import json
 import os
 import shutil
@@ -24,9 +25,46 @@ FAKE_KEY = "sk-FAKE-LEAK-CANARY-42xyz"
 class _FakeResp:
     def __init__(self, payload):
         self._payload = payload
+        self._stream = io.BytesIO(self._sse(payload))
+
+    @staticmethod
+    def _event(obj):
+        return ("data: " + json.dumps(obj) + "\n\n").encode("utf-8")
+
+    @classmethod
+    def _sse(cls, payload):
+        if isinstance(payload, bytes):
+            return payload
+        if isinstance(payload, dict) and isinstance(payload.get("content"), list):
+            usage = payload.get("usage") or {}
+            chunks = [cls._event({"type": "message_start",
+                                  "message": {"usage": {"input_tokens":
+                                      usage.get("input_tokens")}}})]
+            for block in payload["content"]:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    chunks.append(cls._event({"type": "content_block_delta",
+                                              "delta": {"type": "text_delta",
+                                                        "text": block.get("text", "")}}))
+            chunks.extend([cls._event({"type": "message_delta",
+                                      "usage": {"output_tokens":
+                                          usage.get("output_tokens")}}),
+                           cls._event({"type": "message_stop"})])
+            return b"".join(chunks)
+        if isinstance(payload, dict) and isinstance(payload.get("choices"), list):
+            text = ((payload["choices"][0].get("message") or {}).get("content")
+                    if payload["choices"] else "")
+            return (cls._event({"choices": [{"delta": {"content": text}}]})
+                    + cls._event({"choices": [], "usage": payload.get("usage")})
+                    + b"data: [DONE]\n\n")
+        if isinstance(payload, dict) and isinstance(payload.get("candidates"), list):
+            return cls._event(payload)
+        return cls._event(payload)
 
     def read(self):
-        return json.dumps(self._payload).encode("utf-8")
+        return self._stream.read()
+
+    def readline(self):
+        return self._stream.readline()
 
     def __enter__(self):
         return self
@@ -150,6 +188,13 @@ class TestSuccessPaths(_ApiBase):
             self.assertEqual((out, err, code), (_EXPECT_TEXT[provider], "", 0),
                              provider)
             self.assertEqual(cmd, "api:%s model=m1" % provider)
+            self.assertEqual(captured["headers"].get("Accept"),
+                             "text/event-stream")
+            if provider in ("anthropic", "openai"):
+                self.assertIs(captured["body"].get("stream"), True)
+            else:
+                self.assertIn(":streamGenerateContent?alt=sse",
+                              captured["url"])
             usage = traceslib.pop_last_usage()
             self.assertEqual(usage["provider"], provider)
             self.assertEqual(usage["model"], "m1")
@@ -193,6 +238,13 @@ class TestErrorClasses(_ApiBase):
             self.assertIn("auth failed", err)
             self.assertIn(orch._api_key_path("anthropic"), err)
 
+    def test_provider_error_body_cannot_echo_the_api_key(self):
+        _, err, rc, _ = self._run_with(_http_error(401,
+                                                    ("echo " + FAKE_KEY).encode()))
+        self.assertEqual(rc, 1)
+        self.assertNotIn(FAKE_KEY, err)
+        self.assertIn("[REDACTED]", err)
+
     def test_quota_error_is_distinct(self):
         _, err, rc, _ = self._run_with(_http_error(429))
         self.assertEqual(rc, 1)
@@ -209,24 +261,29 @@ class TestErrorClasses(_ApiBase):
         # reset while reading the response raises raw socket errors. Those
         # must map to the network class — an escaped exception would skip
         # trace finalization and crash the turn.
+        class _ReadError(_FakeResp):
+            def __init__(self, exc):
+                self.exc = exc
+            def readline(self):
+                raise self.exc
         for exc in (TimeoutError("timed out"),
                     ConnectionResetError("peer reset")):
-            out, err, rc, _ = self._run_with(exc)
+            out, err, rc, _ = self._run_with(_ReadError(exc))
             self.assertEqual((out, rc), ("", 1), exc)
             self.assertIn("unreachable (network)", err)
 
     def test_malformed_json_is_specific(self):
         class _Junk(_FakeResp):
-            def read(self):
-                return b"<html>not json"
+            def __init__(self, _payload):
+                self._stream = io.BytesIO(b"data: <html>not json\n\n")
         _, err, rc, _ = self._run_with(_Junk(None))
         self.assertEqual(rc, 1)
-        self.assertIn("malformed JSON", err)
+        self.assertIn("malformed SSE JSON", err)
 
     def test_unexpected_shape_is_specific(self):
         _, err, rc, _ = self._run_with(_FakeResp({"content": "not-a-list"}))
         self.assertEqual(rc, 1)
-        self.assertIn("unexpected payload shape", err)
+        self.assertIn("ended before message_stop", err)
 
     def test_failed_turn_never_leaves_stale_usage(self):
         traceslib.set_last_usage({"prompt_tokens": 1, "completion_tokens": 1})
@@ -524,7 +581,10 @@ class TestSecretLeakGate(_ApiBase):
             shutil.rmtree(logdir, ignore_errors=True)
 
     def test_static_source_no_subprocess_or_env_in_api_paths(self):
-        for fn in (orch._api_key, orch._api_http, orch.run_anthropic_api,
+        for fn in (orch._api_key, orch._api_error_detail,
+                   orch._api_http, orch._api_sse,
+                   orch._prepare_api_stream, orch._append_api_stream_delta,
+                   orch._finish_api_stream, orch.run_anthropic_api,
                    orch.run_openai_api, orch.run_google_api,
                    orch.detect_api_available):
             src = inspect.getsource(fn)

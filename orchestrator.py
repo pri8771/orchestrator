@@ -666,13 +666,14 @@ def _gemini_api_key(cfg):
     return None
 
 
-# V3 6.2: direct-API runners (api:<provider>:<model>). Pure stdlib HTTP —
+# V3 6.2/6.3: direct-API runners (api:<provider>:<model>). Pure stdlib HTTP —
 # no subprocess, no child env, and the key is read from a file OUTSIDE the
 # repo and placed ONLY in an HTTP auth header (§9.4): never argv, never a
-# URL, never any environ, never the cmd display string. Non-streaming
-# (6.3 adds stream mode); token usage rides the traces side-channel exactly
-# like run_local because the 4-tuple runner contract is frozen and a
-# cfg-resident usage field would race across concurrent lanes.
+# URL, never any environ, never the cmd display string. API responses use
+# provider SSE endpoints. Token deltas ride the ephemeral per-turn .stream
+# file; usage rides the traces side-channel exactly like run_local because
+# the 4-tuple runner contract is frozen and cfg-resident per-turn fields would
+# race across concurrent lanes.
 _API_PROVIDERS = ("anthropic", "openai", "google")
 _API_KEY_FILES = {
     "anthropic": ("anthropic_api_key",),
@@ -681,6 +682,157 @@ _API_KEY_FILES = {
     # CLI uses, so the existing key file works as a fallback.
     "google": ("google_api_key", "gemini_api_key"),
 }
+
+# The runner signature is frozen at (cfg, prompt, timeout), while the natural
+# stream identity lives at _call_agent_once (session dir + phase + round +
+# lane author). A thread-local handoff keeps concurrent build lanes isolated;
+# cfg is deliberately NOT a per-turn carrier (same ruling as traces usage).
+_API_STREAM = threading.local()
+_STREAM_DIRNAME = ".stream"
+
+
+def _prepare_api_stream(app_dir, phase, rnd, author):
+    """Create this thread's ephemeral preview file before the API POST.
+
+    The filename is the deterministic messages.jsonl turn id, percent-encoded
+    only where filesystem safety requires it (notably '/' in model ids). The
+    decoded id remains the public identity. Raises AgentError before billing if
+    the promised preview channel cannot be created.
+    """
+    _finish_api_stream()
+    if not app_dir:
+        raise AgentError("api streaming requires a session directory")
+    tid = msglib.turn_id(phase, str(rnd), str(author), "turn")
+    stream_dir = os.path.join(app_dir, _STREAM_DIRNAME)
+    filename = urllib.parse.quote(tid, safe=":._-") + ".ndjson"
+    path = os.path.join(stream_dir, filename)
+    try:
+        os.makedirs(stream_dir, exist_ok=True)
+        # One live engine owns the session lock. Truncate any same-turn remnant
+        # defensively; process_app's start sweep normally removed it already.
+        fh = open(path, "w", encoding="utf-8")
+    except OSError as exc:
+        raise AgentError("api stream preview could not be created: %s" % exc)
+    _API_STREAM.path = path
+    _API_STREAM.fh = fh
+    _API_STREAM.turn_id = tid
+    _API_STREAM.seq = 0
+
+
+def _append_api_stream_delta(delta):
+    """Flush one SSE text delta to the current turn's ephemeral NDJSON."""
+    if not isinstance(delta, str) or not delta:
+        return
+    fh = getattr(_API_STREAM, "fh", None)
+    if fh is None:
+        return  # direct runner/unit call: transport streams, no session preview
+    _API_STREAM.seq = int(getattr(_API_STREAM, "seq", 0)) + 1
+    line = {"seq": _API_STREAM.seq, "ts": time.time(), "delta": delta}
+    try:
+        # ASCII escapes make even a provider-supplied lone surrogate safe for
+        # the UTF-8 file handle; the GUI's JSON decoder restores real Unicode.
+        fh.write(json.dumps(line) + "\n")
+        fh.flush()
+    except OSError as exc:
+        # A preview channel that dies mid-turn must fail closed: otherwise the
+        # api: descriptor promises streaming while the live surface silently
+        # freezes. _call_agent_once's finally still removes the partial file.
+        raise AgentError("api stream preview write failed: %s" % exc)
+
+
+def _finish_api_stream(strict=False):
+    """Close and unlink this thread's preview file, idempotently.
+
+    strict=True is the turn boundary: an unlink failure raises instead of
+    letting a successful call return while its preview still exists. The next
+    app start will visibly sweep that orphan.
+    """
+    fh = getattr(_API_STREAM, "fh", None)
+    path = getattr(_API_STREAM, "path", None)
+    cleanup_error = None
+    try:
+        if fh is not None:
+            try:
+                fh.close()
+            except OSError:
+                pass
+        if path:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                cleanup_error = exc
+                emit("WARN api stream preview cleanup failed for %s: %s"
+                     % (os.path.basename(path), exc))
+    finally:
+        for name in ("fh", "path", "turn_id", "seq"):
+            try:
+                delattr(_API_STREAM, name)
+            except AttributeError:
+                pass
+    if strict and cleanup_error is not None:
+        raise AgentError("api stream preview cleanup failed; refusing to "
+                         "complete the turn: %s" % cleanup_error)
+
+
+def _sweep_stream_orphans(app_dir):
+    """Remove killed-turn previews at app run/resume start, visibly.
+
+    The stream directory is engine-owned and contains no authoritative data.
+    Symlinks are unlinked, never followed; unexpected nested directories are
+    walked without following links and removed only after their files.
+    Returns the number of orphan file entries found.
+    """
+    root = os.path.join(app_dir, _STREAM_DIRNAME)
+    if os.path.islink(root):
+        try:
+            os.remove(root)
+            emit("Recovered %s: swept 1 killed-turn stream preview; partial "
+                 "text was discarded and the turn will re-run."
+                 % os.path.basename(app_dir))
+        except OSError as exc:
+            emit("WARN could not remove symlinked api stream directory for "
+                 "%s: %s" % (os.path.basename(app_dir), exc))
+        return 1
+    if not os.path.isdir(root):
+        return 0
+    found = removed = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, topdown=False,
+                                                    followlinks=False):
+            for name in filenames:
+                found += 1
+                try:
+                    os.remove(os.path.join(dirpath, name))
+                    removed += 1
+                except OSError:
+                    pass
+            for name in dirnames:
+                path = os.path.join(dirpath, name)
+                if os.path.islink(path):
+                    found += 1
+                    try:
+                        os.remove(path)
+                        removed += 1
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        os.rmdir(path)
+                    except OSError:
+                        pass
+    except OSError as exc:
+        emit("WARN could not inspect api stream previews for %s: %s"
+             % (os.path.basename(app_dir), exc))
+        return found
+    if found:
+        emit("Recovered %s: swept %d killed-turn stream preview(s)%s; "
+             "partial text was discarded and the turn will re-run."
+             % (os.path.basename(app_dir), found,
+                " (%d could not be removed)" % (found - removed)
+                if removed != found else ""))
+    return found
 
 
 def _api_key_path(provider):
@@ -724,6 +876,18 @@ def _api_key_source(provider):
     return _api_key_path(provider)
 
 
+def _api_error_detail(provider, value):
+    """Bounded provider error garnish with the actual auth value removed."""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", "replace")
+    else:
+        text = str(value or "")
+    key = _api_key(provider)
+    if key:
+        text = text.replace(key, "[REDACTED]")
+    return schemalib.redact_secrets(text)[:300]
+
+
 def _apply_api_optin(tctx, run_cfg):
     """V3 6.2 opt-in wiring: unconditional reset THEN explicit enable, like
     the sibling per-app flags (round_multiplier/autonomy) — a long-lived
@@ -762,7 +926,7 @@ def _api_http(provider, url, headers, body, timeout):
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         try:
-            detail = exc.read().decode("utf-8", "replace")[:300]
+            detail = _api_error_detail(provider, exc.read())
         except Exception:  # noqa: BLE001 - detail is best-effort garnish
             detail = ""
         if exc.code in (401, 403):
@@ -797,6 +961,110 @@ def _api_http(provider, url, headers, body, timeout):
     return parsed, "", 0
 
 
+def _api_sse(provider, url, headers, body, timeout, on_event):
+    """POST JSON and consume an SSE response incrementally.
+
+    Calls on_event(dict) for each JSON data event and returns
+    (error, code, saw_done_sentinel, event_count). HTTP/network failures use
+    the exact 6.2 classes. Crucially, the try covers EVERY readline(): urllib
+    wraps send failures in URLError but receive timeouts/resets surface as raw
+    OSError subclasses. A malformed data event fails the turn; partial text is
+    never promoted into the authoritative transcript.
+    """
+    payload = json.dumps(body).encode("utf-8")
+    sse_headers = dict(headers)
+    sse_headers["Accept"] = "text/event-stream"
+    req = urllib.request.Request(url, data=payload, headers=sse_headers,
+                                 method="POST")
+    saw_done = False
+    event_count = 0
+    data_lines = []
+
+    def _deliver():
+        nonlocal saw_done, event_count, data_lines
+        if not data_lines:
+            return ""
+        raw = "\n".join(data_lines)
+        data_lines = []
+        if raw.strip() == "[DONE]":
+            saw_done = True
+            return ""
+        try:
+            obj = json.loads(raw)
+        except ValueError as exc:
+            return "%s returned malformed SSE JSON: %s" % (provider, exc)
+        if not isinstance(obj, dict):
+            return "%s returned a non-object SSE payload" % provider
+        if obj.get("error"):
+            detail = _api_error_detail(provider, obj.get("error"))
+            return "%s stream error: %s" % (provider, detail)
+        event_count += 1
+        try:
+            problem = on_event(obj)
+        except AgentError as exc:
+            return str(exc)
+        except (KeyError, TypeError, ValueError) as exc:
+            return "%s returned an unexpected SSE payload shape: %s" \
+                % (provider, exc)
+        return str(problem) if problem else ""
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            while True:
+                raw_line = resp.readline()
+                if not raw_line:
+                    problem = _deliver()
+                    if problem:
+                        return problem, 1, saw_done, event_count
+                    break
+                if isinstance(raw_line, bytes):
+                    line = raw_line.decode("utf-8", "replace")
+                else:
+                    line = str(raw_line)
+                line = line.rstrip("\r\n")
+                if not line:
+                    problem = _deliver()
+                    if problem:
+                        return problem, 1, saw_done, event_count
+                    continue
+                if line.startswith(":"):
+                    continue  # SSE keepalive comment
+                if line.startswith("data:"):
+                    value = line[5:]
+                    if value.startswith(" "):
+                        value = value[1:]
+                    data_lines.append(value)
+                # event:/id:/retry: fields are metadata, not payload.
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = _api_error_detail(provider, exc.read())
+        except Exception:  # noqa: BLE001 - detail is best-effort garnish
+            detail = ""
+        if exc.code in (401, 403):
+            return (("%s auth failed (HTTP %s): the API key in %s was "
+                     "rejected — fix or replace that file. %s")
+                    % (provider, exc.code, _api_key_source(provider), detail),
+                    1, saw_done, event_count)
+        if exc.code == 429:
+            return (("%s rate/quota limit (HTTP 429): the account behind %s "
+                     "is rate-limited or out of quota — wait or raise the "
+                     "limit. %s")
+                    % (provider, _api_key_source(provider), detail),
+                    1, saw_done, event_count)
+        return ("%s HTTP %s: %s %s" % (provider, exc.code, exc.reason,
+                                        detail), 1, saw_done, event_count)
+    except urllib.error.URLError as exc:
+        return (("%s unreachable (network): %s — check connectivity; nothing "
+                 "was billed.") % (provider, exc.reason),
+                1, saw_done, event_count)
+    except OSError as exc:
+        # Includes raw TimeoutError/ConnectionResetError raised by readline().
+        return (("%s unreachable (network): %s — the response timed out or "
+                 "the connection dropped mid-read.") % (provider, exc),
+                1, saw_done, event_count)
+    return "", 0, saw_done, event_count
+
+
 def _api_preflight(cfg, provider, model, cmd):
     """Common gate for every api: turn: opt-in, cached availability probe,
     key presence. Returns an (out, err, code, cmd) refusal tuple or None."""
@@ -814,23 +1082,46 @@ def run_anthropic_api(cfg, prompt, timeout, model):
     early = _api_preflight(cfg, "anthropic", model, cmd)
     if early:
         return early
-    data, err, code = _api_http(
+    pieces, usage = [], {}
+    complete = False
+
+    def _event(data):
+        nonlocal complete
+        typ = data.get("type")
+        if typ == "message_start":
+            u = (data.get("message") or {}).get("usage") \
+                if isinstance(data.get("message"), dict) else None
+            if isinstance(u, dict):
+                usage.update(u)
+        elif typ == "content_block_delta":
+            delta = data.get("delta")
+            text = delta.get("text") if isinstance(delta, dict) \
+                and delta.get("type") == "text_delta" else ""
+            if isinstance(text, str) and text:
+                pieces.append(text)
+                _append_api_stream_delta(text)
+        elif typ == "message_delta":
+            u = data.get("usage")
+            if isinstance(u, dict):
+                usage.update(u)
+        elif typ == "message_stop":
+            complete = True
+        return ""
+
+    err, code, _done, events = _api_sse(
         "anthropic", "https://api.anthropic.com/v1/messages",
         {"Content-Type": "application/json", "x-api-key": _api_key("anthropic"),
          "anthropic-version": "2023-06-01"},
-        {"model": model, "max_tokens": 8192,
+        {"model": model, "max_tokens": 8192, "stream": True,
          "messages": [{"role": "user", "content": prompt}]},
-        timeout)
+        timeout, _event)
     if err:
         return ("", err, code, cmd)
-    blocks = data.get("content")
-    if not isinstance(blocks, list):
-        return ("", "anthropic returned an unexpected payload shape "
-                "(no content list)", 1, cmd)
-    text = "".join(b.get("text", "") for b in blocks
-                   if isinstance(b, dict) and b.get("type") == "text")
-    usage = data.get("usage")
-    if isinstance(usage, dict):
+    if not complete:
+        return ("", "anthropic stream ended before message_stop (%d event(s))"
+                % events, 1, cmd)
+    text = "".join(pieces)
+    if usage:
         traceslib.set_last_usage({
             "provider": "anthropic", "model": model,
             "prompt_tokens": usage.get("input_tokens"),
@@ -843,23 +1134,36 @@ def run_openai_api(cfg, prompt, timeout, model):
     early = _api_preflight(cfg, "openai", model, cmd)
     if early:
         return early
-    data, err, code = _api_http(
+    pieces, usage = [], {}
+
+    def _event(data):
+        u = data.get("usage")
+        if isinstance(u, dict):
+            usage.update(u)
+        choices = data.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                delta = choice.get("delta") if isinstance(choice, dict) else None
+                text = delta.get("content") if isinstance(delta, dict) else None
+                if isinstance(text, str) and text:
+                    pieces.append(text)
+                    _append_api_stream_delta(text)
+        return ""
+
+    err, code, done, _events = _api_sse(
         "openai", "https://api.openai.com/v1/chat/completions",
         {"Content-Type": "application/json",
          "Authorization": "Bearer %s" % _api_key("openai")},
-        {"model": model, "messages": [{"role": "user", "content": prompt}]},
-        timeout)
+        {"model": model, "stream": True,
+         "stream_options": {"include_usage": True},
+         "messages": [{"role": "user", "content": prompt}]},
+        timeout, _event)
     if err:
         return ("", err, code, cmd)
-    choices = data.get("choices")
-    if not isinstance(choices, list) or not choices \
-            or not isinstance(choices[0], dict):
-        return ("", "openai returned an unexpected payload shape "
-                "(no choices)", 1, cmd)
-    message = choices[0].get("message")
-    text = message.get("content") if isinstance(message, dict) else None
-    usage = data.get("usage")
-    if isinstance(usage, dict):
+    if not done:
+        return ("", "openai stream ended before [DONE]", 1, cmd)
+    text = "".join(pieces)
+    if usage:
         traceslib.set_last_usage({
             "provider": "openai", "model": model,
             "prompt_tokens": usage.get("prompt_tokens"),
@@ -874,26 +1178,39 @@ def run_google_api(cfg, prompt, timeout, model):
         return early
     # Key travels in the x-goog-api-key HEADER, never a URL query param —
     # URLs reach logs and error strings; headers never do.
-    data, err, code = _api_http(
+    pieces, usage = [], {}
+
+    def _event(data):
+        u = data.get("usageMetadata")
+        if isinstance(u, dict):
+            usage.update(u)
+        candidates = data.get("candidates")
+        if isinstance(candidates, list):
+            for candidate in candidates:
+                content = candidate.get("content") \
+                    if isinstance(candidate, dict) else None
+                parts = content.get("parts") if isinstance(content, dict) else None
+                if isinstance(parts, list):
+                    for part in parts:
+                        text = part.get("text") if isinstance(part, dict) else None
+                        if isinstance(text, str) and text:
+                            pieces.append(text)
+                            _append_api_stream_delta(text)
+        return ""
+
+    err, code, _done, events = _api_sse(
         "google", "https://generativelanguage.googleapis.com/v1beta/models/"
-        "%s:generateContent" % model,
+        "%s:streamGenerateContent?alt=sse" % model,
         {"Content-Type": "application/json",
          "x-goog-api-key": _api_key("google")},
         {"contents": [{"parts": [{"text": prompt}]}]},
-        timeout)
+        timeout, _event)
     if err:
         return ("", err, code, cmd)
-    candidates = data.get("candidates")
-    if not isinstance(candidates, list) or not candidates \
-            or not isinstance(candidates[0], dict):
-        return ("", "google returned an unexpected payload shape "
-                "(no candidates)", 1, cmd)
-    parts = (candidates[0].get("content") or {}).get("parts") \
-        if isinstance(candidates[0].get("content"), dict) else None
-    text = "".join(p.get("text", "") for p in parts
-                   if isinstance(p, dict)) if isinstance(parts, list) else ""
-    usage = data.get("usageMetadata")
-    if isinstance(usage, dict):
+    if not events:
+        return ("", "google stream ended without any data events", 1, cmd)
+    text = "".join(pieces)
+    if usage:
         traceslib.set_last_usage({
             "provider": "google", "model": model,
             "prompt_tokens": usage.get("promptTokenCount"),
@@ -1392,8 +1709,8 @@ RUNNERS = {"codex": run_codex, "claude": run_claude, "gemini": run_gemini,
 #   session_resume — call_agent_sessioned resumes claude in every phase but
 #     codex only under _allow_writes (build phases), because `codex exec
 #     resume` always runs workspace-write: hence "build_only", never True.
-#   streams / token_usage — no CLI runner does either; 6.2's api: runners
-#     will be the first to flip them.
+#   streams / token_usage — no CLI runner does either; api: runners expose
+#     both through SSE + ephemeral previews and the traces usage side-channel.
 AGENT_CAPABILITIES = {
     "codex": {"streams": False, "token_usage": False,
               "effort_control": True, "session_resume": "build_only"},
@@ -1407,13 +1724,12 @@ AGENT_CAPABILITIES = {
 
 # Dynamic identities resolve by prefix, mirroring resolve_runner: local:<model>
 # runs through run_local (reasoning honored, nothing else); api:<provider>:<model>
-# (6.2) meters real token usage via the traces side-channel but is
-# non-streaming until 6.3 lands stream mode (streams flips then — a True
-# here today would promise an affordance the runner lacks, R2).
+# meters real token usage via the traces side-channel and streams provider SSE
+# deltas through the per-turn .stream lifecycle.
 DYNAMIC_CAPABILITY_PREFIXES = {
     "local:": {"streams": False, "token_usage": False,
                "effort_control": True, "session_resume": False},
-    "api:": {"streams": False, "token_usage": True,
+    "api:": {"streams": True, "token_usage": True,
              "effort_control": False, "session_resume": False},
 }
 
@@ -1912,7 +2228,14 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
 
         threading.Thread(target=_heartbeat, daemon=True).start()
         try:
+            if str(agent).startswith("api:"):
+                _prepare_api_stream(_ev_dir, phase, rnd, _hkey)
             out, err, code, command = resolve_runner(agent)(cfg, prompt, timeout)
+            if str(agent).startswith("api:"):
+                # Strict cleanup is still inside the AgentError-mapped runner
+                # try: an unlink failure becomes a finalized failed turn, never
+                # a preceding turn_completed(ok=true) followed by an exception.
+                _finish_api_stream(strict=True)
         except FileNotFoundError as exc:
             # Enabled agent whose CLI binary is missing/uninstalled: skip it like
             # any other unavailable agent instead of crashing the whole run.
@@ -2011,6 +2334,9 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
                          output_len=len(text), dur=round(dur, 1))
     finally:
         _hb_stop.set()
+        # Every transcript/messages.jsonl append is downstream of this call
+        # boundary, so remove the preview before either return or raise.
+        _finish_api_stream()
         # Release ONLY the slot this call actually claimed, by its exact token
         # — releasing after a failed claim, or by (pid, resource_class) alone,
         # could free a DIFFERENT concurrent claim's row and corrupt the
@@ -8821,6 +9147,9 @@ def process_app(cfg, root, app):
         return
     heartbeat_stop = _start_run_heartbeat(app, app_dir)
     try:
+        # A leftover preview proves the prior engine died mid-turn. It is never
+        # transcript input; discard it visibly before any resume parser runs.
+        _sweep_stream_orphans(app_dir)
         _run_app_pipeline(cfg, app, app_dir, prompt)
     finally:
         heartbeat_stop.set()

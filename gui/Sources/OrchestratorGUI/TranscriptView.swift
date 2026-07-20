@@ -12,6 +12,9 @@ struct TranscriptView: View {
     // the previous project/phase's content while the first load is in flight.
     @State private var transcript = PhaseTranscript()
     @State private var loadedID = ""
+    @State private var streamPreview: StreamPreview? = nil
+    @State private var streamBaselineCount = 0
+    @State private var streamLastSeen = Date.distantPast
     // V3 board 1.7: step-in surface state. `stepInPending` flips on send
     // during a live debate and clears ONLY on engine acknowledgment
     // (step_in_joined/step_in_missed events) — never on a timer (R2).
@@ -48,6 +51,11 @@ struct TranscriptView: View {
     var body: some View {
         let t = loadedID == transcriptID ? transcript : PhaseTranscript()
         let pending = store.pendingHuman(project)
+        let nextAgent = project.nextAgent
+        let turnState = PaneTurnState.resolve(
+            isActive: isActivePhase, agent: nextAgent, live: project.running,
+            supportsStreams: nextAgent.map { DS.identity($0).streams } ?? false,
+            preview: streamPreview)
         VStack(spacing: 0) {
             header(t)
             Divider()
@@ -68,8 +76,15 @@ struct TranscriptView: View {
                                 if isActivePhase {
                                     if let workers = store.parallelBuildWorkers(for: project) {
                                         ParallelBuildBanner(workers: workers)
-                                    } else if let agent = project.nextAgent {
-                                        ThinkingRow(agent: agent, live: project.running)
+                                    } else {
+                                        switch turnState {
+                                        case .waiting(let agent, let live):
+                                            ThinkingRow(agent: agent, live: live)
+                                        case .streaming(let preview):
+                                            StreamingRow(preview: preview)
+                                        case .final:
+                                            EmptyView()
+                                        }
                                     }
                                 }
                                 if !pending.isEmpty { PendingHumanBubble(text: pending) }
@@ -127,6 +142,9 @@ struct TranscriptView: View {
     // detached task; the mtime cache makes an unchanged file cost one stat).
     // Cancelled and restarted by .task(id:) whenever the project/phase changes.
     private func pollTranscript() async {
+        streamPreview = nil
+        streamBaselineCount = 0
+        streamLastSeen = .distantPast
         while !Task.isCancelled {
             let t = await store.transcript(for: project, phaseKey: phaseKey)
             guard !Task.isCancelled else { return }
@@ -135,6 +153,32 @@ struct TranscriptView: View {
                 loadedID = transcriptID
             }
             if t != transcript { transcript = t }
+            if isActivePhase, let agent = project.nextAgent,
+               !agent.contains("+") {
+                let incoming = await store.streamPreview(for: project, agent: agent)
+                guard !Task.isCancelled else { return }
+                if let incoming {
+                    if streamPreview?.turnID != incoming.turnID {
+                        streamBaselineCount = t.messages.count
+                    }
+                    streamPreview = incoming
+                    streamLastSeen = Date()
+                } else if let current = streamPreview {
+                    let transcriptLanded = t.messages.count > streamBaselineCount
+                    let wrongAgent = current.agent != agent
+                    // The engine unlinks before appending the final block. Hold
+                    // the last live text across that tiny gap so it is replaced
+                    // atomically on the next parsed transcript. A dead/failed
+                    // stream gets at most this bounded grace, then the existing
+                    // ThinkingRow resumes (§12.1 loading must end).
+                    if transcriptLanded || wrongAgent
+                        || Date().timeIntervalSince(streamLastSeen) > 1.25 {
+                        streamPreview = nil
+                    }
+                }
+            } else {
+                streamPreview = nil
+            }
             // V3 board 1.10: 500ms while this pane is the focused LIVE one;
             // a stopped project never earns the fast tick.
             let fast = store.focusedLivePane == project.name && project.running
@@ -464,6 +508,32 @@ struct ThinkingRow: View {
             Spacer()
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+struct StreamingRow: View {
+    let preview: StreamPreview
+    private var identity: DS.AgentIdentity { DS.identity(preview.agent) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                AgentAvatar(identity: identity, size: 24)
+                Text("\(identity.displayName) is responding live")
+                    .font(.callout.weight(.medium))
+                BreathingDot(color: identity.tint.color)
+                Spacer()
+            }
+            MarkdownBody(text: preview.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10)
+            .fill(identity.tint.fill.opacity(0.55)))
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .stroke(identity.tint.color.opacity(0.25)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Live response from \(identity.displayName)")
     }
 }
 

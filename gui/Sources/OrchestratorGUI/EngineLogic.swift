@@ -252,6 +252,30 @@ struct AgentCapabilitiesInfo: Equatable {
     }
 }
 
+// V3 6.3: ephemeral API preview state. The phase transcript remains the only
+// final/persisted model; this value is reconstructed from .stream NDJSON only
+// while the owning pane is focused.
+struct StreamPreview: Equatable, Sendable {
+    let agent: String
+    let turnID: String
+    let text: String
+}
+
+enum PaneTurnState: Equatable {
+    case waiting(agent: String, live: Bool)
+    case streaming(StreamPreview)
+    case final
+
+    static func resolve(isActive: Bool, agent: String?, live: Bool,
+                        supportsStreams: Bool, preview: StreamPreview?) -> PaneTurnState {
+        guard isActive, let agent else { return .final }
+        if supportsStreams, let preview, preview.agent == agent, !preview.text.isEmpty {
+            return .streaming(preview)
+        }
+        return .waiting(agent: agent, live: live)
+    }
+}
+
 enum DoctorReportParser {
 
     // Parse a full doctor JSON report down to its local_models block. Returns
