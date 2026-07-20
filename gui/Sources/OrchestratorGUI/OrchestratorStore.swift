@@ -633,6 +633,9 @@ final class OrchestratorStore: ObservableObject {
     // V3 3.8: the section rail (explicit R4 state) + selected section.
     @Published var sectionRail: SectionRailState = .loading
     @Published var selectedSection: String?
+    // 4.10 seam: 7.10 can replace default-file resolution with actual pending
+    // Conductor route truth without changing the transcript view.
+    var routePreviewSource = RoutePreviewSource.defaults
     // Per-section lint: missing key = not yet run; .some(nil) = the lint
     // run FAILED (surfaced as unavailable, never as "clean"); .some(.some)
     // = a parsed report.
@@ -1412,6 +1415,42 @@ final class OrchestratorStore: ObservableObject {
     // The phases a given project runs (from its workflow; falls back to app_build).
     func phases(for project: Project) -> [PhaseDef] {
         (workflow(named: project.workflow) ?? workflow(named: "app_build"))?.phases ?? ALL_PHASES
+    }
+
+    func phasePurposes(for project: Project) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: phases(for: project).compactMap { phase in
+            let purpose = phase.purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+            return purpose.isEmpty ? nil : (phase.key, purpose)
+        })
+    }
+
+    func routePreviewTarget(for project: Project, finalOutput: String) -> String? {
+        let parts = project.name.contains("/")
+            ? project.name.components(separatedBy: "/")
+            : project.name.components(separatedBy: "--")
+        guard parts.count == 3 else { return nil }
+        let projectID = parts[0]
+        let section = parts[1]
+        guard let artifactType = ArtifactTypeHintParser.parse(finalOutput: finalOutput)
+            ?? soleEmittedArtifactType(section: section) else { return nil }
+        let fleetURL = orchDirURL.appendingPathComponent(
+            "sections/\(section)/routing.json")
+        let projectURL = rootURL.appendingPathComponent(projectID)
+            .appendingPathComponent("routing.json")
+        return routePreviewSource.target(RoutePreviewContext(
+            section: section,
+            artifactType: artifactType,
+            fleetRouting: try? Data(contentsOf: fleetURL),
+            projectRouting: try? Data(contentsOf: projectURL)))
+    }
+
+    private func soleEmittedArtifactType(section: String) -> String? {
+        let url = orchDirURL.appendingPathComponent("sections/\(section)/section.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let types = obj["artifact_types_emitted"] as? [String],
+              types.count == 1 else { return nil }
+        return types[0]
     }
 
     // MARK: - Config (agents on/off) — edits config.yaml lines in place so the

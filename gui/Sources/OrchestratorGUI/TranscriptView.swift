@@ -50,6 +50,7 @@ struct TranscriptView: View {
 
     var body: some View {
         let t = loadedID == transcriptID ? transcript : PhaseTranscript()
+        let phasePurpose = store.phasePurposes(for: project)[phaseKey]
         let pending = store.pendingHuman(project)
         let nextAgent = project.nextAgent
         let turnState = PaneTurnState.resolve(
@@ -71,7 +72,12 @@ struct TranscriptView: View {
                                     if idx == 0 || t.messages[idx - 1].section != msg.section {
                                         SectionDivider(label: msg.section)
                                     }
-                                    MessageBubble(message: msg)
+                                    if let phasePurpose {
+                                        MessageBubble(message: msg)
+                                            .help(phasePurpose)
+                                    } else {
+                                        MessageBubble(message: msg)
+                                    }
                                 }
                                 if isActivePhase {
                                     if let workers = store.parallelBuildWorkers(for: project) {
@@ -89,7 +95,11 @@ struct TranscriptView: View {
                                 }
                                 if !pending.isEmpty { PendingHumanBubble(text: pending) }
                                 if let fo = t.finalOutput {
-                                    FinalOutputCard(text: fo, marker: t.marker)
+                                    FinalOutputCard(
+                                        text: fo,
+                                        marker: t.marker,
+                                        routeTarget: store.routePreviewTarget(
+                                            for: project, finalOutput: fo))
                                 }
                                 Color.clear.frame(height: 1).id("BOTTOM")
                             }
@@ -540,6 +550,7 @@ struct StreamingRow: View {
 struct FinalOutputCard: View {
     let text: String
     let marker: String?
+    var routeTarget: String? = nil
     // Green tint over the SYSTEM background (not a fixed light mint) so the
     // card — and its .primary text — stays readable in Dark Mode too.
     private let tint = DS.status.success.color
@@ -551,12 +562,28 @@ struct FinalOutputCard: View {
                 Spacer()
                 if let m = marker { MarkerBadge(marker: m) }
             }
+            if let routeTarget {
+                RoutePreviewChip(target: routeTarget)
+            }
             MarkdownBody(text: text)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.10)))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(tint.opacity(0.3)))
+    }
+}
+
+struct RoutePreviewChip: View {
+    let target: String
+    var body: some View {
+        Text("→ would route to \(target.replacingOccurrences(of: "_", with: " ").capitalized)")
+            .font(DS.font.caption.weight(.medium))
+            .foregroundStyle(DS.accent.color)
+            .padding(.horizontal, DS.space.xs)
+            .padding(.vertical, DS.space.xxs)
+            .background(Capsule().fill(DS.accent.fill))
+            .accessibilityLabel("Default route preview: would route to \(target)")
     }
 }
 
