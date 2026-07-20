@@ -66,7 +66,10 @@ enum TranscriptParser {
         while i < tEnd {
             let raw = lines[i]
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("### ") {
+            if line.hasPrefix("<!--"), line.hasSuffix("-->") {
+                // Frontmatter-style comments (including chat-meta) are file
+                // metadata, never transcript content or a chat bubble.
+            } else if line.hasPrefix("### ") {
                 flush()
                 section = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
             } else if isHeader(line) {

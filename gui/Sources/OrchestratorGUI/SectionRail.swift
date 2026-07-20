@@ -95,54 +95,92 @@ struct SectionChatsView: View {
     let section: String
     let onOpenChat: (String) -> Void
     @State private var showSettings = false
+    @State private var selectedTag: String?
+    @State private var showArchived = false
+    @State private var editingChat: Project?
+    @State private var tagDraft = ""
 
-    private var chats: [Project] {
+    private var sectionChats: [Project] {
         store.projects.filter {
             SectionRailLogic.belongs($0.name, toSection: section)
         }
     }
 
+    private var chats: [Project] {
+        let ids = ChatSidebarLogic.visibleIDs(
+            sectionChats.map(\.name), metadata: store.chatMetadata, tag: selectedTag)
+        let byID = Dictionary(uniqueKeysWithValues: sectionChats.map { ($0.name, $0) })
+        return ids.compactMap { byID[$0] }
+    }
+
+    private var tags: [String] {
+        ChatSidebarLogic.availableTags(sectionChats.map(\.name), metadata: store.chatMetadata)
+    }
+
+    private var archived: [ArchivedChat] {
+        store.archivedChats.filter { $0.section == section }
+    }
+
     var body: some View {
         Group {
-            if chats.isEmpty {
+            if sectionChats.isEmpty && archived.isEmpty {
                 EmptyStateView(
                     symbol: "bubble.left.and.bubble.right",
                     title: "No chats in this section yet",
                     message: "Start a chat from Home and pick this section — "
                              + "it will appear here.")
             } else {
-                List(chats) { chat in
-                    Button {
-                        onOpenChat(chat.name)
-                    } label: {
-                        HStack(spacing: DS.space.s) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(SectionRailLogic.chatLabel(chat.name))
-                                    .font(DS.font.body)
-                                Text(chat.name)
-                                    .font(DS.font.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            Spacer()
-                            Text(chat.running
-                                 ? (chat.currentPhase.map { chat.titleFor($0) }
-                                    ?? "starting")
-                                 : (chat.awaitingHuman != nil
-                                    ? "waiting for you" : "idle"))
-                                .font(DS.font.caption)
-                                .foregroundStyle(chat.running
-                                                 ? DS.accent.color
-                                                 : .secondary)
-                        }
-                        .contentShape(Rectangle())
+                List {
+                    if let selectedTag {
+                        Label("Filtered by tag: \(selectedTag)", systemImage: "line.3.horizontal.decrease.circle.fill")
+                            .font(DS.font.caption)
+                            .foregroundStyle(DS.accent.color)
                     }
-                    .buttonStyle(.plain)
+                    ForEach(chats) { chat in
+                        chatRow(chat)
+                    }
+                    if chats.isEmpty, selectedTag != nil {
+                        Text("No chats match this tag.")
+                            .font(DS.font.body).foregroundStyle(.secondary)
+                    }
+                    if !archived.isEmpty {
+                        DisclosureGroup(isExpanded: $showArchived) {
+                            ForEach(archived) { chat in
+                                HStack(spacing: DS.space.s) {
+                                    Image(systemName: "archivebox")
+                                        .foregroundStyle(.secondary)
+                                    Text(SectionRailLogic.chatLabel(chat.id))
+                                    Spacer()
+                                    Button("Restore") { store.restoreArchivedChat(chat) }
+                                        .buttonStyle(.borderless)
+                                }
+                            }
+                        } label: {
+                            Label("Archived (\(archived.count))", systemImage: "archivebox")
+                                .font(DS.font.body.weight(.medium))
+                        }
+                    }
                 }
                 .listStyle(.inset)
             }
         }
         .navigationTitle(section.capitalized)
         .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Menu {
+                    Button("All tags") { selectedTag = nil }
+                    Divider()
+                    ForEach(tags, id: \.self) { tag in
+                        Button(tag) { selectedTag = tag }
+                    }
+                } label: {
+                    Label(selectedTag == nil ? "Filter by tag" : "Tag: \(selectedTag!)",
+                          systemImage: selectedTag == nil
+                            ? "line.3.horizontal.decrease.circle"
+                            : "line.3.horizontal.decrease.circle.fill")
+                }
+                .disabled(tags.isEmpty)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showSettings = true
@@ -157,5 +195,109 @@ struct SectionChatsView: View {
                 id: section, title: section.capitalized))
                 .environmentObject(store)
         }
+        .sheet(item: $editingChat) { chat in
+            ChatTagsEditor(draft: $tagDraft) {
+                store.setChatTags(chat, tags: ChatTagEditorLogic.parse(tagDraft))
+                editingChat = nil
+            } onCancel: {
+                editingChat = nil
+            }
+        }
+    }
+
+    private func chatRow(_ chat: Project) -> some View {
+        let meta = store.chatMeta(for: chat)
+        return Button {
+            onOpenChat(chat.name)
+        } label: {
+            HStack(spacing: DS.space.s) {
+                if meta.pinned {
+                    Image(systemName: "pin.fill").foregroundStyle(DS.accent.color)
+                        .accessibilityLabel("Pinned")
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(SectionRailLogic.chatLabel(chat.name)).font(DS.font.body)
+                    HStack(spacing: DS.space.xs) {
+                        Text(chat.name).font(DS.font.caption).foregroundStyle(.tertiary)
+                        ForEach(meta.tags.prefix(3), id: \.self) { tag in
+                            Text(tag).font(DS.font.caption)
+                                .padding(.horizontal, DS.space.xxs)
+                                .background(Capsule().fill(DS.cardBg))
+                        }
+                    }
+                }
+                Spacer()
+                if let warning = store.chatMetaWarnings[chat.name] {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(DS.status.warning.color).help(warning)
+                        .accessibilityLabel(warning)
+                }
+                Text(chat.running
+                     ? (chat.currentPhase.map { chat.titleFor($0) } ?? "starting")
+                     : (chat.awaitingHuman != nil ? "waiting for you" : "idle"))
+                    .font(DS.font.caption)
+                    .foregroundStyle(chat.running ? DS.accent.color : .secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(store.chatMetaEditable.contains(chat.name)
+                   ? (meta.pinned ? "Unpin" : "Pin")
+                   : "Pin — available after first message") {
+                store.setChatPinned(chat, pinned: !meta.pinned)
+            }
+            .disabled(!store.chatMetaEditable.contains(chat.name))
+            Button(store.chatMetaEditable.contains(chat.name)
+                   ? "Edit Tags…" : "Tags — available after first message") {
+                tagDraft = meta.tags.joined(separator: ", ")
+                editingChat = chat
+            }
+            .disabled(!store.chatMetaEditable.contains(chat.name))
+            Divider()
+            Button("Archive Chat") { store.archiveChat(chat) }
+        }
+    }
+}
+
+enum ChatTagEditorLogic {
+    static func parse(_ text: String) -> [String] {
+        var seen = Set<String>()
+        return text.split(separator: ",").compactMap { raw in
+            let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = tag.lowercased()
+            guard !tag.isEmpty, seen.insert(key).inserted else { return nil }
+            return tag
+        }
+    }
+}
+
+private struct ChatTagsEditor: View {
+    @Binding var draft: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.m) {
+            Text("Chat Tags").font(DS.font.headline)
+            Text("Separate tags with commas.")
+                .font(DS.font.caption).foregroundStyle(.secondary)
+            TextField("pricing, launch", text: $draft)
+            HStack(spacing: DS.space.xs) {
+                ForEach(ChatTagEditorLogic.parse(draft), id: \.self) { tag in
+                    Text(tag).font(DS.font.caption)
+                        .padding(.horizontal, DS.space.xs)
+                        .padding(.vertical, DS.space.xxs)
+                        .background(Capsule().fill(DS.accent.fill))
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Save", action: onSave).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(DS.space.l)
+        .frame(width: 420)
     }
 }

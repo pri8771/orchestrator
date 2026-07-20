@@ -84,6 +84,10 @@ final class SessionLayoutTests: XCTestCase {
         touch(root.appendingPathComponent("gloam/ideas/a..b/initial_prompt/initial_prompt.md"))
         XCTAssertEqual(SessionLayout.discoverApps(rootURL: root),
                        ["flatapp", "gloam/ideas/first"])
+        try FileManager.default.removeItem(at: root.appendingPathComponent(
+            "gloam/ideas/dead/.orch_archived"))
+        XCTAssertEqual(SessionLayout.discoverApps(rootURL: root),
+                       ["flatapp", "gloam/ideas/dead", "gloam/ideas/first"])
     }
 
     func testParentConflictMirrorsTheEngine() throws {

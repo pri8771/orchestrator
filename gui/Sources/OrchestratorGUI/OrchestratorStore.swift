@@ -594,6 +594,10 @@ final class OrchestratorStore: ObservableObject {
     static var scanDelayForTests: TimeInterval = 0
 
     @Published var projects: [Project] = []
+    @Published var chatMetadata: [String: ChatMeta] = [:]
+    @Published var chatMetaWarnings: [String: String] = [:]
+    @Published var archivedChats: [ArchivedChat] = []
+    @Published var chatMetaEditable: Set<String> = []
     @Published var orchestratorRunning = false
     @Published var runLog: String = ""   // tail of the most recent action's output
     // A failed action's message, shown as a dismissible top banner so errors
@@ -1025,6 +1029,7 @@ final class OrchestratorStore: ObservableObject {
                 defaultWorkflow: defaultWorkflow,
                 manualStops: manualStops,
                 runningProcessNames: runningProcessNames)
+            let chatSnapshot = ChatMetadataIndex.scan(rootURL: rootURL)
             let commandArtifact = commandProjectName.flatMap { name -> ArtifactRouteRef? in
                 let projectID = name.components(separatedBy: "/").first ?? name
                 return ArtifactRouteIndex.latestRoutable(
@@ -1077,6 +1082,18 @@ final class OrchestratorStore: ObservableObject {
                 self.reloadSectionRail()
                 self.detectTransitions(loaded)
                 if loaded != self.projects { self.projects = loaded }
+                if chatSnapshot.metadata != self.chatMetadata {
+                    self.chatMetadata = chatSnapshot.metadata
+                }
+                if chatSnapshot.warnings != self.chatMetaWarnings {
+                    self.chatMetaWarnings = chatSnapshot.warnings
+                }
+                if chatSnapshot.archived != self.archivedChats {
+                    self.archivedChats = chatSnapshot.archived
+                }
+                if chatSnapshot.transcriptAvailable != self.chatMetaEditable {
+                    self.chatMetaEditable = chatSnapshot.transcriptAvailable
+                }
                 if commandProjectName == self.commandProjectName,
                    commandArtifact != self.commandRoutableArtifact {
                     self.commandRoutableArtifact = commandArtifact
@@ -2640,6 +2657,53 @@ final class OrchestratorStore: ObservableObject {
         try? fm.removeItem(at: project.dirURL.appendingPathComponent(".orch_archived"))
         runLog += "Restored \(project.name) from the archive.\n"
         refresh()
+    }
+
+    func chatMeta(for project: Project) -> ChatMeta {
+        chatMetadata[project.name] ?? ChatMeta()
+    }
+
+    func setChatPinned(_ project: Project, pinned: Bool) {
+        var meta = chatMeta(for: project)
+        meta.pinned = pinned
+        writeChatMeta(meta, project: project)
+    }
+
+    func setChatTags(_ project: Project, tags: [String]) {
+        var meta = chatMeta(for: project)
+        meta.tags = tags
+        writeChatMeta(meta, project: project)
+    }
+
+    private func writeChatMeta(_ meta: ChatMeta, project: Project) {
+        let url = ChatMetaDocument.transcriptURL(sessionDir: project.dirURL)
+        guard fm.fileExists(atPath: url.path) else {
+            surfaceError("Pins and tags become available after the chat writes its first message.")
+            return
+        }
+        do {
+            try ChatMetaDocument.write(meta, to: url)
+            chatMetadata[project.name] = meta
+            chatMetaWarnings[project.name] = nil
+            refresh()
+        } catch {
+            surfaceError("Could not save pins and tags for \(project.name): "
+                         + error.localizedDescription)
+        }
+    }
+
+    func archiveChat(_ project: Project) {
+        removeProject(project, deleteFolder: false)
+    }
+
+    func restoreArchivedChat(_ chat: ArchivedChat) {
+        do {
+            try fm.removeItem(at: chat.dirURL.appendingPathComponent(".orch_archived"))
+            runLog += "Restored \(chat.id) from the archive.\n"
+            refresh()
+        } catch {
+            surfaceError("Could not restore \(chat.id): \(error.localizedDescription)")
+        }
     }
 
     // Staged continuation: re-open a (typically done) project under a DIFFERENT

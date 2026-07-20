@@ -63,4 +63,16 @@ final class TranscriptParserTests: XCTestCase {
         XCTAssertTrue(t.exists)
         XCTAssertTrue(t.messages.isEmpty)
     }
+
+    func testChatMetaCommentNeverChangesRenderedTranscript() {
+        let plain = TranscriptParser.parse(sample)
+        let withMeta = TranscriptParser.parse(
+            "<!-- chat-meta: {\"pinned\":true,\"tags\":[\"pricing\"]} -->\n" + sample)
+        XCTAssertEqual(withMeta, plain)
+
+        let inside = sample.replacingOccurrences(
+            of: "Here is my proposal.",
+            with: "<!-- chat-meta: {\"pinned\":true,\"tags\":[]} -->\nHere is my proposal.")
+        XCTAssertEqual(TranscriptParser.parse(inside), plain)
+    }
 }
