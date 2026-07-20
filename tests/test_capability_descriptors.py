@@ -12,7 +12,8 @@ import unittest
 import localmodels as lm
 import orchestrator as orch
 
-FIELDS = ("streams", "token_usage", "effort_control", "session_resume")
+FIELDS = ("streams", "token_usage", "effort_control", "session_resume",
+          "structured_output")
 
 
 class TestRegistryCompleteness(unittest.TestCase):
@@ -20,7 +21,7 @@ class TestRegistryCompleteness(unittest.TestCase):
         for aid in orch.RUNNERS:
             self.assertIn(aid, orch.AGENT_CAPABILITIES, aid)
 
-    def test_every_descriptor_has_exactly_the_four_fields(self):
+    def test_every_descriptor_has_exactly_the_declared_fields(self):
         for aid, caps in orch.AGENT_CAPABILITIES.items():
             self.assertEqual(set(caps), set(FIELDS), aid)
         for prefix, caps in orch.DYNAMIC_CAPABILITY_PREFIXES.items():
@@ -36,6 +37,17 @@ class TestRegistryCompleteness(unittest.TestCase):
             self.assertFalse(caps["token_usage"], aid)
         self.assertFalse(orch.DYNAMIC_CAPABILITY_PREFIXES["local:"]["streams"])
         self.assertTrue(orch.DYNAMIC_CAPABILITY_PREFIXES["api:"]["streams"])
+
+    def test_structured_output_is_exclusive_to_local_prefix(self):
+        # Only run_local's HTTP path has Ollama's format field (V3 6.5); a
+        # CLI id claiming structured_output would advertise a capability the
+        # backend lacks (§16), and nothing else in CI catches the flip.
+        for aid, caps in orch.AGENT_CAPABILITIES.items():
+            self.assertFalse(caps["structured_output"], aid)
+        self.assertTrue(
+            orch.DYNAMIC_CAPABILITY_PREFIXES["local:"]["structured_output"])
+        self.assertFalse(
+            orch.DYNAMIC_CAPABILITY_PREFIXES["api:"]["structured_output"])
 
 
 class TestRunnerRealityPins(unittest.TestCase):
@@ -82,16 +94,19 @@ class TestDynamicResolution(unittest.TestCase):
     def test_local_prefix(self):
         caps = orch.resolve_capabilities("local:qwen3:8b")
         self.assertEqual(caps, {"streams": False, "token_usage": False,
-                                "effort_control": True, "session_resume": False})
+                                "effort_control": True, "session_resume": False,
+                                "structured_output": True})
 
     def test_api_prefix(self):
         caps = orch.resolve_capabilities("api:anthropic:claude-sonnet-5")
         self.assertEqual(caps, {"streams": True, "token_usage": True,
-                                "effort_control": False, "session_resume": False})
+                                "effort_control": False, "session_resume": False,
+                                "structured_output": False})
 
     def test_unknown_and_degenerate_ids_never_raise(self):
         allfalse = {"streams": False, "token_usage": False,
-                    "effort_control": False, "session_resume": False}
+                    "effort_control": False, "session_resume": False,
+                    "structured_output": False}
         for bogus in ("nope", "", None, 7, "local:", "api:", ["claude"]):
             self.assertEqual(orch.resolve_capabilities(bogus), allfalse, bogus)
 

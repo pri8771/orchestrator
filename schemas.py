@@ -107,6 +107,24 @@ def validate_required_fields(obj, required_fields):
     return (len(missing) == 0), missing
 
 
+def contract_to_json_schema(required_fields):
+    """V3 6.5: compile a contract's required_fields list into the JSON Schema
+    Ollama's structured-outputs `format` field accepts. Deliberately loose —
+    presence-only, no per-field typing (the contract data doesn't declare
+    types, and validate_required_fields is the on-write authority either
+    way); additionalProperties stays true so a model may include optional
+    payload fields. Empty/None -> None, meaning "run unconstrained"."""
+    if not required_fields:
+        return None
+    fields = [str(f) for f in required_fields if f]
+    if not fields:
+        return None
+    return {"type": "object",
+            "properties": {f: {} for f in fields},
+            "required": fields,
+            "additionalProperties": True}
+
+
 _FENCE_CACHE: "dict[str, re.Pattern[str]]" = {}
 
 

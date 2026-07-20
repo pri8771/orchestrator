@@ -227,6 +227,16 @@ class TurnContext(object):
         "V3 6.2: per-project opt-in for direct-API agents (run_config.json "
         "api_agents: true). api: turns cost real money, so absent/falsy "
         "means every api: turn refuses fast and visibly.")
+    structured_format = _prop(
+        "_structured_format",
+        "V3 6.5: {schema, fence_tag, required_fields} while a local:<model> "
+        "CONTRACT-REPAIR turn runs schema-constrained (run_local passes the "
+        "schema as Ollama's format field), else None. Armed ONLY by "
+        "_structured_repair_setup around _repair_contract's single-block "
+        "re-asks — NEVER around the coordinator wrap-up, whose CONSENSUS "
+        "line + prose a bare-JSON constraint would destroy (§13.2). "
+        "Set-or-CLEAR per candidate; a stale schema constraining an "
+        "unrelated turn would corrupt its output.")
     round_multiplier = _prop(
         "_round_multiplier", "Completeness round-budget multiplier or None.")
     completeness = _prop("_completeness", "Completeness profile name.")

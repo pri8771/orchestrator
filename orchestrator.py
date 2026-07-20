@@ -1693,6 +1693,15 @@ def run_local(cfg, prompt, timeout, model=None):
     _effort = str(cget(cfg, "models.ollama_reasoning", "") or "").strip().lower()
     if _effort and _effort != "low":
         body["think"] = True
+    # V3 6.5: schema-constrained decoding. When the dispatch stashed a
+    # compiled contract schema for this turn, pass it as Ollama's documented
+    # structured-outputs `format` field — the model then CANNOT emit
+    # non-conforming JSON. Only this HTTP path can be constrained; the
+    # run_ollama CLI path has no format flag (it warns, mirroring its
+    # reasoning no-op culture), and cloud CLIs expose no response_format.
+    _sf = tcxlib.TurnContext(cfg).structured_format
+    if isinstance(_sf, dict) and isinstance(_sf.get("schema"), dict):
+        body["format"] = _sf["schema"]
     payload = json.dumps(body).encode("utf-8")
     cmd = "ollama:generate model=%s" % model
     try:
@@ -1732,14 +1741,14 @@ RUNNERS = {"codex": run_codex, "claude": run_claude, "gemini": run_gemini,
 #   streams / token_usage — no CLI runner does either; api: runners expose
 #     both through SSE + ephemeral previews and the traces usage side-channel.
 AGENT_CAPABILITIES = {
-    "codex": {"streams": False, "token_usage": False,
-              "effort_control": True, "session_resume": "build_only"},
-    "claude": {"streams": False, "token_usage": False,
-               "effort_control": True, "session_resume": True},
-    "gemini": {"streams": False, "token_usage": False,
-               "effort_control": False, "session_resume": False},
-    "ollama": {"streams": False, "token_usage": False,
-               "effort_control": False, "session_resume": False},
+    "codex": {"streams": False, "token_usage": False, "effort_control": True,
+              "session_resume": "build_only", "structured_output": False},
+    "claude": {"streams": False, "token_usage": False, "effort_control": True,
+               "session_resume": True, "structured_output": False},
+    "gemini": {"streams": False, "token_usage": False, "effort_control": False,
+               "session_resume": False, "structured_output": False},
+    "ollama": {"streams": False, "token_usage": False, "effort_control": False,
+               "session_resume": False, "structured_output": False},
 }
 
 # Dynamic identities resolve by prefix, mirroring resolve_runner: local:<model>
@@ -1747,14 +1756,15 @@ AGENT_CAPABILITIES = {
 # meters real token usage via the traces side-channel and streams provider SSE
 # deltas through the per-turn .stream lifecycle.
 DYNAMIC_CAPABILITY_PREFIXES = {
-    "local:": {"streams": False, "token_usage": False,
-               "effort_control": True, "session_resume": False},
-    "api:": {"streams": True, "token_usage": True,
-             "effort_control": False, "session_resume": False},
+    "local:": {"streams": False, "token_usage": False, "effort_control": True,
+               "session_resume": False, "structured_output": True},
+    "api:": {"streams": True, "token_usage": True, "effort_control": False,
+             "session_resume": False, "structured_output": False},
 }
 
 _NO_CAPABILITIES = {"streams": False, "token_usage": False,
-                    "effort_control": False, "session_resume": False}
+                    "effort_control": False, "session_resume": False,
+                    "structured_output": False}
 
 
 def resolve_capabilities(agent):
@@ -8414,6 +8424,62 @@ def _uncovered_core_requirements(tasks, requirements):
             if r.get("core", True) and str(r.get("id")) not in covered]
 
 
+# V3 6.5: which top-level JSON fields a contract-repair block must carry,
+# per repair kind. A repair prompt asks for exactly ONE fenced <kind>-json
+# block, so — uniquely among engine turns — its whole response can be
+# schema-constrained without colliding with the wrap-up envelope (prose +
+# CONSENSUS line), which is why constrained decoding lives HERE and not on
+# the coordinator wrap-up itself (deviation from the 6.5 card's letter,
+# recorded in the ledger: constraining a full wrap-up would break consensus
+# detection, and synthesizing a consensus line around bare JSON would be
+# fabrication, §13.2).
+_REPAIR_SCHEMA_FIELDS = {
+    "tasks": ["tasks"],
+    "flows": ["flows"],
+    "requirements": ["requirements"],
+    "interfaces": ["interfaces"],
+    "decisions": ["decisions"],
+}
+
+
+def _structured_repair_setup(cfg, cand, kind):
+    """Arm schema-constrained decoding for a local:<model> repair turn.
+    Returns True when armed (caller must clear structured_format after the
+    turn and fence-wrap the bare-JSON response). CLI paths can't be
+    constrained: static 'ollama' warns once, cloud CLIs run the prompt
+    unconstrained as always."""
+    fields = _REPAIR_SCHEMA_FIELDS.get(kind)
+    schema = schemalib.contract_to_json_schema(fields)
+    if schema is None:
+        return False
+    if str(cand) == "ollama":
+        if tcxlib.TurnContext(cfg).note_once("structured_repair", "ollama_cli"):
+            emit("structured contract repair: the ollama CLI path has no "
+                 "format flag — repair runs unconstrained (local:<model> "
+                 "HTTP turns are constrained).")
+        return False
+    if not str(cand).startswith("local:"):
+        return False
+    tcxlib.TurnContext(cfg).structured_format = {
+        "schema": schema, "fence_tag": "%s-json" % kind,
+        "required_fields": list(fields)}
+    return True
+
+
+def _wrap_constrained_repair(resp, kind):
+    """A constrained response is BARE JSON with no fence; downstream parsers
+    (extract_structured_blocks) expect the fenced block shape. Wrap valid
+    JSON; anything else passes through unchanged for the caller's normal
+    error loop — never fabricate a block around garbage."""
+    try:
+        obj = json.loads((resp or "").strip())
+    except ValueError:
+        return resp
+    if not isinstance(obj, dict):
+        return resp
+    return "```%s-json\n%s\n```" % (kind, json.dumps(obj, indent=2))
+
+
 def _repair_contract(cfg, app, app_dir, key, coord, active, md_path, transcript,
                      kind, prompt):
     """One bounded repair turn for a machine-contract problem (a malformed
@@ -8423,11 +8489,19 @@ def _repair_contract(cfg, app, app_dir, key, coord, active, md_path, transcript,
     they were (resp=None signals that to the caller, which stops retrying
     rather than looping on a dead agent)."""
     for cand in _coordinator_candidates(cfg, active, preferred=coord):
+        # V3 6.5: local:<model> repair turns run schema-constrained (Ollama
+        # structured outputs) — set-or-CLEAR around the turn so a stale
+        # schema can never constrain an unrelated call.
+        constrained = _structured_repair_setup(cfg, cand, kind)
         try:
             resp = call_agent(cfg, app, key, "contract-repair", cand, prompt)
         except AgentError as exc:
             emit("%s could not repair the %s-json contract: %s" % (DISPLAY[cand], kind, exc))
             continue
+        finally:
+            tcxlib.TurnContext(cfg).structured_format = None
+        if constrained:
+            resp = _wrap_constrained_repair(resp, kind)
         block = "**%s — %s-json repair**\n\n%s\n" % (DISPLAY[cand], kind, resp)
         append_md(md_path, "\n" + block)
         msglib.append_message(app_dir, key, "contract", cand, md_path,
