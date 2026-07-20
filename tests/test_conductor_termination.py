@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import artifacts as artlib
 import conductor as cond
 import conductor_termination as ct
+import events as evlib
 
 
 def _quiet(*_a, **_k):
@@ -303,6 +304,22 @@ class TestTerminationWiring(_Base):
         self.assertFalse(os.path.exists(
             os.path.join(self.root, ".conductor", "reports")))
 
+    def test_terminal_event_is_durable_before_state_save_crash(self):
+        app = self._session("p/documentation/c1", {"current_phase": "x"})
+        state = cond.default_state()
+        evidence = {"reason": "vote_undecided",
+                    "evidence": {"undecided": 2, "limit": 2}}
+        with unittest.mock.patch.object(
+                cond, "save_conductor_state",
+                side_effect=RuntimeError("crash after ledger+event")):
+            with self.assertRaisesRegex(RuntimeError, "crash after"):
+                cond._record_termination(
+                    self.root, state, "p/documentation/c1", "stalled",
+                    evidence, emit=_quiet)
+        notices = evlib.read_events(app, kinds=("stalled",))
+        self.assertEqual(1, len(notices))
+        self.assertEqual("vote_undecided", notices[0]["reason"])
+
     def test_goal_met_terminates_with_report_and_ledger(self):
         app = self._session("p/documentation/c1",
                             {"current_phase": "done", "done": True})
@@ -372,6 +389,10 @@ class TestTerminationWiring(_Base):
             report = json.load(fh)
         self.assertTrue(report["payload"]["open_gaps"])
         self.assertTrue(report["payload"]["unmet_goal_checks"])
+        notices = evlib.read_events(app, kinds=("converged",))
+        self.assertEqual(1, len(notices))
+        self.assertEqual("documentation", notices[0]["section"])
+        self.assertIn("idle cycles", notices[0]["reason"])
 
     def test_quiescence_termination_takes_snapshot_after_terminal_ledger(self):
         app = self._session("p/documentation/c1", {"current_phase": "stuck"})
@@ -574,6 +595,12 @@ class TestBudgetStallWiring(_Base):
         led = cond.read_ledger(self.root)
         self.assertTrue(any(r.get("decision") == "budget_exhausted"
                             for r in led))
+        notices = evlib.read_events(os.path.join(self.root, ".conductor"),
+                                    kinds=("budget_exhausted",))
+        self.assertEqual(1, len(notices))
+        self.assertEqual("turns_exhausted", notices[0]["budget"])
+        self.assertEqual("Workspace", notices[0]["project"])
+        self.assertIn("2 used / 2 cap", notices[0]["measurement"])
 
     def test_halted_state_stops_routing(self):
         # a genuinely routable scenario: without the halt this WOULD mint.
@@ -610,6 +637,11 @@ class TestBudgetStallWiring(_Base):
         st = cond.full_poll(self.root, cond.default_state(), emit=_quiet)
         self.assertEqual(st["terminated"]["p/documentation/c1"]["reason"],
                          "stalled")
+        notices = evlib.read_events(
+            os.path.join(self.root, "p/documentation/c1"), kinds=("stalled",))
+        self.assertEqual(1, len(notices))
+        self.assertEqual("vote_undecided", notices[0]["reason"])
+        self.assertEqual("documentation", notices[0]["section"])
 
     def test_over_quota_route_is_deferred_not_minted(self):
         import conductor_routing as crlib

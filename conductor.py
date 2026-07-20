@@ -818,6 +818,28 @@ def _record_termination(root, state, sid, reason, evidence, emit=print):
     state["terminated"][sid] = {"reason": reason, "report": report,
                                 "ts": rec["ts"]}
     state["ledger_cursor"] = new_len
+    event_kind = {"stalled": "stalled",
+                  "converged_open_items": "converged"}.get(reason)
+    if event_kind:
+        detail = evidence if isinstance(evidence, dict) else {}
+        measurement = detail.get("reason") or reason
+        if event_kind == "converged":
+            idle = detail.get("idle_cycles")
+            measurement = ("no new final artifacts for %s idle cycles" % idle
+                           if idle is not None else "converged with open items")
+        try:
+            import events as eventslib
+            parts = sid.split("/")
+            eventslib.emit_event(
+                os.path.join(root, sid), event_kind,
+                project=parts[0] if parts else sid,
+                section=parts[1] if len(parts) > 1 else "",
+                session=sid, reason=str(measurement), evidence=detail)
+        except Exception:
+            pass
+    # Event precedes the cache save: a crash after it is replay-safe because
+    # the terminal ledger line already exists; save-before-event could lose
+    # the only notification forever when restart skips the terminal session.
     save_conductor_state(root, state)
     emit("conductor: session %s terminated (%s) -> %s" % (sid, reason, report))
 
@@ -921,6 +943,31 @@ def _record_workspace_termination(root, state, reason, evidence, emit=print):
     new_len = ledger_append(root, rec)
     state["halted"] = {"reason": reason, "report": report, "ts": rec["ts"]}
     state["ledger_cursor"] = new_len
+    try:
+        import events as eventslib
+        spend = evidence.get("spend_usd") if isinstance(evidence, dict) else None
+        provider = evidence.get("provider") if isinstance(evidence, dict) else None
+        measurement = reason.replace("_", " ")
+        if isinstance(spend, dict) and spend:
+            measurement += ": " + ", ".join(
+                "%s $%s / $%s" % (name, values.get("used"), values.get("cap"))
+                for name, values in sorted(spend.items())
+                if isinstance(values, dict))
+        else:
+            evidence_key = {"turns_exhausted": "turns",
+                            "wall_clock_exhausted": "wall_clock_s"}.get(reason)
+            values = evidence.get(evidence_key) \
+                if isinstance(evidence, dict) and evidence_key else None
+            if isinstance(values, dict):
+                measurement += ": %s used / %s cap" % (
+                    values.get("used"), values.get("cap"))
+        eventslib.emit_event(
+            conductor_dir(root), "budget_exhausted", project="Workspace",
+            section="all", budget=reason, reason=reason,
+            provider=provider, measurement=measurement,
+            spend=spend, evidence=evidence)
+    except Exception:
+        pass
     save_conductor_state(root, state)
     emit("conductor: WORKSPACE HALTED — %s (%s)" % (reason, report))
 
@@ -973,8 +1020,11 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
                                 time.time(), time.strftime("%Y-%m-%d"))
         state["over_quota"] = sorted(bc.get("over_quota") or [])
         if bc["exhausted"] and not state.get("halted"):
+            budget_evidence = dict(bc["evidence"])
+            if bc.get("provider"):
+                budget_evidence["provider"] = bc["provider"]
             _record_workspace_termination(root, state, bc["reason"],
-                                          bc["evidence"], emit)
+                                          budget_evidence, emit)
     if state.get("halted"):
         save_conductor_state(root, state)
         return state   # capped: no routing, quiescence is moot
@@ -1391,10 +1441,15 @@ def route_engine(root, state, sessions, emit=print):
         save_conductor_state(root, state)
         wave_snapshot_taken = True
 
-    def _ledger_route(root_, base):
+    def _ledger_route(root_, base, after_append=None):
         rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "acting"}
         rec.update(base)
         new_len = ledger_append(root_, rec)
+        if after_append is not None:
+            try:
+                after_append()
+            except Exception:
+                pass
         state["ledger_cursor"] = new_len
         save_conductor_state(root_, state)
 
@@ -1631,20 +1686,27 @@ def route_engine(root, state, sessions, emit=print):
                         "route_key": i.route_key}
                 action = cplib.pending_action(i, sid, reason=reason)
                 if cplib.enqueue_pending(root, action):
-                    _ledger_route(root, {
-                        **base, "decision": "approval_requested",
-                        "detail": {**i.as_ledger_detail(),
-                                   "dial": dial, "feedback": feedback,
-                                   "capability_exceeds": capability_exceeds,
-                                   "reason": reason}})
-                    try:
+                    def _emit_approval_events():
                         import events as eventslib
                         eventslib.emit_event(
                             app_dir, "route_proposed", route_id=i.route_id,
                             artifact_id=i.artifact_id, target=i.target,
                             status="needs_approval", reason=reason)
-                    except Exception:
-                        pass   # event emission is observability, never truth
+                        parts = sid.split("/")
+                        eventslib.emit_event(
+                            app_dir, "approval_needed",
+                            project=parts[0] if parts else sid,
+                            section=parts[1] if len(parts) > 1 else "",
+                            session=sid, route_id=i.route_id,
+                            artifact_id=i.artifact_id, target=i.target,
+                            reason=reason)
+                    _ledger_route(root, {
+                        **base, "decision": "approval_requested",
+                        "detail": {**i.as_ledger_detail(),
+                                   "dial": dial, "feedback": feedback,
+                                   "capability_exceeds": capability_exceeds,
+                                   "reason": reason}},
+                        after_append=_emit_approval_events)
                 else:
                     # FIX: a failed durable enqueue must NOT be ledgered as a
                     # successful approval request (§6.2, §23) — record the miss

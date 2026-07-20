@@ -110,6 +110,37 @@ class TestEmitEvent(unittest.TestCase):
         mock_warn.assert_not_called()
 
 
+class TestConductorNotificationVocabulary(unittest.TestCase):
+    KINDS = ("approval_needed", "stalled", "converged",
+             "budget_exhausted")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="orch_events_notify_")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_kinds_are_warning_free_filterable_redacted_and_capped(self):
+        for kind in self.KINDS:
+            with unittest.mock.patch("warnings.warn") as mock_warn:
+                self.assertTrue(evlib.emit_event(
+                    self.dir, kind, project="p", section="research",
+                    reason="api_key=sk_livekey_1234567890abcd" + "x" * 800))
+            mock_warn.assert_not_called()
+        for kind in self.KINDS:
+            records = evlib.read_events(self.dir, kinds=(kind,))
+            self.assertEqual(1, len(records))
+            self.assertIn("[REDACTED", records[0]["reason"])
+            self.assertLessEqual(len(records[0]["reason"]), 500)
+
+    def test_corrupt_partial_line_does_not_hide_valid_condition(self):
+        evlib.emit_event(self.dir, "stalled", project="p", reason="votes")
+        with open(evlib.events_path(self.dir), "a", encoding="utf-8") as fh:
+            fh.write('{"kind":"converged"')
+        self.assertEqual(["stalled"], [r["kind"] for r in
+                                       evlib.read_events(self.dir)])
+
+
 class TestArtifactBusVocabulary(unittest.TestCase):
     """V3 board 2.5: the six bus kinds are registered ahead of their
     emitters (2.4 / M4 / M7) — vocabulary, warning, and cap contracts."""

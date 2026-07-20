@@ -15,6 +15,7 @@ struct EngineEvent: Equatable, Identifiable {
     var kind: String            // events.py KINDS
     var project = ""
     var phase = ""
+    var section = ""
     var round = 0
     var agent = ""
     var ok: Bool?
@@ -34,6 +35,11 @@ struct EngineEvent: Equatable, Identifiable {
     var artifactPath = ""
     var target = ""
     var targetSession = ""
+    var session = ""
+    var routeID = ""
+    var budget = ""
+    var measurement = ""
+    var provider = ""
 
     var isFallback: Bool { kind == "agent_fallback" }
     var isError: Bool {
@@ -70,6 +76,10 @@ struct EngineEvent: Equatable, Identifiable {
         case "run_finished": return "Run finished — \(status.isEmpty ? "?" : status)"
         case "verify_result": return "Verify: \(status)\(detail.isEmpty ? "" : " — \(detail)")"
         case "agent_disabled": return "\(agentName) disabled — \(reason)"
+        case "approval_needed": return "Approval needed for \(target) — \(reason)"
+        case "stalled": return "\(prettyPhase) stalled — \(reason)"
+        case "converged": return "\(prettyPhase) converged — \(reason)"
+        case "budget_exhausted": return "Budget exhausted — \(measurement)"
         default: return kind
         }
     }
@@ -105,6 +115,7 @@ struct EngineEvent: Equatable, Identifiable {
         var e = EngineEvent(id: id, ts: ts, kind: kind)
         e.project = (obj["project"] as? String) ?? ""
         e.phase = (obj["phase"] as? String) ?? ""
+        e.section = (obj["section"] as? String) ?? ""
         e.round = (obj["round"] as? Int) ?? 0
         e.agent = (obj["agent"] as? String) ?? ""
         e.ok = obj["ok"] as? Bool
@@ -124,6 +135,11 @@ struct EngineEvent: Equatable, Identifiable {
         e.artifactPath = (obj["path"] as? String) ?? ""
         e.target = (obj["target"] as? String) ?? ""
         e.targetSession = (obj["target_session"] as? String) ?? ""
+        e.session = (obj["session"] as? String) ?? ""
+        e.routeID = (obj["route_id"] as? String) ?? ""
+        e.budget = (obj["budget"] as? String) ?? ""
+        e.measurement = (obj["measurement"] as? String) ?? ""
+        e.provider = (obj["provider"] as? String) ?? ""
         return e
     }
 
@@ -137,6 +153,173 @@ struct EngineEvent: Equatable, Identifiable {
             idx += 1
         }
         return out
+    }
+}
+
+// MARK: - Conductor notification requests (V3 7.8)
+
+struct ConductorNotificationRequest: Codable, Equatable, Identifiable {
+    let id: String
+    let kind: String
+    let project: String
+    let section: String
+    let title: String
+    let body: String
+}
+
+struct QuietHours: Equatable {
+    var enabled: Bool
+    var startMinute: Int
+    var endMinute: Int
+
+    func contains(_ date: Date, calendar: Calendar = .current) -> Bool {
+        guard enabled else { return false }
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        if startMinute == endMinute { return true }
+        if startMinute < endMinute {
+            return minute >= startMinute && minute < endMinute
+        }
+        return minute >= startMinute || minute < endMinute
+    }
+}
+
+final class ConductorNotificationCoordinator {
+    private let defaults: UserDefaults
+    private let namespace: String
+    private var queued: [ConductorNotificationRequest]
+
+    init(defaults: UserDefaults, namespace: String) {
+        self.defaults = defaults
+        self.namespace = namespace
+        if let data = defaults.data(forKey: "conductor.notifications.queue.\(namespace)"),
+           let decoded = try? JSONDecoder().decode(
+                [ConductorNotificationRequest].self, from: data) {
+            queued = decoded
+        } else {
+            queued = []
+        }
+    }
+
+    private func key(_ suffix: String, project: String) -> String {
+        "conductor.notifications.\(suffix).\(namespace).\(project)"
+    }
+
+    private func stableKey(_ event: EngineEvent) -> String {
+        [event.kind, event.routeID, event.session,
+         String(Int(event.ts.timeIntervalSince1970)), event.reason,
+         event.budget].joined(separator: "|")
+    }
+
+    private func request(_ event: EngineEvent, source: String) -> ConductorNotificationRequest? {
+        let project = event.project.isEmpty
+            ? (source == ".conductor" ? "Workspace" : source) : event.project
+        let section = event.phase.isEmpty ? event.sectionName : event.phase
+        let whereText = section.isEmpty || section == "all"
+            ? project : "\(project) / \(section)"
+        let body: String
+        let title: String
+        switch event.kind {
+        case "approval_needed":
+            guard !event.routeID.isEmpty, !event.target.isEmpty else { return nil }
+            title = "Approval needed"
+            body = "\(whereText): route \(event.routeID) to \(event.target) — \(event.reason)."
+        case "stalled":
+            title = "Section stalled"
+            body = "\(whereText): \(event.reason)."
+        case "converged":
+            title = "Section converged"
+            body = "\(whereText): \(event.reason)."
+        case "budget_exhausted":
+            guard !event.budget.isEmpty else { return nil }
+            title = "Budget exhausted"
+            let measure = event.measurement.isEmpty ? event.reason : event.measurement
+            body = "\(whereText): \(event.budget.replacingOccurrences(of: "_", with: " ")) — \(measure)."
+        default:
+            return nil
+        }
+        return ConductorNotificationRequest(
+            id: stableKey(event), kind: event.kind, project: project,
+            section: section, title: title, body: body)
+    }
+
+    private func persistQueue() {
+        let key = "conductor.notifications.queue.\(namespace)"
+        if queued.isEmpty {
+            defaults.removeObject(forKey: key)
+        } else if let data = try? JSONEncoder().encode(queued) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    private func summary() -> ConductorNotificationRequest? {
+        guard !queued.isEmpty else { return nil }
+        let counts = Dictionary(grouping: queued, by: \.kind).mapValues(\.count)
+        var pieces: [String] = []
+        if let n = counts["approval_needed"] { pieces.append("\(n) approval\(n == 1 ? "" : "s") waiting") }
+        if let n = counts["stalled"] { pieces.append("\(n) stalled section\(n == 1 ? "" : "s")") }
+        if let n = counts["converged"] { pieces.append("\(n) section\(n == 1 ? "" : "s") converged") }
+        if let n = counts["budget_exhausted"] { pieces.append("\(n) budget limit\(n == 1 ? "" : "s") reached") }
+        return ConductorNotificationRequest(
+            id: "quiet-summary-\(queued.map(\.id).sorted().joined(separator: ","))",
+            kind: "quiet_summary", project: "Workspace", section: "",
+            title: "Overnight activity", body: pieces.joined(separator: ", ") + ".")
+    }
+
+    func process(eventsByProject: [String: [EngineEvent]], quietHours: QuietHours,
+                 now: Date = Date()) -> [ConductorNotificationRequest] {
+        let quiet = quietHours.contains(now)
+        var output: [ConductorNotificationRequest] = []
+        if !quiet, let summary = summary() {
+            output.append(summary)
+            queued = []
+            persistQueue()
+        }
+        for source in eventsByProject.keys.sorted() {
+            let relevant = (eventsByProject[source] ?? []).filter {
+                ["approval_needed", "stalled", "converged", "budget_exhausted"]
+                    .contains($0.kind)
+            }
+            let seenKey = key("seen", project: source)
+            let cursorKey = key("cursor", project: source)
+            guard defaults.bool(forKey: seenKey) else {
+                defaults.set(true, forKey: seenKey)
+                defaults.set(relevant.last.map(stableKey) ?? "", forKey: cursorKey)
+                continue
+            }
+            let cursor = defaults.string(forKey: cursorKey) ?? ""
+            let fresh: ArraySlice<EngineEvent>
+            if cursor.isEmpty {
+                fresh = relevant[...]
+            } else if let index = relevant.lastIndex(where: { stableKey($0) == cursor }) {
+                fresh = relevant.suffix(from: relevant.index(after: index))
+            } else {
+                // The bounded tail no longer contains the cursor. Re-baseline;
+                // replaying an ambiguous history is worse than one missed ping.
+                defaults.set(relevant.last.map(stableKey) ?? "", forKey: cursorKey)
+                continue
+            }
+            for event in fresh {
+                guard let item = request(event, source: source) else { continue }
+                if quiet {
+                    if !queued.contains(where: { $0.id == item.id }) { queued.append(item) }
+                } else {
+                    output.append(item)
+                }
+            }
+            if let last = relevant.last { defaults.set(stableKey(last), forKey: cursorKey) }
+        }
+        if quiet { persistQueue() }
+        return output
+    }
+}
+
+private extension EngineEvent {
+    var sectionName: String {
+        if !section.isEmpty { return section }
+        if !phase.isEmpty { return phase }
+        let parts = session.split(separator: "/")
+        return parts.count > 1 ? String(parts[1]) : ""
     }
 }
 
@@ -368,13 +551,15 @@ enum EventsScanner {
         var out: [String: [EngineEvent]] = [:]
         lock.lock()
         defer { lock.unlock() }
-        for name in names {
+        let scanNames = names.contains(".conductor") ? names : names + [".conductor"]
+        for name in scanNames {
             let url = rootURL.appendingPathComponent(name)
                 .appendingPathComponent("events.jsonl")
             guard let attrs = try? fm.attributesOfItem(atPath: url.path),
                   let mtime = attrs[.modificationDate] as? Date,
                   let size = (attrs[.size] as? NSNumber)?.intValue else {
                 cache[name] = nil
+                if name == ".conductor" { out[name] = [] }
                 continue
             }
             if let hit = cache[name], hit.mtime == mtime, hit.size == size {

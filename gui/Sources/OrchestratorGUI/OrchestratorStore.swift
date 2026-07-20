@@ -980,6 +980,27 @@ final class OrchestratorStore: ObservableObject {
     // tick by EventsScanner — views never read the files themselves.
     @Published var eventsByProject: [String: [EngineEvent]] = [:]
     @Published var fleetHealth = FleetHealthSummary()
+    @Published var quietHoursEnabled = OrchestratorStore.defaults.bool(
+        forKey: "notificationQuietHoursEnabled") {
+        didSet { Self.defaults.set(quietHoursEnabled,
+                                   forKey: "notificationQuietHoursEnabled") }
+    }
+    @Published var quietHoursStartMinute: Int = {
+        let d = OrchestratorStore.defaults
+        return d.object(forKey: "notificationQuietHoursStart") == nil
+            ? 22 * 60 : d.integer(forKey: "notificationQuietHoursStart")
+    }() {
+        didSet { Self.defaults.set(quietHoursStartMinute,
+                                   forKey: "notificationQuietHoursStart") }
+    }
+    @Published var quietHoursEndMinute: Int = {
+        let d = OrchestratorStore.defaults
+        return d.object(forKey: "notificationQuietHoursEnd") == nil
+            ? 7 * 60 : d.integer(forKey: "notificationQuietHoursEnd")
+    }() {
+        didSet { Self.defaults.set(quietHoursEndMinute,
+                                   forKey: "notificationQuietHoursEnd") }
+    }
     // V3 6.4: per-project cost rollups from costs.jsonl (CostsScanner, same
     // background tick). Empty until a project has cost records on disk.
     @Published var projectCosts: [String: ProjectCosts] = [:]
@@ -1252,6 +1273,8 @@ final class OrchestratorStore: ObservableObject {
     func setWorkspaceRoot(_ url: URL) {
         Self.defaults.set(url.path, forKey: "workspaceRoot")
         rootURL = url
+        conductorNotificationCoordinator = ConductorNotificationCoordinator(
+            defaults: Self.defaults, namespace: url.path)
         // Resume offers are per-workspace; clearing here (belt) plus the
         // scannedRoot guard in updateResumeOffers (braces) keeps a stale
         // tick's offers from ever leaking across roots.
@@ -1441,6 +1464,7 @@ final class OrchestratorStore: ObservableObject {
                     self.artifactsByProject = result.artifacts
                 }
                 if result.events != self.eventsByProject { self.eventsByProject = result.events }
+                self.processConductorNotifications(result.events)
                 self.revealSectionsFromRoutes(result.events)
                 if result.health != self.fleetHealth { self.fleetHealth = result.health }
                 if result.conductor != self.conductorOversight {
@@ -2043,6 +2067,9 @@ final class OrchestratorStore: ObservableObject {
 
     private(set) var notifAuthRequested = false
     private var lastStatusKey: [String: String] = [:]
+    private lazy var conductorNotificationCoordinator =
+        ConductorNotificationCoordinator(defaults: Self.defaults,
+                                          namespace: rootURL.path)
     // Notifications need a bundle identity; skip when run as a raw executable so we
     // never crash on UNUserNotificationCenter with a nil bundle id. The
     // suppression seam exists because the xctest runner HAS a bundle id.
@@ -2062,6 +2089,20 @@ final class OrchestratorStore: ObservableObject {
         c.title = title; c.body = body
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    }
+
+    private func processConductorNotifications(
+        _ eventsByProject: [String: [EngineEvent]], now: Date = Date()
+    ) {
+        let quiet = QuietHours(enabled: quietHoursEnabled,
+                               startMinute: quietHoursStartMinute,
+                               endMinute: quietHoursEndMinute)
+        let requests = conductorNotificationCoordinator.process(
+            eventsByProject: eventsByProject, quietHours: quiet, now: now)
+        if !requests.isEmpty { requestNotificationAuthIfNeeded() }
+        for request in requests {
+            notify(request.title, request.body)
+        }
     }
 
     private func statusKey(_ p: Project) -> String {

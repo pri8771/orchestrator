@@ -45,6 +45,9 @@ Event kinds emitted by orchestrator.py:
                          AND the recoverable text, never silently discarded)
     snapshot_failed     (reason, error — workspace checkpoint safety net
                          failed; routing continues but the miss is visible)
+    approval_needed / stalled / converged / budget_exhausted
+                        (Conductor decisions consumed by macOS notifications;
+                         fields name the session/route/budget measurement)
 
 Contract:
   * Best-effort by design — emitting an event must NEVER take a run down.
@@ -132,6 +135,8 @@ KINDS = (
     # V3 board 7.7: snapshots are non-gating, so a failed Git checkpoint
     # needs a visible event in addition to its durable Conductor ledger line.
     "snapshot_failed",
+    # V3 board 7.8: emitted only from the Conductor's durable decision sites.
+    "approval_needed", "stalled", "converged", "budget_exhausted",
 )
 
 _MAX_FIELD_CHARS = 500

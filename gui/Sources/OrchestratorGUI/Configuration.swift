@@ -562,6 +562,24 @@ struct GeneralSettings: View {
                     }
                 }
             }
+            Section("Notifications") {
+                Toggle("Quiet hours", isOn: $store.quietHoursEnabled)
+                Text("Conductor alerts wait during this window, then arrive as one summary.")
+                    .font(DS.font.caption)
+                    .foregroundStyle(.secondary)
+                if store.quietHoursEnabled {
+                    HStack {
+                        DatePicker("From", selection: minuteBinding(
+                            get: { store.quietHoursStartMinute },
+                            set: { store.quietHoursStartMinute = $0 }),
+                            displayedComponents: .hourAndMinute)
+                        DatePicker("Until", selection: minuteBinding(
+                            get: { store.quietHoursEndMinute },
+                            set: { store.quietHoursEndMinute = $0 }),
+                            displayedComponents: .hourAndMinute)
+                    }
+                }
+            }
             Section("About") {
                 LabeledContent("Orchestrator V2") {
                     Text("Local-first multi-agent app builder.")
@@ -570,6 +588,20 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped).padding()
+    }
+
+    private func minuteBinding(get: @escaping () -> Int,
+                               set: @escaping (Int) -> Void) -> Binding<Date> {
+        Binding(
+            get: {
+                let minute = get()
+                return Calendar.current.date(bySettingHour: minute / 60,
+                    minute: minute % 60, second: 0, of: Date()) ?? Date()
+            },
+            set: { date in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                set((parts.hour ?? 0) * 60 + (parts.minute ?? 0))
+            })
     }
 
     private func pickWorkspace() {

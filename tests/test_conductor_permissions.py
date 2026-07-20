@@ -12,6 +12,7 @@ import unittest.mock
 import conductor as cond
 import conductor_permissions as cp
 import conductor_routing as cr
+import events as evlib
 
 
 class _Intent:
@@ -149,6 +150,25 @@ class TestCapabilityGate(_RouteBase):
         self.assertTrue(any(r["decision"] == "approval_requested"
                             for r in recs))
         self.assertNotIn(pend[0]["route_id"], state["routed"])
+        notices = evlib.read_events(os.path.join(self.root, self.sid),
+                                    kinds=("approval_needed",))
+        self.assertEqual(1, len(notices))
+        self.assertEqual(pend[0]["route_id"], notices[0]["route_id"])
+        self.assertEqual("proj", notices[0]["project"])
+        self.assertIn("capabilities", notices[0]["reason"])
+
+    def test_approval_event_is_durable_before_state_save_crash(self):
+        state = cond.default_state()
+        with unittest.mock.patch.object(
+                cond, "save_conductor_state",
+                side_effect=RuntimeError("crash after ledger+event")):
+            with self.assertRaisesRegex(RuntimeError, "crash after"):
+                self._run(state, lambda *a, **k: None)
+        notices = evlib.read_events(os.path.join(self.root, self.sid),
+                                    kinds=("approval_needed",))
+        self.assertEqual(1, len(notices))
+        self.assertEqual(cp.read_pending(self.root)[0]["route_id"],
+                         notices[0]["route_id"])
 
     def test_approval_ok_executes_the_gated_route(self):
         state = cond.default_state()
