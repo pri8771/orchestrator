@@ -872,6 +872,7 @@ final class OrchestratorStore: ObservableObject {
     // don't hide in the ⌘L-collapsed run log. Set via surfaceError().
     @Published var lastError: String?
     @Published var snippetWarnings: [String] = []
+    @Published var commandWarnings: [String] = []
 
     /// Report a user-facing error both in the run log and as a banner.
     func surfaceError(_ msg: String) {
@@ -2498,6 +2499,19 @@ final class OrchestratorStore: ObservableObject {
             projectURL: projectDir?.appendingPathComponent("snippets.json"))
         snippetWarnings = result.warnings
         return result.snippets
+    }
+
+    func loadCommands(section: String? = nil,
+                      projectDir: URL? = nil) -> [ComposerCommand] {
+        let sectionURL = section.map {
+            orchDirURL.appendingPathComponent("sections/\($0)/commands.json")
+        }
+        let result = CommandLibrary.load(
+            fleetURL: orchDirURL.appendingPathComponent("commands.json"),
+            sectionURL: sectionURL,
+            projectURL: projectDir?.appendingPathComponent("commands.json"))
+        commandWarnings = result.warnings
+        return result.commands
     }
 
     func saveSnippets(_ snippets: [PromptSnippet],

@@ -2,6 +2,41 @@
   "schema_version": 1,
   "commands": [
     {
+      "name": "mode",
+      "kind": "builtin",
+      "description": "Switch auto/manual participation at the next round barrier."
+    },
+    {
+      "name": "vote",
+      "kind": "builtin",
+      "description": "Request a forced weighted vote at the next round barrier."
+    },
+    {
+      "name": "consensus",
+      "kind": "builtin",
+      "description": "Request a coordinator consensus attempt at the next round barrier."
+    },
+    {
+      "name": "cast",
+      "kind": "builtin",
+      "description": "Add or remove a roster member at the next round barrier."
+    },
+    {
+      "name": "fork",
+      "kind": "builtin",
+      "description": "Fork this session through the existing session fork verb."
+    },
+    {
+      "name": "promote",
+      "kind": "builtin",
+      "description": "Promote this chat through the existing promotion verb."
+    },
+    {
+      "name": "send",
+      "kind": "builtin",
+      "description": "Route an artifact to a section through route_push."
+    },
+    {
       "name": "summarize",
       "kind": "template",
       "template": "@Documentation summarize this conversation so far.",
@@ -26,9 +61,24 @@
       "description": "Deep-dive: Research investigates a question."
     },
     {
-      "name": "vote",
+      "name": "compare",
       "kind": "builtin",
-      "description": "Force a vote on the current phase (wired by 9.8)."
+      "description": "Compare one prompt across selected enabled models without changing the room."
+    },
+    {
+      "name": "status",
+      "kind": "builtin",
+      "description": "Show this session's persisted run status."
+    },
+    {
+      "name": "cost",
+      "kind": "builtin",
+      "description": "Show this session's honest metered/unmetered cost rollup."
+    },
+    {
+      "name": "help",
+      "kind": "builtin",
+      "description": "Show the effective layered command registry grouped by kind."
     },
     {
       "name": "model-effort",

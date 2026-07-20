@@ -155,6 +155,34 @@ class TestRegistry(unittest.TestCase):
         self.assertTrue(any("unreadable" in w for w in warned))
 
 
+class TestBaseCommandDispatchMatrix(unittest.TestCase):
+    def test_fifteen_commands_call_exactly_their_mapped_existing_verb(self):
+        expected = {
+            "mode", "vote", "consensus", "cast", "fork", "promote",
+            "send", "audit", "research", "decision", "summarize",
+            "compare", "status", "cost", "help",
+        }
+        self.assertEqual(set(cmdlib.COMMAND_VERBS), expected)
+        calls = []
+        handlers = {}
+        for verb in cmdlib.COMMAND_VERBS.values():
+            handlers[verb] = lambda args, verb=verb: calls.append((verb, args))
+        for name in sorted(expected):
+            calls.clear()
+            handled, _ = cmdlib.dispatch_registered(name, "payload", handlers)
+            self.assertTrue(handled, name)
+            self.assertEqual(calls, [(cmdlib.COMMAND_VERBS[name], "payload")],
+                             name)
+
+    def test_deleted_or_unknown_command_does_not_dispatch(self):
+        calls = []
+        handled, result = cmdlib.dispatch_registered(
+            "project-deleted", "x", {"registry_help": calls.append})
+        self.assertFalse(handled)
+        self.assertIsNone(result)
+        self.assertEqual(calls, [])
+
+
 # --------------------------------------------------------------------------- #
 # Engine dispatch — real _dispatch_command / _peek_command_from_inbox against
 # a nested session, mirroring test_delegation.py's _HandlerBase.
@@ -270,6 +298,72 @@ class TestBuiltinCommand(_DispatchBase):
         kinds = [e["kind"] for e in self._events()]
         self.assertIn("command_ran", kinds)
         self.assertNotIn("command_unknown", kinds)
+        queued = orch.load_state(self.app_dir)["command_barrier"]
+        self.assertEqual(queued, [{"name": "vote", "args": "",
+                                   "requested_round": 3}])
+        self.assertIn("next round barrier", self._md_text())
+
+    def test_barrier_requests_dedupe_and_fire_only_after_request_round(self):
+        self._dispatch("/vote first")
+        self._dispatch("/vote second")
+        state = orch.load_state(self.app_dir)
+        self.assertEqual(len(state["command_barrier"]), 1)
+        self.assertEqual(orch._take_barrier_commands(self.app_dir, state, 3), [])
+        due = orch._take_barrier_commands(self.app_dir, state, 4)
+        self.assertEqual([(d["name"], d["args"]) for d in due],
+                         [("vote", "second")])
+        self.assertEqual(orch._take_barrier_commands(self.app_dir, state, 5), [])
+
+    def test_status_cost_and_help_are_real_generated_cards(self):
+        with open(cmdlib.commands_path(os.path.join(self.root, "proj")), "w") as fh:
+            json.dump({"schema_version": 1, "commands": [
+                {"name": "project-extra", "kind": "template",
+                 "template": "extra", "description": "From project"}]}, fh)
+        orch.costslib.record_turn(self.app_dir, orch.costslib.turn_record(
+            "codex", None, "now"))
+        self._dispatch("/status")
+        self._dispatch("/cost")
+        self._dispatch("/help")
+        body = self._md_text()
+        self.assertIn("Session `proj/ideas/chat-1`", body)
+        self.assertIn("unmetered · 1 turn", body)
+        self.assertIn("`/project-extra` — From project", body)
+
+
+class TestCompareCommand(_DispatchBase):
+    def setUp(self):
+        super().setUp()
+        self._orig_call = orch.call_agent
+        self.addCleanup(self._restore_call)
+
+    def _restore_call(self):
+        orch.call_agent = self._orig_call
+
+    def test_one_failure_keeps_other_columns_and_room_state_untouched(self):
+        before = orch.load_state(self.app_dir)
+        def fake_call(cfg, app, key, rnd, agent, prompt):
+            if agent == "claude":
+                raise orch.AgentError("offline")
+            return "answer from " + agent
+        orch.call_agent = fake_call
+        self.cfg["agents"]["claude_enabled"] = True
+        orch._agent_available = lambda a, cfg=None: a in ("codex", "claude")
+        self._dispatch("/compare codex,claude :: choose safely")
+        body = self._md_text()
+        self.assertIn("### codex — ok", body)
+        self.assertIn("### claude — failed", body)
+        self.assertIn("Error: offline", body)
+        after = orch.load_state(self.app_dir)
+        self.assertEqual(after.get("command_barrier"), before.get("command_barrier"))
+        self.assertEqual(after.get("next_agent"), before.get("next_agent"))
+
+    def test_all_fail_is_an_honest_single_card(self):
+        orch.call_agent = lambda *a, **k: (_ for _ in ()).throw(
+            orch.AgentError("down"))
+        self._dispatch("/compare codex :: prompt")
+        body = self._md_text()
+        self.assertEqual(body.count("**/compare — all failed**"), 1)
+        self.assertIn("### codex — failed", body)
 
 
 class TestDelegationCommand(_DispatchBase):

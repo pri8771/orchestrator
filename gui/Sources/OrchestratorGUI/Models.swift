@@ -379,10 +379,16 @@ struct ChatMessage: Identifiable, Equatable {
     var persona: String = ""   // e.g. "Product Strategist · Skeptic" or "Gemini"
 }
 
+struct CommandTranscriptCard: Identifiable, Equatable {
+    let id: Int
+    let body: String
+}
+
 struct PhaseTranscript: Equatable {
     var originalPrompt: String = ""
     var purpose: String = ""
     var messages: [ChatMessage] = []
+    var commandCards: [CommandTranscriptCard] = []
     var finalOutput: String? = nil
     var marker: String? = nil
     var exists: Bool = false

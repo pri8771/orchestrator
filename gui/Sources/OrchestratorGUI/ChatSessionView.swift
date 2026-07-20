@@ -65,8 +65,12 @@ struct ChatSessionView: View {
     @State private var pendingSwap: [String: String] = [:]   // agent -> model
     @State private var retryPending = false
     @State private var snippets: [PromptSnippet] = []
+    @State private var commands: [ComposerCommand] = []
     @State private var snippetForm: SnippetFormDraft?
     @State private var snippetNotice: String?
+    @State private var autocompleteSelection: Int?
+    @State private var autocompleteDismissed = false
+    @State private var comparisonForm: ComparisonComposerDraft?
 
     private var session: ChatSession? { store.chatSessions[sessionID] }
     // The background scan discovers the minted dir on its next tick; until
@@ -97,7 +101,12 @@ struct ChatSessionView: View {
                 projectDir: session.map {
                     store.rootURL.appendingPathComponent($0.project)
                 })
-            snippetNotice = store.snippetWarnings.first
+            commands = store.loadCommands(
+                section: session?.section,
+                projectDir: session.map {
+                    store.rootURL.appendingPathComponent($0.project)
+                })
+            snippetNotice = store.snippetWarnings.first ?? store.commandWarnings.first
         }
         .onDisappear {
             if store.focusedLivePane == sessionID { store.setFocusedLivePane(nil) }
@@ -122,6 +131,17 @@ struct ChatSessionView: View {
                     snippetForm = nil
                 },
                 onCancel: { snippetForm = nil })
+        }
+        .sheet(item: $comparisonForm) { form in
+            ComparisonComposerForm(
+                draft: Binding(get: { comparisonForm ?? form },
+                               set: { comparisonForm = $0 }),
+                effortOptions: store.effortOptions,
+                onInsert: { command in
+                    draft = command
+                    comparisonForm = nil
+                },
+                onCancel: { comparisonForm = nil })
         }
     }
 
@@ -266,6 +286,9 @@ struct ChatSessionView: View {
                                 attributionCaption(for: msg)
                             }
                         }
+                    }
+                    ForEach(transcript.commandCards) { card in
+                        CommandResultCard(card: card)
                     }
                     if let p = project, !store.pendingHuman(p).isEmpty {
                         PendingHumanBubble(text: store.pendingHuman(p))
@@ -416,16 +439,8 @@ struct ChatSessionView: View {
                     .font(DS.font.caption)
                     .foregroundStyle(DS.status.warning.color)
             }
-            if !snippetMatches.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: DS.space.xxs) {
-                        ForEach(snippetMatches.prefix(6)) { snippet in
-                            Button("/\(snippet.name)") { chooseSnippet(snippet) }
-                                .buttonStyle(.bordered)
-                                .font(DS.font.caption)
-                        }
-                    }
-                }
+            if !autocompleteMatches.isEmpty {
+                autocompletePopover
             }
             HStack(spacing: DS.space.xs) {
                 ZStack(alignment: .leading) {
@@ -444,7 +459,21 @@ struct ChatSessionView: View {
                         .textFieldStyle(.plain)
                         .padding(.horizontal, DS.space.s)
                         .padding(.vertical, DS.space.xs)
-                        .onSubmit(send)
+                        .onSubmit(activateSelectedOrSend)
+                        .onKeyPress(.upArrow) { moveAutocomplete(by: -1) }
+                        .onKeyPress(.downArrow) { moveAutocomplete(by: 1) }
+                        .onKeyPress(.escape) {
+                            autocompleteDismissed = true
+                            autocompleteSelection = nil
+                            return .handled
+                        }
+                        .onChange(of: draft) {
+                            autocompleteDismissed = false
+                            if let selected = autocompleteSelection,
+                               selected >= autocompleteMatches.count {
+                                autocompleteSelection = autocompleteMatches.isEmpty ? nil : 0
+                            }
+                        }
                         .accessibilityLabel("Message to the room")
                 }
                 .frame(height: 36)
@@ -457,8 +486,84 @@ struct ChatSessionView: View {
         .padding(DS.space.s)
     }
 
-    private var snippetMatches: [PromptSnippet] {
-        SnippetComposerLogic.matches(draft: draft, snippets: snippets)
+    private var autocompleteMatches: [ComposerSuggestion] {
+        guard !autocompleteDismissed else { return [] }
+        return Array(ComposerAutocompleteLogic.matches(
+            draft: draft, commands: commands, snippets: snippets).prefix(8))
+    }
+
+    private var autocompletePopover: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(autocompleteMatches.enumerated()), id: \.element.id) { index, item in
+                Button { chooseSuggestion(item) } label: {
+                    HStack(spacing: DS.space.xs) {
+                        Text("/\(item.name)")
+                            .font(DS.font.monoInline)
+                        Text(item.kindLabel)
+                            .font(DS.font.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, DS.space.xxs)
+                            .padding(.vertical, 1)
+                            .background(DS.status.idlePill.fill, in: Capsule())
+                        Text(item.detail)
+                            .font(DS.font.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, DS.space.xs)
+                    .padding(.vertical, DS.space.xxs)
+                    .background(index == autocompleteSelection
+                                ? DS.accent.fill : Color.clear,
+                                in: RoundedRectangle(cornerRadius: DS.radius.chip))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(DS.space.xxs)
+        .background(.regularMaterial,
+                    in: RoundedRectangle(cornerRadius: DS.radius.card))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius.card)
+            .stroke(DS.hairline, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Composer command and snippet suggestions")
+    }
+
+    private func moveAutocomplete(by delta: Int) -> KeyPress.Result {
+        guard !autocompleteMatches.isEmpty else { return .ignored }
+        autocompleteSelection = ComposerAutocompleteLogic.movedIndex(
+            current: autocompleteSelection, delta: delta,
+            count: autocompleteMatches.count)
+        return .handled
+    }
+
+    private func activateSelectedOrSend() {
+        if let index = autocompleteSelection,
+           autocompleteMatches.indices.contains(index) {
+            chooseSuggestion(autocompleteMatches[index])
+        } else {
+            send()
+        }
+    }
+
+    private func chooseSuggestion(_ suggestion: ComposerSuggestion) {
+        switch suggestion {
+        case .command(let command):
+            if command.name == "compare" {
+                let agents = store.agentOrder.filter {
+                    (store.enabledAgents[$0] ?? false)
+                        && (store.cliAvailable[$0] ?? false)
+                }
+                comparisonForm = ComparisonComposerDraft(agents: agents)
+            } else {
+                draft = "/\(command.name) "
+            }
+        case .snippet(let snippet):
+            chooseSnippet(snippet)
+        }
+        autocompleteSelection = nil
+        autocompleteDismissed = true
     }
 
     private func chooseSnippet(_ snippet: PromptSnippet) {
@@ -513,6 +618,87 @@ struct ChatSessionView: View {
                 && (session?.state.isAlive ?? false)
             try? await Task.sleep(nanoseconds: fast ? 500_000_000 : 1_500_000_000)
         }
+    }
+}
+
+struct ComparisonComposerDraft: Identifiable, Equatable {
+    let id = UUID()
+    let agents: [String]
+    var selected: Set<String>
+    var efforts: [String: String]
+    var prompt = ""
+
+    init(agents: [String]) {
+        self.agents = agents
+        self.selected = Set(agents.prefix(2))
+        self.efforts = Dictionary(uniqueKeysWithValues: agents.map { ($0, "medium") })
+    }
+
+    var canInsert: Bool {
+        !selected.isEmpty
+            && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var commandText: String {
+        let models = agents.filter(selected.contains).map { agent in
+            DS.identity(agent).supportsEffort ? "\(agent)@\(efforts[agent] ?? "medium")"
+                                               : agent
+        }
+        return "/compare \(models.joined(separator: ",")) :: "
+            + prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private struct ComparisonComposerForm: View {
+    @Binding var draft: ComparisonComposerDraft
+    let effortOptions: [String]
+    let onInsert: (String) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.m) {
+            Text("Compare models").font(DS.font.title)
+            Text("Choose enabled models and enter one prompt. The comparison is display-only and does not change the room.")
+                .font(DS.font.caption).foregroundStyle(.secondary)
+            ForEach(draft.agents, id: \.self) { agent in
+                HStack {
+                    Toggle(DS.identity(agent).displayName,
+                           isOn: Binding(
+                            get: { draft.selected.contains(agent) },
+                            set: { enabled in
+                                if enabled { draft.selected.insert(agent) }
+                                else { draft.selected.remove(agent) }
+                            }))
+                    Spacer()
+                    if DS.identity(agent).supportsEffort {
+                        Picker("Effort", selection: Binding(
+                            get: { draft.efforts[agent] ?? "medium" },
+                            set: { draft.efforts[agent] = $0 })) {
+                                ForEach(effortOptions, id: \.self) {
+                                    Text($0.capitalized).tag($0)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 120)
+                    } else {
+                        Text("no effort control")
+                            .font(DS.font.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            TextField("Prompt to compare", text: $draft.prompt, axis: .vertical)
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button("Cancel", action: onCancel)
+                Spacer()
+                Button("Insert command") { onInsert(draft.commandText) }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!draft.canInsert)
+            }
+        }
+        .padding(DS.space.l)
+        .frame(width: 520)
     }
 }
 

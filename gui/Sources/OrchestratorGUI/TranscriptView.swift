@@ -96,6 +96,9 @@ struct TranscriptView: View {
                                     }
                                 }
                                 if !pending.isEmpty { PendingHumanBubble(text: pending) }
+                                ForEach(t.commandCards) { card in
+                                    CommandResultCard(card: card)
+                                }
                                 ForEach(artifacts) { artifact in
                                     ArtifactCard(summary: artifact,
                                                  sourceSession: project.name)
@@ -553,6 +556,92 @@ struct MessageBubble: View {
         let parts = message.header.components(separatedBy: "—")
         if parts.count > 1 { return parts.dropFirst().joined(separator: "—").trimmingCharacters(in: .whitespaces) }
         return message.section
+    }
+}
+
+struct ComparisonColumn: Identifiable, Equatable {
+    let model: String
+    let status: String
+    let body: String
+    var id: String { model }
+}
+
+enum ComparisonCardLogic {
+    static func parse(_ text: String) -> [ComparisonColumn] {
+        let lines = text.components(separatedBy: "\n")
+        var columns: [ComparisonColumn] = []
+        var model: String?
+        var status = ""
+        var body: [String] = []
+        func flush() {
+            guard let model else { return }
+            columns.append(ComparisonColumn(
+                model: model, status: status,
+                body: body.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)))
+        }
+        for line in lines {
+            guard line.hasPrefix("### "), line.contains(" — ") else {
+                if model != nil { body.append(line) }
+                continue
+            }
+            flush()
+            let parts = String(line.dropFirst(4)).components(separatedBy: " — ")
+            model = parts.first ?? "model"
+            status = parts.dropFirst().joined(separator: " — ")
+            body = []
+        }
+        flush()
+        return columns
+    }
+}
+
+struct CommandResultCard: View {
+    let card: CommandTranscriptCard
+
+    private var comparison: [ComparisonColumn] {
+        guard card.body.hasPrefix("**/compare —") else { return [] }
+        return ComparisonCardLogic.parse(card.body)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.xs) {
+            Label("Command result", systemImage: "command.square")
+                .font(DS.font.caption)
+                .foregroundStyle(.secondary)
+            if comparison.isEmpty {
+                MarkdownBody(text: card.body)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: DS.space.xs) {
+                        ForEach(comparison) { column in
+                            VStack(alignment: .leading, spacing: DS.space.xxs) {
+                                HStack {
+                                    Text(column.model).font(DS.font.callout)
+                                    Spacer()
+                                    Text(column.status)
+                                        .font(DS.font.caption2)
+                                        .foregroundStyle(column.status == "ok"
+                                                         ? DS.status.success.color
+                                                         : DS.status.error.color)
+                                }
+                                MarkdownBody(text: column.body)
+                            }
+                            .padding(DS.space.s)
+                            .frame(width: 260, alignment: .topLeading)
+                            .background(DS.raised,
+                                        in: RoundedRectangle(cornerRadius: DS.radius.card))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(DS.space.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.insetBg,
+                    in: RoundedRectangle(cornerRadius: DS.radius.card))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius.card)
+            .stroke(DS.hairline, lineWidth: 1))
     }
 }
 

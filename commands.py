@@ -23,12 +23,26 @@ SCHEMA_VERSION = 1
 KINDS = ("builtin", "template", "delegation", "meta")
 
 # Base set per the sections plan's command table (§14.4): fully functional
-# template/delegation entries; builtin dispatch (which verb each name maps
-# to) is 9.8's wiring. Meta entries are advisory-card content: the 9.5
+# template/delegation entries and builtins wired by 9.8. Meta entries are
+# advisory-card content: the 9.5
 # executor quotes their arguments as data and performs exactly one turn.
 DEFAULT_COMMANDS = {
     "schema_version": SCHEMA_VERSION,
     "commands": [
+        {"name": "mode", "kind": "builtin",
+         "description": "Switch auto/manual participation at the next round barrier."},
+        {"name": "vote", "kind": "builtin",
+         "description": "Request a forced weighted vote at the next round barrier."},
+        {"name": "consensus", "kind": "builtin",
+         "description": "Request a coordinator consensus attempt at the next round barrier."},
+        {"name": "cast", "kind": "builtin",
+         "description": "Add or remove a roster member at the next round barrier."},
+        {"name": "fork", "kind": "builtin",
+         "description": "Fork this session through the existing session fork verb."},
+        {"name": "promote", "kind": "builtin",
+         "description": "Promote this chat through the existing promotion verb."},
+        {"name": "send", "kind": "builtin",
+         "description": "Route an artifact to a section through route_push."},
         {"name": "summarize", "kind": "template",
          "template": "@Documentation summarize this conversation so far.",
          "description": "Ask Documentation to summarize the conversation."},
@@ -39,8 +53,14 @@ DEFAULT_COMMANDS = {
          "description": "Deep-dive: QA audits this conversation."},
         {"name": "research", "kind": "delegation", "target": "research",
          "description": "Deep-dive: Research investigates a question."},
-        {"name": "vote", "kind": "builtin",
-         "description": "Force a vote on the current phase (wired by 9.8)."},
+        {"name": "compare", "kind": "builtin",
+         "description": "Compare one prompt across selected enabled models without changing the room."},
+        {"name": "status", "kind": "builtin",
+         "description": "Show this session's persisted run status."},
+        {"name": "cost", "kind": "builtin",
+         "description": "Show this session's honest metered/unmetered cost rollup."},
+        {"name": "help", "kind": "builtin",
+         "description": "Show the effective layered command registry grouped by kind."},
         {"name": "model-effort", "kind": "meta",
          "description":
              "Return an advisory card only; do not perform the task. Use "
@@ -63,6 +83,39 @@ DEFAULT_COMMANDS = {
                         "never auto-send it."},
     ],
 }
+
+# Names are data; behavior remains at the existing engine/GUI verb seams.
+# The pure table is deliberately testable without importing orchestrator.py.
+COMMAND_VERBS = {
+    "mode": "barrier_mode",
+    "vote": "barrier_vote",
+    "consensus": "barrier_consensus",
+    "cast": "roster_cast",
+    "fork": "fork_session",
+    "promote": "promote_chat",
+    "send": "route_push",
+    "audit": "delegate_qa",
+    "research": "delegate_research",
+    "decision": "template_decision",
+    "summarize": "template_summarize",
+    "compare": "compare_models",
+    "status": "session_status",
+    "cost": "session_cost",
+    "help": "registry_help",
+}
+
+
+def dispatch_registered(name, args, handlers):
+    """Call exactly one injected existing-verb handler for a base command.
+
+    Returns ``(handled, result)``. Unknown/deleted registry names are a clean
+    no-op; callers remain responsible for checking the effective layered
+    registry before invoking this table.
+    """
+    verb = COMMAND_VERBS.get(name)
+    if verb is None or verb not in handlers:
+        return False, None
+    return True, handlers[verb](args)
 
 _NAME_EXTRA = "-_"
 

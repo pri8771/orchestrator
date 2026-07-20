@@ -4060,6 +4060,136 @@ def strip_command_cards(text):
     return _COMMAND_CARD_RE.sub("", text)
 
 
+def _command_session_id(cfg):
+    root, app_dir = cfg.get("root") or "", cfg.get("_app_dir") or ""
+    if not root or not app_dir:
+        return ""
+    rel = os.path.relpath(app_dir, root)
+    return "" if rel.startswith("..") else rel.replace(os.sep, "/")
+
+
+def _queue_barrier_command(app_dir, name, args, rnd):
+    """Persist one next-round request; duplicate vote/consensus/mode requests
+    collapse by name so double-submit cannot trigger twice at the barrier."""
+    state = load_state(app_dir)
+    queued = [row for row in state.get("command_barrier", [])
+              if isinstance(row, dict) and row.get("name") != name]
+    queued.append({"name": name, "args": args, "requested_round": rnd})
+    state["command_barrier"] = queued
+    save_state(app_dir, state)
+    return "**/%s queued** — will take effect at the next round barrier " \
+           "(after round %d)." % (name, rnd)
+
+
+def _take_barrier_commands(app_dir, state, rnd):
+    """Move due command requests out of persisted state exactly once."""
+    latest = load_state(app_dir)
+    queued = [row for row in latest.get("command_barrier", [])
+              if isinstance(row, dict)]
+    due = [row for row in queued
+           if int(row.get("requested_round") or 0) < rnd]
+    latest["command_barrier"] = [row for row in queued if row not in due]
+    state.clear()
+    state.update(latest)
+    if due:
+        save_state(app_dir, state)
+    return due
+
+
+def _cost_display(app_dir):
+    totals = costslib.rollup(app_dir)
+    metered = totals["metered_turns"]
+    unknown = totals["unmetered_turns"] + totals["unpriced_turns"]
+    if metered == 0 and unknown == 0:
+        return "No completed turns have cost records yet."
+    if metered == 0:
+        return "unmetered · %d turn%s" % (unknown, "" if unknown == 1 else "s")
+    dollars = "$%.2f" % (totals["cost_micro_usd"] / 1000000.0)
+    priced = metered - totals["unpriced_turns"]
+    if unknown:
+        if priced:
+            return "≥ %s · %d turn%s unmetered" % (
+                dollars, unknown, "" if unknown == 1 else "s")
+        return "unmetered · %d turn%s" % (unknown, "" if unknown == 1 else "s")
+    return dollars
+
+
+def _comparison_spec(args, active):
+    """`models :: prompt`; without `::`, compare the current enabled roster."""
+    if "::" in args:
+        raw_models, prompt = args.split("::", 1)
+        models = [m.strip() for m in raw_models.split(",") if m.strip()]
+    else:
+        models, prompt = list(active), args
+    # Ordered de-dupe keeps display stable and prevents duplicate paid turns.
+    models = list(dict.fromkeys(models))
+    return models, prompt.strip()
+
+
+def _run_command_compare(cfg, app, app_dir, key, rnd, args, active):
+    models, prompt = _comparison_spec(args, active)
+    if not models or not prompt:
+        return "**/compare — all failed**\n\nChoose at least one model and a prompt."
+
+    def one(model):
+        agent, effort = model, ""
+        if "@" in model:
+            agent, effort = model.rsplit("@", 1)
+        if effort and effort not in ("low", "medium", "high"):
+            return {"model": model, "status": "failed",
+                    "error": "unsupported effort %r" % effort}
+        if effort and not resolve_capabilities(agent).get("effort_control"):
+            return {"model": model, "status": "failed",
+                    "error": "%s has no effort control" % agent}
+        if agent not in active and not _agent_available(agent, cfg):
+            return {"model": model, "status": "failed",
+                    "error": "model is not enabled/available"}
+        before = len(costslib.read_records(app_dir))
+        try:
+            acfg = tcxlib.TurnContext(cfg).thread_copy(
+                health_key=agent, stateless=True)
+            if effort:
+                models_cfg = dict(acfg.get("models") or {})
+                if agent.startswith("codex"):
+                    models_cfg["codex_reasoning"] = effort
+                elif agent.startswith("claude"):
+                    models_cfg["claude_reasoning"] = effort
+                acfg["models"] = models_cfg
+            text = call_agent(acfg, app, key, "compare", agent,
+                              "Answer this comparison prompt independently. "
+                              "Do not mutate the live session or its roster.\n\n" + prompt)
+            records = costslib.read_records(app_dir)
+            own = [r for r in records[before:] if r.get("agent") == agent]
+            cost = "unmetered"
+            if own:
+                rec = own[-1]
+                if rec.get("metered") and isinstance(rec.get("cost_micro_usd"), int):
+                    cost = "$%.2f" % (rec["cost_micro_usd"] / 1000000.0)
+                elif rec.get("metered"):
+                    cost = "unmetered (price unavailable)"
+            return {"model": model, "status": "ok", "text": str(text),
+                    "cost": cost}
+        except Exception as exc:  # one dead model never blanks the card
+            return {"model": model, "status": "failed", "error": str(exc)}
+
+    by_model = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(models)) as ex:
+        futures = {ex.submit(one, model): model for model in models}
+        for future in concurrent.futures.as_completed(futures):
+            by_model[futures[future]] = future.result()
+    columns = [by_model[model] for model in models]
+    heading = "all failed" if all(c["status"] == "failed" for c in columns) \
+        else "%d model%s" % (len(columns), "" if len(columns) == 1 else "s")
+    lines = ["**/compare — %s**" % heading, "", "Prompt: %s" % prompt]
+    for col in columns:
+        lines.extend(["", "### %s — %s" % (col["model"], col["status"])])
+        if col["status"] == "ok":
+            lines.extend([col["text"], "Cost: %s" % col["cost"]])
+        else:
+            lines.append("Error: %s" % col["error"])
+    return "\n".join(lines)
+
+
 def _dispatch_command(cfg, app, app_dir, phasedef, key, rnd, original_prompt,
                       prior_outputs, personas, active, transcript, md_path,
                       raw_msg, extra=""):
@@ -4114,10 +4244,80 @@ def _dispatch_command(cfg, app, app_dir, phasedef, key, rnd, original_prompt,
         emit("Template '/%s' expanded — review and send." % name)
         return transcript
     if entry["kind"] == "builtin":
-        # Recognized, but which verb it maps to is 9.8's wiring — a no-op
-        # here is honest (R2: never claim to have done something it didn't).
-        emit("Command '/%s' is recognized but not yet wired (builtin)."
-             % name)
+        sid = _command_session_id(cfg)
+
+        def barrier(_args):
+            return _queue_barrier_command(app_dir, name, _args, rnd)
+
+        def fork_existing(_args):
+            code, forked = fork_session(cfg.get("root") or "", sid,
+                                        _args.strip() or None)
+            return ("Forked as `%s`." % forked) if code == 0 else \
+                "Fork refused by the existing session-fork safety checks."
+
+        def promote_existing(_args):
+            code, _target = promote_chat(cfg.get("root") or "", sid,
+                                         _args.strip() or None,
+                                         wait_seconds=0)
+            return "Promotion queued." if code == 0 else \
+                "Promotion refused while this live round still owns the session."
+
+        def route_existing(_args):
+            parts = _args.split()
+            if len(parts) != 2:
+                return "Usage: `/send <artifact-id> <project/section/chat>`."
+            ns = argparse.Namespace(route_from=sid, route_to=parts[1],
+                                    route_artifact=parts[0])
+            code = _do_route_push(cfg, ns)
+            return "Artifact routed." if code == 0 else \
+                "Artifact route refused; see the engine reason above."
+
+        def status_existing(_args):
+            st = load_state(app_dir)
+            return ("Session `%s` · phase `%s` · round %s · %s"
+                    % (sid, st.get("current_phase") or "not started",
+                       st.get("current_round") or 0,
+                       "done" if st.get("done") else
+                       ("error: %s" % st["error"] if st.get("error")
+                        else "in progress")))
+
+        def help_existing(_args):
+            groups = {kind: [] for kind in cmdlib.KINDS}
+            for command in registry.values():
+                groups[command["kind"]].append(command)
+            lines = ["**Available commands**"]
+            for kind in cmdlib.KINDS:
+                rows = sorted(groups[kind], key=lambda row: row["name"])
+                if rows:
+                    lines.extend(["", "### %s" % kind])
+                    lines.extend("`/%s` — %s" % (row["name"],
+                                 row.get("description") or "No description.")
+                                 for row in rows)
+            return "\n".join(lines)
+
+        handlers = {
+            "barrier_mode": barrier, "barrier_vote": barrier,
+            "barrier_consensus": barrier, "roster_cast": barrier,
+            "fork_session": fork_existing, "promote_chat": promote_existing,
+            "route_push": route_existing,
+            "compare_models": lambda a: _run_command_compare(
+                cfg, app, app_dir, key, rnd, a, active),
+            "session_status": status_existing,
+            "session_cost": lambda _a: _cost_display(app_dir),
+            "registry_help": help_existing,
+        }
+        handled, result = cmdlib.dispatch_registered(name, args, handlers)
+        if not handled:
+            _render_command_card(
+                md_path, "**/%s unavailable** — its mapped existing verb is "
+                         "not available on this surface." % name)
+            emit("Command '/%s' has no available builtin handler." % name)
+            return transcript
+        _render_command_card(md_path, str(result))
+        evlib.emit_event(app_dir, "command_result", project=app, phase=key,
+                         round=rnd, name=name, card=str(result)[:2000])
+        emit("Command '/%s' ran through %s." %
+             (name, cmdlib.COMMAND_VERBS.get(name)))
         return transcript
     # meta: exactly ONE advisory call_agent turn. The user's text is quoted
     # DATA inside the prompt — never itself executed, sent to the room, or
@@ -7094,6 +7294,80 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
             cfg = _apply_phase_routing(base, key)
             emit("Chat routing updated — new model assignments apply from "
                  "round %d." % rnd)
+        # V3 9.8: room-mutating commands are applied only after the round in
+        # which they were requested. The persisted queue makes crash/resume
+        # deterministic and name de-duplication prevents double-votes.
+        for _request in _take_barrier_commands(app_dir, state, rnd):
+            _cname = str(_request.get("name") or "")
+            _cargs = str(_request.get("args") or "").strip()
+            _announcement = ""
+            if _cname == "mode":
+                if _cargs not in ("auto", "manual"):
+                    _announcement = "Mode unchanged — use `/mode auto` or `/mode manual`."
+                else:
+                    state["chat_mode"] = _cargs
+                    _announcement = "Room mode is now %s (applied at round %d barrier)." \
+                        % (_cargs, rnd)
+            elif _cname == "cast":
+                _parts = _cargs.split(None, 1)
+                if len(_parts) != 2 or _parts[0] not in ("add", "remove"):
+                    _announcement = "Cast unchanged — use `/cast add|remove <agent>`."
+                else:
+                    _op, _agent = _parts
+                    if _op == "remove" and _agent in active:
+                        active.remove(_agent)
+                        _announcement = "%s leaves the cast from round %d." % (
+                            DISPLAY.get(_agent, _agent), rnd)
+                    elif _op == "add" and _agent not in active \
+                            and _agent_available(_agent, cfg):
+                        active.append(_agent)
+                        _announcement = "%s joins the cast from round %d." % (
+                            DISPLAY.get(_agent, _agent), rnd)
+                    elif _op == "add" and _agent in active:
+                        _announcement = "%s is already in the cast." % _agent
+                    else:
+                        _announcement = "Unknown or unavailable agent `%s`; cast unchanged." % _agent
+            elif _cname == "vote":
+                _available = [a for a in ordered_agents(active)
+                              if _agent_available(a, cfg)]
+                if not _available:
+                    _announcement = "Vote failed: no enabled agent is available."
+                else:
+                    _coord = _pick_coordinator(cfg, _available)
+                    _ignored, transcript, _vote = _run_forced_vote(
+                        cfg, app, app_dir, phasedef, original_prompt,
+                        prior_outputs, state, md_path=md_path,
+                        transcript=transcript, unit="round", coord=_coord,
+                        available_active=_available,
+                        last_substantive=_last_substantive, final_output="")
+                    _announcement = "Requested vote completed at the round %d barrier." % rnd
+            elif _cname == "consensus":
+                _available = [a for a in ordered_agents(active)
+                              if _agent_available(a, cfg)]
+                if not _available:
+                    _announcement = "Consensus attempt failed: no enabled agent is available."
+                else:
+                    _coord = _pick_coordinator(cfg, _available)
+                    _ctx = build_context(cfg, app, phasedef, original_prompt,
+                                         prior_outputs, transcript)
+                    try:
+                        _resp = call_agent(
+                            cfg, app, key, "consensus", _coord,
+                            prompt_coordinate(cfg, _coord, _ctx, phasedef,
+                                              rnd, final_round=False))
+                        _block = "**Coordinator (%s) — requested consensus attempt**\n\n%s\n" % (
+                            DISPLAY.get(_coord, _coord), _resp)
+                        append_md(md_path, "\n" + _block)
+                        transcript += "\n" + _block
+                        _announcement = "Consensus attempt completed at the round %d barrier." % rnd
+                    except AgentError as exc:
+                        _announcement = "Consensus attempt failed visibly: %s" % exc
+            if _announcement:
+                _block = "**System — Round %d**\n\n_%s_\n" % (rnd, _announcement)
+                append_md(md_path, "\n" + _block)
+                transcript += "\n" + _block
+                emit(_announcement)
+        save_state(app_dir, state)
         state["current_round"] = rnd
         save_state(app_dir, state)
         unit_label = "Round %d" % rnd

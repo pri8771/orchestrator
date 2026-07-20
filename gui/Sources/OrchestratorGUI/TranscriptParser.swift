@@ -38,6 +38,7 @@ enum TranscriptParser {
         t.purpose = extractSection(lines, after: "## Phase Purpose")
         t.finalOutput = extractFinalOutput(lines)
         t.marker = extractMarker(lines)
+        t.commandCards = extractCommandCards(lines)
 
         guard let tStart = indexOfHeading(lines, "## Transcript") else { return t }
         // Transcript ends at the footer "## Coordinator Decision" if present.
@@ -200,5 +201,26 @@ enum TranscriptParser {
             }
         }
         return nil
+    }
+
+    private static func extractCommandCards(_ lines: [String]) -> [CommandTranscriptCard] {
+        let start = "<!-- command-card:start -->"
+        let end = "<!-- command-card:end -->"
+        var cards: [CommandTranscriptCard] = []
+        var body: [String]? = nil
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == start {
+                body = []
+            } else if trimmed == end, let collected = body {
+                let text = collected.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                cards.append(CommandTranscriptCard(id: cards.count, body: text))
+                body = nil
+            } else if body != nil {
+                body?.append(line)
+            }
+        }
+        return cards
     }
 }
