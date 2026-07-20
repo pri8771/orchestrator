@@ -4,7 +4,7 @@ import Combine
 import UserNotifications
 import SwiftUI
 
-private enum BackgroundProjectLoader {
+enum BackgroundProjectLoader {
     static func discoverApps(rootURL: URL) -> [String] {
         // V3 3.0: flat + nested (marker-gated) — one shared implementation.
         SessionLayout.discoverApps(rootURL: rootURL)
@@ -225,7 +225,7 @@ private func firstMatch(in text: String, pattern: String) -> String? {
 // (same pattern as BackgroundProjectLoader above) into a plain value snapshot,
 // so a busy disk never stalls the main thread; the main-actor hop publishes
 // only the values that changed.
-private enum BackgroundConfigLoader {
+enum BackgroundConfigLoader {
     // "ollama" last, mirroring the engine's AGENT_ORDER: the local model never
     // shadows a cloud agent anywhere order implies preference (spec §10/§12).
     static let agentOrder = ["codex", "claude", "gemini", "ollama"]
@@ -593,7 +593,11 @@ final class OrchestratorStore: ObservableObject {
     var watchdogSeconds: TimeInterval = 20
     static var scanDelayForTests: TimeInterval = 0
 
+    // Fleet ordering remains a compatibility surface while SessionModel is the
+    // canonical owner of each element's run state.
     @Published var projects: [Project] = []
+    @Published private(set) var sessionModels: [String: SessionModel] = [:]
+    private var sessionModelSubscriptions: [String: AnyCancellable] = [:]
     @Published var chatMetadata: [String: ChatMeta] = [:]
     @Published var chatMetaWarnings: [String: String] = [:]
     @Published var archivedChats: [ArchivedChat] = []
@@ -683,8 +687,6 @@ final class OrchestratorStore: ObservableObject {
     // Parallel-build roster status, keyed by project name. Computed at most once
     // per refresh() tick (below) — NOT on every SwiftUI body re-evaluation, which
     // would otherwise re-scan the logs directory on every render/animation frame.
-    @Published private var buildWorkerStatus: [String: [BuildWorker]] = [:]
-
     // Pluggable workflows + editable sub-agents, loaded from disk.
     @Published var workflows: [WorkflowDef] = []
     @Published var roles: [RoleDef] = []
@@ -723,18 +725,24 @@ final class OrchestratorStore: ObservableObject {
     // this is pure GUI state, not a project or a config file) so a conversation
     // survives quitting the app, not just navigating within one session.
     @Published var chatMessages: [ConciergeMessage] = [] {
-        didSet { saveChatHistory() }
+        didSet {
+            if !isLoadingChatHistory {
+                sessionModel(for: currentChatKey).chatMessages = chatMessages
+            }
+            saveChatHistory()
+        }
     }
-    @Published var chatInput = ""
-    @Published var chatThinking = false
-    // V3 board 1.4: per-chat history. currentChatKey selects which history
-    // file chatMessages mirrors ("home" = the legacy Chat Home thread; see
-    // ChatHistoryStore's key-space note). thinkingKeys/draftsByChat keep
-    // thinking state and composer drafts per chat so switching mid-reply
-    // can't show a "Thinking…" the new chat never asked for (§12.1/R2).
+    @Published var chatInput = "" {
+        didSet { sessionModel(for: currentChatKey).chatInput = chatInput }
+    }
+    @Published var chatThinking = false {
+        didSet { sessionModel(for: currentChatKey).chatThinking = chatThinking }
+    }
+    // V3 board 1.4: per-chat history. currentChatKey selects which SessionModel
+    // and history file the legacy fields mirror ("home" = Chat Home). Keeping
+    // thinking state and drafts on that model means switching mid-reply can't
+    // show a "Thinking…" the new chat never asked for (§12.1/R2).
     private(set) var currentChatKey = "home"
-    private var thinkingKeys: Set<String> = []
-    private var draftsByChat: [String: String] = [:]
     // Load-guard: loadChatHistory assigns chatMessages, which fires didSet →
     // saveChatHistory; without this flag a load-during-switch would write
     // chat A's messages under chat B's key.
@@ -742,7 +750,11 @@ final class OrchestratorStore: ObservableObject {
     // V3 board 1.5: engine-backed chat sessions minted by this GUI instance,
     // keyed by flat dir name. Lifecycle is the ChatSession state enum; the
     // scan-merge in refresh() only derives waiting/running transitions.
-    @Published var chatSessions: [String: ChatSession] = [:]
+    var chatSessions: [String: ChatSession] {
+        Dictionary(sessionModels.compactMap { key, model in
+            model.chatSession.map { (key, $0) }
+        }, uniquingKeysWith: { current, _ in current })
+    }
     @Published var chatClaudeAvailable = true
     @Published var buildLanes = 3
     @Published var shepherdActive = false
@@ -767,20 +779,48 @@ final class OrchestratorStore: ObservableObject {
     // error and launches are refused instead of failing cryptically.
     let engineAvailable: Bool
 
-    // Process handles for runs launched FROM THIS GUI session, keyed by project
-    // name, so a running project can be stopped. Handles don't survive a GUI
-    // relaunch — a run started elsewhere can't be signalled from here.
-    private var runningProcesses: [String: Process] = [:]
-    @Published private(set) var stoppableProjects: Set<String> = []
-    // Project name -> when the user pressed Stop. Overrides the state-file
-    // mtime "running" heuristic until the engine writes state again.
-    private var manualStops: [String: Date] = [:]
+    private let runController = RunController()
+    private var runControllerSubscription: AnyCancellable?
+    var stoppableProjects: Set<String> { runController.stoppableProjects }
 
     private var timer: Timer?
+    private(set) var refreshTimerInstallCount = 0
     private var refreshInFlight = false
     private var refreshPending = false
     private var refreshGeneration = 0
     private let fm = FileManager.default
+
+    @discardableResult
+    func sessionModel(for name: String) -> SessionModel {
+        if let existing = sessionModels[name] { return existing }
+        let model = SessionModel(id: name)
+        model.runController = runController
+        sessionModelSubscriptions[name] = model.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        sessionModels[name] = model
+        return model
+    }
+
+    private func setChatSession(_ session: ChatSession?, for name: String) {
+        sessionModel(for: name).chatSession = session
+    }
+
+    private func applyProjects(_ loaded: [Project], workers: [String: [BuildWorker]]) {
+        let loadedNames = Set(loaded.map(\.name))
+        for model in sessionModels.values where model.project != nil
+            && !loadedNames.contains(model.id) {
+            model.project = nil
+            model.buildWorkers = nil
+        }
+        for project in loaded {
+            let model = sessionModel(for: project.name)
+            if model.project != project { model.project = project }
+            let nextWorkers = workers[project.name]
+            if model.buildWorkers != nextWorkers { model.buildWorkers = nextWorkers }
+        }
+        if loaded != projects { projects = loaded }
+    }
 
     // TTL-cached model_routing.json reads. readModelRouting()/
     // readProjectRouting() are called straight from view bodies
@@ -825,6 +865,9 @@ final class OrchestratorStore: ObservableObject {
                 .appendingPathComponent("Documents/iOS-App-Factory", isDirectory: true)
         }
         try? fm.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        runControllerSubscription = runController.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     // The engine (orchestrator.py + workflows/config/knowledge) writes logs, seeds
@@ -932,6 +975,7 @@ final class OrchestratorStore: ObservableObject {
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        refreshTimerInstallCount += 1
     }
 
     private func rescheduleRefreshTimer() {
@@ -1003,120 +1047,71 @@ final class OrchestratorStore: ObservableObject {
         let modelPresetsURL = self.modelPresetsURL
         let configURL = self.configURL
         let artifactRegistryURL = self.orchDirURL.appendingPathComponent("artifact_types.json")
-        let manualStops = self.manualStops
+        let manualStops = runController.manualStops
         let commandProjectName = self.commandProjectName
-        let runningProcessNames = Set(runningProcesses.compactMap { $0.value.isRunning ? $0.key : nil })
+        let runningProcessNames = runController.runningProcessNames
+        let delayForTests = Self.scanDelayForTests
+        let input = FleetScanInput(
+            rootURL: rootURL, logsDirURL: logsDirURL,
+            workflowsDirURL: workflowsDirURL, rolesURL: rolesURL,
+            modelPresetsURL: modelPresetsURL, configURL: configURL,
+            artifactRegistryURL: artifactRegistryURL, manualStops: manualStops,
+            runningProcessNames: runningProcessNames,
+            commandProjectName: commandProjectName,
+            delayForTests: delayForTests)
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // 2.7 seam D: lets the watchdog/stale-generation tests wedge
-            // the scan deterministically; 0 in production.
-            if OrchestratorStore.scanDelayForTests > 0 {
-                Thread.sleep(forTimeInterval: OrchestratorStore.scanDelayForTests)
-            }
-            // Config + workflows first, so each project's shape can be resolved.
-            let snap = BackgroundConfigLoader.load(workflowsDirURL: workflowsDirURL,
-                                                   rolesURL: rolesURL,
-                                                   modelPresetsURL: modelPresetsURL,
-                                                   configURL: configURL)
-            let workflowIndex = Dictionary(snap.workflows.map { ($0.name, $0) },
-                                           uniquingKeysWith: { a, _ in a })
-            let defaultWorkflow = workflowIndex["app_build"]
-            let names = BackgroundProjectLoader.discoverApps(rootURL: rootURL)
-            let loaded = BackgroundProjectLoader.loadProjects(
-                names: names,
-                rootURL: rootURL,
-                workflowsByName: workflowIndex,
-                defaultWorkflow: defaultWorkflow,
-                manualStops: manualStops,
-                runningProcessNames: runningProcessNames)
-            let chatSnapshot = ChatMetadataIndex.scan(rootURL: rootURL)
-            let commandArtifact = commandProjectName.flatMap { name -> ArtifactRouteRef? in
-                let projectID = name.components(separatedBy: "/").first ?? name
-                return ArtifactRouteIndex.latestRoutable(
-                    projectDir: rootURL.appendingPathComponent(projectID))
-            }
-            let artifactIndex = ArtifactIndex.scan(
-                rootURL: rootURL, projectNames: names, registryURL: artifactRegistryURL)
-            var bws: [String: [BuildWorker]] = [:]
-            for p in loaded where p.running && (p.nextAgent?.contains("+") ?? false) {
-                if let workers = BackgroundProjectLoader.computeParallelBuildWorkers(for: p,
-                                                                                     logsDirURL: logsDirURL) {
-                    bws[p.name] = workers
-                }
-            }
-            let costsScan = CostsScanner.scan(rootURL: rootURL, names: names)
-            let locks = FactoryScanner.scanLocks(rootURL: rootURL)
-            // Dead/absent-pid detection on the scan thread: cheap kill(2)
-            // probes over captured locals, same seam as every other scanner.
-            let stale = FactoryScanner.staleLockNames(in: locks)
-            let autorun = FactoryScanner.scanAutorunDisabled(rootURL: rootURL, names: names)
-            let queueFile = FactoryScanner.readQueueFile(rootURL: rootURL)
-            // M4: events.jsonl tails + the fleet-health rollup (only files whose
-            // mtime/size moved are re-read — the scanner caches parses).
-            let events = EventsScanner.scan(rootURL: rootURL, names: names)
-            // A stale lock is a corpse, not a running project — counting it
-            // as running would hide the crash from the fleet-health rollup.
-            let running = Set(loaded.filter(\.running).map(\.name))
-                .union(locks.keys.filter { !stale.contains($0) })
-            // "Done" only means the pipeline finished — it says nothing about
-            // whether the last verify_results.json record actually passed.
-            // Fold a done-but-failed-verification project into the same
-            // "failed" rollup as an aborted run so the toolbar capsule can't
-            // read "All healthy" while a project's build is known-broken.
-            let failed = Set(loaded.filter {
-                $0.status == .aborted
-                    || ($0.status == .done && $0.latestVerify?.ok == false)
-            }.map(\.name))
-            let health = EventsScanner.summarize(eventsByProject: events,
-                                                 runningProjects: running,
-                                                 failedProjects: failed)
+            let result = FleetScanner.scan(input)
             DispatchQueue.main.async {
                 // A stale generation means the watchdog already recovered from
                 // this attempt hanging — a fresher refresh may already be in
                 // flight or applied, so this late result must not overwrite it.
                 guard let self, self.refreshGeneration == myGeneration else { return }
                 self.refreshInFlight = false
-                self.apply(snap)
-                self.orchestratorRunning = loaded.contains { $0.running }
+                self.apply(result.config)
+                self.orchestratorRunning = result.projects.contains { $0.running }
                 AppDelegate.runsActive = self.orchestratorRunning
                 self.reloadSectionRail()
-                self.detectTransitions(loaded)
-                if loaded != self.projects { self.projects = loaded }
-                if chatSnapshot.metadata != self.chatMetadata {
-                    self.chatMetadata = chatSnapshot.metadata
+                self.detectTransitions(result.projects)
+                self.applyProjects(result.projects, workers: result.workers)
+                if result.chat.metadata != self.chatMetadata {
+                    self.chatMetadata = result.chat.metadata
                 }
-                if chatSnapshot.warnings != self.chatMetaWarnings {
-                    self.chatMetaWarnings = chatSnapshot.warnings
+                if result.chat.warnings != self.chatMetaWarnings {
+                    self.chatMetaWarnings = result.chat.warnings
                 }
-                if chatSnapshot.archived != self.archivedChats {
-                    self.archivedChats = chatSnapshot.archived
+                if result.chat.archived != self.archivedChats {
+                    self.archivedChats = result.chat.archived
                 }
-                if chatSnapshot.transcriptAvailable != self.chatMetaEditable {
-                    self.chatMetaEditable = chatSnapshot.transcriptAvailable
+                if result.chat.transcriptAvailable != self.chatMetaEditable {
+                    self.chatMetaEditable = result.chat.transcriptAvailable
                 }
                 if commandProjectName == self.commandProjectName,
-                   commandArtifact != self.commandRoutableArtifact {
-                    self.commandRoutableArtifact = commandArtifact
+                   result.commandArtifact != self.commandRoutableArtifact {
+                    self.commandRoutableArtifact = result.commandArtifact
                 }
-                if artifactIndex != self.artifactsByProject {
-                    self.artifactsByProject = artifactIndex
+                if result.artifacts != self.artifactsByProject {
+                    self.artifactsByProject = result.artifacts
                 }
-                if bws != self.buildWorkerStatus { self.buildWorkerStatus = bws }
-                if events != self.eventsByProject { self.eventsByProject = events }
-                if health != self.fleetHealth { self.fleetHealth = health }
-                if costsScan != self.projectCosts { self.projectCosts = costsScan }
-                self.escalateFallbacksIfNeeded(events)
-                if locks != self.appLocks { self.appLocks = locks }
-                if stale != self.staleLocks { self.staleLocks = stale }
-                self.syncChatSessions(with: loaded)
-                if autorun != self.autorunDisabled { self.autorunDisabled = autorun }
-                self.updateResumeOffers(scannedRoot: rootURL, loaded: loaded,
-                                        locks: locks, stale: stale, autorun: autorun)
+                if result.events != self.eventsByProject { self.eventsByProject = result.events }
+                if result.health != self.fleetHealth { self.fleetHealth = result.health }
+                if result.costs != self.projectCosts { self.projectCosts = result.costs }
+                self.escalateFallbacksIfNeeded(result.events)
+                if result.locks != self.appLocks { self.appLocks = result.locks }
+                if result.staleLocks != self.staleLocks { self.staleLocks = result.staleLocks }
+                self.syncChatSessions(with: result.projects)
+                if result.autorunDisabled != self.autorunDisabled {
+                    self.autorunDisabled = result.autorunDisabled
+                }
+                self.updateResumeOffers(
+                    scannedRoot: rootURL, loaded: result.projects,
+                    locks: result.locks, stale: result.staleLocks,
+                    autorun: result.autorunDisabled)
                 if self.queueDragActive, let t = self.queueDragStarted,
                    Date().timeIntervalSince(t) > 30 {
                     self.endQueueDrag()   // abandoned drag — persist what's shown
                 }
-                if let qf = queueFile, !self.queueDragActive {
+                if let qf = result.queueFile, !self.queueDragActive {
                     if qf.order != self.queueOrder { self.queueOrder = qf.order }
                     if qf.lanes != self.buildLanes { self.buildLanes = qf.lanes }
                 }
@@ -1155,11 +1150,9 @@ final class OrchestratorStore: ObservableObject {
             autorunDisabled: autorun,
             doneOrMissing: Set(loaded.filter { $0.status == .done }.map(\.name))
                 .union(stale.subtracting(loaded.map(\.name))),
-            guiOwnedLive: Set(runningProcesses.compactMap {
-                $0.value.isRunning ? $0.key : nil
-            }),
+            guiOwnedLive: runController.runningProcessNames,
             queuedOrLaunching: queuedOrLaunching,
-            manuallyStopped: Set(manualStops.keys))
+            manuallyStopped: Set(runController.manualStops.keys))
         if offers != crashedRuns { crashedRuns = offers }
     }
 
@@ -1220,7 +1213,7 @@ final class OrchestratorStore: ObservableObject {
                 section: OrchestratorStore.slugify(section),
                 slug: OrchestratorStore.slugify(title),
                 workflow: workflow)
-            chatSessions[minted.name] = session
+            setChatSession(session, for: minted.name)
             refresh()
             return session
         } catch {
@@ -1250,21 +1243,27 @@ final class OrchestratorStore: ObservableObject {
         case .idle:
             s.state = .launching
         }
-        chatSessions[id] = s
+        setChatSession(s, for: id)
         launch(args: ["orchestrator.py", "--root", rootURL.path, "--app", id],
                project: id)
         // R2: 'running' only with a live handle backing it.
-        if runningProcesses[id]?.isRunning == true {
-            chatSessions[id]?.state = .running
+        if runController.isRunning(id) {
+            var updated = chatSessions[id]
+            updated?.state = .running
+            setChatSession(updated, for: id)
         } else if chatSessions[id]?.state.isAlive == true {
-            chatSessions[id]?.state = .crashed(code: -1, wasSignal: false)
+            var updated = chatSessions[id]
+            updated?.state = .crashed(code: -1, wasSignal: false)
+            setChatSession(updated, for: id)
             surfaceError("The chat engine failed to launch — see the run log.")
         }
     }
 
     func stopChatSession(_ id: String) {
         guard chatSessions[id]?.state.isAlive == true else { return }
-        chatSessions[id]?.state = .stopping
+        var updated = chatSessions[id]
+        updated?.state = .stopping
+        setChatSession(updated, for: id)
         stopProject(id)   // SIGTERM→grace→SIGKILL + owner-checked lock cleanup
     }
 
@@ -1375,12 +1374,12 @@ final class OrchestratorStore: ObservableObject {
                 let parts = name.contains("/")
                     ? name.components(separatedBy: "/")
                     : name.components(separatedBy: "--")
-                self.chatSessions[name] = ChatSession(
+                self.setChatSession(ChatSession(
                     id: name,
                     project: parts.count == 3 ? parts[0] : name,
                     section: parts.count == 3 ? parts[1] : "",
                     slug: parts.count == 3 ? parts[2] : name,
-                    workflow: workflow)
+                    workflow: workflow), for: name)
                 self.refresh()
             }
         }
@@ -1398,7 +1397,7 @@ final class OrchestratorStore: ObservableObject {
 
     private func performPromotion(_ id: String) {
         pendingPromote.remove(id)
-        chatSessions.removeValue(forKey: id)
+        setChatSession(nil, for: id)
         launch(args: ["orchestrator.py", "--root", rootURL.path, "--promote", id],
                project: id)
         refresh()
@@ -1422,7 +1421,9 @@ final class OrchestratorStore: ObservableObject {
         let next = ChatSessionState.afterTermination(
             status: status, uncaughtSignal: uncaughtSignal,
             wasStopping: wasStopping, stateDone: done, conversationEnd: endReason)
-        chatSessions[name]?.state = next
+        var updated = chatSessions[name]
+        updated?.state = next
+        setChatSession(updated, for: name)
         if case .crashed(let code, let wasSignal) = next {
             // A crash cancels a pending promotion — promoting a half-written
             // chat must be the user's explicit second decision, not automatic.
@@ -1446,11 +1447,15 @@ final class OrchestratorStore: ObservableObject {
         let byName = Dictionary(projects.map { ($0.name, $0) },
                                 uniquingKeysWith: { a, _ in a })
         for (id, session) in chatSessions {
-            let alive = runningProcesses[id]?.isRunning == true
+            let alive = runController.isRunning(id)
             let awaiting = byName[id]?.awaitingHuman != nil
             let next = ChatSessionState.applyingScan(
                 current: session.state, awaitingHuman: awaiting, processAlive: alive)
-            if next != session.state { chatSessions[id]?.state = next }
+            if next != session.state {
+                var updated = session
+                updated.state = next
+                setChatSession(updated, for: id)
+            }
         }
     }
 
@@ -2626,7 +2631,7 @@ final class OrchestratorStore: ObservableObject {
         let name = project.name
         let wasRunning = project.running || canStop(name) || appLocks[name] != nil
         if wasRunning {
-            if runningProcesses[name] != nil { stopProject(name) } else { stopRun(name) }
+            if runController.hasTrackedProcess(name) { stopProject(name) } else { stopRun(name) }
         }
         removeFromQueue(name)
         removeFromQueueOrder(name)
@@ -3255,10 +3260,10 @@ final class OrchestratorStore: ObservableObject {
         // NEWER than the stop means a new run started, so the override is
         // dropped; writes within 10s are the engine's own SIGTERM shutdown.
         var stopped = false
-        if let stopAt = manualStops[name] {
+        if let stopAt = runController.manualStops[name] {
             if let m = stateMTime, m.timeIntervalSince(stopAt) > 10 {
-                manualStops[name] = nil
-            } else if !(runningProcesses[name]?.isRunning ?? false) {
+                runController.clearManualStop(name)
+            } else if !runController.isRunning(name) {
                 running = false
                 stopped = status == .inProgress
             }
@@ -3344,21 +3349,10 @@ final class OrchestratorStore: ObservableObject {
     // nothing. The stat + read + Markdown parse all run in a detached task —
     // never on the main actor, where a busy disk beachballed the UI — and only
     // the cache lookup/update happens here. Content one tick late is fine.
-    private var transcriptCache: [String: (mtime: Date, value: PhaseTranscript)] = [:]
     private nonisolated static let transcriptReadLimitBytes = 1_500_000
     private nonisolated static let transcriptHeadReadBytes = 256_000
 
-    struct StreamTailCache: Sendable {
-        var path: String
-        var turnID: String
-        var agent: String
-        var offset: UInt64
-        var remainder: Data
-        var text: String
-        var mtime: Date
-        var lastSeq: Int
-    }
-    private var streamTailCache: [String: StreamTailCache] = [:]
+    typealias StreamTailCache = SessionModel.StreamTailCache
 
     nonisolated static func shouldReadStream(focusedPane: String?, project: String,
                                              running: Bool, supportsStreams: Bool) -> Bool {
@@ -3369,15 +3363,16 @@ final class OrchestratorStore: ObservableObject {
     /// executes BEFORE Task.detached and therefore before any directory stat or
     /// open: background panes and the fleet refresh scan never touch .stream.
     func streamPreview(for project: Project, agent: String) async -> StreamPreview? {
+        let model = sessionModel(for: project.name)
         let supports = DS.identity(agent).streams
         guard Self.shouldReadStream(focusedPane: focusedLivePane,
                                     project: project.name,
                                     running: project.running,
                                     supportsStreams: supports) else {
-            streamTailCache.removeValue(forKey: project.name)
+            model.streamTailCache = nil
             return nil
         }
-        let prior = streamTailCache[project.name]
+        let prior = model.streamTailCache
         let dir = project.dirURL.appendingPathComponent(".stream", isDirectory: true)
         let (next, preview) = await Task.detached(priority: .utility) {
             Self.readStreamTail(in: dir, agent: agent, prior: prior)
@@ -3388,11 +3383,10 @@ final class OrchestratorStore: ObservableObject {
                                     project: project.name,
                                     running: project.running,
                                     supportsStreams: supports) else {
-            streamTailCache.removeValue(forKey: project.name)
+            model.streamTailCache = nil
             return nil
         }
-        if let next { streamTailCache[project.name] = next }
-        else { streamTailCache.removeValue(forKey: project.name) }
+        model.streamTailCache = next
         return preview
     }
 
@@ -3459,17 +3453,18 @@ final class OrchestratorStore: ObservableObject {
     }
 
     func transcript(for project: Project, phaseKey: String) async -> PhaseTranscript {
+        let model = sessionModel(for: project.name)
         guard let def = phases(for: project).first(where: { $0.key == phaseKey })
                 ?? ALL_PHASES.first(where: { $0.key == phaseKey }) else {
             return PhaseTranscript()
         }
         let url = project.dirURL.appendingPathComponent(def.folder).appendingPathComponent(def.file)
-        let cachedMtime = transcriptCache[url.path]?.mtime
+        let cachedMtime = model.transcriptCache[url.path]?.mtime
         let (mtime, fresh) = await Task.detached(priority: .utility) {
             Self.readAndParseTranscript(at: url, ifChangedSince: cachedMtime)
         }.value
-        if let fresh { transcriptCache[url.path] = (mtime, fresh) }
-        return transcriptCache[url.path]?.value ?? PhaseTranscript()
+        if let fresh { model.transcriptCache[url.path] = (mtime, fresh) }
+        return model.transcriptCache[url.path]?.value ?? PhaseTranscript()
     }
 
     // fresh == nil means the file hasn't changed since `ifChangedSince` (keep
@@ -3532,7 +3527,7 @@ final class OrchestratorStore: ObservableObject {
     // Returns nil for every phase that isn't a real parallel-build fan-out, so
     // callers fall back to the normal single-agent ThinkingRow.
     func parallelBuildWorkers(for project: Project) -> [BuildWorker]? {
-        buildWorkerStatus[project.name]
+        sessionModels[project.name]?.buildWorkers
     }
 
     // The actual computation — called ONLY from refresh(), never from a view.
@@ -3874,6 +3869,7 @@ final class OrchestratorStore: ObservableObject {
         // previous chat's messages on screen.
         chatMessages = chatHistory.load(key: currentChatKey) ?? []
         isLoadingChatHistory = false
+        sessionModel(for: currentChatKey).chatMessages = chatMessages
     }
 
     // Switch the visible conversation to another history key: persist the
@@ -3883,17 +3879,18 @@ final class OrchestratorStore: ObservableObject {
     // and test-proven now so later keys can't cross-write histories.)
     func switchChat(to key: String) {
         guard key != currentChatKey else { return }
-        draftsByChat[currentChatKey] = chatInput
+        sessionModel(for: currentChatKey).chatInput = chatInput
         currentChatKey = key
-        chatInput = draftsByChat[key] ?? ""
-        chatThinking = thinkingKeys.contains(key)
+        let model = sessionModel(for: key)
+        chatInput = model.chatInput
+        chatThinking = model.chatThinking
         loadChatHistory()
     }
 
     // Concierge bookkeeping, keyed so a reply that lands after a chat switch
     // is delivered to the chat that asked — never the newly-focused one.
     func setChatThinking(_ thinking: Bool, for key: String) {
-        if thinking { thinkingKeys.insert(key) } else { thinkingKeys.remove(key) }
+        sessionModel(for: key).chatThinking = thinking
         if key == currentChatKey { chatThinking = thinking }
     }
 
@@ -3904,6 +3901,7 @@ final class OrchestratorStore: ObservableObject {
         } else {
             do {
                 try chatHistory.append(message, key: key)
+                sessionModel(for: key).chatMessages.append(message)
             } catch {
                 runLog += "Couldn't deliver chat reply to '\(key)': \(error.localizedDescription)\n"
             }
@@ -4011,58 +4009,14 @@ final class OrchestratorStore: ObservableObject {
 
     // True when this GUI session owns a live process for the project (Stop works).
     func canStop(_ name: String) -> Bool {
-        stoppableProjects.contains(name) && (runningProcesses[name]?.isRunning ?? false)
+        runController.canStop(name)
     }
 
-    // Stop a running project: SIGTERM (the engine's signal handler releases its
-    // locks), escalate to SIGKILL after a ~5s grace, then defensively clear the
-    // per-app lock (<engine>/locks/<app>.lock) in case it was left behind.
     func stopProject(_ name: String) {
-        guard let proc = runningProcesses[name] else {
-            runLog += "\(name) wasn't launched from this window, so it can't be stopped here.\n"
-            return
-        }
-        manualStops[name] = Date()
-        runLog += "Stopping \(name)…\n"
-        let pid = proc.processIdentifier
-        if proc.isRunning { proc.terminate() }   // SIGTERM
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            guard let self else { return }
-            if proc.isRunning {
-                kill(pid, SIGKILL)
-                self.runLog += "\(name) didn't exit within 5s — killed.\n"
-            }
-            // The engine normally removes its own lock on SIGTERM; clean up
-            // defensively in case it didn't get the chance. Locks live in the
-            // workspace (<root>/.orch-locks) so both engine copies contend for
-            // the same file; the engine-local path is the legacy location.
-            // Only delete a lock the STOPPED run (or a dead process) owns — a
-            // relaunch within this 5s grace may already hold a fresh lock.
-            for lockURL in [SessionLayout.lockURL(rootURL: self.rootURL, id: name),
-                            self.orchDirURL.appendingPathComponent("locks/\(name).lock")] {
-                guard let text = try? String(contentsOf: lockURL, encoding: .utf8) else { continue }
-                let ownerPid = text.split(separator: " ")
-                    .first { $0.hasPrefix("pid=") }
-                    .flatMap { Int32($0.dropFirst(4)) }
-                let ownedByStopped = ownerPid == pid
-                let ownerAlive = ownerPid.map { kill($0, 0) == 0 } ?? false
-                if ownedByStopped || !ownerAlive {
-                    do {
-                        try self.fm.removeItem(at: lockURL)
-                    } catch {
-                        // A lock we can't clear leaves the lane looking "running"
-                        // forever — surface it (skip the benign already-gone case).
-                        if self.fm.fileExists(atPath: lockURL.path) {
-                            self.surfaceError("Could not clear stale lock for \(name) at "
-                                + "\(lockURL.path): \(error.localizedDescription)")
-                        }
-                    }
-                }
-            }
-            self.refresh()
-        }
-        refresh()
+        runController.stopOwned(
+            name, rootURL: rootURL,
+            legacyLockURL: orchDirURL.appendingPathComponent("locks/\(name).lock"),
+            hooks: runHooks())
     }
 
     private func launch(args: [String], project: String? = nil) {
@@ -4070,65 +4024,24 @@ final class OrchestratorStore: ObservableObject {
             runLog += "Cannot launch — \(engineMissingMessage)\n"
             return
         }
-        let py = resolvePython()
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: py)
-        proc.currentDirectoryURL = rootURL
-        proc.arguments = [orchDirURL.appendingPathComponent(args[0]).path] + Array(args.dropFirst())
+        runController.launch(
+            python: resolvePython(), script: orchDirURL.appendingPathComponent(args[0]),
+            arguments: Array(args.dropFirst()), rootURL: rootURL,
+            project: project, hooks: runHooks())
+    }
 
-        var env = ProcessInfo.processInfo.environment
-        for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                  "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL",
-                  "GOOGLE_APPLICATION_CREDENTIALS"] {
-            env.removeValue(forKey: k)
-        }
-        proc.environment = env
-
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let s = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in
-                self?.runLog += s
-                // Bounded tail, trimmed on a LINE boundary (RunLogBuffer) so the
-                // panel never shows a garbled half-line after truncation.
-                if let r = self?.runLog {
-                    self?.runLog = RunLogBuffer.trim(r)
-                }
-                self?.refresh()
-            }
-        }
-        proc.terminationHandler = { [weak self] p in
-            let status = p.terminationStatus
-            let uncaught = p.terminationReason == .uncaughtSignal
-            Task { @MainActor in
-                // §5.2: a SIGKILL'd child reports uncaughtSignal with the
-                // SIGNAL number in terminationStatus — "killed by signal 9"
-                // is not "exited with code 9".
-                self?.runLog += uncaught
-                    ? "\n[killed by signal \(status)]\n"
-                    : "\n[exited with code \(status)]\n"
-                pipe.fileHandleForReading.readabilityHandler = nil
-                if let name = project {
-                    self?.runningProcesses[name] = nil
-                    self?.stoppableProjects.remove(name)
-                    self?.noteChatTermination(name: name, status: status,
-                                              uncaughtSignal: uncaught)
-                }
-                self?.refresh()
-            }
-        }
-        do {
-            try proc.run()
-            // Retain the handle so the run can be stopped from the UI.
-            if let name = project {
-                runningProcesses[name] = proc
-                stoppableProjects.insert(name)
-                manualStops[name] = nil   // a fresh launch clears any old Stop
-            }
-        } catch { runLog += "Failed to launch: \(error.localizedDescription)\n" }
+    private func runHooks() -> RunController.Hooks {
+        RunController.Hooks(
+            appendLog: { [weak self] text in
+                guard let self else { return }
+                self.runLog = RunLogBuffer.trim(self.runLog + text)
+            },
+            surfaceError: { [weak self] message in self?.surfaceError(message) },
+            refresh: { [weak self] in self?.refresh() },
+            terminated: { [weak self] name, status, uncaught in
+                self?.noteChatTermination(name: name, status: status,
+                                          uncaughtSignal: uncaught)
+            })
     }
 
     // V3 board 2.6: one debounced-upstream query against the engine's
@@ -4297,26 +4210,12 @@ final class OrchestratorStore: ObservableObject {
     // their own sessions; SIGKILL after 5s), then clear the lock so the lane
     // frees. Deliberately NOT killpg: a shepherd-launched run shares its
     // process group with shepherd.sh and every other lane.
-    // Remove a run lock, surfacing failure (a lock we can't delete keeps the
-    // lane pinned "running"). Silent on the benign already-gone case.
-    private func clearLockFile(_ url: URL, _ name: String) {
-        do {
-            try fm.removeItem(at: url)
-        } catch {
-            if fm.fileExists(atPath: url.path) {
-                surfaceError("Could not clear the run lock for \(name) at \(url.path): "
-                    + error.localizedDescription)
-            }
-        }
-    }
-
     func stopRun(_ name: String) {
         if canStop(name) {
             stopProject(name)
             return
         }
         let lockURL = SessionLayout.lockURL(rootURL: rootURL, id: name)
-        manualStops[name] = Date()
         // Lock payload's pid first; else the engine's belt-and-braces
         // run.pid (V3 7.0) — a foreign run whose lock is unreadable or
         // damaged is still stoppable. The liveness check below applies to
@@ -4324,34 +4223,8 @@ final class OrchestratorStore: ObservableObject {
         let lockPid = appLocks[name]?.pid ?? 0
         let pid = lockPid > 0 ? lockPid
             : (FactoryScanner.readRunPid(rootURL: rootURL, id: name) ?? 0)
-        guard pid > 0 else {
-            clearLockFile(lockURL, name)
-            refresh()
-            return
-        }
-        // A lock left behind by a process that died without cleaning up (crash,
-        // SIGKILL from elsewhere) still names a pid — but that pid can since have
-        // been recycled by an unrelated OS process. Signaling a dead pid is a
-        // silent no-op; confirm liveness first so we never SIGTERM a stranger.
-        guard kill(pid, 0) == 0 else {
-            runLog += "\(name)'s lock names pid \(pid), which is no longer running — clearing the stale lock.\n"
-            clearLockFile(lockURL, name)
-            refresh()
-            return
-        }
-        kill(pid, SIGTERM)
-        runLog += "Stopping \(name) (pid \(pid))…\n"
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            guard let self else { return }
-            if kill(pid, 0) == 0 {
-                kill(pid, SIGKILL)
-                self.runLog += "\(name) didn't exit within 5s — killed.\n"
-            }
-            self.clearLockFile(lockURL, name)
-            self.refresh()
-        }
-        refresh()
+        runController.stopExternal(name, pid: pid, lockURL: lockURL,
+                                   hooks: runHooks())
     }
 
     // Create a new app the shepherd way: <slug>/initial_prompt/initial_prompt.md

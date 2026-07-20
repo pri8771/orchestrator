@@ -166,6 +166,20 @@ final class StoreGoldenPathTests: XCTestCase {
         XCTAssertEqual(store.projects.map(\.name).sorted(),
                        ["alpha", "bravo"])
         XCTAssertFalse(store.projects[0].running)
+        let alpha = try XCTUnwrap(store.sessionModels["alpha"])
+        XCTAssertEqual(alpha.project?.name, "alpha")
+        XCTAssertTrue(alpha === store.sessionModel(for: "alpha"),
+                      "a session id must keep one derived-object identity")
+    }
+
+    func testStartNeverStacksASecondRefreshTimer() throws {
+        try FileManager.default.createDirectory(
+            at: engineDir.appendingPathComponent("workflows"),
+            withIntermediateDirectories: true)
+        let store = makeStore()
+        store.start()
+        store.start()
+        XCTAssertEqual(store.refreshTimerInstallCount, 1)
     }
 
     func testOverlappingRefreshCoalescesAndBothApply(){
@@ -193,7 +207,18 @@ final class StoreGoldenPathTests: XCTestCase {
         // a fresh refresh must succeed end-to-end afterwards (§12.1:
         // loading must end).
         OrchestratorStore.scanDelayForTests = 0
+        try? mintProject("newer-snapshot")
         refreshAndWait(store)
+        XCTAssertNotNil(store.sessionModels["newer-snapshot"]?.project)
+        try? FileManager.default.removeItem(
+            at: root.appendingPathComponent("newer-snapshot"))
+        let lateReturned = expectation(description: "abandoned scan returned")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            lateReturned.fulfill()
+        }
+        wait(for: [lateReturned], timeout: 3)
+        XCTAssertNotNil(store.sessionModels["newer-snapshot"]?.project,
+                        "an abandoned generation must not overwrite the newer apply")
     }
 
     // MARK: - Stop
