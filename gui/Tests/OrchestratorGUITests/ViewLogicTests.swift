@@ -40,6 +40,33 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertEqual(CommandPaletteView.fuzzyScore("BUILD", "build an app"), 3)
     }
 
+    func testSessionVerbsAppearUnderExpectedFuzzyQueries() {
+        XCTAssertNotNil(CommandPaletteView.fuzzyScore("brain", "New brainstorm"))
+        XCTAssertNotNil(CommandPaletteView.fuzzyScore("send", "Send to …"))
+        XCTAssertNotNil(CommandPaletteView.fuzzyScore("cond", "Open conductor"))
+    }
+
+    func testSessionVerbAvailabilityIsHonest() {
+        XCTAssertEqual(CommandPaletteView.sessionVerbActions(
+            hasRoutableArtifact: false, conductorAvailable: false), [.newBrainstorm])
+        XCTAssertEqual(CommandPaletteView.sessionVerbActions(
+            hasRoutableArtifact: true, conductorAvailable: true),
+                       [.newBrainstorm, .sendToSection, .openConductor])
+    }
+
+    func testSessionVerbSelectionUsesUICommandRelay() {
+        for expected in [UICommand.newBrainstorm, .sendToSection, .openConductor] {
+            var received: UICommand?
+            CommandPaletteView.dispatch(expected) { received = $0 }
+            XCTAssertEqual(received, expected)
+        }
+    }
+
+    func testConductorNavigationIsGatedByAvailability() {
+        XCTAssertNil(AppShellLogic.conductorDestination(available: false))
+        XCTAssertEqual(AppShellLogic.conductorDestination(available: true), .conductor)
+    }
+
     // MARK: - compactCount
 
     func testCompactCountBelowThousandIsRaw() {

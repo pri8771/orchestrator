@@ -17,6 +17,7 @@ enum ShellSelection: Hashable {
     case activity
     case project(String)
     case section(String)   // V3 3.8: a section studio's chat list
+    case conductor
     case workflows
     case models
 }
@@ -32,6 +33,7 @@ struct AppShellView: View {
     @State private var archivedExpanded = false
     @State private var showLanesPopover = false
     @State private var showRunLog = false
+    @State private var routeRequest: ArtifactRouteRequest?
     @FocusState private var searchFocused: Bool
 
     // MARK: Section classification — the same store arrays the 460pt queue
@@ -153,6 +155,10 @@ struct AppShellView: View {
             NewAppIntakeSheet { slug in selection = .project(slug) }
                 .environmentObject(store)
         }
+        .sheet(item: $routeRequest) { request in
+            ArtifactRoutePicker(request: request)
+                .environmentObject(store)
+        }
         // ⌘K palette: a floating panel over a dimmed scrim (DESIGN-REFRESH.md
         // §6), overlaid on the whole shell rather than presented as a sheet.
         .overlay {
@@ -165,6 +171,22 @@ struct AppShellView: View {
             guard let cmd else { return }
             switch cmd {
             case .newChat: showNewApp = true
+            case .newBrainstorm:
+                let projectID = selectedProject?.name.components(separatedBy: "/").first
+                    ?? "home"
+                if let session = store.mintBrainstorm(project: projectID) {
+                    store.startChatSession(session.id)
+                    selection = .project(session.id)
+                }
+            case .sendToSection:
+                if let artifact = store.commandRoutableArtifact,
+                   let source = store.commandProjectName {
+                    routeRequest = ArtifactRouteRequest(artifact: artifact,
+                                                        sourceSession: source)
+                }
+            case .openConductor:
+                if let target = AppShellLogic.conductorDestination(
+                    available: store.conductorSurfaceAvailable) { selection = target }
             case .runSelected:
                 if let p = selectedProject, !p.running, anyRunnable,
                    !store.runQueue.contains(p.name) {
@@ -177,6 +199,10 @@ struct AppShellView: View {
             case .openPlanTab: return     // handled by ProjectShellContent
             }
             store.uiCommand = nil
+        }
+        .onAppear { store.updateCommandContext(projectName: selectedProject?.name) }
+        .onChange(of: selection) { _, _ in
+            store.updateCommandContext(projectName: selectedProject?.name)
         }
         .frame(minWidth: 860, minHeight: 560)
     }
@@ -431,6 +457,10 @@ struct AppShellView: View {
         case .section(let name):
             SectionChatsView(section: name,
                              onOpenChat: { selection = .project($0) })
+        case .conductor:
+            EmptyStateView(symbol: "point.3.connected.trianglepath.dotted",
+                           title: "Conductor",
+                           message: "The Conductor workspace is available for this engine.")
         }
     }
 
@@ -488,6 +518,81 @@ struct AppShellView: View {
 
     private func shellPlaceholder(_ title: String, _ symbol: String) -> some View {
         EmptyStateView(symbol: symbol, title: title)
+    }
+}
+
+struct ArtifactRouteRequest: Identifiable {
+    let artifact: ArtifactRouteRef
+    let sourceSession: String
+    var id: String { artifact.id }
+}
+
+private struct ArtifactRoutePicker: View {
+    @EnvironmentObject var store: OrchestratorStore
+    @Environment(\.dismiss) private var dismiss
+    let request: ArtifactRouteRequest
+
+    private var sourceSection: String? {
+        let parts = request.sourceSession.components(separatedBy: "/")
+        return parts.count == 3 ? parts[1] : nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.m) {
+            Text("Send \(request.artifact.id) to …")
+                .font(DS.font.headline)
+            Text("The engine will validate final status, lineage, and route admissibility.")
+                .font(DS.font.caption).foregroundStyle(.secondary)
+            switch store.sectionRail {
+            case .populated(let sections):
+                ForEach(sections.filter { $0.id != sourceSection }) { section in
+                    Button {
+                        store.routeArtifact(request.artifact,
+                                            from: request.sourceSession,
+                                            to: section.id)
+                    } label: {
+                        Label(section.title, systemImage: "arrow.turn.up.right")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .disabled(isRouting)
+                }
+            case .loading:
+                ProgressView("Loading sections…")
+            case .empty:
+                Text("No target sections are available.")
+                    .foregroundStyle(.secondary)
+            case .error(let message):
+                Text(message).foregroundStyle(DS.status.error.color)
+            }
+            if let state = store.artifactRouteStates[request.artifact.id] {
+                routeStatus(state)
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+            }
+        }
+        .padding(DS.space.l)
+        .frame(width: 420)
+    }
+
+    private var isRouting: Bool {
+        if case .routing = store.artifactRouteStates[request.artifact.id] { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private func routeStatus(_ state: ArtifactRouteState) -> some View {
+        switch state {
+        case .routing(let target):
+            ProgressView("Routing to \(target)…")
+        case .routed(let target):
+            Label("Routed to \(target)", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(DS.status.success.color)
+        case .refused(let reason):
+            Label(reason, systemImage: "xmark.octagon.fill")
+                .foregroundStyle(DS.status.error.color)
+        }
     }
 }
 
@@ -1099,6 +1204,10 @@ enum AppShellLogic {
     static func showsAsRunning(lockPresent: Bool, lockStale: Bool,
                                guiOwned: Bool) -> Bool {
         (lockPresent && !lockStale) || guiOwned
+    }
+
+    static func conductorDestination(available: Bool) -> ShellSelection? {
+        available ? .conductor : nil
     }
 }
 

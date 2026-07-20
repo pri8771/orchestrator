@@ -465,6 +465,7 @@ enum FactoryScanner {
 // state the actions need. One action layer, several invocation surfaces.
 enum UICommand: Equatable, Hashable {
     case newChat, runSelected, toggleLog
+    case newBrainstorm, sendToSection, openConductor
     case toggleInspector   // ⌥⌘I — Native Pro shell inspector
     case focusSearch       // ⌘F — focus the sidebar project filter
     case openPlanTab       // Inspector "Open Plan tab" jump (§3 region 3)
@@ -636,6 +637,10 @@ final class OrchestratorStore: ObservableObject {
     // 4.10 seam: 7.10 can replace default-file resolution with actual pending
     // Conductor route truth without changing the transcript view.
     var routePreviewSource = RoutePreviewSource.defaults
+    @Published var commandProjectName: String?
+    @Published var commandRoutableArtifact: ArtifactRouteRef?
+    @Published var conductorSurfaceAvailable = false
+    @Published var artifactRouteStates: [String: ArtifactRouteState] = [:]
     // Per-section lint: missing key = not yet run; .some(nil) = the lint
     // run FAILED (surfaced as unavailable, never as "clean"); .some(.some)
     // = a parsed report.
@@ -972,6 +977,7 @@ final class OrchestratorStore: ObservableObject {
         let modelPresetsURL = self.modelPresetsURL
         let configURL = self.configURL
         let manualStops = self.manualStops
+        let commandProjectName = self.commandProjectName
         let runningProcessNames = Set(runningProcesses.compactMap { $0.value.isRunning ? $0.key : nil })
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -996,6 +1002,11 @@ final class OrchestratorStore: ObservableObject {
                 defaultWorkflow: defaultWorkflow,
                 manualStops: manualStops,
                 runningProcessNames: runningProcessNames)
+            let commandArtifact = commandProjectName.flatMap { name -> ArtifactRouteRef? in
+                let projectID = name.components(separatedBy: "/").first ?? name
+                return ArtifactRouteIndex.latestRoutable(
+                    projectDir: rootURL.appendingPathComponent(projectID))
+            }
             var bws: [String: [BuildWorker]] = [:]
             for p in loaded where p.running && (p.nextAgent?.contains("+") ?? false) {
                 if let workers = BackgroundProjectLoader.computeParallelBuildWorkers(for: p,
@@ -1040,6 +1051,10 @@ final class OrchestratorStore: ObservableObject {
                 self.reloadSectionRail()
                 self.detectTransitions(loaded)
                 if loaded != self.projects { self.projects = loaded }
+                if commandProjectName == self.commandProjectName,
+                   commandArtifact != self.commandRoutableArtifact {
+                    self.commandRoutableArtifact = commandArtifact
+                }
                 if bws != self.buildWorkerStatus { self.buildWorkerStatus = bws }
                 if events != self.eventsByProject { self.eventsByProject = events }
                 if health != self.fleetHealth { self.fleetHealth = health }
@@ -1165,6 +1180,12 @@ final class OrchestratorStore: ObservableObject {
             surfaceError("Couldn't create the chat: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    @discardableResult
+    func mintBrainstorm(project: String) -> ChatSession? {
+        mintChatSession(project: project, section: "ideas", title: "brainstorm",
+                        workflow: "chat_ideas", firstMessage: "Let's brainstorm.")
     }
 
     func startChatSession(_ id: String) {
@@ -1451,6 +1472,52 @@ final class OrchestratorStore: ObservableObject {
               let types = obj["artifact_types_emitted"] as? [String],
               types.count == 1 else { return nil }
         return types[0]
+    }
+
+    func updateCommandContext(projectName: String?) {
+        commandProjectName = projectName
+        guard let projectName else {
+            commandRoutableArtifact = nil
+            return
+        }
+        let projectID = projectName.components(separatedBy: "/").first ?? projectName
+        commandRoutableArtifact = ArtifactRouteIndex.latestRoutable(
+            projectDir: rootURL.appendingPathComponent(projectID))
+    }
+
+    func routeArtifact(_ artifact: ArtifactRouteRef, from sourceSession: String,
+                       to targetSection: String) {
+        let parts = sourceSession.components(separatedBy: "/")
+        guard let projectID = parts.first, !projectID.isEmpty,
+              SessionLayout.validSlug(targetSection) else {
+            artifactRouteStates[artifact.id] = .refused(reason: "Invalid route target")
+            return
+        }
+        let targetSession = "\(projectID)/\(targetSection)/\(artifact.id)"
+        artifactRouteStates[artifact.id] = .routing(target: targetSection)
+        let python = resolvePython()
+        let engine = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let root = rootURL.path
+        Task.detached { [weak self] in
+            let result = ArtifactRouteCommand.run(
+                python: python, engine: engine, root: root,
+                artifactID: artifact.id, sourceSession: sourceSession,
+                targetSession: targetSession)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let message = ArtifactRouteCommand.summary(
+                    result.output, fallback: "route exited \(result.code)")
+                self.runLog += result.output.hasSuffix("\n")
+                    ? result.output : result.output + "\n"
+                if result.code == 0 {
+                    self.artifactRouteStates[artifact.id] = .routed(target: targetSection)
+                    self.refresh()
+                } else {
+                    self.artifactRouteStates[artifact.id] = .refused(reason: message)
+                    self.surfaceError(message)
+                }
+            }
+        }
     }
 
     // MARK: - Config (agents on/off) — edits config.yaml lines in place so the

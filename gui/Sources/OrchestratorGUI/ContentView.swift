@@ -313,8 +313,10 @@ struct CommandPaletteView: View {
             return Command(title: s.title, symbol: symbol,
                            shortcut: s.shortcutDisplay, action: s.action)
         }
-        return [
+        var result = [
             spec(.newChat, symbol: "plus"),
+            Command(title: "New brainstorm", symbol: "lightbulb",
+                    shortcut: "", action: .newBrainstorm),
             spec(.runSelected, symbol: "play.fill"),
             Command(title: store.enginePaused ? "Resume Engine" : "Pause Engine",
                     symbol: store.enginePaused ? "play.circle" : "pause.circle",
@@ -323,6 +325,15 @@ struct CommandPaletteView: View {
             spec(.toggleInspector, symbol: "sidebar.trailing"),
             spec(.focusSearch, symbol: "magnifyingglass"),
         ]
+        if store.commandRoutableArtifact != nil {
+            result.append(Command(title: "Send to …", symbol: "arrow.turn.up.right",
+                                  shortcut: "", action: .sendToSection))
+        }
+        if store.conductorSurfaceAvailable {
+            result.append(Command(title: "Open conductor", symbol: "point.3.connected.trianglepath.dotted",
+                                  shortcut: "", action: .openConductor))
+        }
+        return result
     }
 
     private var filteredCommands: [Command] {
@@ -367,12 +378,25 @@ struct CommandPaletteView: View {
         return 1
     }
 
+    nonisolated static func sessionVerbActions(hasRoutableArtifact: Bool,
+                                                conductorAvailable: Bool) -> [UICommand] {
+        var actions: [UICommand] = [.newBrainstorm]
+        if hasRoutableArtifact { actions.append(.sendToSection) }
+        if conductorAvailable { actions.append(.openConductor) }
+        return actions
+    }
+
+    nonisolated static func dispatch(_ action: UICommand,
+                                     setter: (UICommand) -> Void) {
+        setter(action)
+    }
+
     private func close() { store.showCommandPalette = false }
 
     private func run(_ row: RowID) {
         close()
         switch row {
-        case .command(let action): store.uiCommand = action
+        case .command(let action): Self.dispatch(action) { store.uiCommand = $0 }
         case .project(let name): onJumpToProject(name)
         case .searchHit(let id):
             guard let hit = store.searchHits.first(where: { $0.id == id })
