@@ -938,6 +938,7 @@ final class OrchestratorStore: ObservableObject {
     @Published var commandProjectName: String?
     @Published var commandRoutableArtifact: ArtifactRouteRef?
     @Published var conductorSurfaceAvailable = false
+    @Published var conductorOversight = ConductorOversightSnapshot()
     @Published var artifactRouteStates: [String: ArtifactRouteState] = [:]
     @Published var artifactsByProject: [String: [ArtifactSummary]] = [:]
     @Published var artifactFinalizeInFlight: Set<String> = []
@@ -1442,6 +1443,10 @@ final class OrchestratorStore: ObservableObject {
                 if result.events != self.eventsByProject { self.eventsByProject = result.events }
                 self.revealSectionsFromRoutes(result.events)
                 if result.health != self.fleetHealth { self.fleetHealth = result.health }
+                if result.conductor != self.conductorOversight {
+                    self.conductorOversight = result.conductor
+                }
+                self.conductorSurfaceAvailable = result.conductor.available
                 if result.costs != self.projectCosts { self.projectCosts = result.costs }
                 self.escalateFallbacksIfNeeded(result.events)
                 if result.locks != self.appLocks { self.appLocks = result.locks }
@@ -4732,6 +4737,29 @@ final class OrchestratorStore: ObservableObject {
             : (FactoryScanner.readRunPid(rootURL: rootURL, id: name) ?? 0)
         runController.stopExternal(name, pid: pid, lockURL: lockURL,
                                    hooks: runHooks())
+    }
+
+    // V3 7.6: write only the file contract, then wait for the next scan to
+    // read it back. No optimistic assignment: the segmented control always
+    // shows the dial the Conductor can actually read from disk.
+    func setConductorOversight(_ dial: OversightDial) {
+        if let error = ConductorControlFiles.writeDial(
+            rootURL: rootURL, dial: dial) {
+            surfaceError(error)
+            return
+        }
+        refresh()
+    }
+
+    func decideConductorRoute(_ route: ConductorPendingRoute,
+                              suffix: String, body: String = "") {
+        if let error = ConductorControlFiles.writeDecision(
+            rootURL: rootURL, routeID: route.routeID,
+            suffix: suffix, body: body) {
+            surfaceError(error)
+            return
+        }
+        refresh()
     }
 
     // Create a new app the shepherd way: <slug>/initial_prompt/initial_prompt.md

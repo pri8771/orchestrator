@@ -36,8 +36,10 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
 import signal
 import socket
+import subprocess
 import sys
 import time
 
@@ -52,6 +54,7 @@ CONDUCTOR_DIRNAME = ".conductor"
 # alongside --pipeline. Consumed (deleted) the moment it's read, same as
 # human_inbox.txt's peek-and-clear discipline.
 PIPELINE_REQUEST_FILENAME = "pipeline_request.json"
+OVERSIGHT_REQUEST_FILENAME = "oversight_request.json"
 # R4 explicit lifecycle (precedent: sessions.STATUS): the stage is persisted
 # on every transition so a kill at ANY point resumes into a known state.
 STAGES = ("idle", "scanning", "evaluating", "acting")
@@ -62,6 +65,8 @@ _TERMINAL_DECISIONS = ("goal_met", "converged_open_items", "stalled")
 # crash between the pipeline_loaded append and its state save (same class of
 # gap 7.5a's termination replay fixed).
 _PIPELINE_DECISIONS = ("pipeline_loaded",)
+OVERSIGHT_DIALS = ("full_auto", "suggest_only", "gated", "loops_gated")
+DEFAULT_OVERSIGHT_DIAL = "loops_gated"
 SCHEMA_VERSION = 1
 _MAX_LEDGER_LINE_BYTES = 3500   # same PIPE_BUF discipline as events.py
 
@@ -160,6 +165,10 @@ def default_state():
             # 7.5b: workspace budget halt (stops ALL routing when set) + the
             # providers currently over their daily request quota (route defer).
             "halted": None, "over_quota": [],
+            # 7.6: one workspace-level policy. The capability floor remains
+            # independent and can only make this stricter, never looser.
+            "oversight": {"dial": DEFAULT_OVERSIGHT_DIAL},
+            "do_not_route": [],
             # 7.11: the active pipeline preset (None = normal per-section
             # routing/goal-manifest). Loaded ONCE from the request marker or
             # --pipeline and held in-memory/state — never re-read from the
@@ -174,10 +183,18 @@ def load_conductor_state(root):
     try:
         with open(state_path(root), encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return default_state()
+    except (OSError, ValueError) as exc:
+        data = default_state()
+        data["_oversight_fallback_pending"] = (
+            "conductor state unreadable: %s" % exc)
+        return data
     if not isinstance(data, dict) or data.get("stage") not in STAGES:
-        return default_state()
+        fallback = default_state()
+        fallback["_oversight_fallback_pending"] = (
+            "conductor state shape invalid")
+        return fallback
     data.setdefault("schema_version", SCHEMA_VERSION)
     data.setdefault("ledger_cursor", 0)
     data.setdefault("sessions", {})
@@ -187,14 +204,169 @@ def load_conductor_state(root):
     data.setdefault("halted", None)     # 7.5b: symmetry + defense-in-depth
     data.setdefault("over_quota", [])
     data.setdefault("pipeline", None)   # 7.11: symmetry + defense-in-depth
+    oversight = data.get("oversight")
+    if not isinstance(oversight, dict) or oversight.get("dial") not in \
+            OVERSIGHT_DIALS:
+        data["oversight"] = {"dial": DEFAULT_OVERSIGHT_DIAL}
+        data["_oversight_fallback_pending"] = (
+            "missing or invalid oversight.dial")
+    do_not_route = data.get("do_not_route")
+    if not isinstance(do_not_route, list):
+        data["do_not_route"] = []
+        data["_oversight_fallback_pending"] = (
+            "invalid do_not_route list")
     if not isinstance(data["sessions"], dict) \
             or not isinstance(data["routed"], dict) \
             or not isinstance(data["terminated"], dict) \
             or not isinstance(data["quiescence"], dict) \
             or not isinstance(data["ledger_cursor"], int) \
             or data["ledger_cursor"] < 0:
-        return default_state()
+        fallback = default_state()
+        fallback["_oversight_fallback_pending"] = (
+            "conductor state fields invalid")
+        return fallback
     return data
+
+
+def oversight_dial(state):
+    value = state.get("oversight") if isinstance(state, dict) else None
+    dial = value.get("dial") if isinstance(value, dict) else None
+    return dial if dial in OVERSIGHT_DIALS else DEFAULT_OVERSIGHT_DIAL
+
+
+def route_revisits_section(intent, meta, lineage_metas):
+    """True when a candidate sends content back into its section ancestry."""
+    seen = {str(getattr(intent, "source_section", "") or "")}
+    for ancestor_id in (meta.get("lineage") or []) if isinstance(meta, dict) else []:
+        ancestor = lineage_metas.get(ancestor_id) if lineage_metas else None
+        source = ancestor.get("source") if isinstance(ancestor, dict) else None
+        section = source.get("section") if isinstance(source, dict) else None
+        if section:
+            seen.add(str(section))
+    return bool(getattr(intent, "target", None) in seen)
+
+
+def classify_route(route, dial, feedback=False, capability_exceeds=False):
+    """Pure 7.6 dial matrix; capability escalation is an immutable floor."""
+    dial = dial if dial in OVERSIGHT_DIALS else DEFAULT_OVERSIGHT_DIAL
+    if capability_exceeds:
+        return "needs_approval"
+    if dial in ("suggest_only", "gated"):
+        return "needs_approval"
+    if dial == "loops_gated" and feedback:
+        return "needs_approval"
+    return "auto"
+
+
+def _do_not_route_pair(artifact_id, rule_id):
+    return {"artifact_id": str(artifact_id or ""),
+            "rule_id": str(rule_id or "")}
+
+
+def _is_do_not_route(state, artifact_id, rule_id):
+    pair = _do_not_route_pair(artifact_id, rule_id)
+    return any(isinstance(item, dict) and item == pair
+               for item in state.get("do_not_route", []))
+
+
+def _remember_do_not_route(state, artifact_id, rule_id):
+    pair = _do_not_route_pair(artifact_id, rule_id)
+    if pair not in state.setdefault("do_not_route", []):
+        state["do_not_route"].append(pair)
+    return pair
+
+
+def _pid_command(pid):
+    try:
+        return subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+            text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _clear_session_lock_if_matches(root, session_id, pid):
+    """Remove only the stale lock that still names the pid we inspected."""
+    try:
+        from orchestrator import encode_lock_name
+        path = os.path.join(root, ".orch-locks",
+                            "%s.lock" % encode_lock_name(session_id))
+        with open(path, encoding="utf-8") as fh:
+            payload = fh.read()
+        named = None
+        for token in payload.replace("\n", " ").split():
+            if token.startswith("pid="):
+                named = int(token[4:])
+                break
+        if named == pid:
+            os.remove(path)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def kill_spawned_session(root, session_id, grace_seconds=5.0, *,
+                         kill_fn=os.kill, command_fn=_pid_command,
+                         sleep_fn=time.sleep, now_fn=time.monotonic):
+    """Stop one proven Conductor-minted engine without trusting a stale pid."""
+    session_dir = os.path.realpath(os.path.join(root, str(session_id or "")))
+    root_real = os.path.realpath(root)
+    if not session_dir.startswith(root_real + os.sep):
+        return {"status": "refused", "reason": "session path escapes workspace"}
+    delegation = seslib.read_delegation(session_dir, on_error=lambda _m: None)
+    request = delegation.get("request") if isinstance(delegation, dict) else None
+    if not isinstance(request, dict) or not request.get("route_id"):
+        return {"status": "refused",
+                "reason": "session is not proven Conductor-minted"}
+    pid = seslib.read_pidfile(session_dir)
+    if not isinstance(pid, int) or pid <= 0:
+        return {"status": "not_running", "reason": "no valid run.pid"}
+
+    def alive():
+        try:
+            kill_fn(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    def clear_if_same():
+        if seslib.read_pidfile(session_dir) == pid:
+            seslib.remove_pidfile(session_dir)
+        _clear_session_lock_if_matches(root, session_id, pid)
+
+    if not alive():
+        clear_if_same()
+        return {"status": "not_running", "pid": pid,
+                "reason": "stale pid cleared"}
+    command = command_fn(pid)
+    try:
+        argv = shlex.split(command or "")
+    except ValueError:
+        argv = []
+    if "orchestrator.py" not in " ".join(argv) or \
+            not any(arg == session_id for arg in argv):
+        return {"status": "refused", "pid": pid,
+                "reason": "live pid does not match this orchestrator session"}
+    try:
+        kill_fn(pid, signal.SIGTERM)
+    except OSError as exc:
+        return {"status": "failed", "pid": pid, "reason": str(exc)}
+    deadline = now_fn() + max(0.0, grace_seconds)
+    while alive() and now_fn() < deadline:
+        sleep_fn(min(0.1, max(0.0, deadline - now_fn())))
+    if alive():
+        # Re-check identity immediately before the irreversible escalation.
+        if command_fn(pid) != command:
+            return {"status": "refused", "pid": pid,
+                    "reason": "pid identity changed during shutdown"}
+        try:
+            kill_fn(pid, signal.SIGKILL)
+        except OSError as exc:
+            return {"status": "failed", "pid": pid, "reason": str(exc)}
+    clear_if_same()
+    return {"status": "killed", "pid": pid,
+            "reason": "SIGTERM with liveness-checked escalation"}
 
 
 def save_conductor_state(root, state):
@@ -403,12 +575,91 @@ def reconcile_on_start(root, state, emit=print):
                 else:
                     state["pipeline"] = preset
                     applied += 1
+        if rec.get("decision") in ("oversight_fallback", "oversight_changed"):
+            detail = rec.get("detail") if isinstance(rec.get("detail"), dict) else {}
+            dial = detail.get("dial")
+            if dial in OVERSIGHT_DIALS:
+                state["oversight"] = {"dial": dial}
+                state.pop("_oversight_fallback_pending", None)
+                applied += 1
+        if rec.get("decision") == "do_not_route_added":
+            detail = rec.get("detail") if isinstance(rec.get("detail"), dict) else {}
+            _remember_do_not_route(state, detail.get("artifact_id"),
+                                   detail.get("rule_id"))
+            applied += 1
     state["ledger_cursor"] = length
     save_conductor_state(root, state)
     emit("conductor: resumed — reconciled %d un-cursored ledger entr%s "
          "(%d applied)." % (len(tail), "y" if len(tail) == 1 else "ies",
                             applied))
     return state
+
+
+def _record_oversight_setting(root, state, dial, decision, reason, emit=print):
+    dial = dial if dial in OVERSIGHT_DIALS else DEFAULT_OVERSIGHT_DIAL
+    rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+           "decision": decision,
+           "detail": {"dial": dial, "reason": str(reason)[:500]}}
+    new_len = ledger_append(root, rec)
+    state["oversight"] = {"dial": dial}
+    state.pop("_oversight_fallback_pending", None)
+    state["ledger_cursor"] = new_len
+    save_conductor_state(root, state)
+    emit("conductor: oversight=%s (%s)" % (dial, reason))
+
+
+def sync_oversight_from_disk(root, state, emit=print):
+    """Read back the GUI-edited dial at each wake; ledger before cache save."""
+    pending = state.get("_oversight_fallback_pending")
+    if pending:
+        _record_oversight_setting(
+            root, state, DEFAULT_OVERSIGHT_DIAL, "oversight_fallback",
+            pending, emit)
+        return oversight_dial(state)
+    request_path = os.path.join(conductor_dir(root),
+                                OVERSIGHT_REQUEST_FILENAME)
+    if os.path.exists(request_path):
+        try:
+            with open(request_path, encoding="utf-8") as fh:
+                request = json.load(fh)
+            requested = request.get("dial") if isinstance(request, dict) else None
+        except (OSError, ValueError):
+            requested = None
+        if requested not in OVERSIGHT_DIALS:
+            _record_oversight_setting(
+                root, state, DEFAULT_OVERSIGHT_DIAL, "oversight_fallback",
+                "invalid oversight request", emit)
+        elif requested != oversight_dial(state):
+            _record_oversight_setting(
+                root, state, requested, "oversight_changed",
+                "workspace dial changed", emit)
+        try:
+            os.remove(request_path)
+        except OSError:
+            pass
+        return oversight_dial(state)
+    try:
+        with open(state_path(root), encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return oversight_dial(state)
+    except (OSError, ValueError) as exc:
+        _record_oversight_setting(
+            root, state, DEFAULT_OVERSIGHT_DIAL, "oversight_fallback",
+            "state unreadable while refreshing dial: %s" % exc, emit)
+        return DEFAULT_OVERSIGHT_DIAL
+    value = raw.get("oversight") if isinstance(raw, dict) else None
+    dial = value.get("dial") if isinstance(value, dict) else None
+    if dial not in OVERSIGHT_DIALS:
+        _record_oversight_setting(
+            root, state, DEFAULT_OVERSIGHT_DIAL, "oversight_fallback",
+            "missing or invalid oversight.dial", emit)
+        return DEFAULT_OVERSIGHT_DIAL
+    if dial != oversight_dial(state):
+        _record_oversight_setting(
+            root, state, dial, "oversight_changed", "workspace dial changed",
+            emit)
+    return oversight_dial(state)
 
 
 def _record_termination(root, state, sid, reason, evidence, emit=print):
@@ -614,6 +865,7 @@ def full_poll(root, state, emit=print, route_engine=None):
     every changed session, APPEND-THEN-CURSOR each) -> idle. The skeleton
     records observations; when route_engine is injected, the acting
     stage routes this poll's admissible artifacts (7.2)."""
+    sync_oversight_from_disk(root, state, emit)
     set_stage(root, state, "scanning")
     sessions = discover_sessions(root)
     # Prune digests for sessions that no longer exist: a long-lived
@@ -700,9 +952,8 @@ def main(argv=None):
     ap.add_argument("--route", action="store_true",
                     help="ENABLE the acting stage: autonomously mint routed "
                          "sessions per routing.json rules. Off by default — "
-                         "the safety layers (7.4 permissions, 7.5 "
-                         "termination, 7.6 oversight dials) are not built "
-                         "yet, so live routing stays opt-in until they are.")
+                         "7.4 permissions, 7.5 termination, and 7.6 oversight "
+                         "dials remain enforced on every routed session.")
     ap.add_argument("--pipeline",
                     help="V3 7.11: activate this pipeline preset JSON for the "
                          "run's routing + goal manifest. Validated up front — "
@@ -793,6 +1044,8 @@ def route_engine(root, state, sessions, emit=print):
     import artifacts as artlib
     import sessions as seslib_local
 
+    dial = oversight_dial(state)
+
     # 7.5b: a workspace budget halt stops ALL routing — the acting stage is a
     # no-op until the cap is lifted (a new manifest / a new day for wall-clock).
     if state.get("halted"):
@@ -848,12 +1101,16 @@ def route_engine(root, state, sessions, emit=print):
                 continue
             if rid in state["routed"]:
                 cplib.remove_pending(root, rid)
+                cplib.consume_decision(root, rid)
                 continue
-            decision = cplib.approval_decision(root, rid)
-            if decision is None:
+            decision_record = cplib.read_approval_decision(root, rid)
+            if decision_record is None:
                 continue   # still awaiting a human — never blocks the poll
+            decision = decision_record["decision"]
             base = {"session": action.get("requested_by"), "route_id": rid,
-                    "detail": {"target": action["target"], **action["payload"]}}
+                    "detail": {"target": action["target"], **action["payload"],
+                               "reason": decision_record.get("reason") or
+                               action.get("reason")}}
             if decision == "rejected":
                 # Same atomicity fix as the approved branch: routed must be
                 # set before the one save this decision's ledger line uses,
@@ -861,6 +1118,19 @@ def route_engine(root, state, sessions, emit=print):
                 # on restart.
                 state["routed"][rid] = True
                 _ledger_route(root, {**base, "decision": "route_denied"})
+            elif decision == "do_not_route":
+                pair = _remember_do_not_route(
+                    state, payload.get("artifact_id"), payload.get("rule_id"))
+                state["routed"][rid] = True
+                _ledger_route(root, {
+                    **base, "decision": "do_not_route_added",
+                    "detail": {**base["detail"], **pair}})
+            elif decision == "kill_session":
+                killed = kill_spawned_session(root, requested_by)
+                state["routed"][rid] = True
+                _ledger_route(root, {
+                    **base, "decision": "kill_session",
+                    "detail": {**base["detail"], **killed}})
             elif over_quota and section_providers.get(target) in over_quota:
                 # 7.5b: an approval must not bypass the quota-defer a fresh
                 # route would get — an approved-but-not-yet-executed action
@@ -902,6 +1172,7 @@ def route_engine(root, state, sessions, emit=print):
                 if not sdir:
                     continue   # retry on a later poll; routed stays unset
             cplib.remove_pending(root, rid)
+            cplib.consume_decision(root, rid)
 
     sections_dir_parent = os.path.dirname(sections_dir)
     _drain_pending()
@@ -981,6 +1252,15 @@ def route_engine(root, state, sessions, emit=print):
             # through to execute_intents' own terminal ledger lines.
             allowed_now, gated = [], []
             for i in fresh:
+                if _is_do_not_route(state, i.artifact_id, i.rule_id):
+                    state["routed"][i.route_id] = True
+                    _ledger_route(root, {
+                        "session": sid, "route_id": i.route_id,
+                        "route_key": i.route_key,
+                        "decision": "route_suppressed",
+                        "detail": {**i.as_ledger_detail(),
+                                   "reason": "do-not-route decision"}})
+                    continue
                 if over_quota and section_providers.get(i.target) in over_quota:
                     # DEFER (not drop, not execute over-quota): don't mint and
                     # don't mark routed, so the still-admissible source re-plans
@@ -1001,18 +1281,42 @@ def route_engine(root, state, sessions, emit=print):
                     continue
                 if i.verdict != crlib.ALLOW or not i.target:
                     allowed_now.append(i)
-                elif seclib.exceeds_workspace_only(_caps_for(i.target)):
-                    gated.append(i)
                 else:
-                    allowed_now.append(i)
-            for i in gated:
+                    capability_exceeds = seclib.exceeds_workspace_only(
+                        _caps_for(i.target))
+                    feedback = route_revisits_section(i, meta, lineage_metas)
+                    classification = classify_route(
+                        i, dial, feedback=feedback,
+                        capability_exceeds=capability_exceeds)
+                    if classification == "needs_approval":
+                        reason = ("target capabilities exceed workspace-only"
+                                  if capability_exceeds else
+                                  ("feedback route revisits section ancestry"
+                                   if feedback else
+                                   "%s oversight requires approval" % dial))
+                        gated.append((i, reason, feedback,
+                                      capability_exceeds))
+                    else:
+                        allowed_now.append(i)
+            for i, reason, feedback, capability_exceeds in gated:
                 base = {"session": sid, "route_id": i.route_id,
                         "route_key": i.route_key}
-                if cplib.enqueue_pending(root, cplib.pending_action(i, sid)):
+                action = cplib.pending_action(i, sid, reason=reason)
+                if cplib.enqueue_pending(root, action):
                     _ledger_route(root, {
                         **base, "decision": "approval_requested",
                         "detail": {**i.as_ledger_detail(),
-                                   "capability": "exceeds workspace-only"}})
+                                   "dial": dial, "feedback": feedback,
+                                   "capability_exceeds": capability_exceeds,
+                                   "reason": reason}})
+                    try:
+                        import events as eventslib
+                        eventslib.emit_event(
+                            app_dir, "route_proposed", route_id=i.route_id,
+                            artifact_id=i.artifact_id, target=i.target,
+                            status="needs_approval", reason=reason)
+                    except Exception:
+                        pass   # event emission is observability, never truth
                 else:
                     # FIX: a failed durable enqueue must NOT be ledgered as a
                     # successful approval request (§6.2, §23) — record the miss

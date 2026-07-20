@@ -55,6 +55,19 @@ class TestPendingQueue(unittest.TestCase):
         # a fresh process reads the same queue off disk
         self.assertTrue(cp.is_pending(self.root, "rid-x"))
 
+    def test_crash_after_pending_mirror_before_queue_append_recovers(self):
+        action = cp.pending_action(_Intent("rid-crash"), "s")
+        self.assertTrue(cp._atomic_json(
+            cp.pending_file(self.root, "rid-crash"), action))
+        self.assertFalse(os.path.exists(cp.pending_path(self.root)))
+        recovered = cp.read_pending(self.root)
+        self.assertEqual([item["action_id"] for item in recovered],
+                         ["rid-crash"])
+        cp.remove_pending(self.root, "rid-crash")
+        self.assertEqual(cp.read_pending(self.root), [])
+        self.assertFalse(os.path.exists(
+            cp.pending_file(self.root, "rid-crash")))
+
 
 class TestApprovalDecision(unittest.TestCase):
     def setUp(self):
@@ -73,6 +86,12 @@ class TestApprovalDecision(unittest.TestCase):
         self.assertEqual(cp.approval_decision(self.root, "r1"), "approved")
         self._touch("r1.changes")   # both present -> deny wins
         self.assertEqual(cp.approval_decision(self.root, "r1"), "rejected")
+
+    def test_ambiguous_reject_and_kill_chooses_non_destructive_reject(self):
+        self._touch("r2.kill_session")
+        self._touch("r2.changes")
+        decision = cp.read_approval_decision(self.root, "r2")
+        self.assertEqual(decision["decision"], "rejected")
 
 
 class _RouteBase(unittest.TestCase):

@@ -77,12 +77,14 @@ class TestStateAndLedger(_Base):
         self.assertEqual(back["sessions"], {"p": "abc"})
         with open(cond.state_path(self.root), "w", encoding="utf-8") as fh:
             fh.write("{corrupt")
-        self.assertEqual(cond.load_conductor_state(self.root),
-                         cond.default_state())
+        corrupt = cond.load_conductor_state(self.root)
+        self.assertEqual(cond.oversight_dial(corrupt), "loops_gated")
+        self.assertIn("_oversight_fallback_pending", corrupt)
         with open(cond.state_path(self.root), "w", encoding="utf-8") as fh:
             json.dump({"stage": "bogus-stage"}, fh)
-        self.assertEqual(cond.load_conductor_state(self.root),
-                         cond.default_state())
+        malformed = cond.load_conductor_state(self.root)
+        self.assertEqual(cond.oversight_dial(malformed), "loops_gated")
+        self.assertIn("_oversight_fallback_pending", malformed)
 
     def test_ledger_append_read_and_line_cap(self):
         n1 = cond.ledger_append(self.root, {"v": 1, "session": "a",

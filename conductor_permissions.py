@@ -24,6 +24,7 @@ import os
 CONDUCTOR_DIRNAME = ".conductor"
 PENDING_FILENAME = "pending_actions.jsonl"
 APPROVALS_DIRNAME = "approvals"
+DECISION_SUFFIXES = ("changes", "do_not_route", "kill_session", "ok")
 
 
 def _cdir(root):
@@ -38,39 +39,99 @@ def approvals_dir(root):
     return os.path.join(_cdir(root), APPROVALS_DIRNAME)
 
 
+def pending_file(root, route_id):
+    return os.path.join(approvals_dir(root), "%s.pending" % route_id)
+
+
+def _atomic_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(value, fh, indent=1, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _decision_body(root, route_id, suffix):
+    try:
+        with open(os.path.join(approvals_dir(root),
+                               "%s.%s" % (route_id, suffix)),
+                  encoding="utf-8") as fh:
+            return fh.read()[:1000].strip()
+    except OSError:
+        return ""
+
+
+def read_approval_decision(root, route_id):
+    """Structured operator decision; deny/undo always wins over approval."""
+    adir = approvals_dir(root)
+    present = {suffix for suffix in DECISION_SUFFIXES
+               if os.path.exists(os.path.join(
+                   adir, "%s.%s" % (route_id, suffix)))}
+    if "do_not_route" in present:
+        choice = "do_not_route"
+    elif "changes" in present:
+        choice = "rejected"
+    elif "kill_session" in present:
+        choice = "kill_session"
+    elif "ok" in present:
+        choice = "approved"
+    else:
+        return None
+    suffix = {"rejected": "changes", "approved": "ok"}.get(choice, choice)
+    return {"decision": choice,
+            "reason": _decision_body(root, route_id, suffix)}
+
+
 def approval_decision(root, route_id):
     """The operator's decision for a pending route, or None if still pending.
     Non-blocking: one stat pair per call, checked on each poll. `.ok` ->
     "approved" (execute the effect), `.changes` -> "rejected" (drop it). A
     stray both-files case resolves to "rejected" (deny wins — never act on an
     ambiguous approval)."""
-    adir = approvals_dir(root)
-    ok = os.path.exists(os.path.join(adir, "%s.ok" % route_id))
-    changes = os.path.exists(os.path.join(adir, "%s.changes" % route_id))
-    if changes:
-        return "rejected"
-    if ok:
-        return "approved"
-    return None
+    decision = read_approval_decision(root, route_id)
+    return decision.get("decision") if decision else None
 
 
-def pending_action(intent, session_id, kind="route"):
+def consume_decision(root, route_id):
+    """Best-effort cleanup after the ledger/state durably records a choice."""
+    for suffix in DECISION_SUFFIXES:
+        try:
+            os.remove(os.path.join(approvals_dir(root),
+                                   "%s.%s" % (route_id, suffix)))
+        except OSError:
+            pass
+
+
+def pending_action(intent, session_id, kind="route", reason=""):
     """The restart-safe queue record for a route awaiting approval — carries
     everything needed to execute it later without re-deriving from live
     state, plus the route_id both the approval file and 7.3 dedup key on."""
     return {"action_id": intent.route_id, "route_id": intent.route_id,
             "kind": kind, "requested_by": session_id,
             "target": intent.target,
+            "reason": str(reason or "route requires approval")[:500],
             "payload": {"artifact_id": intent.artifact_id,
                         "content_hash": intent.content_hash,
                         "source_section": intent.source_section,
-                        "rule_id": intent.rule_id}}
+                        "rule_id": intent.rule_id,
+                        "strategy": intent.strategy}}
 
 
 def read_pending(root):
     """Every queued action, oldest first; malformed lines skipped (a corrupt
     line must not hide the rest — §6.2)."""
     out = []
+    seen = set()
     try:
         with open(pending_path(root), encoding="utf-8") as fh:
             for line in fh:
@@ -80,8 +141,30 @@ def read_pending(root):
                     continue
                 if isinstance(rec, dict) and rec.get("action_id"):
                     out.append(rec)
+                    seen.add(rec["action_id"])
     except OSError:
-        return []
+        pass
+    # Crash recovery: enqueue writes the atomic per-action mirror BEFORE the
+    # queue append. If the process dies in that narrow gap, the mirror is the
+    # durable request and must be recovered rather than shown in the GUI as an
+    # approval card the Conductor can never act on.
+    try:
+        names = sorted(os.listdir(approvals_dir(root)))
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".pending"):
+            continue
+        try:
+            with open(os.path.join(approvals_dir(root), name),
+                      encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("action_id") \
+                and rec["action_id"] not in seen:
+            out.append(rec)
+            seen.add(rec["action_id"])
     return out
 
 
@@ -97,8 +180,10 @@ def enqueue_pending(root, action):
     if not isinstance(action, dict) or not action.get("action_id"):
         return False
     if is_pending(root, action["action_id"]):
-        return True
+        return _atomic_json(pending_file(root, action["action_id"]), action)
     try:
+        if not _atomic_json(pending_file(root, action["action_id"]), action):
+            return False
         os.makedirs(_cdir(root), exist_ok=True)
         with open(pending_path(root), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(action, ensure_ascii=False) + "\n")
@@ -106,6 +191,10 @@ def enqueue_pending(root, action):
             os.fsync(fh.fileno())
         return True
     except OSError:
+        try:
+            os.remove(pending_file(root, action["action_id"]))
+        except OSError:
+            pass
         return False
 
 
@@ -115,16 +204,19 @@ def remove_pending(root, action_id):
     corrupts the queue. Missing file / absent id is a silent no-op."""
     actions = [a for a in read_pending(root) if a.get("action_id") != action_id]
     path = pending_path(root)
-    if not os.path.exists(path):
-        return
     tmp = "%s.%d.tmp" % (path, os.getpid())
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            for a in actions:
-                fh.write(json.dumps(a, ensure_ascii=False) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())   # durability parity with enqueue_pending
-        os.replace(tmp, path)
+        if os.path.exists(path):
+            with open(tmp, "w", encoding="utf-8") as fh:
+                for a in actions:
+                    fh.write(json.dumps(a, ensure_ascii=False) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())   # durability parity with enqueue_pending
+            os.replace(tmp, path)
+        try:
+            os.remove(pending_file(root, action_id))
+        except OSError:
+            pass
     except OSError:
         try:
             os.remove(tmp)

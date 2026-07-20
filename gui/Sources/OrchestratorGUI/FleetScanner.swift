@@ -35,6 +35,7 @@ struct FleetScanSnapshot {
     let events: [String: [EngineEvent]]
     let health: FleetHealthSummary
     let projectCache: [String: ProjectScanCacheEntry]
+    let conductor: ConductorOversightSnapshot
 }
 
 enum FleetScanner {
@@ -94,12 +95,13 @@ enum FleetScanner {
             eventsByProject: events,
             runningProjects: running,
             failedProjects: failed)
+        let conductor = ConductorOversightDisk.scan(rootURL: input.rootURL)
         return FleetScanSnapshot(
             config: config, projects: projects, chat: chat,
             commandArtifact: commandArtifact, artifacts: artifacts,
             workers: workers, costs: costs, locks: locks,
             staleLocks: staleLocks, autorunDisabled: autorunDisabled,
             queueFile: queueFile, events: events, health: health,
-            projectCache: projectBatch.cache)
+            projectCache: projectBatch.cache, conductor: conductor)
     }
 }
