@@ -548,3 +548,118 @@ final class MarkdownSegmentsTests: XCTestCase {
         XCTAssertEqual(segs[1].text, "code to the end")
     }
 }
+
+// MARK: - Agent capability descriptors (V3 6.1)
+
+final class AgentCapabilitiesParserTests: XCTestCase {
+
+    private func data(_ s: String) -> Data { Data(s.utf8) }
+
+    private let fullDoctorJSON = """
+    {"schema_version": 1, "agent_capabilities": {
+       "agents": {
+         "claude": {"streams": false, "token_usage": false,
+                    "effort_control": true, "session_resume": true},
+         "codex": {"streams": false, "token_usage": false,
+                   "effort_control": true, "session_resume": "build_only"},
+         "gemini": {"streams": false, "token_usage": false,
+                    "effort_control": false, "session_resume": false},
+         "ollama": {"streams": false, "token_usage": false,
+                    "effort_control": false, "session_resume": false}},
+       "dynamic_prefixes": {
+         "local:": {"streams": false, "token_usage": false,
+                    "effort_control": true, "session_resume": false},
+         "api:": {"streams": true, "token_usage": true,
+                  "effort_control": false, "session_resume": false}}}}
+    """
+
+    func testParsesFullBlockWithTriStateResume() {
+        let info = DoctorReportParser.agentCapabilities(fromDoctorJSON: data(fullDoctorJSON))
+        XCTAssertNotNil(info)
+        XCTAssertEqual(info?.agents["claude"]?.sessionResume, "always")
+        XCTAssertEqual(info?.agents["codex"]?.sessionResume, "build_only")
+        XCTAssertEqual(info?.agents["gemini"]?.sessionResume, "never")
+        XCTAssertTrue(info?.agents["claude"]?.effortControl ?? false)
+        XCTAssertFalse(info?.agents["ollama"]?.effortControl ?? true)
+        XCTAssertTrue(info?.dynamicPrefixes["api:"]?.streams ?? false)
+        XCTAssertTrue(info?.dynamicPrefixes["api:"]?.tokenUsage ?? false)
+    }
+
+    func testAbsentOrMalformedBlockIsNil() {
+        XCTAssertNil(DoctorReportParser.agentCapabilities(fromDoctorJSON: data("{\"tools\": {}}")))
+        XCTAssertNil(DoctorReportParser.agentCapabilities(fromDoctorJSON: data("{not json")))
+        XCTAssertNil(DoctorReportParser.agentCapabilities(fromDoctorJSON:
+            data("{\"agent_capabilities\": \"nope\"}")))
+        // an empty block carries no information — treated as absent
+        XCTAssertNil(DoctorReportParser.agentCapabilities(fromDoctorJSON:
+            data("{\"agent_capabilities\": {\"agents\": {}, \"dynamic_prefixes\": {}}}")))
+    }
+
+    func testMissingFieldsDefaultToNoCapabilityNeverToEnabled() {
+        let info = DoctorReportParser.agentCapabilities(fromDoctorJSON:
+            data("{\"agent_capabilities\": {\"agents\": {\"claude\": {}}}}"))
+        let caps = info?.agents["claude"]
+        XCTAssertNotNil(caps)
+        XCTAssertFalse(caps?.streams ?? true)
+        XCTAssertFalse(caps?.tokenUsage ?? true)
+        XCTAssertFalse(caps?.effortControl ?? true)
+        XCTAssertEqual(caps?.sessionResume, "never")
+    }
+
+    func testPrefixResolutionMirrorsEngine() {
+        let info = DoctorReportParser.agentCapabilities(fromDoctorJSON: data(fullDoctorJSON))
+        XCTAssertEqual(info?.capability(for: "local:qwen3:8b")?.effortControl, true)
+        XCTAssertEqual(info?.capability(for: "api:anthropic:claude-sonnet-5")?.streams, true)
+        XCTAssertEqual(info?.capability(for: "CLAUDE")?.effortControl, true)   // case-tolerant
+        XCTAssertNil(info?.capability(for: "local:"))    // empty remainder
+        XCTAssertNil(info?.capability(for: "mystery-agent"))
+    }
+
+    func testIdentityMergesLiveCapsAndFallsBackWhenNil() {
+        let saved = DS.engineCapabilities
+        defer { DS.engineCapabilities = saved }
+        DS.engineCapabilities = nil
+        // static fallback: dynamic local ids collapse to the ollama identity
+        XCTAssertFalse(DS.identity("local:phi4").supportsEffort)
+        XCTAssertEqual(DS.identity("codex").sessionResume, "build_only")
+        DS.engineCapabilities =
+            DoctorReportParser.agentCapabilities(fromDoctorJSON: data(fullDoctorJSON))
+        // live descriptors are authoritative: local:<model> gains effort
+        // (run_local honors reasoning), static ollama/gemini stay disabled
+        XCTAssertTrue(DS.identity("local:phi4").supportsEffort)
+        XCTAssertFalse(DS.identity("ollama").supportsEffort)
+        XCTAssertFalse(DS.identity("gemini").supportsEffort)
+        XCTAssertEqual(DS.identity("claude").sessionResume, "always")
+        // ids the doctor doesn't describe keep the static fallback
+        XCTAssertFalse(DS.identity("mystery-agent").supportsEffort)
+    }
+
+    func testConcurrentDoctorWritesAndBackgroundReadsAreSafe() {
+        // The store's scan tick reads DS.identity() on a utility queue
+        // (EventsScanner → RunHealthDeriver) while the MainActor doctor
+        // completion writes engineCapabilities. This mirrors that overlap;
+        // under --sanitize=thread the unguarded var is flagged, the
+        // lock-guarded accessor is clean.
+        let saved = DS.engineCapabilities
+        defer { DS.engineCapabilities = saved }
+        let caps = DoctorReportParser.agentCapabilities(fromDoctorJSON: data(fullDoctorJSON))
+        let group = DispatchGroup()
+        for _ in 0..<4 {
+            DispatchQueue.global(qos: .utility).async(group: group) {
+                for _ in 0..<500 {
+                    _ = DS.identity("local:phi4").supportsEffort
+                    _ = DS.identity("codex").sessionResume
+                }
+            }
+        }
+        // Writer races on its own queue so the test thread only ever waits:
+        // the unguarded-var failure mode is a corrupted-CoW livelock (the
+        // sabotage run wedged for hours), which must surface as a bounded
+        // failed wait here — never a hung CI.
+        DispatchQueue.global(qos: .userInitiated).async(group: group) {
+            for i in 0..<500 { DS.engineCapabilities = (i % 2 == 0) ? caps : nil }
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 60), .success,
+                       "concurrent capability reads/writes wedged — lock regression?")
+    }
+}

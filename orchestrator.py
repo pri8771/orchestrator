@@ -1059,6 +1059,55 @@ def run_local(cfg, prompt, timeout, model=None):
 RUNNERS = {"codex": run_codex, "claude": run_claude, "gemini": run_gemini,
            "ollama": run_ollama}
 
+# V3 6.1: machine-readable capability descriptors. The GUI must never promise a
+# control the backend lacks (R2 interface-must-never-lie / §16 fake-feature
+# prohibition), so every agent id declares what its runner actually does:
+#   effort_control — run_codex passes model_reasoning_effort and run_claude
+#     passes --effort; run_gemini has no effort flag and run_ollama's CLI path
+#     ignores ollama_reasoning (only run_local honors it).
+#   session_resume — call_agent_sessioned resumes claude in every phase but
+#     codex only under _allow_writes (build phases), because `codex exec
+#     resume` always runs workspace-write: hence "build_only", never True.
+#   streams / token_usage — no CLI runner does either; 6.2's api: runners
+#     will be the first to flip them.
+AGENT_CAPABILITIES = {
+    "codex": {"streams": False, "token_usage": False,
+              "effort_control": True, "session_resume": "build_only"},
+    "claude": {"streams": False, "token_usage": False,
+               "effort_control": True, "session_resume": True},
+    "gemini": {"streams": False, "token_usage": False,
+               "effort_control": False, "session_resume": False},
+    "ollama": {"streams": False, "token_usage": False,
+               "effort_control": False, "session_resume": False},
+}
+
+# Dynamic identities resolve by prefix, mirroring resolve_runner: local:<model>
+# runs through run_local (reasoning honored, nothing else); api:<provider>:<model>
+# (6.2) will stream and meter tokens but exposes no effort knob yet.
+DYNAMIC_CAPABILITY_PREFIXES = {
+    "local:": {"streams": False, "token_usage": False,
+               "effort_control": True, "session_resume": False},
+    "api:": {"streams": True, "token_usage": True,
+             "effort_control": False, "session_resume": False},
+}
+
+_NO_CAPABILITIES = {"streams": False, "token_usage": False,
+                    "effort_control": False, "session_resume": False}
+
+
+def resolve_capabilities(agent):
+    """Capability descriptor for any agent id — static, local:<model>, or
+    api:<provider>:<model>. Unknown ids get the all-false descriptor instead
+    of a KeyError so a stale config can never crash a caller. Returns a fresh
+    dict each call; mutating it never corrupts the registry."""
+    if isinstance(agent, str):
+        if agent in AGENT_CAPABILITIES:
+            return dict(AGENT_CAPABILITIES[agent])
+        for prefix, caps in DYNAMIC_CAPABILITY_PREFIXES.items():
+            if agent.startswith(prefix) and len(agent) > len(prefix):
+                return dict(caps)
+    return dict(_NO_CAPABILITIES)
+
 
 def resolve_runner(agent):
     """Return a callable (cfg, prompt, timeout)->(out,err,code,cmd) for any agent
@@ -9622,6 +9671,16 @@ def preflight_report(cfg):
         "leaked_api_key_env_vars": leaked,
         "workflows": wflib.list_workflows(HERE),
         "resolved_models": cfg.get("_resolved", {}),
+        # V3 6.1: what each agent id can actually do (streams / token_usage /
+        # effort_control / session_resume). "agents" covers the static ids;
+        # "dynamic_prefixes" the local:/api: rules the GUI applies to dynamic
+        # identities. The GUI treats this block as authoritative over its
+        # hardcoded fallback map.
+        "agent_capabilities": {
+            "agents": {aid: resolve_capabilities(aid) for aid in sorted(RUNNERS)},
+            "dynamic_prefixes": {p: dict(c) for p, c in
+                                 sorted(DYNAMIC_CAPABILITY_PREFIXES.items())},
+        },
         # Local model manager (V2 spec §12/§27): server reachability, the selected
         # model + whether it's pulled, and the curated registry with installed
         # flags — this is what the GUI's Local Models settings render.

@@ -192,15 +192,28 @@ enum DS {
         /// Whether this agent's CLI exposes a reasoning-effort control
         /// (Claude `--effort`, Codex `model_reasoning_effort`). Gemini and
         /// local models render effort UI disabled at 40% — "no effort control".
-        let supportsEffort: Bool
+        /// V3 6.1: this table is only the pre-doctor FALLBACK — the engine's
+        /// live capability descriptors (engineCapabilities below) are
+        /// authoritative once a --doctor --json payload has loaded.
+        var supportsEffort: Bool
+        /// V3 6.1 forward guards (6.3 streaming, 6.4 token meter): no surface
+        /// may show a streaming affordance or a token meter unless these say
+        /// so. No CLI agent has either today; 6.2's api: ids flip them first.
+        var streams: Bool = false
+        var tokenUsage: Bool = false
+        /// "always" | "never" | "build_only" (codex resumes only in
+        /// write-enabled build phases — never a bare "always").
+        var sessionResume: String = "never"
     }
 
     static let agentIdentities: [String: AgentIdentity] = [
         "claude": AgentIdentity(key: "claude", displayName: "Claude", monogram: "Cl",
-                                symbol: "asterisk", tint: agent.claude, supportsEffort: true),
+                                symbol: "asterisk", tint: agent.claude, supportsEffort: true,
+                                sessionResume: "always"),
         "codex": AgentIdentity(key: "codex", displayName: "Codex", monogram: "Cx",
                                symbol: "chevron.left.forwardslash.chevron.right",
-                               tint: agent.codex, supportsEffort: true),
+                               tint: agent.codex, supportsEffort: true,
+                               sessionResume: "build_only"),
         "gemini": AgentIdentity(key: "gemini", displayName: "Gemini", monogram: "Gm",
                                 symbol: "diamond", tint: agent.gemini, supportsEffort: false),
         "ollama": AgentIdentity(key: "ollama", displayName: "Local", monogram: "Lo",
@@ -208,9 +221,38 @@ enum DS {
                                 supportsEffort: false),
     ]
 
+    /// V3 6.1: the engine's agent_capabilities block, published here by
+    /// OrchestratorStore after each --doctor --json fetch. nil until the
+    /// first fetch lands — identity() then serves the static fallback and
+    /// never enables anything the static map disables. Lock-guarded (same
+    /// pattern as EventsScanner.cache) because identity() is read from the
+    /// store's background scan tick (EventsScanner → RunHealthDeriver) while
+    /// the MainActor doctor completion writes; the getter snapshots a
+    /// consistent value-copy under the lock.
+    private static let capsLock = NSLock()
+    nonisolated(unsafe) private static var _engineCapabilities: AgentCapabilitiesInfo?
+    static var engineCapabilities: AgentCapabilitiesInfo? {
+        get { capsLock.lock(); defer { capsLock.unlock() }; return _engineCapabilities }
+        set { capsLock.lock(); defer { capsLock.unlock() }; _engineCapabilities = newValue }
+    }
+
     /// Identity lookup tolerant of roster slugs ("codex-a") and the "local"
-    /// alias; unknown agents get a neutral slate identity.
+    /// alias; unknown agents get a neutral slate identity. When the engine
+    /// has described this id (statically or via a local:/api: prefix rule),
+    /// its descriptor overrides the hardcoded capability fields — the
+    /// interface must never promise a control the backend lacks (R2/§16).
     static func identity(_ rawKey: String) -> AgentIdentity {
+        var hit = staticIdentity(rawKey)
+        if let caps = engineCapabilities?.capability(for: rawKey) {
+            hit.supportsEffort = caps.effortControl
+            hit.streams = caps.streams
+            hit.tokenUsage = caps.tokenUsage
+            hit.sessionResume = caps.sessionResume
+        }
+        return hit
+    }
+
+    private static func staticIdentity(_ rawKey: String) -> AgentIdentity {
         let key = rawKey.lowercased()
         if let hit = agentIdentities[key] { return hit }
         if key.hasPrefix("local") { return agentIdentities["ollama"]! }

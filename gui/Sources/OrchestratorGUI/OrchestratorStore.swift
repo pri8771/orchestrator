@@ -1570,6 +1570,11 @@ final class OrchestratorStore: ObservableObject {
     // selected model, installed flags per curated registry entry. nil until
     // the first fetch completes (or when the engine/JSON is unavailable).
     @Published var localModels: LocalModelsInfo?
+    // V3 6.1: the doctor's agent_capabilities block. DS.identity(_:) merges
+    // it over the static fallback table for every reader (EffortPicker and
+    // friends); this published copy exists so SwiftUI invalidates observing
+    // views the moment the block lands or changes.
+    @Published var agentCapabilities: AgentCapabilitiesInfo?
     private var doctorFetchInFlight = false
 
     // Re-run the engine doctor and republish the local_models block. Async and
@@ -1591,6 +1596,13 @@ final class OrchestratorStore: ObservableObject {
                 self?.doctorFetchInFlight = false
                 if let info = DoctorReportParser.localModels(fromDoctorJSON: data) {
                     self?.localModels = info
+                }
+                // V3 6.1: same payload carries the capability descriptors.
+                // Absent block (older engine) leaves the static fallback in
+                // force — never clears a previously-loaded map to nil.
+                if let caps = DoctorReportParser.agentCapabilities(fromDoctorJSON: data) {
+                    self?.agentCapabilities = caps
+                    DS.engineCapabilities = caps
                 }
             }
         }

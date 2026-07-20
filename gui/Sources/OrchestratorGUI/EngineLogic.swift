@@ -222,6 +222,36 @@ struct LocalModelsInfo: Equatable {
     var registry: [LocalModelEntry]
 }
 
+// V3 6.1: one agent id's capability descriptor from the engine's doctor
+// payload — the machine-readable truth about what the backend can do, so no
+// GUI surface promises a feature (effort control, streaming, token metering,
+// session continuity) the runner lacks.
+struct AgentCapability: Equatable {
+    var streams: Bool
+    var tokenUsage: Bool
+    var effortControl: Bool
+    /// Mirrors the engine tri-state: "always" (JSON true), "never" (false),
+    /// or "build_only" (codex — resumes only in write-enabled build phases).
+    var sessionResume: String
+}
+
+struct AgentCapabilitiesInfo: Equatable {
+    var agents: [String: AgentCapability]
+    var dynamicPrefixes: [String: AgentCapability]
+
+    /// Resolve like the engine's resolve_capabilities: exact id first, then
+    /// prefix rules (local:/api:) with a non-empty remainder. nil for ids the
+    /// engine doesn't describe — callers fall back to the static identity
+    /// table and must not enable anything the static map disables.
+    func capability(for rawKey: String) -> AgentCapability? {
+        let key = rawKey.lowercased()
+        if let hit = agents[key] { return hit }
+        for (prefix, caps) in dynamicPrefixes
+            where key.hasPrefix(prefix) && key.count > prefix.count { return caps }
+        return nil
+    }
+}
+
 enum DoctorReportParser {
 
     // Parse a full doctor JSON report down to its local_models block. Returns
@@ -251,6 +281,39 @@ enum DoctorReportParser {
                                selected: (block["selected"] as? String) ?? "",
                                selectedInstalled: (block["selected_installed"] as? Bool) ?? false,
                                registry: registry)
+    }
+
+    // V3 6.1: parse the agent_capabilities block ({"agents": {...},
+    // "dynamic_prefixes": {...}}). nil when absent or empty (older engine) —
+    // the GUI then serves the static identity table unchanged. Missing or
+    // malformed fields default to the no-capability value, never to enabled:
+    // a parse problem must not light up a control the backend may lack.
+    static func agentCapabilities(fromDoctorJSON data: Data) -> AgentCapabilitiesInfo? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let block = root["agent_capabilities"] as? [String: Any] else { return nil }
+        func caps(_ raw: Any) -> AgentCapability? {
+            guard let m = raw as? [String: Any] else { return nil }
+            let resume: String
+            switch m["session_resume"] {
+            case let flag as Bool: resume = flag ? "always" : "never"
+            case let mode as String: resume = mode
+            default: resume = "never"
+            }
+            return AgentCapability(streams: (m["streams"] as? Bool) ?? false,
+                                   tokenUsage: (m["token_usage"] as? Bool) ?? false,
+                                   effortControl: (m["effort_control"] as? Bool) ?? false,
+                                   sessionResume: resume)
+        }
+        var agents: [String: AgentCapability] = [:]
+        for (key, raw) in (block["agents"] as? [String: Any]) ?? [:] {
+            if let c = caps(raw) { agents[key.lowercased()] = c }
+        }
+        var prefixes: [String: AgentCapability] = [:]
+        for (key, raw) in (block["dynamic_prefixes"] as? [String: Any]) ?? [:] {
+            if let c = caps(raw) { prefixes[key.lowercased()] = c }
+        }
+        if agents.isEmpty && prefixes.isEmpty { return nil }
+        return AgentCapabilitiesInfo(agents: agents, dynamicPrefixes: prefixes)
     }
 }
 
