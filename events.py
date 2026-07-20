@@ -38,6 +38,11 @@ Event kinds emitted by orchestrator.py:
                          off this + delegation.json status)
     route_proposed      (route_id, artifact_id, target)
     route_approved      (route_id, artifact_id, target)
+    command_ran         (name, command_kind, target — a '/command' dispatched)
+    command_result      (name, card — a template/meta command's rendered
+                         output, so a GUI can card it without .md parsing)
+    command_unknown     (name, args — an unrecognized '/command'; the banner
+                         AND the recoverable text, never silently discarded)
 
 Contract:
   * Best-effort by design — emitting an event must NEVER take a run down.
@@ -112,6 +117,16 @@ KINDS = (
     # — the visible-fallback banner kind (sections.py is the first
     # emitter; every future config loader reuses it).
     "config_fallback",
+    # V3 board 9.5: a '/command' drained from human_inbox.txt. command_ran
+    # (name, command_kind, target? — "kind" is emit_event's own positional
+    # param name, so the field is command_kind) marks a dispatched
+    # template/delegation/builtin;
+    # command_result (name, card — the rendered advisory text) is the meta
+    # executor's ONE call_agent turn's output, so a GUI can render it as a
+    # card without parsing the transcript's fenced block. command_unknown
+    # (name) is the visible banner for an unrecognized command — paired with
+    # the text NOT being forwarded as chat (§6.2/§13.3).
+    "command_ran", "command_result", "command_unknown",
 )
 
 _MAX_FIELD_CHARS = 500
