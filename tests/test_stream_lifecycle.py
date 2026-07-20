@@ -5,6 +5,7 @@ delta order, every completion arm, kill/resume orphan recovery, deterministic
 turn ids, and transcript byte parity. Provider SSE parsing/usage/error classes
 remain covered in test_api_runners.py.
 """
+import http.client
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import unittest.mock
 
 import messages as msglib
 import orchestrator as orch
+import traces as traceslib
 import turncontext as tcxlib
 
 
@@ -244,6 +246,119 @@ class StreamLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(orch.AgentError, "refusing to complete"):
                 self._call(runner)
         self.assertTrue(os.path.exists(path_box["path"]))
+
+
+class StreamReviewFixTests(StreamLifecycleTests):
+    """Regressions for the 6.3 adversarial-review findings: preview-sink
+    redaction, opt-out never creates .stream, billed usage survives a failed
+    turn, and mid-stream IncompleteRead maps to the network error class."""
+
+    CANARY = "sk-proj-FAKEcanary12345678901234567890123456789012345678"
+
+    def test_stream_deltas_are_redacted_before_hitting_disk(self):
+        # §17: the preview file is a persisted sink; the secret must be
+        # scrubbed BEFORE the write, not only at the end-of-turn chokepoint.
+        seen = {}
+
+        def runner(cfg, prompt, timeout):
+            orch._append_api_stream_delta("key is %s ok" % self.CANARY)
+            path = getattr(orch._API_STREAM, "path", None)
+            with open(path, encoding="utf-8") as fh:
+                seen["content"] = fh.read()
+            return ("final text", "", 0, "api:openai model=gpt-5")
+
+        self._call(runner)
+        self.assertNotIn(self.CANARY, seen["content"])
+        self.assertIn("[REDACTED", seen["content"])
+
+    def test_opted_out_project_never_gets_a_stream_dir(self):
+        cfg = self._cfg()
+        tcxlib.TurnContext(cfg).api_agents_enabled = None   # opt-in removed
+
+        def refusing_runner(cfg_, prompt, timeout):
+            return ("", "api:openai:gpt-5 refused: opt-in", 1,
+                    "api:openai model=gpt-5")
+
+        with self.assertRaises(orch.AgentError):
+            self._call(refusing_runner, cfg=cfg)
+        self.assertFalse(
+            os.path.exists(os.path.join(self.app_dir, ".stream")),
+            "opt-out turn must not create even an empty .stream dir")
+
+    def test_billed_usage_survives_strict_cleanup_failure(self):
+        # The provider charged for these tokens; a cleanup-failed turn must
+        # still finalize the trace WITH them, never tokens=None.
+        usage = {"provider": "openai", "model": "gpt-5",
+                 "prompt_tokens": 21, "completion_tokens": 34}
+        finals = []
+
+        def runner(cfg, prompt, timeout):
+            traceslib.set_last_usage(dict(usage))
+            return ("final text", "", 0, "api:openai model=gpt-5")
+
+        real_finish = orch._finish_api_stream
+
+        def failing_finish(strict=False):
+            if strict:
+                raise orch.AgentError(
+                    "api stream preview cleanup failed; refusing to "
+                    "complete the turn: planted")
+            return real_finish()
+
+        def record_finalize(trace, **kw):
+            finals.append(kw)
+
+        with unittest.mock.patch.object(orch, "_finish_api_stream",
+                                        failing_finish), \
+                unittest.mock.patch.object(orch.traceslib, "finalize",
+                                           record_finalize):
+            with self.assertRaisesRegex(orch.AgentError,
+                                        "refusing to complete"):
+                self._call(runner)
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(finals[0].get("tokens"), usage)
+        self.assertEqual(finals[0].get("status"), "error")
+
+    def test_incomplete_read_mid_stream_is_a_network_error_not_a_crash(self):
+        class _TruncatedResp:
+            def readline(self):
+                raise http.client.IncompleteRead(b"partial")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with unittest.mock.patch.object(
+                orch.urllib.request, "urlopen",
+                lambda req, timeout=None: _TruncatedResp()):
+            err, code, saw_done, n = orch._api_sse(
+                "openai", "https://api.openai.com/v1/chat/completions",
+                {}, {}, 5, lambda obj: "")
+        self.assertEqual(code, 1)
+        self.assertIn("unreachable (network)", err)
+
+    def test_incomplete_read_on_buffered_body_is_a_network_error(self):
+        class _TruncatedBody:
+            def read(self):
+                raise http.client.IncompleteRead(b"partial")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with unittest.mock.patch.object(
+                orch.urllib.request, "urlopen",
+                lambda req, timeout=None: _TruncatedBody()):
+            parsed, err, code = orch._api_http(
+                "openai", "https://api.openai.com/v1/chat/completions",
+                {}, {}, 5)
+        self.assertIsNone(parsed)
+        self.assertEqual(code, 1)
+        self.assertIn("unreachable (network)", err)
 
 
 if __name__ == "__main__":

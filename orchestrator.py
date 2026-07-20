@@ -22,6 +22,7 @@ import argparse
 import concurrent.futures
 import datetime as _dt
 import hashlib
+import http.client
 import itertools
 import json
 import errno
@@ -726,6 +727,14 @@ def _append_api_stream_delta(delta):
     fh = getattr(_API_STREAM, "fh", None)
     if fh is None:
         return  # direct runner/unit call: transport streams, no session preview
+    # §17: the preview file and the GUI's live tail are persisted/visible
+    # sinks like any other — a secret an agent echoes must be scrubbed BEFORE
+    # it hits disk, not only at the end-of-turn chokepoint. Per-delta
+    # redaction can miss a secret split across two deltas (regexes see one
+    # delta at a time); the durable transcript is still scrubbed whole, and
+    # the preview is deleted at turn end — accepted residual risk, recorded
+    # in the ledger.
+    delta = schemalib.redact_secrets(delta)
     _API_STREAM.seq = int(getattr(_API_STREAM, "seq", 0)) + 1
     line = {"seq": _API_STREAM.seq, "ts": time.time(), "delta": delta}
     try:
@@ -944,6 +953,10 @@ def _api_http(provider, url, headers, body, timeout):
     except urllib.error.URLError as exc:
         return None, ("%s unreachable (network): %s — check connectivity; "
                       "nothing was billed." % (provider, exc.reason)), 1
+    except http.client.HTTPException as exc:
+        # Truncated body on resp.read(): not OSError, not URLError.
+        return None, ("%s unreachable (network): %s — the response ended "
+                      "mid-body." % (provider, exc)), 1
     except OSError as exc:
         # urllib only wraps SEND-phase failures into URLError; a timeout or
         # reset while RECEIVING the response raises raw socket errors
@@ -1057,6 +1070,12 @@ def _api_sse(provider, url, headers, body, timeout, on_event):
         return (("%s unreachable (network): %s — check connectivity; nothing "
                  "was billed.") % (provider, exc.reason),
                 1, saw_done, event_count)
+    except http.client.HTTPException as exc:
+        # IncompleteRead/BadStatusLine on a truncated chunked body: raised by
+        # readline() mid-stream, NOT an OSError and NOT wrapped into URLError
+        # — without this arm the turn crashes and skips trace finalization.
+        return (("%s unreachable (network): %s — the stream ended "
+                 "mid-response.") % (provider, exc), 1, saw_done, event_count)
     except OSError as exc:
         # Includes raw TimeoutError/ConnectionResetError raised by readline().
         return (("%s unreachable (network): %s — the response timed out or "
@@ -2227,10 +2246,19 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
                         int(time.time() - t0), timeout or "none"))
 
         threading.Thread(target=_heartbeat, daemon=True).start()
+        _tokens = None
         try:
-            if str(agent).startswith("api:"):
+            if str(agent).startswith("api:") \
+                    and tcxlib.TurnContext(cfg).api_agents_enabled:
+                # Opt-out projects never get even an empty .stream dir: the
+                # refusal memo needs no preview channel.
                 _prepare_api_stream(_ev_dir, phase, rnd, _hkey)
             out, err, code, command = resolve_runner(agent)(cfg, prompt, timeout)
+            # Harvest usage IMMEDIATELY after the runner returns: the provider
+            # billed these tokens even if strict cleanup / empty-output /
+            # banner fails the turn below — a later arm finalizing with
+            # tokens=None would silently unbill real spend.
+            _tokens = traceslib.pop_last_usage()
             if str(agent).startswith("api:"):
                 # Strict cleanup is still inside the AgentError-mapped runner
                 # try: an unlink failure becomes a finalized failed turn, never
@@ -2277,12 +2305,18 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
                            % (DISPLAY[agent], timeout or 0)), _trace)
         except AgentError as exc:
             # A runner-level refusal (e.g. run_gemini's unavailable memo) —
-            # still exactly one turn_completed per turn_started.
+            # still exactly one turn_completed per turn_started. A runner can
+            # abort AFTER the provider streamed billable usage (strict-cleanup
+            # failure, mid-stream preview-write error), so harvest any stashed
+            # tokens and record them on the failed trace: billed spend must
+            # never vanish from the accounting record.
+            if _tokens is None:
+                _tokens = traceslib.pop_last_usage()
             evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                              round=rnd, agent=str(agent), ok=False,
                              model_requested=_model_req, reason="agent_error",
                              detail=str(exc), dur=round(time.time() - t0, 1))
-            traceslib.finalize(_trace, stderr=str(exc),
+            traceslib.finalize(_trace, stderr=str(exc), tokens=_tokens,
                                duration_s=time.time() - t0, status="error")
             if _trace and not getattr(exc, "trace_id", None):
                 exc.trace_id = traceslib.trace_id(_trace)
@@ -2292,7 +2326,7 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
         # means a secret an agent echoed never reaches any persisted artifact.
         out = schemalib.redact_secrets(out)
         err = schemalib.redact_secrets(err)
-        _tokens = traceslib.pop_last_usage()
+        # (_tokens was harvested right after the runner returned, above.)
         write_call_log(app, phase, rnd, agent, command, out, err, code)
         text = (out or "").strip()
         if not text:
