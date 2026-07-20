@@ -64,4 +64,29 @@ final class FactoryScannerLockTests: XCTestCase {
         XCTAssertEqual(locks["alpha"]?.pid, 100)
         XCTAssertEqual(locks["beta"]?.pid, 200)
     }
+
+    // V3 7.0: the run.pid fallback reader — bare int, nested ids resolve as
+    // path segments, garbage never yields a pid.
+    func testReadRunPidParsesAndRejects() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let dir = root.appendingPathComponent("p/s/chat")
+        try FileManager.default.createDirectory(at: dir,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertNil(FactoryScanner.readRunPid(
+            rootURL: root, id: "p/s/chat"))
+        try "  4242\n".write(to: dir.appendingPathComponent("run.pid"),
+                             atomically: true, encoding: .utf8)
+        XCTAssertEqual(FactoryScanner.readRunPid(
+            rootURL: root, id: "p/s/chat"), 4242)
+        try "not-a-pid".write(to: dir.appendingPathComponent("run.pid"),
+                              atomically: true, encoding: .utf8)
+        XCTAssertNil(FactoryScanner.readRunPid(
+            rootURL: root, id: "p/s/chat"))
+        try "-9".write(to: dir.appendingPathComponent("run.pid"),
+                       atomically: true, encoding: .utf8)
+        XCTAssertNil(FactoryScanner.readRunPid(
+            rootURL: root, id: "p/s/chat"))
+    }
 }

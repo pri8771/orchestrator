@@ -444,6 +444,18 @@ enum FactoryScanner {
     // signaling. EPERM counts as ALIVE — a process we may not signal can still
     // be running, and a false "alive" only suppresses a resume offer (the safe
     // direction), never launches anything.
+    // V3 7.0: the per-session run.pid fallback (bare int, engine-written
+    // after lock acquisition, removed on clean exit). Nested ids embed
+    // slashes; appendingPathComponent resolves them as path segments.
+    static func readRunPid(rootURL: URL, id: String) -> Int32? {
+        let url = rootURL.appendingPathComponent(id)
+            .appendingPathComponent("run.pid")
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(
+                  in: .whitespacesAndNewlines)), pid > 0 else { return nil }
+        return pid
+    }
+
     nonisolated(unsafe) static let pidAlive: (Int32) -> Bool = { pid in
         kill(pid, 0) == 0 || errno == EPERM
     }
@@ -4241,7 +4253,14 @@ final class OrchestratorStore: ObservableObject {
         }
         let lockURL = SessionLayout.lockURL(rootURL: rootURL, id: name)
         manualStops[name] = Date()
-        guard let pid = appLocks[name]?.pid, pid > 0 else {
+        // Lock payload's pid first; else the engine's belt-and-braces
+        // run.pid (V3 7.0) — a foreign run whose lock is unreadable or
+        // damaged is still stoppable. The liveness check below applies to
+        // whichever source supplied the pid.
+        let lockPid = appLocks[name]?.pid ?? 0
+        let pid = lockPid > 0 ? lockPid
+            : (FactoryScanner.readRunPid(rootURL: rootURL, id: name) ?? 0)
+        guard pid > 0 else {
             clearLockFile(lockURL, name)
             refresh()
             return

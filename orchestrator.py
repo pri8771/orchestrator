@@ -9280,12 +9280,22 @@ def process_app(cfg, root, app):
         return
     heartbeat_stop = _start_run_heartbeat(app, app_dir)
     try:
+        # V3 7.0: belt-and-braces stop target. Written AFTER the lock is won
+        # (a lock-skipped duplicate returns before this line and can never
+        # clobber the live run's pidfile) and INSIDE the try — an OSError
+        # here must degrade to "no fallback stop target", not leak the held
+        # lock and the heartbeat thread (that leak starves the app for the
+        # whole process lifetime under parallel workers). Removal lives in
+        # the finally — _cleanup exits via sys.exit(0), so SIGTERM unwinds
+        # through it too and no separate registry is needed.
+        seslib.write_pidfile(app_dir, os.getpid())
         # A leftover preview proves the prior engine died mid-turn. It is never
         # transcript input; discard it visibly before any resume parser runs.
         _sweep_stream_orphans(app_dir)
         _run_app_pipeline(cfg, app, app_dir, prompt)
     finally:
         heartbeat_stop.set()
+        seslib.remove_pidfile(app_dir)
         release_app_lock(app)
 
 
@@ -10787,7 +10797,8 @@ def fork_session(root, src_slug, new_slug=None):
 
     def _ignore(_dirpath, entries):
         return {e for e in entries
-                if e in (".agent_cwd", "approvals", "human_inbox.txt", ".step_in")
+                if e in (".agent_cwd", "approvals", "human_inbox.txt", ".step_in",
+                         "run.pid")   # a fork has no runner (7.0)
                 or e.endswith(".lock")}
 
     try:

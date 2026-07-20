@@ -10,7 +10,9 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
+import unittest.mock
 
 import orchestrator as orch
 import sessions as seslib
@@ -499,3 +501,158 @@ class TestHookReplyEdge(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRunPidLifecycle(unittest.TestCase):
+    """V3 7.0: run.pid write/remove discipline — the belt-and-braces stop
+    target must exist exactly while a run is live."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.app_dir = os.path.join(self.root, "p", "s", "chat")
+        os.makedirs(self.app_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_write_read_remove_roundtrip(self):
+        seslib.write_pidfile(self.app_dir, 4242)
+        self.assertEqual(seslib.read_pidfile(self.app_dir), 4242)
+        seslib.remove_pidfile(self.app_dir)
+        self.assertIsNone(seslib.read_pidfile(self.app_dir))
+
+    def test_remove_missing_is_silent(self):
+        seslib.remove_pidfile(self.app_dir)   # must not raise
+
+    def test_process_app_self_writes_then_removes(self):
+        import orchestrator as orch
+        seen = {}
+        os.makedirs(os.path.join(self.app_dir, "initial_prompt"))
+        with open(os.path.join(self.app_dir, "initial_prompt",
+                               "initial_prompt.md"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("build a thing")
+
+        def fake_pipeline(cfg, app, app_dir, prompt):
+            seen["live_pid"] = seslib.read_pidfile(app_dir)
+
+        saved_locks, saved_quiet = orch.LOCKS_DIR, orch._QUIET
+        orch.LOCKS_DIR, orch._QUIET = os.path.join(self.root, ".orch-locks"), True
+        try:
+            with unittest.mock.patch.object(orch, "_run_app_pipeline",
+                                            fake_pipeline), \
+                    unittest.mock.patch.object(orch, "_start_run_heartbeat",
+                                               lambda *a: threading.Event()), \
+                    unittest.mock.patch.object(orch, "_sweep_stream_orphans",
+                                               lambda *a: None):
+                orch.process_app({"root": self.root, "runtime": {}},
+                                 self.root, "p/s/chat")
+        finally:
+            orch.LOCKS_DIR, orch._QUIET = saved_locks, saved_quiet
+        # Alive DURING the pipeline with our own pid; gone after the finally.
+        self.assertEqual(seen["live_pid"], os.getpid())
+        self.assertIsNone(seslib.read_pidfile(self.app_dir))
+
+    def test_pipeline_crash_still_removes(self):
+        import orchestrator as orch
+        os.makedirs(os.path.join(self.app_dir, "initial_prompt"))
+        with open(os.path.join(self.app_dir, "initial_prompt",
+                               "initial_prompt.md"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("x")
+
+        def exploding(cfg, app, app_dir, prompt):
+            raise RuntimeError("boom")
+
+        saved_locks, saved_quiet = orch.LOCKS_DIR, orch._QUIET
+        orch.LOCKS_DIR, orch._QUIET = os.path.join(self.root, ".orch-locks"), True
+        try:
+            with unittest.mock.patch.object(orch, "_run_app_pipeline",
+                                            exploding), \
+                    unittest.mock.patch.object(orch, "_start_run_heartbeat",
+                                               lambda *a: threading.Event()), \
+                    unittest.mock.patch.object(orch, "_sweep_stream_orphans",
+                                               lambda *a: None):
+                with self.assertRaises(RuntimeError):
+                    orch.process_app({"root": self.root, "runtime": {}},
+                                     self.root, "p/s/chat")
+        finally:
+            orch.LOCKS_DIR, orch._QUIET = saved_locks, saved_quiet
+        self.assertIsNone(seslib.read_pidfile(self.app_dir))
+
+    def test_lock_skipped_duplicate_never_touches_pidfile(self):
+        # The ordering claim in process_app's comment, pinned: a second
+        # process losing the lock race returns before the write and must
+        # leave the live run's pidfile byte-identical.
+        import orchestrator as orch
+        os.makedirs(os.path.join(self.app_dir, "initial_prompt"))
+        with open(os.path.join(self.app_dir, "initial_prompt",
+                               "initial_prompt.md"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("x")
+        seslib.write_pidfile(self.app_dir, 999999)   # the "live run's" file
+        saved_locks, saved_quiet = orch.LOCKS_DIR, orch._QUIET
+        orch.LOCKS_DIR, orch._QUIET = os.path.join(self.root, ".orch-locks"), True
+        try:
+            with unittest.mock.patch.object(orch, "acquire_app_lock",
+                                            lambda *a, **k: False), \
+                    unittest.mock.patch.object(
+                        orch, "_run_app_pipeline",
+                        lambda *a: (_ for _ in ()).throw(
+                            AssertionError("must not run"))):
+                orch.process_app({"root": self.root, "runtime": {}},
+                                 self.root, "p/s/chat")
+        finally:
+            orch.LOCKS_DIR, orch._QUIET = saved_locks, saved_quiet
+        self.assertEqual(seslib.read_pidfile(self.app_dir), 999999)
+
+    def test_failed_pidfile_write_still_releases_the_lock(self):
+        # Regression for the review's converged finding: an OSError from the
+        # write must NOT leak the held lock (permanent app starvation under
+        # parallel workers) — it unwinds through the finally instead.
+        import orchestrator as orch
+        os.makedirs(os.path.join(self.app_dir, "initial_prompt"))
+        with open(os.path.join(self.app_dir, "initial_prompt",
+                               "initial_prompt.md"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("x")
+        released = {}
+        saved_locks, saved_quiet = orch.LOCKS_DIR, orch._QUIET
+        orch.LOCKS_DIR, orch._QUIET = os.path.join(self.root, ".orch-locks"), True
+        try:
+            real_release = orch.release_app_lock
+            with unittest.mock.patch.object(
+                    seslib, "write_pidfile",
+                    lambda *a: (_ for _ in ()).throw(OSError("disk full"))), \
+                    unittest.mock.patch.object(
+                        orch, "release_app_lock",
+                        lambda app: released.update(app=app) or real_release(app)), \
+                    unittest.mock.patch.object(orch, "_start_run_heartbeat",
+                                               lambda *a: threading.Event()), \
+                    unittest.mock.patch.object(orch, "_sweep_stream_orphans",
+                                               lambda *a: None):
+                with self.assertRaises(OSError):
+                    orch.process_app({"root": self.root, "runtime": {}},
+                                     self.root, "p/s/chat")
+        finally:
+            orch.LOCKS_DIR, orch._QUIET = saved_locks, saved_quiet
+        self.assertEqual(released.get("app"), "p/s/chat")
+
+    def test_fork_never_copies_run_pid(self):
+        import orchestrator as orch
+        src = os.path.join(self.root, "srcproj")
+        os.makedirs(os.path.join(src, "initial_prompt"))
+        with open(os.path.join(src, "initial_prompt", "initial_prompt.md"),
+                  "w", encoding="utf-8") as fh:
+            fh.write("x")
+        seslib.write_pidfile(src, 12345)
+        saved_quiet = orch._QUIET
+        orch._QUIET = True
+        try:
+            orch.fork_session(self.root, "srcproj", "forkproj")
+        finally:
+            orch._QUIET = saved_quiet
+        dst = os.path.join(self.root, "forkproj")
+        self.assertTrue(os.path.isdir(dst), "fork must have copied the dir")
+        self.assertIsNone(seslib.read_pidfile(dst),
+                          "a fork has no runner — run.pid must not be copied")

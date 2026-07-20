@@ -267,14 +267,29 @@ def run_pid_path(session_dir):
     return os.path.join(session_dir, "run.pid")
 
 
-def _write_pidfile(session_dir, pid):
-    # A single-value liveness file (bare int) that 7.0's stop coverage can
-    # int(open(...).read()); atomic overwrite reaps a stale prior pid.
+def write_pidfile(session_dir, pid):
+    """A single-value liveness file (bare int) for stop coverage (V3 7.0):
+    the GUI can kill a run it didn't launch even when the lock stem is
+    unreadable, without JSON-parsing agent_state.json. Written by spawn_run
+    (child pid) AND self-written by process_app (same number for spawned
+    runs — idempotent overwrite); atomic so a reader never sees a torn
+    value."""
     path = run_pid_path(session_dir)
     tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write("%d\n" % pid)
     os.replace(tmp, path)
+
+
+def remove_pidfile(session_dir):
+    """Best-effort cleanup at run end (V3 7.0): a lingering run.pid after a
+    clean exit would read as a live run to belt-and-braces consumers until
+    they liveness-check. Missing file is fine; other OS errors are ignored
+    — cleanup must never take a shutdown path down."""
+    try:
+        os.remove(run_pid_path(session_dir))
+    except OSError:
+        pass
 
 
 def read_pidfile(session_dir):
@@ -307,7 +322,7 @@ def spawn_run(session_dir, workflow=None, *, root, on_error=None,
                    failed_reason=str(exc)[:300])
         on_error("spawn failed for %r: %s" % (sid, exc))
         return None
-    _write_pidfile(session_dir, proc.pid)
+    write_pidfile(session_dir, proc.pid)
     set_status(session_dir, "running", on_error=on_error)
     return proc.pid
 
