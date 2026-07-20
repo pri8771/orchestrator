@@ -124,11 +124,11 @@ def release_singleton(fd):
 
 
 def route_digest(route_key):
-    """Stable digest of a route_key dict for the already-routed set — keyed
-    on content_hash so a new artifact version re-routes but an unchanged one
-    never re-fires (7.3 will build full idempotency on the same inputs)."""
-    blob = json.dumps(route_key, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    """The route's deterministic id (7.3). Delegates to conductor_routing so
+    there is ONE definition shared by the ledger route_id, the mint request,
+    and the already-routed cache key."""
+    import conductor_routing as _cr
+    return _cr.route_id_for(route_key)
 
 
 def default_state():
@@ -469,6 +469,7 @@ def route_engine(root, state, sessions, emit=print):
     sections_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "sections")
     classify = _build_classifier(root)
+    effected_cache = {}   # (project, section) -> set, scanned once per poll
 
     def _ledger_route(root_, base):
         rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "acting"}
@@ -515,14 +516,36 @@ def route_engine(root, state, sessions, emit=print):
                     create_session=create_session,
                     on_error=lambda m: emit("conductor mint: %s" % m))
 
+            def _probe(rid, target_section, _proj=project, _intent_by_rid=None):
+                # 7.3 restart recovery, cost-bounded: scan each target
+                # section's effected routes ONCE per poll (cached), then match
+                # this route_id — or, for a session minted before 7.3 stamped
+                # route_id, its legacy (artifact_id, rule_id) key. Skipping the
+                # mint AND recording the recovery is what makes it exactly-once
+                # across a crash-before-done or the 7.2b->7.3 boundary.
+                key = (_proj, target_section)
+                if key not in effected_cache:
+                    effected_cache[key] = seslib_local.scan_effected_routes(
+                        root, _proj, target_section)
+                effected = effected_cache[key]
+                if rid in effected:
+                    return True
+                intent = _intent_by_rid.get(rid) if _intent_by_rid else None
+                if intent is not None:
+                    return ("legacy", intent.artifact_id, intent.rule_id) \
+                        in effected
+                return False
+
+            by_rid = {i.route_id: i for i in fresh}
             outcomes = crlib.execute_intents(
                 fresh, sid, root, _mint,
-                lambda base: _ledger_route(root, base))
+                lambda base: _ledger_route(root, base),
+                probe=lambda rid, tgt: _probe(rid, tgt, _intent_by_rid=by_rid))
             # Record only routes that actually fired or were terminally
             # decided (converged/budget/unroutable/denied) — a mint_failed
             # stays un-recorded so the next poll retries it.
             for oc in outcomes:
-                if oc["outcome"] != "mint_failed":
-                    state["routed"][route_digest(oc["route_key"])] = True
+                if oc["outcome"] not in ("mint_failed",):
+                    state["routed"][oc["route_id"]] = True
             save_conductor_state(root, state)
     return state

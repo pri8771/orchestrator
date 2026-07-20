@@ -23,6 +23,7 @@ routes and yields an empty, disabled-free routing set — never a guessed route.
 Stdlib only; imports nothing from the engine. Corrupt config disables routing
 with a visible banner rather than falling back to stale rules (R2/§6.2).
 """
+import hashlib
 import json
 import os
 
@@ -273,17 +274,31 @@ class RouteIntent:
 
     @property
     def route_key(self):
-        # The stable identity 7.3 will hash for restart-dedup: artifact
+        # The stable identity 7.3 hashes for exactly-once routing: artifact
         # content + destination + which rule decided it (two rules to the
-        # same target must not collapse).
+        # same target must not collapse; a NEW content_hash is a NEW route).
         return {"artifact_id": self.artifact_id,
                 "content_hash": self.content_hash,
                 "target": self.target, "rule_id": self.rule_id}
+
+    @property
+    def route_id(self):
+        return route_id_for(self.route_key)
 
     def as_ledger_detail(self):
         return {"artifact_id": self.artifact_id, "target": self.target,
                 "strategy": self.strategy, "rule_id": self.rule_id,
                 "verdict": self.verdict, "reason": self.reason}
+
+
+def route_id_for(route_key):
+    """The deterministic route_id = sha256(canonical route_key)[:16] — the
+    single hash inputs 7.3 promises: {artifact_id, content_hash, target,
+    rule_id}. Same route -> same id (dedup); new artifact version (new
+    content_hash) -> new id (re-routes). conductor.route_digest delegates
+    here so there is ONE definition."""
+    blob = json.dumps(route_key, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def plan_routes(meta, source_section, config, lineage_metas, classify=None):
@@ -340,47 +355,70 @@ def plan_routes(meta, source_section, config, lineage_metas, classify=None):
     return [guarded(target, "one", "route:%s" % atype, DEFAULT_HOP_BUDGET)]
 
 
-def execute_intents(intents, project, root, mint, ledger, permit=None):
-    """Execute planned intents with injected side effects, ledger-before-act:
-    for every intent a `route_proposed` line is written FIRST (durable), then
-    only ALLOW+permitted intents mint, then a terminal line records the
-    outcome. `mint(target_section, request_meta) -> session_dir|None` wraps
-    sessions.mint_delegation_session (idempotent, so a TOCTOU re-run adopts
-    the existing dir — exactly one real session per route_key). `permit` is
-    the 7.4 seam: a callable returning True/False, default allow-all. Returns
-    the list of outcome dicts (also ledgered)."""
+def route_marker(route_id):
+    """The exactly-once marker embedded in a routed session's seed prompt and
+    delegation metadata. Restart recovery probes for it to prove a route
+    already effected before re-acting (§4.3)."""
+    return "[route:%s]" % route_id
+
+
+def execute_intents(intents, session_id, root, mint, ledger, permit=None,
+                    probe=None):
+    """Execute planned intents, ledger-before-act with the 7.3 intent->done
+    protocol. For each intent: a `route_proposed` line (carrying route_id) is
+    durable FIRST; a guarded/denied intent gets its terminal line and no
+    effect; an ALLOW+permitted intent then either RECOVERS (probe proves the
+    route already effected on a prior, crashed run — ledger `route_recovered`,
+    no second mint) or MINTS and ledgers `route_approved`.
+
+    `mint(target_section, request_meta) -> session_dir|None` wraps
+    sessions.mint_delegation_session; request_meta carries content_hash AND
+    route_id so a NEW artifact version mints a DISTINCT session (the delegation
+    id hashes the request) while the SAME version is idempotent. The seed
+    title embeds the route marker so it survives into the minted session.
+    `permit` is the 7.4 seam. `probe(route_id, target_section) -> bool` is the
+    restart-recovery check (default: none — rely on mint idempotency)."""
     permit = permit or (lambda _intent: True)
+    probe = probe or (lambda _rid, _tgt: False)
     outcomes = []
     for intent in intents:
-        ledger({"decision": "route_proposed", "session": project,
+        rid = intent.route_id
+        base = {"session": session_id, "route_id": rid,
                 "route_key": intent.route_key,
-                "detail": intent.as_ledger_detail()})
+                "detail": intent.as_ledger_detail()}
+        ledger({**base, "decision": "route_proposed"})
         if intent.verdict != ALLOW or not intent.target:
             outcomes.append({"outcome": intent.verdict, "target": intent.target,
-                             "route_key": intent.route_key})
-            ledger({"decision": intent.verdict, "session": project,
-                    "route_key": intent.route_key,
-                    "detail": intent.as_ledger_detail()})
+                             "route_id": rid, "route_key": intent.route_key})
+            ledger({**base, "decision": intent.verdict})
             continue
         if not permit(intent):
             outcomes.append({"outcome": "denied", "target": intent.target,
-                             "route_key": intent.route_key})
-            ledger({"decision": "denied", "session": project,
-                    "route_key": intent.route_key,
-                    "detail": intent.as_ledger_detail()})
+                             "route_id": rid, "route_key": intent.route_key})
+            ledger({**base, "decision": "denied"})
             continue
-        request = {"title": "route:%s -> %s" % (intent.artifact_id,
-                                                intent.target),
+        if probe(rid, intent.target):
+            # The effect already landed on a prior run that crashed before
+            # recording done — recover, don't mint twice (§4.3, §23).
+            outcomes.append({"outcome": "recovered", "target": intent.target,
+                             "route_id": rid, "route_key": intent.route_key})
+            ledger({**base, "decision": "route_recovered"})
+            continue
+        request = {"title": "%s route:%s -> %s"
+                            % (route_marker(rid), intent.artifact_id,
+                               intent.target),
                    "artifact_id": intent.artifact_id,
+                   "content_hash": intent.content_hash,   # 7.3: version-
+                   "route_id": rid,                       # distinct minting
                    "source_section": intent.source_section,
                    "rule_id": intent.rule_id}
         session_dir = mint(intent.target, request)
         outcome = "routed" if session_dir else "mint_failed"
         outcomes.append({"outcome": outcome, "target": intent.target,
-                         "session_dir": session_dir,
+                         "route_id": rid, "session_dir": session_dir,
                          "route_key": intent.route_key})
-        ledger({"decision": "route_approved" if session_dir else "mint_failed",
-                "session": project, "route_key": intent.route_key,
+        ledger({**base, "decision": "route_approved" if session_dir
+                else "mint_failed",
                 "detail": {**intent.as_ledger_detail(),
                            "session_dir": session_dir}})
     return outcomes

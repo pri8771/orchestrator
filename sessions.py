@@ -300,6 +300,37 @@ def read_pidfile(session_dir):
         return None
 
 
+def scan_effected_routes(root, project, section):
+    """V3 7.3 restart-recovery index: the set of routes already effected into
+    <root>/<project>/<section>/, scanned ONCE per poll (the conductor caches
+    the result per target section, so the O(chats) disk walk is not repeated
+    per route). Each delegation.json contributes its route_id AND a legacy
+    ("legacy", artifact_id, rule_id) tuple — the latter recovers sessions
+    minted before 7.3 stamped route_id into the request, which would
+    otherwise re-hash to a new delegation id and mint a duplicate across the
+    7.2b->7.3 boundary. Missing/unreadable tree -> empty set, never raises."""
+    out = set()
+    base = os.path.join(root, project, section)
+    try:
+        chats = os.listdir(base)
+    except OSError:
+        return out
+    for chat in chats:
+        rec = read_delegation(os.path.join(base, chat), on_error=lambda _m: None)
+        if not isinstance(rec, dict):
+            continue
+        req = rec.get("request")
+        if not isinstance(req, dict):
+            continue
+        rid = req.get("route_id")
+        if isinstance(rid, str):
+            out.add(rid)
+        aid, rule = req.get("artifact_id"), req.get("rule_id")
+        if aid is not None and rule is not None:
+            out.add(("legacy", aid, rule))
+    return out
+
+
 def spawn_run(session_dir, workflow=None, *, root, on_error=None,
               _popen=None):
     """Launch a detached engine run in the delegated session and return
