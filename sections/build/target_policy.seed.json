@@ -1,0 +1,275 @@
+{
+  "schema_version": 1,
+  "targets": {
+    "ios": {
+      "app_rules": [
+        "Prefer a smaller finished app over a larger half-built app.",
+        "Every generated app must have real user-visible behavior, not only placeholder screens.",
+        "For iOS apps, default to SwiftUI, deterministic local state first, Apple system frameworks, and no third-party package unless it materially reduces risk.",
+        "Every screen needs empty, loading, success, and error states when the workflow can reach those states.",
+        "No two text or control elements may visually overlap, collide, or clip each other. Labels never sit on top of values; values never stack into each other. When elements are positioned by a data value (times on a timeline, points on an axis), enforce a minimum gap and de-clutter (offset, group, collapse, or drop a colliding label) — overlapping text is a broken screen.",
+        "The interface must never claim an outcome that has not happened: show Saved/Deleted/Sent/Synced/Unlocked only after it is truly confirmed, never a success state shown unconditionally. No sample or placeholder data shown as if it were the user's real data.",
+        "Implement the design spec's tokens as one SwiftUI theme file (e.g. Theme.swift with type, spacing, and color definitions) and reference it everywhere; never scatter font/size/color literals through views.",
+        "Every generated app must fully support dark mode: semantic color roles with explicit light and dark values, verified in both appearances.",
+        "Empty states are designed content (icon + one-line explanation + the action that fills the screen), never a blank view or bare 'No data' text.",
+        "No default unstyled List, Form, or navigation chrome where the design spec calls for custom rows, cards, or backgrounds; the built UI must match the spec.",
+        "Treat accessibility, privacy, persistence, and testing as product requirements, not polish.",
+        "Do not declare the app done until build verification and the final review agree on what works and what remains limited."
+      ],
+      "phase_rules": {
+        "product_research": {
+          "rules": [
+            "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
+            "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
+            "Decide what would make the app feel native and valuable on iPhone, not just technically possible.",
+            "Every factual claim cites its source (URL from the prompt's fetched context, or is marked ASSUMPTION).",
+            "Include a concrete competitor comparison (names, what they do well, the gap this app exploits)."
+          ],
+          "required_output": [
+            "Audience and use context.",
+            "Comparable apps or patterns to learn from.",
+            "Platform-specific opportunities.",
+            "Major assumptions and risks.",
+            "Implications for the first build."
+          ],
+          "acceptance_checks": [
+            "The next phase can use the output without repeating discovery.",
+            "At least three concrete risks or unknowns are named.",
+            "The research points toward a shippable first version.",
+            "No unsourced factual claims — each is cited or explicitly marked ASSUMPTION."
+          ]
+        },
+        "design_discussion": {
+          "rules": [
+            "Name a design language for THIS app (e.g. 'warm paper journal', 'precision instrument dark') with a one-line rationale; 'clean and modern' is a rejection-worthy non-answer.",
+            "State the emotional target: how the user should feel on the main screen, in one sentence.",
+            "Pick one signature interaction (a hero moment of motion, layout, or feedback) that expresses the design language.",
+            "Describe the default-looking version of this app (plain List, stock chrome, system accent) and explicitly reject it, naming at least three concrete differences.",
+            "Design real screens and states, not vague UX language.",
+            "Make navigation, empty states, errors, onboarding, and persistence visible.",
+            "Use iOS-native patterns unless the prompt clearly demands otherwise."
+          ],
+          "required_output": [
+            "Named design language with rationale.",
+            "Emotional target.",
+            "Signature interaction.",
+            "Rejected default option and the concrete differences from it.",
+            "Screen inventory.",
+            "Primary user flow.",
+            "State model per screen.",
+            "Accessibility notes."
+          ],
+          "acceptance_checks": [
+            "The design language is specific to this app; swapping in a different app's name would make it wrong.",
+            "The default-looking option is explicitly rejected with named differences, not just adjectives.",
+            "A SwiftUI developer can create the view hierarchy from this output.",
+            "Every required user workflow has a screen/state path."
+          ]
+        },
+        "design_handoff": {
+          "rules": [
+            "Emit a structured DESIGN SPEC under fixed headings (Type Scale, Spacing, Colors, Corner Radii, Components, Navigation, Screen States, Motion & Haptics, Accessibility) that the build phase consumes verbatim.",
+            "Give explicit values everywhere: point sizes and weights, spacing steps, corner radii, and light AND dark color hex values; no adjective may stand in for a number.",
+            "Carry design_discussion's named design language and signature interaction into concrete named components.",
+            "Every primary screen must include layout intent, key components, state variants (loading/empty/error/populated), accessibility, and motion guidance.",
+            "If external Claude Design is desired, provide a clean prompt/upload plan the user can use directly."
+          ],
+          "required_output": [
+            "DESIGN SPEC - Type scale: every text role with explicit size/weight (e.g. Title 28 semibold) mapped to a Dynamic Type style.",
+            "DESIGN SPEC - Spacing grid: base unit (4 or 8pt) and the named steps used for padding and gaps.",
+            "DESIGN SPEC - Semantic color palette: named roles (background, surface, text primary/secondary, accent, success/warning/error) each with a light and a dark hex value.",
+            "DESIGN SPEC - Corner radii: named steps (e.g. small/medium/large) with point values.",
+            "DESIGN SPEC - Component inventory: every screen's components named (e.g. StatCard, StreakRing, EntryRow), mapped to the screens that use each one.",
+            "DESIGN SPEC - Navigation pattern: the tab/stack/sheet map for the whole app.",
+            "DESIGN SPEC - Per-screen empty, loading, and error states with copy, icon, and recovery action.",
+            "DESIGN SPEC - Motion and haptics notes: which transitions animate, with what curve, and which events fire feedback.",
+            "DESIGN SPEC - Accessibility: Dynamic Type behavior, contrast expectations, VoiceOver labels for icon-only controls.",
+            "Claude Design prompt or explicit no-external-design decision."
+          ],
+          "acceptance_checks": [
+            "A SwiftUI builder can write Theme.swift (fonts, spacing, colors, radii) directly from the spec with zero invented values.",
+            "Every screen has named components and defined empty/loading/error states — not just the happy path.",
+            "Every color role has both a light and a dark hex value.",
+            "The handoff does not depend on hidden design decisions.",
+            "The design direction is premium and category-specific."
+          ]
+        },
+        "ios_architecture_review": {
+          "rules": [
+            "Review the product through iOS-specific constraints before tech_specs locks implementation.",
+            "Prefer SwiftUI, Apple frameworks, local persistence, and permissive dependencies only.",
+            "Call out privacy, permissions, offline behavior, StoreKit, ML/AR feasibility, and testability."
+          ],
+          "required_output": [
+            "SwiftUI architecture recommendation.",
+            "Apple framework choices.",
+            "Persistence and local data plan.",
+            "Permissions/privacy plan.",
+            "Dependency/license decision.",
+            "Testing implications."
+          ],
+          "acceptance_checks": [
+            "The app can be built as a native iOS app without vague architecture gaps.",
+            "Any ML, LLM, or AR use is justified by user value.",
+            "No dependency violates the permissive-license policy."
+          ]
+        },
+        "tech_specs": {
+          "rules": [
+            "Choose the simplest architecture that supports the MVP and tests.",
+            "Specify data models, services, persistence, concurrency boundaries, and error handling.",
+            "Prefer Apple frameworks and permissive dependencies only.",
+            "Emit the required interfaces-json block.",
+            "The Red Team's job here: name at least one requirement or edge case the spec missed before closing."
+          ],
+          "required_output": [
+            "Architecture overview.",
+            "File/module layout.",
+            "Data models.",
+            "Persistence strategy.",
+            "Testing strategy.",
+            "interfaces-json contract."
+          ],
+          "acceptance_checks": [
+            "Parallel build lanes can work without inventing incompatible types.",
+            "The spec names how the app will be built and verified."
+          ]
+        },
+        "implementation_readiness_gate": {
+          "rules": [
+            "Act as the final pre-build gate, not another planning brainstorm.",
+            "Check consistency across prompt contract, product brief, design handoff, iOS architecture, tech specs, project plan, and tasks.",
+            "Resolve contradictions by downgrading scope or naming a blocker before code starts."
+          ],
+          "required_output": [
+            "Readiness verdict.",
+            "Cross-phase consistency check.",
+            "Build blockers and fixes.",
+            "Final scope for build.",
+            "Acceptance criteria checklist."
+          ],
+          "acceptance_checks": [
+            "The build phase can start without inventing product/design/architecture decisions.",
+            "Every major workflow has an acceptance criterion.",
+            "Testing responsibilities are explicit."
+          ]
+        },
+        "build_coordination": {
+          "rules": [
+            "Build real files in app_build; do not only describe the solution.",
+            "Create the design spec's tokens as a single theme file (Theme.swift or equivalent) before building screens, and style every view through it; scattered font/spacing/color literals are defects.",
+            "Implement the handoff's named components, per-screen empty states, and dark-mode palette as specified; a default unstyled List where the spec says otherwise is a defect.",
+            "Every interactive element (buttons, cells, fields, toggles) must set .accessibilityIdentifier — the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support. When a DECLARED FLOW TOKENS contract is present, expose each of those tokens VERBATIM as the matching control's .accessibilityIdentifier (keep a descriptive .accessibilityLabel for VoiceOver — set BOTH); an independently-named identifier fails that journey.",
+            "Implement screens with ALL specified states: empty, loading, error, and populated. A screen with only the happy path is incomplete.",
+            "Keep changes scoped to the assigned lane and leave integration files to the integrator.",
+            "Every iteration should reduce compile, runtime, or product-completeness risk.",
+            "When generating iOS, include unit/UI test targets where feasible."
+          ],
+          "required_output": [
+            "Files created or changed.",
+            "What works now.",
+            "What remains.",
+            "How to run or verify."
+          ],
+          "acceptance_checks": [
+            "The app has a runnable entry point.",
+            "The main user workflow is implemented end-to-end.",
+            "A single theme/token file exists, views use it, dark mode works, and all specified states (empty/loading/error/populated) are real.",
+            "Interactive elements carry accessibilityIdentifiers (crawl/flow targetable).",
+            "Every declared-flow tap/type token is exposed as the exact .accessibilityIdentifier of the control that satisfies that step.",
+            "The integrator has wired lane outputs together."
+          ]
+        },
+        "human_qa_checklist": {
+          "rules": [
+            "Cover every important workflow, not only the happy path.",
+            "Include simulator/device steps, expected results, and regression checks.",
+            "Include accessibility, persistence, permissions, offline behavior, and subscription/paywall checks when relevant."
+          ],
+          "required_output": [
+            "Manual QA checklist.",
+            "Workflow-by-workflow test steps.",
+            "Expected results.",
+            "Accessibility checks.",
+            "Known gaps."
+          ],
+          "acceptance_checks": [
+            "A human can run the checklist without asking what to tap.",
+            "Every core feature from app_features appears in QA.",
+            "Failure states are tested, not ignored."
+          ]
+        },
+        "write_tests": {
+          "rules": [
+            "Write REAL XCTest unit tests against the app_build code just written — never placeholder/empty tests that only assert true.",
+            "Prioritize coverage of core logic and view-models (business rules, data transforms, state machines) over trivial UI snapshot tests.",
+            "Add a dedicated test target/scheme if the project doesn't already have one, so xcodebuild -list can discover it (build_verification's xcodebuild test run depends on this).",
+            "Keep tests deterministic — no network calls, no real timers/sleeps, no reliance on wall-clock or external state.",
+            "Do not modify production code to make a test pass; fix the test or file a note if production code looks wrong."
+          ],
+          "required_output": [
+            "Which test target/scheme was created or extended.",
+            "List of test files added and what each covers.",
+            "Any core logic left untested and why."
+          ],
+          "acceptance_checks": [
+            "At least one real XCTestCase file exists under a discoverable test target.",
+            "Tests exercise actual app_build types/functions, not stubs.",
+            "No test hard-fails immediately from a missing import/target wiring mistake."
+          ]
+        }
+      },
+      "tech_stack": {
+        "_docs": "Approved-library registry (task #4). Spliced into tech_specs/build context and enforced by designlint.py: 'banned' entries are lint ERRORS; when 'allowed' is non-empty, any other third-party SPM dependency is a WARNING (error in runtime.design_lint_strict). System frameworks (SwiftUI, SwiftData, Foundation, ...) are always fine and never need listing.",
+        "allowed": [],
+        "banned": [
+          {
+            "name": "Alamofire",
+            "why": "URLSession covers every need here; no third-party networking."
+          },
+          {
+            "name": "SwiftyJSON",
+            "why": "Codable is the standard; unmaintained-style JSON wrappers add risk."
+          },
+          {
+            "name": "realm",
+            "why": "SwiftData/GRDB are the approved persistence choices."
+          }
+        ],
+        "notes": "Prefer system frameworks first: URLSession for networking, SwiftData for persistence, Swift Charts for charts, OSLog for logging. A new third-party dependency needs a one-line justification in tech_specs."
+      },
+      "dod": {
+        "prototype": [
+          "Every core feature in the prompt/requirements is FUNCTIONALLY implemented, not just visually present: real logic runs, real data is produced/stored, real state changes persist across navigation and relaunch where the feature implies it should.",
+          "The primary user workflow works end-to-end (create/see/act on the core object) using REAL data entered by the user, not hardcoded placeholder content standing in for it.",
+          "The app launches to a real screen, not a placeholder.",
+          "No crash on the primary workflow."
+        ],
+        "mvp": [
+          "Every screen has empty, loading, and error states — not just the happy path.",
+          "Dark mode is styled (both palettes from the design handoff, readable).",
+          "Onboarding or a self-explanatory first screen exists.",
+          "All views style through DesignSystem tokens (no inline colors/fonts).",
+          "Every interactive element has an accessibilityIdentifier."
+        ],
+        "v1": [
+          "All declared user flows (flows.json) pass against the built app.",
+          "No TODO/FIXME markers left in source.",
+          "Settings/preferences screen exists where the prompt implies configurability.",
+          "App icon and display name are set."
+        ],
+        "production_draft": [
+          "Unit or UI test target exists and runs.",
+          "Accessibility audit issues addressed (labels, contrast, dynamic type).",
+          "No dead buttons (every tappable does something)."
+        ]
+      },
+      "review_prompts": {
+        "ios_architecture_review": "Review the app specifically as a modern iOS product. Prefer SwiftUI, Apple frameworks, local persistence first, privacy by design, and permissive dependencies only. Call out permissions, entitlements, StoreKit/subscriptions, background work, ML/AR feasibility, and UI/unit test strategy before tech_specs locks the contracts.\n"
+      },
+      "contract_snippets": {
+        "flows": "MACHINE CONTRACT (required): ALSO emit ONE fenced ```flows-json``` block of the form {\"flows\": [{\"name\": \"add first item\", \"steps\": [{\"tap\": \"home.addItemButton\"}, {\"type\": \"Sample\", \"into\": \"addEdit.nameField\"}, {\"tap\": \"addEdit.saveButton\"}, {\"assert_exists\": \"Sample\"}, {\"back\": true}]}]}. Cover EVERY primary user journey the app promises (3-8 flows). Every tap/type step MUST name a stable dotted accessibilityIdentifier (screen.controlName) — PREFER accessibilityIdentifiers over visible labels: an identifier is a contract the build MUST honor, whereas a visible label drifts during the build. NEVER name a bare glyph or symbol as a tap/type token ('+', 'x', '×', '°F', a gear icon): an icon-only control has no matchable text, so reference it by its accessibilityIdentifier — or, if you must use a label, name the EXACT full accessibilityLabel the control will expose ('Add custom tea'), never the glyph. assert_exists MAY instead name a user-visible string you expect on screen (e.g. the item you just created). When an asserted state only arrives after an app-determined delay — a timer completing, a countdown reaching zero — add \"timeout\": <seconds> to THAT step (e.g. {\"assert_exists\": \"Ready\", \"timeout\": 95}), sized to the app's own duration plus margin: the default wait is ~5 seconds, so a timer's completion state can NEVER pass without a declared timeout. Route such flows through the SHORTEST built-in duration. Never route a flow through a control hidden behind a gesture (swipe actions, long-press context menus): the gate taps directly-visible controls only, so a journey needing edit/delete must use a visibly exposed affordance. Whatever a step names, the built app has to expose that EXACT string on the control or the UI-crawl gate fails the journey. These are executed against the real built app by the UI-crawl gate — a journey you forget to declare is a journey nobody verifies.\n"
+      }
+    }
+  }
+}

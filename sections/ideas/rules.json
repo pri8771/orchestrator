@@ -26,7 +26,7 @@
       "rules": [
         "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
         "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
-        "Decide what would make the app feel native and valuable on iPhone, not just technically possible.",
+        "Decide what would make the app feel native and valuable on the target device, not just technically possible.",
         "Every factual claim cites its source (URL from the prompt's fetched context, or is marked ASSUMPTION).",
         "Include a concrete competitor comparison (names, what they do well, the gap this app exploits)."
       ],

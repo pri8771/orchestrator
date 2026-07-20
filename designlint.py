@@ -30,6 +30,8 @@ import json
 import os
 import re
 
+import buildpolicy as buildpolicylib
+
 TECH_STACK_FILENAME = "tech_stack.json"
 
 _INLINE_COLOR = re.compile(r"Color\s*\(\s*red\s*:|UIColor\s*\(\s*red\s*:|#colorLiteral\s*\(")
@@ -48,14 +50,22 @@ _SPM_NAME = re.compile(r"\.package\s*\(\s*name\s*:\s*\"([^\"]+)\"")
 
 
 def load_tech_stack(here):
-    """tech_stack.json as {allowed:[...], banned:[...]}; missing/corrupt ->
-    empty policy (nothing banned, nothing required)."""
+    """Active Build-target stack, with the fleet-neutral file as legacy.
+
+    V3 8.4 moved platform dependencies under ``sections/build``.  A checkout
+    without Sections remains compatible with the old registry shape.
+    """
     out = {"allowed": [], "banned": [], "notes": ""}
-    try:
-        with open(os.path.join(here, TECH_STACK_FILENAME), encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return out
+    policy = buildpolicylib.load_target_policy(here, "app")
+    if policy is not None:
+        data = policy.get("tech_stack", {})
+    else:
+        try:
+            with open(os.path.join(here, TECH_STACK_FILENAME),
+                      encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return out
     if isinstance(data, dict):
         for k in ("allowed", "banned"):
             v = data.get(k)

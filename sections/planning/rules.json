@@ -26,7 +26,7 @@
       "rules": [
         "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
         "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
-        "Decide what would make the app feel native and valuable on iPhone, not just technically possible.",
+        "Decide what would make the app feel native and valuable on the target device, not just technically possible.",
         "Every factual claim cites its source (URL from the prompt's fetched context, or is marked ASSUMPTION).",
         "Include a concrete competitor comparison (names, what they do well, the gap this app exploits)."
       ],
@@ -107,7 +107,7 @@
         "Describe the default-looking version of this app (plain List, stock chrome, system accent) and explicitly reject it, naming at least three concrete differences.",
         "Design real screens and states, not vague UX language.",
         "Make navigation, empty states, errors, onboarding, and persistence visible.",
-        "Use iOS-native patterns unless the prompt clearly demands otherwise."
+        "Use platform-native patterns unless the prompt clearly demands otherwise."
       ],
       "required_output": [
         "Named design language with rationale.",
@@ -122,7 +122,7 @@
       "acceptance_checks": [
         "The design language is specific to this app; swapping in a different app's name would make it wrong.",
         "The default-looking option is explicitly rejected with named differences, not just adjectives.",
-        "A SwiftUI developer can create the view hierarchy from this output.",
+        "An implementation team can create the view hierarchy from this output.",
         "Every required user workflow has a screen/state path."
       ]
     },
@@ -130,7 +130,7 @@
       "rules": [
         "Choose the simplest architecture that supports the MVP and tests.",
         "Specify data models, services, persistence, concurrency boundaries, and error handling.",
-        "Prefer Apple frameworks and permissive dependencies only.",
+        "Prefer platform frameworks and permissive dependencies only.",
         "Emit the required interfaces-json block.",
         "The Red Team's job here: name at least one requirement or edge case the spec missed before closing."
       ],

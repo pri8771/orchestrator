@@ -62,6 +62,7 @@ import schemas as schemalib
 import resilience as reslib
 import docs as docslib
 import completeness as complib
+import buildpolicy as buildpolicylib
 import global_resource as grlib
 import knowledge as knowlib
 import messages as msglib
@@ -3338,6 +3339,10 @@ def _contract_snippet(name):
     """One named contract's prompt snippet from the shipped data — the
     repair prompts and phase_extra re-statements read the same bytes the
     wrap-up published."""
+    policy = buildpolicylib.load_target_policy(HERE, "app")
+    override = (policy or {}).get("contract_snippets", {}).get(name)
+    if override:
+        return override
     for e in seclib.DEFAULT_CONTRACTS:
         if e.get("contract") == name:
             return e["prompt_snippet"]
@@ -3357,6 +3362,16 @@ def _phase_contract(cfg, phasedef):
     _project, section = _session_coords(cfg or {})
     contracts = seclib.load_contracts(HERE, section=section,
                                       app_dir=(cfg or {}).get("_app_dir"))
+    policy = buildpolicylib.load_target_policy(
+        HERE, (cfg or {}).get("_workflow_target"),
+        on_fallback=_rules_fallback_banner(cfg or {}))
+    overrides = (policy or {}).get("contract_snippets", {})
+    if overrides:
+        contracts = [dict(entry,
+                          prompt_snippet=overrides.get(
+                              entry.get("contract"),
+                              entry.get("prompt_snippet", "")))
+                     for entry in contracts]
     return seclib.assemble_contract(
         contracts, key, (cfg or {}).get("_workflow_target"),
         include_decisions=_decisions_contract_requested(cfg, phasedef),
@@ -3459,13 +3474,10 @@ def phase_extra(cfg, key):
             "Design prompt/upload instruction when external design is desired.\n"
         )
     if key == "ios_architecture_review":
-        return (
-            "Review the app specifically as a modern iOS product. Prefer SwiftUI, "
-            "Apple frameworks, local persistence first, privacy by design, and "
-            "permissive dependencies only. Call out permissions, entitlements, "
-            "StoreKit/subscriptions, background work, ML/AR feasibility, and UI/"
-            "unit test strategy before tech_specs locks the contracts.\n"
-        )
+        policy = buildpolicylib.load_target_policy(
+            HERE, cfg.get("_workflow_target"),
+            on_fallback=_rules_fallback_banner(cfg))
+        return str((policy or {}).get("review_prompts", {}).get(key) or "")
     if key == "task_assignments":
         return (
             "Sort out, in plain English, how you'll actually build this together: "
@@ -10062,7 +10074,9 @@ def _adherence_gate(cfg, app, app_dir, phases, state, prompt, workflow):
                                          r["text"]) for r in reqs[:60])
                          + "\n\n")
         dod_block = complib.render_dod(
-            HERE, str(cfg.get("_completeness") or "v1")) + "\n\n"
+            HERE, str(cfg.get("_completeness") or "v1"),
+            workflow_target=cfg.get("_workflow_target"),
+            on_fallback=_rules_fallback_banner(cfg)) + "\n\n"
         grade_instruction = (
             "Grade EACH numbered requirement above MET / PARTIAL / UNMET"
             if reqs else
@@ -10618,8 +10632,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         state["workflow"] = workflow.name
         save_state(app_dir, state)
     if workflow.target == "app" and not cfg.get("_tech_stack_block"):
+        policy = buildpolicylib.load_target_policy(
+            HERE, workflow.target, on_fallback=_rules_fallback_banner(cfg))
         tctx.tech_stack_block = dlintlib.render_tech_stack(
-            dlintlib.load_tech_stack(HERE))
+            policy["tech_stack"] if policy is not None
+            else dlintlib.load_tech_stack(HERE))
     emit("App '%s': workflow '%s' (%d phases, target=%s)."
          % (app, workflow.name, len(phases), workflow.target))
     evlib.emit_event(app_dir, "run_started", project=app,

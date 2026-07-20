@@ -3,12 +3,9 @@
   "global_app_rules": [
     "Prefer a smaller finished app over a larger half-built app.",
     "Every generated app must have real user-visible behavior, not only placeholder screens.",
-    "For iOS apps, default to SwiftUI, deterministic local state first, Apple system frameworks, and no third-party package unless it materially reduces risk.",
     "Every screen needs empty, loading, success, and error states when the workflow can reach those states.",
     "No two text or control elements may visually overlap, collide, or clip each other. Labels never sit on top of values; values never stack into each other. When elements are positioned by a data value (times on a timeline, points on an axis), enforce a minimum gap and de-clutter (offset, group, collapse, or drop a colliding label) — overlapping text is a broken screen.",
     "The interface must never claim an outcome that has not happened: show Saved/Deleted/Sent/Synced/Unlocked only after it is truly confirmed, never a success state shown unconditionally. No sample or placeholder data shown as if it were the user's real data.",
-    "Implement the design spec's tokens as one SwiftUI theme file (e.g. Theme.swift with type, spacing, and color definitions) and reference it everywhere; never scatter font/size/color literals through views.",
-    "Every generated app must fully support dark mode: semantic color roles with explicit light and dark values, verified in both appearances.",
     "Empty states are designed content (icon + one-line explanation + the action that fills the screen), never a blank view or bare 'No data' text.",
     "No default unstyled List, Form, or navigation chrome where the design spec calls for custom rows, cards, or backgrounds; the built UI must match the spec.",
     "Treat accessibility, privacy, persistence, and testing as product requirements, not polish.",
@@ -40,7 +37,7 @@
       "rules": [
         "Infer the likely audience, competing alternatives, platform expectations, and risky unknowns from the prompt.",
         "If facts are uncertain, label them as assumptions rather than pretending external research was performed.",
-        "Decide what would make the app feel native and valuable on iPhone, not just technically possible.",
+        "Decide what would make the app feel native and valuable on the target device, not just technically possible.",
         "Every factual claim cites its source (URL from the prompt's fetched context, or is marked ASSUMPTION).",
         "Include a concrete competitor comparison (names, what they do well, the gap this app exploits)."
       ],
@@ -176,7 +173,7 @@
         "Describe the default-looking version of this app (plain List, stock chrome, system accent) and explicitly reject it, naming at least three concrete differences.",
         "Design real screens and states, not vague UX language.",
         "Make navigation, empty states, errors, onboarding, and persistence visible.",
-        "Use iOS-native patterns unless the prompt clearly demands otherwise."
+        "Use platform-native patterns unless the prompt clearly demands otherwise."
       ],
       "required_output": [
         "Named design language with rationale.",
@@ -191,7 +188,7 @@
       "acceptance_checks": [
         "The design language is specific to this app; swapping in a different app's name would make it wrong.",
         "The default-looking option is explicitly rejected with named differences, not just adjectives.",
-        "A SwiftUI developer can create the view hierarchy from this output.",
+        "An implementation team can create the view hierarchy from this output.",
         "Every required user workflow has a screen/state path."
       ]
     },
@@ -212,11 +209,11 @@
         "DESIGN SPEC - Navigation pattern: the tab/stack/sheet map for the whole app.",
         "DESIGN SPEC - Per-screen empty, loading, and error states with copy, icon, and recovery action.",
         "DESIGN SPEC - Motion and haptics notes: which transitions animate, with what curve, and which events fire feedback.",
-        "DESIGN SPEC - Accessibility: Dynamic Type behavior, contrast expectations, VoiceOver labels for icon-only controls.",
+        "DESIGN SPEC - Accessibility: Dynamic Type behavior, contrast expectations, screen reader labels for icon-only controls.",
         "Claude Design prompt or explicit no-external-design decision."
       ],
       "acceptance_checks": [
-        "A SwiftUI builder can write Theme.swift (fonts, spacing, colors, radii) directly from the spec with zero invented values.",
+        "An implementation team can write a shared theme module (fonts, spacing, colors, radii) directly from the spec with zero invented values.",
         "Every screen has named components and defined empty/loading/error states — not just the happy path.",
         "Every color role has both a light and a dark hex value.",
         "The handoff does not depend on hidden design decisions.",
@@ -225,20 +222,20 @@
     },
     "ios_architecture_review": {
       "rules": [
-        "Review the product through iOS-specific constraints before tech_specs locks implementation.",
-        "Prefer SwiftUI, Apple frameworks, local persistence, and permissive dependencies only.",
-        "Call out privacy, permissions, offline behavior, StoreKit, ML/AR feasibility, and testability."
+        "Review the product through target-platform constraints before tech_specs locks implementation.",
+        "Prefer the target UI framework, platform frameworks, local persistence, and permissive dependencies only.",
+        "Call out privacy, permissions, offline behavior, platform commerce, ML/AR feasibility, and testability."
       ],
       "required_output": [
-        "SwiftUI architecture recommendation.",
-        "Apple framework choices.",
+        "UI architecture recommendation.",
+        "platform framework choices.",
         "Persistence and local data plan.",
         "Permissions/privacy plan.",
         "Dependency/license decision.",
         "Testing implications."
       ],
       "acceptance_checks": [
-        "The app can be built as a native iOS app without vague architecture gaps.",
+        "The app can be built natively on its target platform without vague architecture gaps.",
         "Any ML, LLM, or AR use is justified by user value.",
         "No dependency violates the permissive-license policy."
       ]
@@ -247,7 +244,7 @@
       "rules": [
         "Choose the simplest architecture that supports the MVP and tests.",
         "Specify data models, services, persistence, concurrency boundaries, and error handling.",
-        "Prefer Apple frameworks and permissive dependencies only.",
+        "Prefer platform frameworks and permissive dependencies only.",
         "Emit the required interfaces-json block.",
         "The Red Team's job here: name at least one requirement or edge case the spec missed before closing."
       ],
@@ -304,7 +301,7 @@
     "implementation_readiness_gate": {
       "rules": [
         "Act as the final pre-build gate, not another planning brainstorm.",
-        "Check consistency across prompt contract, product brief, design handoff, iOS architecture, tech specs, project plan, and tasks.",
+        "Check consistency across prompt contract, product brief, design handoff, target-platform architecture, tech specs, project plan, and tasks.",
         "Resolve contradictions by downgrading scope or naming a blocker before code starts."
       ],
       "required_output": [
@@ -323,13 +320,13 @@
     "build_coordination": {
       "rules": [
         "Build real files in app_build; do not only describe the solution.",
-        "Create the design spec's tokens as a single theme file (Theme.swift or equivalent) before building screens, and style every view through it; scattered font/spacing/color literals are defects.",
-        "Implement the handoff's named components, per-screen empty states, and dark-mode palette as specified; a default unstyled List where the spec says otherwise is a defect.",
-        "Every interactive element (buttons, cells, fields, toggles) must set .accessibilityIdentifier — the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support. When a DECLARED FLOW TOKENS contract is present, expose each of those tokens VERBATIM as the matching control's .accessibilityIdentifier (keep a descriptive .accessibilityLabel for VoiceOver — set BOTH); an independently-named identifier fails that journey.",
+        "Create the design spec's tokens as a single theme file (a shared theme module or equivalent) before building screens, and style every view through it; scattered font/spacing/color literals are defects.",
+        "Implement the handoff's named components, per-screen empty states, and appearance-variant palette as specified; a default unstyled List where the spec says otherwise is a defect.",
+        "Every interactive element (buttons, cells, fields, toggles) must expose a stable automation identifier — the UI-crawl gate and declared flows target elements by it, and it doubles as accessibility support. When a DECLARED FLOW TOKENS contract is present, expose each token VERBATIM as the matching control's stable automation identifier (and keep a descriptive accessible label for screen readers); an independently named identifier fails that journey.",
         "Implement screens with ALL specified states: empty, loading, error, and populated. A screen with only the happy path is incomplete.",
         "Keep changes scoped to the assigned lane and leave integration files to the integrator.",
         "Every iteration should reduce compile, runtime, or product-completeness risk.",
-        "When generating iOS, include unit/UI test targets where feasible."
+        "When generating an app, include unit/UI test targets where feasible."
       ],
       "required_output": [
         "Files created or changed.",
@@ -340,9 +337,9 @@
       "acceptance_checks": [
         "The app has a runnable entry point.",
         "The main user workflow is implemented end-to-end.",
-        "A single theme/token file exists, views use it, dark mode works, and all specified states (empty/loading/error/populated) are real.",
-        "Interactive elements carry accessibilityIdentifiers (crawl/flow targetable).",
-        "Every declared-flow tap/type token is exposed as the exact .accessibilityIdentifier of the control that satisfies that step.",
+        "A single theme/token file exists, views use it, alternate appearance works, and all specified states (empty/loading/error/populated) are real.",
+        "Interactive elements carry stable automation identifiers (crawl/flow targetable).",
+        "Every declared-flow tap/type token is exposed as the exact stable automation identifier of the control that satisfies that step.",
         "The integrator has wired lane outputs together."
       ]
     },
@@ -368,7 +365,7 @@
     "human_qa_checklist": {
       "rules": [
         "Cover every important workflow, not only the happy path.",
-        "Include simulator/device steps, expected results, and regression checks.",
+        "Include runtime/device steps, expected results, and regression checks.",
         "Include accessibility, persistence, permissions, offline behavior, and subscription/paywall checks when relevant."
       ],
       "required_output": [
@@ -790,9 +787,9 @@
     },
     "write_tests": {
       "rules": [
-        "Write REAL XCTest unit tests against the app_build code just written — never placeholder/empty tests that only assert true.",
+        "Write REAL native unit-test unit tests against the app_build code just written — never placeholder/empty tests that only assert true.",
         "Prioritize coverage of core logic and view-models (business rules, data transforms, state machines) over trivial UI snapshot tests.",
-        "Add a dedicated test target/scheme if the project doesn't already have one, so xcodebuild -list can discover it (build_verification's xcodebuild test run depends on this).",
+        "Add a dedicated test target/scheme if the project doesn't already have one, so the build tool can discover and run it during build verification.",
         "Keep tests deterministic — no network calls, no real timers/sleeps, no reliance on wall-clock or external state.",
         "Do not modify production code to make a test pass; fix the test or file a note if production code looks wrong."
       ],
@@ -802,7 +799,7 @@
         "Any core logic left untested and why."
       ],
       "acceptance_checks": [
-        "At least one real XCTestCase file exists under a discoverable test target.",
+        "At least one real native unit-testCase file exists under a discoverable test target.",
         "Tests exercise actual app_build types/functions, not stubs.",
         "No test hard-fails immediately from a missing import/target wiring mistake."
       ]

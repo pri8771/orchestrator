@@ -19,6 +19,8 @@ gui/DerivedData/
 *.egg-info/
 dist/
 build/
+!sections/build/
+!sections/build/**
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/

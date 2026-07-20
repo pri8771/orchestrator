@@ -1,5 +1,5 @@
 {
-  "_docs": "Definition of Done per completeness tier (task #8). Edit freely; the adherence gate grades the built app against the ACTIVE tier's checklist, and designlint enforces the machine-checkable items. Tiers inherit: mvp includes prototype's items, v1 includes mvp's, production_draft includes v1's.",
+  "_docs": "Platform-neutral Definition of Done. Build-target additions resolve from the Build section target manifest.",
   "_functionality_rule": "BINDING at every tier, checked first: the app is NOT a cosmetic prototype. A screen that LOOKS finished but whose controls don't actually work (taps that do nothing, fake/hardcoded data instead of real state, calculations not performed, nothing persisted) is UNMET regardless of visual polish. Looking done and being done are graded separately; only being done counts.",
   "prototype": [
     "Every core feature in the prompt/requirements is FUNCTIONALLY implemented, not just visually present: real logic runs, real data is produced/stored, real state changes persist across navigation and relaunch where the feature implies it should.",
@@ -8,17 +8,13 @@
     "No crash on the primary workflow."
   ],
   "mvp": [
-    "Every screen has empty, loading, and error states \u2014 not just the happy path.",
-    "Dark mode is styled (both palettes from the design handoff, readable).",
-    "Onboarding or a self-explanatory first screen exists.",
-    "All views style through DesignSystem tokens (no inline colors/fonts).",
-    "Every interactive element has an accessibilityIdentifier."
+    "Every screen has empty, loading, and error states — not just the happy path.",
+    "Onboarding or a self-explanatory first screen exists."
   ],
   "v1": [
     "All declared user flows (flows.json) pass against the built app.",
     "No TODO/FIXME markers left in source.",
-    "Settings/preferences screen exists where the prompt implies configurability.",
-    "App icon and display name are set."
+    "Settings/preferences screen exists where the prompt implies configurability."
   ],
   "production_draft": [
     "Unit or UI test target exists and runs.",

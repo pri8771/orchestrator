@@ -15,6 +15,8 @@ import json
 import os
 import typing
 
+import buildpolicy as buildpolicylib
+
 RULES_FILENAME = "phase_rules.json"
 
 # Per-phase list fields. A GUI edit that turns one of these into a string (e.g.
@@ -106,7 +108,8 @@ def _load_layer(path, on_fallback=None):
     return copy.deepcopy(layer)
 
 
-def load_rules_layered(orch_dir, layers=None, on_fallback=None):
+def load_rules_layered(orch_dir, layers=None, on_fallback=None,
+                       target_policy=None):
     """The layered rules view: section -> project-override -> global, with
     WHOLE-phase-entry precedence — the most specific layer containing a
     phase key supplies the entire entry, no cross-layer field merging.
@@ -114,10 +117,17 @@ def load_rules_layered(orch_dir, layers=None, on_fallback=None):
     from the global file alone. With no layers this IS load_rules —
     flat/legacy runs behave byte-identically."""
     rules = load_rules(orch_dir)
+    phases = dict(rules.get("phases", {}))
+    if target_policy:
+        # Build-target policy sits above fleet-neutral rules but below the
+        # ordinary section/project overlays.  This preserves the established
+        # specificity order while removing platform assumptions from fleet
+        # config.
+        phases.update(target_policy.get("phase_rules", {}))
+        rules["phases"] = phases
     live = [p for p in (layers or []) if p]
     if not live:
         return rules
-    phases = dict(rules.get("phases", {}))
     for path in reversed(live):          # least specific first; later wins
         layer = _load_layer(path, on_fallback)
         if layer:
@@ -133,13 +143,18 @@ def _bullets(items):
 def render_phase_playbook(orch_dir, workflow_target, phase_key,
                           layers=None, on_fallback=None):
     """Markdown snippet injected into every turn for ``phase_key``."""
-    rules = load_rules_layered(orch_dir, layers, on_fallback)
+    target_policy = buildpolicylib.load_target_policy(
+        orch_dir, workflow_target, on_fallback=on_fallback)
+    rules = load_rules_layered(orch_dir, layers, on_fallback,
+                               target_policy=target_policy)
     phase = rules.get("phases", {}).get(phase_key, {})
     if not isinstance(phase, dict):
         phase = {}
 
     parts = []
-    global_rules = rules.get("global_app_rules") if workflow_target == "app" else []
+    global_rules = (target_policy.get("app_rules", []) if target_policy
+                    else (rules.get("global_app_rules")
+                          if workflow_target == "app" else []))
     if global_rules:
         parts.append("Global app-build rules:\n" + _bullets(global_rules))
     if phase.get("rules"):
@@ -163,13 +178,18 @@ def render_phase_quality_rubric(orch_dir, workflow_target, phase_key,
     evaluator checklist. Missing rule files stay best-effort: the fixed gate can
     still check for a useful, concrete phase artifact.
     """
-    rules = load_rules_layered(orch_dir, layers, on_fallback)
+    target_policy = buildpolicylib.load_target_policy(
+        orch_dir, workflow_target, on_fallback=on_fallback)
+    rules = load_rules_layered(orch_dir, layers, on_fallback,
+                               target_policy=target_policy)
     phase = rules.get("phases", {}).get(phase_key, {})
     if not isinstance(phase, dict):
         phase = {}
 
     parts = []
-    global_rules = rules.get("global_app_rules") if workflow_target == "app" else []
+    global_rules = (target_policy.get("app_rules", []) if target_policy
+                    else (rules.get("global_app_rules")
+                          if workflow_target == "app" else []))
     if global_rules:
         parts.append("Global quality bar:\n" + _bullets(global_rules))
     if phase.get("rules"):

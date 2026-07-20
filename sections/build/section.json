@@ -1,0 +1,12 @@
+{
+  "id": "build",
+  "title": "Build",
+  "workflow": "app_build",
+  "default_mode": "manual",
+  "artifact_types_emitted": [],
+  "artifact_types_accepted": ["spec_bundle", "design_brief"],
+  "dod_tier": "v1",
+  "capabilities": {"writes": "workspace", "exec": true, "external": true},
+  "local_pins": [],
+  "target_policy": "target_policy.json"
+}

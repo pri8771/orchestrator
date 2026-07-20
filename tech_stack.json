@@ -1,10 +1,7 @@
 {
-  "_docs": "Approved-library registry (task #4). Spliced into tech_specs/build context and enforced by designlint.py: 'banned' entries are lint ERRORS; when 'allowed' is non-empty, any other third-party SPM dependency is a WARNING (error in runtime.design_lint_strict). System frameworks (SwiftUI, SwiftData, Foundation, ...) are always fine and never need listing.",
+  "schema_version": 1,
+  "scope": "fleet-neutral",
   "allowed": [],
-  "banned": [
-    {"name": "Alamofire", "why": "URLSession covers every need here; no third-party networking."},
-    {"name": "SwiftyJSON", "why": "Codable is the standard; unmaintained-style JSON wrappers add risk."},
-    {"name": "realm", "why": "SwiftData/GRDB are the approved persistence choices."}
-  ],
-  "notes": "Prefer system frameworks first: URLSession for networking, SwiftData for persistence, Swift Charts for charts, OSLog for logging. A new third-party dependency needs a one-line justification in tech_specs."
+  "banned": [],
+  "notes": "Platform-specific dependency policy resolves from the Build section target manifest."
 }

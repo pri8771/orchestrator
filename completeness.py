@@ -24,6 +24,8 @@ Standard library only.
 import json
 import os
 
+import buildpolicy as buildpolicylib
+
 # Spec §7.2 profiles, keyed to the real workflow phase keys. phase_keys is the
 # inclusion allow-list; a phase not listed is skipped for that profile.
 # round_multiplier scales each phase's round budget. The build phase and the
@@ -200,8 +202,18 @@ DEFAULT_DOD = {
 }
 
 
-def load_dod(orch_dir):
-    """definition_of_done.json as {tier: [items]}; missing/corrupt -> defaults."""
+def load_dod(orch_dir, workflow_target=None, on_fallback=None):
+    """Resolved Definition of Done for a fleet or Build target.
+
+    Platform-neutral tiers remain in ``definition_of_done.json``.  App runs
+    take the byte-preserved target tiers from the Build manifest; legacy
+    checkouts without a Sections tree retain the old file/default behavior.
+    """
+    policy = buildpolicylib.load_target_policy(
+        orch_dir, workflow_target, on_fallback=on_fallback)
+    if policy is not None:
+        return {tier: list(policy["dod"].get(tier, []))
+                for tier in DOD_ORDER}
     out = {k: list(v) for k, v in DEFAULT_DOD.items()}
     try:
         with open(os.path.join(orch_dir, DOD_FILENAME), encoding="utf-8") as fh:
@@ -216,11 +228,11 @@ def load_dod(orch_dir):
     return out
 
 
-def dod_items(orch_dir, tier):
+def dod_items(orch_dir, tier, workflow_target=None, on_fallback=None):
     """The ACTIVE checklist for a tier: its items plus every lower tier's
     (inheritance). Unknown tier -> v1."""
     tier = tier if tier in DOD_ORDER else "v1"
-    dod = load_dod(orch_dir)
+    dod = load_dod(orch_dir, workflow_target, on_fallback)
     items = []
     for t in DOD_ORDER:
         items.extend(dod.get(t) or [])
@@ -229,9 +241,9 @@ def dod_items(orch_dir, tier):
     return items
 
 
-def render_dod(orch_dir, tier):
+def render_dod(orch_dir, tier, workflow_target=None, on_fallback=None):
     """Prompt block for the adherence gate ('' never happens — defaults exist)."""
-    items = dod_items(orch_dir, tier)
+    items = dod_items(orch_dir, tier, workflow_target, on_fallback)
     return ("===== DEFINITION OF DONE (tier: %s — grade against EVERY item) =====\n"
             % (tier if tier in DOD_ORDER else "v1")
             + "\n".join("%d. %s" % (i + 1, it) for i, it in enumerate(items)))
