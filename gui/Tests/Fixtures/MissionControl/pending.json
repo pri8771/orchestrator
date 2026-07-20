@@ -1,0 +1,8 @@
+{
+  "artifact_id": "research-demo",
+  "target": "planning",
+  "reason": "human gate",
+  "requested_by": "mission-demo/research/brief",
+  "rule_id": "research:planning",
+  "route_id": "2222222222222222"
+}

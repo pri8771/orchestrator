@@ -43,7 +43,7 @@ final class CostMeterTests: XCTestCase {
                                                 withIntermediateDirectories: true)
         let lines = [
             #"{"v":1,"agent":"api:anthropic:h","metered":true,"cost_micro_usd":100}"#,
-            #"{"v":1,"agent":"api:anthropic:h","metered":true,"cost_micro_usd":200}"#,
+            #"{"v":1,"agent":"api:anthropic:h","provider":"anthropic","metered":true,"cost_micro_usd":200}"#,
             #"{"v":1,"agent":"claude","metered":false,"cost_micro_usd":null}"#,
             "not json at all",
             "[1,2,3]",
@@ -60,6 +60,7 @@ final class CostMeterTests: XCTestCase {
         XCTAssertEqual(costs.total.costMicroUSD, 300)
         XCTAssertEqual(costs.byAgent["api:anthropic:h"]?.costMicroUSD, 300)
         XCTAssertEqual(costs.byAgent["claude"]?.unmeteredTurns, 1)
+        XCTAssertEqual(costs.byProvider["anthropic"]?.costMicroUSD, 200)
     }
 
     func testOverCapFileServesLastKnownTotalsNotNothing() throws {

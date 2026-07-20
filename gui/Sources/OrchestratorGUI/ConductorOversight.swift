@@ -25,6 +25,7 @@ struct ConductorPendingRoute: Identifiable, Equatable, Sendable {
     let ruleID: String
     let requestedBy: String
     let reason: String
+    var decisionSubmitted = false
     var id: String { routeID }
 }
 
@@ -90,7 +91,15 @@ enum ConductorOversightDisk {
                 byID[route.routeID] = byID[route.routeID] ?? route
             }
         }
-        snapshot.pending = byID.values.sorted { $0.routeID < $1.routeID }
+        let submittedSuffixes = ["ok", "changes", "do_not_route", "kill_session"]
+        snapshot.pending = byID.values.map { route in
+            var value = route
+            value.decisionSubmitted = submittedSuffixes.contains { suffix in
+                fm.fileExists(atPath: approvals.appendingPathComponent(
+                    "\(route.routeID).\(suffix)").path)
+            }
+            return value
+        }.sorted { $0.routeID < $1.routeID }
         return snapshot
     }
 

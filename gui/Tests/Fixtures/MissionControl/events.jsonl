@@ -1,0 +1,2 @@
+{"v":1,"ts":"2026-07-20T13:00:00Z","kind":"run_started","app":"mission-demo/ideas/brainstorm","message":"Recorded 7.9 stream replay"}
+{"v":1,"ts":"2026-07-20T13:01:00Z","kind":"phase_completed","app":"mission-demo/ideas/brainstorm","phase":"brainstorm","message":"Idea artifact ready"}

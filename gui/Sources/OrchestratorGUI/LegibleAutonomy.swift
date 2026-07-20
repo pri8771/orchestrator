@@ -36,6 +36,16 @@ struct RoutePreviewSource {
     }
 }
 
+enum RoutePreviewTruth: Equatable {
+    case conductor
+    case routingDefault
+}
+
+struct RoutePreviewPresentation: Equatable {
+    let target: String
+    let truth: RoutePreviewTruth
+}
+
 enum RoutePreviewResolver {
     static func resolve(_ context: RoutePreviewContext) -> String? {
         guard !context.section.isEmpty, !context.artifactType.isEmpty else { return nil }

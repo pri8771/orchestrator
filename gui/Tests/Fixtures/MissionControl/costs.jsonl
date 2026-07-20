@@ -1,0 +1,1 @@
+{"v":1,"ts":"2026-07-20T13:01:00Z","agent":"api:anthropic:demo","provider":"anthropic","model":"claude-sonnet","tokens_in":5000,"tokens_out":1000,"cost_micro_usd":75000,"metered":true}

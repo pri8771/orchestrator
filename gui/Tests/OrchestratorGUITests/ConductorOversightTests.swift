@@ -95,4 +95,27 @@ final class ConductorOversightTests: XCTestCase {
         XCTAssertNotNil(ConductorControlFiles.writeDecision(
             rootURL: root, routeID: routeID, suffix: "execute_anything"))
     }
+
+    func testSubmittedDecisionDoesNotOptimisticallyRemovePendingCard() throws {
+        let routeID = "fedcba9876543210"
+        try writeJSON([
+            "route_id": routeID, "target": "research",
+            "requested_by": "demo/ideas/chat-1",
+            "payload": ["artifact_id": "idea-1", "rule_id": "r1"]
+        ], to: root.appendingPathComponent(
+            ".conductor/approvals/\(routeID).pending"))
+        XCTAssertNil(ConductorControlFiles.writeDecision(
+            rootURL: root, routeID: routeID, suffix: "ok"))
+        XCTAssertNil(ConductorControlFiles.writeDecision(
+            rootURL: root, routeID: routeID, suffix: "ok"))
+
+        let snapshot = ConductorOversightDisk.scan(rootURL: root)
+        XCTAssertEqual(snapshot.pending.count, 1,
+                       "card remains until the Conductor confirms in its ledger")
+        XCTAssertTrue(snapshot.pending[0].decisionSubmitted)
+        let files = try FileManager.default.contentsOfDirectory(atPath:
+            root.appendingPathComponent(".conductor/approvals").path)
+        XCTAssertEqual(files.filter { $0 == "\(routeID).ok" }.count, 1,
+                       "double tap is one idempotent decision file")
+    }
 }

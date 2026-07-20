@@ -1,0 +1,3 @@
+{"ts":1784552400,"decision":"observed","session":"mission-demo/ideas/brainstorm","detail":{"reason":"recorded stream loaded"}}
+{"ts":1784552460,"decision":"route_approved","session":"mission-demo/ideas/brainstorm","route_id":"1111111111111111","detail":{"artifact_id":"idea-demo","target":"research","rule_id":"idea:research","reason":"evidence gap"}}
+{"ts":1784552520,"decision":"approval_requested","session":"mission-demo/research/brief","route_id":"2222222222222222","detail":{"artifact_id":"research-demo","target":"planning","rule_id":"research:planning","reason":"human gate"}}

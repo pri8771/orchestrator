@@ -617,7 +617,7 @@ enum EventsScanner {
 // invariants mirror costs.py's rollup: metered/unmetered/unpriced are kept
 // distinct so a mixed scope can never render as a bare dollar total, and
 // unmetered is NEVER shown as $0.00 (the engine has no numbers for it).
-struct CostTotals: Equatable {
+struct CostTotals: Equatable, Sendable {
     var meteredTurns = 0
     var unmeteredTurns = 0
     var unpricedTurns = 0     // metered tokens, but no verified price
@@ -645,11 +645,19 @@ struct CostTotals: Equatable {
             unmeteredTurns += 1
         }
     }
+
+    mutating func merge(_ other: CostTotals) {
+        meteredTurns += other.meteredTurns
+        unmeteredTurns += other.unmeteredTurns
+        unpricedTurns += other.unpricedTurns
+        costMicroUSD += other.costMicroUSD
+    }
 }
 
-struct ProjectCosts: Equatable {
+struct ProjectCosts: Equatable, Sendable {
     var total = CostTotals()
     var byAgent: [String: CostTotals] = [:]
+    var byProvider: [String: CostTotals] = [:]
 }
 
 // Background scanner over each project's costs.jsonl — same shape as
@@ -698,9 +706,14 @@ enum CostsScanner {
                 let metered = (obj["metered"] as? Bool) ?? false
                 let cost = obj["cost_micro_usd"] as? Int
                 let agent = (obj["agent"] as? String) ?? "?"
+                let provider = (obj["provider"] as? String) ?? ""
                 costs.total.fold(metered: metered, cost: cost)
                 costs.byAgent[agent, default: CostTotals()]
                     .fold(metered: metered, cost: cost)
+                if !provider.isEmpty {
+                    costs.byProvider[provider, default: CostTotals()]
+                        .fold(metered: metered, cost: cost)
+                }
             }
             cache[name] = (mtime, size, costs)
             out[name] = costs

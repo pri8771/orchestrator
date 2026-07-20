@@ -797,7 +797,7 @@ struct StreamingRow: View {
 struct FinalOutputCard: View {
     let text: String
     let marker: String?
-    var routeTarget: String? = nil
+    var routeTarget: RoutePreviewPresentation? = nil
     // Green tint over the SYSTEM background (not a fixed light mint) so the
     // card — and its .primary text — stays readable in Dark Mode too.
     private let tint = DS.status.success.color
@@ -810,7 +810,7 @@ struct FinalOutputCard: View {
                 if let m = marker { MarkerBadge(marker: m) }
             }
             if let routeTarget {
-                RoutePreviewChip(target: routeTarget)
+                RoutePreviewChip(preview: routeTarget)
             }
             MarkdownBody(text: text)
         }
@@ -822,15 +822,27 @@ struct FinalOutputCard: View {
 }
 
 struct RoutePreviewChip: View {
-    let target: String
+    let preview: RoutePreviewPresentation
+    private var target: String {
+        preview.target.replacingOccurrences(of: "_", with: " ").capitalized
+    }
     var body: some View {
-        Text("→ would route to \(target.replacingOccurrences(of: "_", with: " ").capitalized)")
+        Label(preview.truth == .conductor
+              ? "Conductor → \(target)"
+              : "Default · would route to \(target)",
+              systemImage: preview.truth == .conductor
+                ? "point.3.connected.trianglepath.dotted" : "arrow.right")
             .font(DS.font.caption.weight(.medium))
-            .foregroundStyle(DS.accent.color)
+            .foregroundStyle(preview.truth == .conductor
+                             ? DS.status.success.color : DS.textSecondary)
             .padding(.horizontal, DS.space.xs)
             .padding(.vertical, DS.space.xxs)
-            .background(Capsule().fill(DS.accent.fill))
-            .accessibilityLabel("Default route preview: would route to \(target)")
+            .background(Capsule().fill(preview.truth == .conductor
+                                       ? DS.status.success.fill
+                                       : DS.status.idlePill.fill))
+            .accessibilityLabel(preview.truth == .conductor
+                ? "Conductor route decision: routes to \(target)"
+                : "Routing default preview: would route to \(target)")
     }
 }
 

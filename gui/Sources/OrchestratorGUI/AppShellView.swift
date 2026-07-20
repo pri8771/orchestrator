@@ -304,10 +304,8 @@ struct AppShellView: View {
                     .tag(ShellSelection.overview)
                 Label("Activity", systemImage: "chart.bar.xaxis")
                     .tag(ShellSelection.activity)
-                if store.conductorSurfaceAvailable {
-                    Label("Conductor", systemImage: "point.3.connected.trianglepath.dotted")
-                        .tag(ShellSelection.conductor)
-                }
+                Label("Conductor", systemImage: "point.3.connected.trianglepath.dotted")
+                    .tag(ShellSelection.conductor)
             }
 
             sectionsRailSection
@@ -495,7 +493,7 @@ struct AppShellView: View {
             SectionChatsView(section: name,
                              onOpenChat: { selection = .project($0) })
         case .conductor:
-            ConductorOversightView()
+            MissionControlView()
         }
     }
 

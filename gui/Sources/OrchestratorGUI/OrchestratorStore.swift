@@ -937,8 +937,9 @@ final class OrchestratorStore: ObservableObject {
     var routePreviewSource = RoutePreviewSource.defaults
     @Published var commandProjectName: String?
     @Published var commandRoutableArtifact: ArtifactRouteRef?
-    @Published var conductorSurfaceAvailable = false
+    @Published var conductorSurfaceAvailable = true
     @Published var conductorOversight = ConductorOversightSnapshot()
+    @Published var missionControl = MissionControlSnapshot()
     @Published var artifactRouteStates: [String: ArtifactRouteState] = [:]
     @Published var artifactsByProject: [String: [ArtifactSummary]] = [:]
     @Published var artifactFinalizeInFlight: Set<String> = []
@@ -1470,7 +1471,12 @@ final class OrchestratorStore: ObservableObject {
                 if result.conductor != self.conductorOversight {
                     self.conductorOversight = result.conductor
                 }
-                self.conductorSurfaceAvailable = result.conductor.available
+                if result.missionControl != self.missionControl {
+                    self.missionControl = result.missionControl
+                }
+                // Mission Control has a designed pre-run empty state; the
+                // surface remains available before .conductor/ exists.
+                self.conductorSurfaceAvailable = true
                 if result.costs != self.projectCosts { self.projectCosts = result.costs }
                 self.escalateFallbacksIfNeeded(result.events)
                 if result.locks != self.appLocks { self.appLocks = result.locks }
@@ -1873,7 +1879,9 @@ final class OrchestratorStore: ObservableObject {
         })
     }
 
-    func routePreviewTarget(for project: Project, finalOutput: String) -> String? {
+    func routePreviewTarget(
+        for project: Project, finalOutput: String
+    ) -> RoutePreviewPresentation? {
         let parts = project.name.contains("/")
             ? project.name.components(separatedBy: "/")
             : project.name.components(separatedBy: "--")
@@ -1882,15 +1890,21 @@ final class OrchestratorStore: ObservableObject {
         let section = parts[1]
         guard let artifactType = ArtifactTypeHintParser.parse(finalOutput: finalOutput)
             ?? soleEmittedArtifactType(section: section) else { return nil }
+        if let actual = missionControl.actualRoute(for: project.name) {
+            return RoutePreviewPresentation(target: actual.target,
+                                            truth: .conductor)
+        }
         let fleetURL = orchDirURL.appendingPathComponent(
             "sections/\(section)/routing.json")
         let projectURL = rootURL.appendingPathComponent(projectID)
             .appendingPathComponent("routing.json")
-        return routePreviewSource.target(RoutePreviewContext(
+        guard let fallback = routePreviewSource.target(RoutePreviewContext(
             section: section,
             artifactType: artifactType,
             fleetRouting: try? Data(contentsOf: fleetURL),
-            projectRouting: try? Data(contentsOf: projectURL)))
+            projectRouting: try? Data(contentsOf: projectURL))) else { return nil }
+        return RoutePreviewPresentation(target: fallback,
+                                        truth: .routingDefault)
     }
 
     private func soleEmittedArtifactType(section: String) -> String? {

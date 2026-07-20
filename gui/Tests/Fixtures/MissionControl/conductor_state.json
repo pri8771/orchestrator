@@ -1,0 +1,13 @@
+{
+  "stage": "routing",
+  "oversight": {"dial": "loops_gated"},
+  "pipeline": {
+    "goal_manifest": {
+      "budgets": {
+        "turns": 6,
+        "wall_clock_s": 14400,
+        "per_provider": {"anthropic": {"spend": 5.0}}
+      }
+    }
+  }
+}

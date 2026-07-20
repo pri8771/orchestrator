@@ -135,3 +135,20 @@ cd gui && swift test   # from the repo root
 ```bash
 python3 seed_demo.py   # from the repo root; writes demo projects into the workspace
 ```
+
+### Mission Control recorded-stream demo
+
+Card 7.10 includes a deterministic Mission Control fixture derived from the
+7.9 recorded Conductor stream. Seed it into a new or disposable workspace (the
+script refuses to replace an existing `.conductor` directory), open that
+workspace in the GUI, then choose **Conductor** in the sidebar:
+
+```bash
+mkdir /tmp/orchestrator-mission-demo
+gui/demo_mission_control.sh /tmp/orchestrator-mission-demo
+```
+
+The view shows the Ideas → Research route, a Research → Planning approval,
+the explainable ledger, replay controls, and persisted Anthropic spend. Approve
+or reject the pending card to exercise the real decision-file contract; it
+remains visible as submitted until a Conductor scan consumes the decision.
