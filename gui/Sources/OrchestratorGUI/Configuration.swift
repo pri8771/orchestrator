@@ -381,9 +381,166 @@ struct SettingsView: View {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
             EngineSettings().tabItem { Label("Engine", systemImage: "gauge") }
             DefaultsSettings().tabItem { Label("Defaults", systemImage: "slider.horizontal.3") }
+            ApiKeySettings().tabItem { Label("API Keys", systemImage: "key") }
             AdvancedSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
         }
         .frame(width: 780, height: 640)
+    }
+}
+
+// Settings › API Keys — one file per provider under ~/.orchestrator/, the
+// SAME contract orchestrator.py's _api_key/_gemini_api_key read (never the
+// repo, never an env var written by this app). Write-only UX: a saved key's
+// CONTENT is never read back into the field, only whether one exists — so
+// opening this screen can never re-display a secret already on disk.
+struct APIKeyProvider: Identifiable {
+    let id: String              // stable SwiftUI identity
+    let title: String
+    let filename: String        // under ~/.orchestrator/
+    let detail: String
+}
+
+let apiKeyProviders: [APIKeyProvider] = [
+    APIKeyProvider(id: "gemini", title: "Gemini",
+                   filename: "gemini_api_key",
+                   detail: "Used by the gemini CLI runner, and as the "
+                           + "api:google: fallback."),
+    APIKeyProvider(id: "google", title: "Google (api:google:)",
+                   filename: "google_api_key",
+                   detail: "Direct HTTP runner — takes precedence over "
+                           + "the Gemini key above for api:google: calls."),
+    APIKeyProvider(id: "anthropic", title: "Anthropic (api:anthropic:)",
+                   filename: "anthropic_api_key",
+                   detail: "Direct HTTP runner, separate from the logged-in "
+                           + "claude CLI (which needs no key here)."),
+    APIKeyProvider(id: "openai", title: "OpenAI (api:openai:)",
+                   filename: "openai_api_key",
+                   detail: "Direct HTTP runner, separate from the "
+                           + "logged-in codex CLI (which needs no key here)."),
+]
+
+// internal (not private): APIKeyFileTests reaches this via @testable import,
+// exercising the exact save/isSet/clear logic the Settings UI calls — with
+// `base` overridden to a temp dir, so tests never touch a real ~/.orchestrator.
+enum APIKeyFile {
+    static func directoryURL(base: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        base.appendingPathComponent(".orchestrator", isDirectory: true)
+    }
+
+    static func url(for filename: String,
+                    base: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        directoryURL(base: base).appendingPathComponent(filename)
+    }
+
+    static func isSet(_ filename: String,
+                      base: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        guard let data = try? Data(contentsOf: url(for: filename, base: base)) else {
+            return false
+        }
+        return !data.isEmpty
+            && !String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Atomic write + 0600 perms — this is a credential file, and the engine
+    /// itself never restricts permissions on write, so the GUI is the one
+    /// place that can reasonably enforce it at creation time.
+    @discardableResult
+    static func save(_ filename: String, key: String,
+                     base: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: directoryURL(base: base),
+                                   withIntermediateDirectories: true)
+            let target = url(for: filename, base: base)
+            let tmp = target.appendingPathExtension("tmp-\(UUID().uuidString)")
+            try trimmed.write(to: tmp, atomically: true, encoding: .utf8)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
+            _ = try? fm.removeItem(at: target)
+            try fm.moveItem(at: tmp, to: target)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    static func clear(_ filename: String,
+                      base: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        (try? FileManager.default.removeItem(at: url(for: filename, base: base))) != nil
+    }
+}
+
+private struct APIKeyRow: View {
+    let provider: APIKeyProvider
+    @State private var draft = ""
+    @State private var isSet = false
+    @State private var savedFlash = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(provider.title).font(.headline)
+                Spacer()
+                if isSet {
+                    Label("Key saved", systemImage: "checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(.green)
+                } else {
+                    Label("Not set", systemImage: "circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text(provider.detail).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                SecureField("Paste key to save or replace…", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                Button("Save") {
+                    if APIKeyFile.save(provider.filename, key: draft) {
+                        draft = ""
+                        isSet = true
+                        savedFlash = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            savedFlash = false
+                        }
+                    }
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if isSet {
+                    Button("Clear", role: .destructive) {
+                        if APIKeyFile.clear(provider.filename) { isSet = false }
+                    }
+                }
+            }
+            if savedFlash {
+                Text("Saved to ~/.orchestrator/\(provider.filename)")
+                    .font(.caption2).foregroundStyle(.green)
+            }
+        }
+        .padding(.vertical, 4)
+        .onAppear { isSet = APIKeyFile.isSet(provider.filename) }
+    }
+}
+
+struct ApiKeySettings: View {
+    var body: some View {
+        Form {
+            Section {
+                Text("Keys are saved to ~/.orchestrator/, outside this "
+                     + "repo — never committed, never pushed. Pasting a key "
+                     + "here is the same as dropping it in that file "
+                     + "yourself; the app never sends it anywhere except "
+                     + "into that file.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Direct API keys") {
+                ForEach(apiKeyProviders) { provider in
+                    APIKeyRow(provider: provider)
+                }
+            }
+        }
+        .formStyle(.grouped).padding()
     }
 }
 
