@@ -293,7 +293,7 @@ def render_full_transcript_txt(app, original_prompt, phase_entries):
 
 def write_project_archive(app_dir, app, phases, original_prompt, state,
                           workflow_name="app_build", verify_summary="",
-                          findings=None):
+                          findings=None, human_overrides=None):
     """Persist the whole completed run in stable JSON files:
     - docs/phase_discussions.json: every phase markdown transcript
     - docs/PROJECT_RECORD.json: prompt, outputs, discussions, tasks, interfaces
@@ -344,20 +344,22 @@ def write_project_archive(app_dir, app, phases, original_prompt, state,
         verify_summary=verify_summary, findings=findings or [])
     full_transcript = render_full_transcript_txt(app, original_prompt, phase_entries)
     written = []
+
+    overrides = set(human_overrides or [])
+
+    def put(rel, text):
+        if rel in overrides:
+            return
+        _write(os.path.join(app_dir, rel), text)
+        written.append(rel)
+
     try:
-        _write(os.path.join(docs_dir, "phase_discussions.json"),
-               json.dumps(phase_entries, indent=2))
-        written.append("docs/phase_discussions.json")
-        _write(os.path.join(docs_dir, "COMPLETE_PROJECT_DOSSIER.md"), dossier)
-        written.append("docs/COMPLETE_PROJECT_DOSSIER.md")
-        _write(os.path.join(docs_dir, "FULL_TRANSCRIPT.txt"), full_transcript)
-        written.append("docs/FULL_TRANSCRIPT.txt")
-        _write(os.path.join(docs_dir, "PROJECT_RECORD.json"),
-               json.dumps(record, indent=2))
-        written.append("docs/PROJECT_RECORD.json")
-        _write(os.path.join(integrations_dir, "project_management_backfill.json"),
-               json.dumps(backfill, indent=2))
-        written.append("integrations/project_management_backfill.json")
+        put("docs/phase_discussions.json", json.dumps(phase_entries, indent=2))
+        put("docs/COMPLETE_PROJECT_DOSSIER.md", dossier)
+        put("docs/FULL_TRANSCRIPT.txt", full_transcript)
+        put("docs/PROJECT_RECORD.json", json.dumps(record, indent=2))
+        put("integrations/project_management_backfill.json",
+            json.dumps(backfill, indent=2))
     except OSError:
         pass
     return written
@@ -1238,7 +1240,8 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                        consensus_status=None, workflow_name="app_build",
                        verify_summary="", findings=None, blocked_conflict=None,
                        conversation_end=None, orch_dir=None, on_warn=None,
-                       artifact_reader=None):
+                       artifact_reader=None, human_overrides=None,
+                       override_notice=""):
     """Render + persist the full doc set (§24) into <app_dir>/docs/:
     PROJECT_DOCUMENTATION.md, LAUNCH_READINESS.md, phase_outputs.json, plus
     PRD.md / TECHNICAL_ARCHITECTURE.md / QA_REPORT.md when their source phases
@@ -1247,18 +1250,24 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
     docs_dir = os.path.join(app_dir, "docs")
     os.makedirs(docs_dir, exist_ok=True)
     written = []
+    overrides = set(human_overrides or [])
+
+    def put(rel, text):
+        if rel in overrides:
+            return
+        _write(os.path.join(app_dir, rel), text)
+        written.append(rel)
+
     try:
-        _write(os.path.join(docs_dir, "phase_outputs.json"),
-               json.dumps(phase_outputs or {}, indent=2))
-        written.append("docs/phase_outputs.json")
-        _write(os.path.join(docs_dir, "PROJECT_DOCUMENTATION.md"),
-               render_project_documentation(app, ordered_phases, phase_outputs, workflow_name))
-        written.append("docs/PROJECT_DOCUMENTATION.md")
-        _write(os.path.join(docs_dir, "LAUNCH_READINESS.md"),
-               render_launch_readiness(app, ordered_phases, phase_outputs,
-                                       consensus_status, verify_summary,
-                                       findings=findings))
-        written.append("docs/LAUNCH_READINESS.md")
+        put("docs/phase_outputs.json",
+            json.dumps(phase_outputs or {}, indent=2))
+        put("docs/PROJECT_DOCUMENTATION.md",
+            render_project_documentation(app, ordered_phases, phase_outputs,
+                                         workflow_name))
+        put("docs/LAUNCH_READINESS.md",
+            render_launch_readiness(app, ordered_phases, phase_outputs,
+                                    consensus_status, verify_summary,
+                                    findings=findings) + override_notice)
         # V3 board 5.1: the composed docs (PRD / TECHNICAL_ARCHITECTURE / QA) are
         # driven by the loaded doc_map instead of hardcoded tuples. Iterating the
         # map's docs[] in its stored order preserves the historical write order
@@ -1280,15 +1289,13 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                 md = render_composed_doc(app, title, sources, ordered_phases,
                                          phase_outputs, intro=intro)
             if md is not None:
-                _write(os.path.join(docs_dir, filename), md)
-                written.append("docs/" + filename)
-        _write(os.path.join(docs_dir, "KNOWN_LIMITATIONS.md"),
-               render_known_limitations(app, ordered_phases, phase_outputs,
-                                        consensus_status, verify_summary,
-                                        findings=findings,
-                                        blocked_conflict=blocked_conflict,
-                                        conversation_end=conversation_end))
-        written.append("docs/KNOWN_LIMITATIONS.md")
+                put("docs/" + filename, md)
+        put("docs/KNOWN_LIMITATIONS.md",
+            render_known_limitations(app, ordered_phases, phase_outputs,
+                                     consensus_status, verify_summary,
+                                     findings=findings,
+                                     blocked_conflict=blocked_conflict,
+                                     conversation_end=conversation_end))
         # V3 5.2: SUBSCRIBE artifact ingestion. Reader-gated and LAST, in its own
         # guard, so a store fault can never disturb the 5.1 docs already written
         # and reader=None leaves the doc set byte-identical to 5.1.
@@ -1300,13 +1307,11 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                     artifact_reader, on_warn=on_warn, contentions=contentions,
                     coverage=coverage)
                 if bp is not None:
-                    _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), bp)
-                    written.append("docs/HANDOFF_BLUEPRINT.md")
+                    put("docs/HANDOFF_BLUEPRINT.md", bp)
                     # 5.4: the gap report is scan-derived (never from the bus),
                     # so it can't surface stale gaps — written even when clean.
-                    _write(os.path.join(docs_dir, "GAP_REPORT.md"),
-                           render_gap_report(app, coverage))
-                    written.append("docs/GAP_REPORT.md")
+                    put("docs/GAP_REPORT.md",
+                        render_gap_report(app, coverage) + override_notice)
                 # Publish empty/thin + conflict gaps AFTER the docs are on disk,
                 # so the report survives even if gap emission fails (5.3/5.4).
                 if coverage or contentions:

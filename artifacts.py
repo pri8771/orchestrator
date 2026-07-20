@@ -462,7 +462,8 @@ def is_routable(meta):
 
 
 def publish(project_dir, body_text, meta, registry, on_error=None,
-            supersedes=None, consensus=False, gate=None):
+            supersedes=None, consensus=False, gate=None,
+            reconcile_request=False):
     """Atomically publish one artifact; return its minted id, or None with
     the reason reported through on_error.
 
@@ -473,6 +474,11 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
     evidence, never a silent drop. Recorded verbatim under meta['gate']. A
     publisher can never request quarantine — it is set ONLY from this param
     (a smuggled meta['gate'] falls through to fields, non-authoritative).
+
+    ``reconcile_request`` (V3 5.5) is likewise engine-owned: it permits the
+    documentation sync service to publish a human-override request with empty
+    parents without weakening the ordinary reconcile type's >=2-head merge
+    contract. Merely smuggling request_kind in meta never enables it.
 
     Nothing touches the disk unless the publish is fully valid (a partial
     artifact must never appear); on success the artifact directory is
@@ -600,6 +606,14 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
     lin_fd = None
     lroot = None
     parents = None
+    # V3 5.5 uses the existing reconcile bus type for a *request* to
+    # reconcile a human-overridden rendered document.  It is explicitly not a
+    # 4.3 lineage merge: empty parents plus this engine-recognized request kind
+    # publish an ordinary root artifact, while every other reconcile retains
+    # the strict >=2-current-heads invariant below.
+    is_reconcile_request = (reconcile_request and type_name == "reconcile"
+                            and extras.get("request_kind") == "human_override"
+                            and extras.get("parents") == [])
     if supersedes is not None:
         if type_name == "reconcile":
             on_error("publish rejected: a reconcile merges via its "
@@ -616,7 +630,7 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
             return None
         plin = _lineage_list(pre, on_error)
         lroot = plin[0] if plin else supersedes
-    elif type_name == "reconcile":
+    elif type_name == "reconcile" and not is_reconcile_request:
         # Merge declaration: >=2 distinct valid ids sharing ONE root
         # (the root names the lock; head-set equality is re-checked
         # under it). Per-element validity is checked BEFORE set(), so an

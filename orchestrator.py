@@ -61,6 +61,7 @@ import workflows as wflib
 import schemas as schemalib
 import resilience as reslib
 import docs as docslib
+import docsync as docsynclib
 import completeness as complib
 import buildpolicy as buildpolicylib
 import global_resource as grlib
@@ -10912,6 +10913,16 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             _latest_v = verifylib.latest_verify_result(app_dir, prompt_hash=state.get("prompt_hash"))
             _vsum = ("%s (%s)" % (_latest_v.get("status", "").upper(), _latest_v.get("summary", ""))
                      if _latest_v else "")
+            sync_context = None
+            overrides = set()
+            override_notice = ""
+            if bool(cget(cfg, "runtime.docs_git_sync_enabled", True)):
+                sync_context = docsynclib.prepare_render(
+                    app_dir, docslib.load_doc_map(
+                        HERE, on_warn=lambda m: emit("WARN " + m)),
+                    on_warn=lambda m: emit("WARN " + m))
+                overrides = set(sync_context.get("overrides") or [])
+                override_notice = docsynclib.override_note(overrides)
             written = docslib.write_project_docs(
                 app_dir, app, ordered, state.get("phase_outputs", {}),
                 consensus_status=state.get("consensus_status", {}),
@@ -10920,12 +10931,21 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 blocked_conflict=state.get("blocked_conflict"),
                 conversation_end=state.get("conversation_end", {}),
                 orch_dir=HERE, on_warn=lambda m: emit("WARN " + m),
-                artifact_reader=artifactslib)   # 5.2 SUBSCRIBE: app_dir is the
-                                                # artifact project_dir
+                artifact_reader=artifactslib,    # 5.2 SUBSCRIBE: app_dir is
+                                                 # the artifact project_dir
+                human_overrides=overrides,
+                override_notice=override_notice)
             written += docslib.write_project_archive(
                 app_dir, app, phases, prompt, state,
                 workflow_name=workflow.name, verify_summary=_vsum,
-                findings=load_docs_findings(app_dir))
+                findings=load_docs_findings(app_dir),
+                human_overrides=overrides)
+            if sync_context is not None:
+                docsynclib.finish_render(
+                    app_dir, sync_context, written, HERE, app=app,
+                    workflow=workflow.name,
+                    phase=state.get("current_phase") or "complete",
+                    on_warn=lambda m: emit("WARN " + m))
             if written:
                 emit("Rendered docs: %s" % ", ".join(written))
         except Exception as exc:  # noqa: BLE001 - docs are best-effort, never fatal
