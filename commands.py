@@ -29,8 +29,6 @@ KINDS = ("builtin", "template", "delegation", "meta")
 DEFAULT_COMMANDS = {
     "schema_version": SCHEMA_VERSION,
     "commands": [
-        {"name": "mode", "kind": "builtin",
-         "description": "Switch auto/manual participation at the next round barrier."},
         {"name": "vote", "kind": "builtin",
          "description": "Request a forced weighted vote at the next round barrier."},
         {"name": "consensus", "kind": "builtin",
@@ -39,10 +37,6 @@ DEFAULT_COMMANDS = {
          "description": "Add or remove a roster member at the next round barrier."},
         {"name": "fork", "kind": "builtin",
          "description": "Fork this session through the existing session fork verb."},
-        {"name": "promote", "kind": "builtin",
-         "description": "Promote this chat through the existing promotion verb."},
-        {"name": "send", "kind": "builtin",
-         "description": "Route an artifact to a section through route_push."},
         {"name": "summarize", "kind": "template",
          "template": "@Documentation summarize this conversation so far.",
          "description": "Ask Documentation to summarize the conversation."},
@@ -87,13 +81,10 @@ DEFAULT_COMMANDS = {
 # Names are data; behavior remains at the existing engine/GUI verb seams.
 # The pure table is deliberately testable without importing orchestrator.py.
 COMMAND_VERBS = {
-    "mode": "barrier_mode",
     "vote": "barrier_vote",
     "consensus": "barrier_consensus",
     "cast": "roster_cast",
     "fork": "fork_session",
-    "promote": "promote_chat",
-    "send": "route_push",
     "audit": "delegate_qa",
     "research": "delegate_research",
     "decision": "template_decision",

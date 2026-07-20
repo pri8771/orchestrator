@@ -2,11 +2,6 @@
   "schema_version": 1,
   "commands": [
     {
-      "name": "mode",
-      "kind": "builtin",
-      "description": "Switch auto/manual participation at the next round barrier."
-    },
-    {
       "name": "vote",
       "kind": "builtin",
       "description": "Request a forced weighted vote at the next round barrier."
@@ -25,16 +20,6 @@
       "name": "fork",
       "kind": "builtin",
       "description": "Fork this session through the existing session fork verb."
-    },
-    {
-      "name": "promote",
-      "kind": "builtin",
-      "description": "Promote this chat through the existing promotion verb."
-    },
-    {
-      "name": "send",
-      "kind": "builtin",
-      "description": "Route an artifact to a section through route_push."
     },
     {
       "name": "summarize",

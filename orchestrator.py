@@ -4255,23 +4255,6 @@ def _dispatch_command(cfg, app, app_dir, phasedef, key, rnd, original_prompt,
             return ("Forked as `%s`." % forked) if code == 0 else \
                 "Fork refused by the existing session-fork safety checks."
 
-        def promote_existing(_args):
-            code, _target = promote_chat(cfg.get("root") or "", sid,
-                                         _args.strip() or None,
-                                         wait_seconds=0)
-            return "Promotion queued." if code == 0 else \
-                "Promotion refused while this live round still owns the session."
-
-        def route_existing(_args):
-            parts = _args.split()
-            if len(parts) != 2:
-                return "Usage: `/send <artifact-id> <project/section/chat>`."
-            ns = argparse.Namespace(route_from=sid, route_to=parts[1],
-                                    route_artifact=parts[0])
-            code = _do_route_push(cfg, ns)
-            return "Artifact routed." if code == 0 else \
-                "Artifact route refused; see the engine reason above."
-
         def status_existing(_args):
             st = load_state(app_dir)
             return ("Session `%s` · phase `%s` · round %s · %s"
@@ -4296,10 +4279,9 @@ def _dispatch_command(cfg, app, app_dir, phasedef, key, rnd, original_prompt,
             return "\n".join(lines)
 
         handlers = {
-            "barrier_mode": barrier, "barrier_vote": barrier,
+            "barrier_vote": barrier,
             "barrier_consensus": barrier, "roster_cast": barrier,
-            "fork_session": fork_existing, "promote_chat": promote_existing,
-            "route_push": route_existing,
+            "fork_session": fork_existing,
             "compare_models": lambda a: _run_command_compare(
                 cfg, app, app_dir, key, rnd, a, active),
             "session_status": status_existing,
@@ -7301,14 +7283,7 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
             _cname = str(_request.get("name") or "")
             _cargs = str(_request.get("args") or "").strip()
             _announcement = ""
-            if _cname == "mode":
-                if _cargs not in ("auto", "manual"):
-                    _announcement = "Mode unchanged — use `/mode auto` or `/mode manual`."
-                else:
-                    state["chat_mode"] = _cargs
-                    _announcement = "Room mode is now %s (applied at round %d barrier)." \
-                        % (_cargs, rnd)
-            elif _cname == "cast":
+            if _cname == "cast":
                 _parts = _cargs.split(None, 1)
                 if len(_parts) != 2 or _parts[0] not in ("add", "remove"):
                     _announcement = "Cast unchanged — use `/cast add|remove <agent>`."

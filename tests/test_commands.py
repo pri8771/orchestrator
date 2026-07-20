@@ -156,10 +156,10 @@ class TestRegistry(unittest.TestCase):
 
 
 class TestBaseCommandDispatchMatrix(unittest.TestCase):
-    def test_fifteen_commands_call_exactly_their_mapped_existing_verb(self):
+    def test_twelve_commands_call_exactly_their_mapped_existing_verb(self):
         expected = {
-            "mode", "vote", "consensus", "cast", "fork", "promote",
-            "send", "audit", "research", "decision", "summarize",
+            "vote", "consensus", "cast", "fork", "audit", "research",
+            "decision", "summarize",
             "compare", "status", "cost", "help",
         }
         self.assertEqual(set(cmdlib.COMMAND_VERBS), expected)
@@ -173,6 +173,16 @@ class TestBaseCommandDispatchMatrix(unittest.TestCase):
             self.assertTrue(handled, name)
             self.assertEqual(calls, [(cmdlib.COMMAND_VERBS[name], "payload")],
                              name)
+
+    def test_missing_dependency_commands_are_not_advertised(self):
+        # 9.8 explicitly forbids inventing verbs. 4.9 recorded that manual
+        # message->artifact publish is still absent; 1.7/1.8 expose actions,
+        # not a live-session mode verb; route_push needs an artifact + full
+        # target rather than the promised `/send <section>` adapter.
+        registry = cmdlib.load_commands(cmdlib.HERE)
+        for name in ("mode", "promote", "send"):
+            self.assertNotIn(name, cmdlib.COMMAND_VERBS)
+            self.assertNotIn(name, registry)
 
     def test_deleted_or_unknown_command_does_not_dispatch(self):
         calls = []
