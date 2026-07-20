@@ -42,11 +42,15 @@ import sys
 import time
 
 import sessions as seslib
+import conductor_termination as ctlib
 
 CONDUCTOR_DIRNAME = ".conductor"
 # R4 explicit lifecycle (precedent: sessions.STATUS): the stage is persisted
 # on every transition so a kill at ANY point resumes into a known state.
 STAGES = ("idle", "scanning", "evaluating", "acting")
+# 7.5 terminal ledger decisions — replayed by reconcile_on_start to rebuild
+# state['terminated'] after a crash between the termination append and its save.
+_TERMINAL_DECISIONS = ("goal_met", "converged_open_items")
 SCHEMA_VERSION = 1
 _MAX_LEDGER_LINE_BYTES = 3500   # same PIPE_BUF discipline as events.py
 
@@ -133,7 +137,10 @@ def route_digest(route_key):
 
 def default_state():
     return {"schema_version": SCHEMA_VERSION, "stage": "idle",
-            "ledger_cursor": 0, "sessions": {}, "routed": {}}
+            "ledger_cursor": 0, "sessions": {}, "routed": {},
+            # 7.5: terminal sessions (routing skips them) + per-session
+            # quiescence idle-counter records. Defensive-loaded like the rest.
+            "terminated": {}, "quiescence": {}}
 
 
 def load_conductor_state(root):
@@ -150,8 +157,12 @@ def load_conductor_state(root):
     data.setdefault("ledger_cursor", 0)
     data.setdefault("sessions", {})
     data.setdefault("routed", {})
+    data.setdefault("terminated", {})   # 7.5: symmetry + defense-in-depth
+    data.setdefault("quiescence", {})
     if not isinstance(data["sessions"], dict) \
             or not isinstance(data["routed"], dict) \
+            or not isinstance(data["terminated"], dict) \
+            or not isinstance(data["quiescence"], dict) \
             or not isinstance(data["ledger_cursor"], int) \
             or data["ledger_cursor"] < 0:
         return default_state()
@@ -321,11 +332,85 @@ def reconcile_on_start(root, state, emit=print):
             if state["sessions"].get(sid) != digest:
                 state["sessions"][sid] = digest
                 applied += 1
+        # 7.5: a termination decision in the un-cursored tail already happened
+        # and is durable in the ledger; rebuild its effect (state['terminated'])
+        # so a crash between the termination append and the state save does not
+        # resurrect a terminated session into re-evaluation / a duplicate
+        # terminal record. Idempotent: replaying it just re-sets the same entry.
+        if isinstance(sid, str) and rec.get("decision") in _TERMINAL_DECISIONS:
+            detail = rec.get("detail") if isinstance(rec.get("detail"),
+                                                     dict) else {}
+            state.setdefault("terminated", {})[sid] = {
+                "reason": rec.get("decision"), "report": detail.get("report"),
+                "ts": rec.get("ts")}
+            applied += 1
     state["ledger_cursor"] = length
     save_conductor_state(root, state)
     emit("conductor: resumed — reconciled %d un-cursored ledger entr%s "
          "(%d applied)." % (len(tail), "y" if len(tail) == 1 else "ies",
                             applied))
+    return state
+
+
+def _record_termination(root, state, sid, reason, evidence, emit=print):
+    """Persist one terminal outcome: a durable report file, a ledger line
+    carrying the full evidence, and a state['terminated'] entry that makes the
+    acting stage skip this session. Ledger-before-cursor like every other
+    conductor decision — the conductor NEVER stops a session silently."""
+    report = ctlib.write_report(root, sid, reason, evidence)
+    if report is None:
+        # The ledger line below is the authoritative terminal record; the
+        # report file is a supplementary artifact. If it could not be written,
+        # still ledger (never terminate silently) but say so loudly.
+        emit("conductor: WARNING session %s termination report could not be "
+             "written — the ledger line remains authoritative" % sid)
+    rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+           "decision": reason, "session": sid,
+           "detail": {"reason": reason, "report": report, "evidence": evidence}}
+    new_len = ledger_append(root, rec)
+    state["terminated"][sid] = {"reason": reason, "report": report,
+                                "ts": rec["ts"]}
+    state["ledger_cursor"] = new_len
+    save_conductor_state(root, state)
+    emit("conductor: session %s terminated (%s) -> %s" % (sid, reason, report))
+
+
+def evaluate_terminations(root, state, sessions, manifest, emit=print):
+    """7.5(a): decide per session whether the goal is met (done) or the
+    session has gone quiescent (converged with open items). Order goal ->
+    quiescence (7.5b inserts stall + budget between). A goal that is met wins
+    outright; otherwise the same goal verdict feeds the quiescence report so
+    'converged-with-open-items' can honestly enumerate the unmet checks.
+    Idempotent: an already-terminated session is never re-reported. A session
+    with no agent_state.json has not started — it is neither goal-eval'd nor
+    counted as quiescent (a freshly-minted, un-run session must never
+    terminate)."""
+    terminated = state.setdefault("terminated", {})
+    quiescence = state.setdefault("quiescence", {})
+    limit = manifest.get("quiescence_cycles")
+    for sid in sessions:
+        if sid in terminated:
+            continue
+        app_dir = os.path.join(root, sid)
+        sstate = read_session_state(app_dir, warn=emit)
+        if sstate is None:
+            continue   # not started — nothing to terminate
+        verdict = ctlib.goal_predicate(app_dir, manifest, on_warn=emit)
+        if verdict["met"]:
+            _record_termination(root, state, sid, "goal_met", verdict, emit)
+            continue
+        if limit is None:
+            continue
+        record, converged = ctlib.quiescence_step(
+            quiescence.get(sid), app_dir, limit,
+            ctlib.progress_digest(sstate), on_warn=emit)
+        quiescence[sid] = record
+        if converged:
+            report = ctlib.converged_report(app_dir, verdict, record,
+                                            on_warn=emit)
+            _record_termination(root, state, sid, "converged_open_items",
+                                report, emit)
+    save_conductor_state(root, state)
     return state
 
 
@@ -362,6 +447,13 @@ def full_poll(root, state, emit=print, route_engine=None):
         state["sessions"][sid] = digest
         state["ledger_cursor"] = new_len
         save_conductor_state(root, state)
+    # V3 7.5: termination stack (goal -> quiescence; 7.5b inserts stall +
+    # budget). Runs inside the evaluating stage, BEFORE acting, so a session
+    # that terminated this poll is not routed into. Zero cost + zero ledger
+    # noise when no manifest enables any layer.
+    manifest = ctlib.load_goal_manifest(root, on_warn=emit)
+    if manifest.get("goal") or manifest.get("quiescence_cycles"):
+        state = evaluate_terminations(root, state, sessions, manifest, emit)
     # V3 7.2: act on this poll's admissible newly-final artifacts. Routing
     # is off unless a .conductor/routing enable + rules exist; the acting
     # stage owns NO dir-minting — every route mints through sessions
@@ -536,7 +628,12 @@ def route_engine(root, state, sessions, emit=print):
     sections_dir_parent = os.path.dirname(sections_dir)
     _drain_pending()
 
+    terminated = state.get("terminated", {})
     for sid in sessions:
+        if sid in terminated:
+            continue   # 7.5: the goal is met or the session converged — no
+            # new routes are planned into it (a human-approved pending route
+            # still drains above; termination gates only NEW planning).
         parts = sid.split("/")
         if len(parts) < 2:
             continue   # flat/legacy dir: no section to source-route from
