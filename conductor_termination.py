@@ -68,23 +68,36 @@ def _warn(on_warn, msg):
 def load_goal_manifest(root, on_warn=None):
     """Read <root>/goal_manifest.json into a validated manifest, or the safe
     default (+ a visible banner) on any missing/corrupt/invalid file. NEVER
-    raises: a broken manifest disables goal-based termination while budgets
-    (7.5b) stay enforced — it must never wedge or crash the conductor."""
+    raises. See load_goal_manifest_ex for the status this collapses (callers
+    that must not let a CORRUPT file silently drop active budgets use that
+    instead — 'budgets still enforced' is a lie for this simple form alone,
+    since it has nowhere to fall back to)."""
+    return load_goal_manifest_ex(root, on_warn)[0]
+
+
+def load_goal_manifest_ex(root, on_warn=None):
+    """Like load_goal_manifest, but also returns a status: 'ok' (parsed and
+    normalized), 'missing' (no file — budgets were never configured, safe to
+    report as none), or 'corrupt' (a file exists but failed to parse/validate
+    — the caller must NOT treat this the same as 'missing': it should fall
+    back to the LAST KNOWN GOOD budgets rather than silently going uncapped,
+    since a corrupt manifest could be a torn write over a previously-valid
+    one, not evidence budgets were never wanted)."""
     path = os.path.join(root, GOAL_MANIFEST_FILENAME)
     if not os.path.exists(path):
-        return dict(SAFE_DEFAULT_MANIFEST)
+        return dict(SAFE_DEFAULT_MANIFEST), "missing"
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError) as exc:
-        _warn(on_warn, "goal_manifest.json unreadable (%s) — goal termination "
-                       "DISABLED, budgets still enforced" % exc)
-        return dict(SAFE_DEFAULT_MANIFEST)
+        _warn(on_warn, "goal_manifest.json unreadable (%s) — goal/quiescence "
+                       "termination DISABLED for this poll" % exc)
+        return dict(SAFE_DEFAULT_MANIFEST), "corrupt"
     if not isinstance(data, dict):
-        _warn(on_warn, "goal_manifest.json is not an object — goal termination "
-                       "DISABLED, budgets still enforced")
-        return dict(SAFE_DEFAULT_MANIFEST)
-    return normalize_manifest(data, on_warn)
+        _warn(on_warn, "goal_manifest.json is not an object — goal/quiescence "
+                       "termination DISABLED for this poll")
+        return dict(SAFE_DEFAULT_MANIFEST), "corrupt"
+    return normalize_manifest(data, on_warn), "ok"
 
 
 def normalize_manifest(data, on_warn=None):
@@ -251,22 +264,23 @@ def progress_digest(sstate):
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def genuine_final_ids(app_dir, on_warn=None):
-    """Ids of the session's GENUINE live final artifacts: status='final',
-    MINUS any whose content_hash re-derives an ancestor's (the codebase never
-    tombstones a superseded artifact — it stays 'final' — so 'progress' can't
-    be 'the final set shrank'; the real oscillation trap is a lineage whose new
-    head reproduces earlier content, which is exactly guard_route's CONVERGED
-    condition evaluated over the whole ancestry). Such a final is churn, not
-    progress, and must not reset the idle counter."""
+def _scan_finals(app_dir, on_warn=None):
+    """One pass over the live final artifacts, classifying each as GENUINE or
+    OSCILLATING. A final oscillates when its content_hash re-derives an
+    ancestor's — exactly guard_route's CONVERGED condition, evaluated over the
+    whole ancestry (the codebase never tombstones a superseded artifact, so
+    'progress' can't be 'the final set shrank'; churn is a lineage whose new
+    head reproduces earlier content). Returns (genuine_ids, oscillating_ids).
+    ONE definition shared by quiescence (genuine finals) and stall (oscillation)
+    so the two can never drift apart."""
     import artifacts as artlib
     finals = artlib.list_artifacts(app_dir, status="final",
                                    on_error=lambda m: _warn(on_warn, m))
     if not finals:
-        return set()
+        return set(), set()
     index = artlib.lineage_index(app_dir, on_error=lambda m: _warn(on_warn, m))
     by_id = index.get("by_id", {}) if isinstance(index, dict) else {}
-    out = set()
+    genuine, oscillating = set(), set()
     for m in finals:
         aid = m.get("id")
         if not aid:
@@ -275,9 +289,24 @@ def genuine_final_ids(app_dir, on_warn=None):
         anc = {by_id.get(a, {}).get("content_hash")
                for a in (m.get("lineage") or [])}
         if chash is not None and chash in anc:
-            continue   # oscillation: content re-derives an ancestor — not new
-        out.add(str(aid))
-    return out
+            oscillating.add(str(aid))   # re-derives an ancestor — churn
+        else:
+            genuine.add(str(aid))
+    return genuine, oscillating
+
+
+def genuine_final_ids(app_dir, on_warn=None):
+    """Ids of the session's genuine live finals (oscillation excluded — see
+    _scan_finals). Progress for quiescence = a NEW id in this set."""
+    return _scan_finals(app_dir, on_warn)[0]
+
+
+def has_oscillation(app_dir, on_warn=None):
+    """True when any live final re-derives an ancestor's content — the global
+    supersedes-oscillation stall signal (§ the card: oscillation is stall, not
+    progress). Shares _scan_finals with quiescence so the two agree by
+    construction."""
+    return bool(_scan_finals(app_dir, on_warn)[1])
 
 
 def quiescence_step(prev, app_dir, limit, prog_digest, on_warn=None):
@@ -315,6 +344,153 @@ def converged_report(app_dir, goal_verdict, quiescence_record, on_warn=None):
             "unmet_goal_checks": unmet,
             "open_gaps": _open_gaps(app_dir, on_warn),
             "note": "converged with open items — NOT complete"}
+
+
+# --------------------------------------------------------------------------- #
+# Budgets (7.5b) — hard caps halt routing; per-provider daily quota defers it
+# --------------------------------------------------------------------------- #
+# A conductor "turn" = one route it actually minted. Bounds how much
+# autonomous ACTION the conductor takes, read from its OWN ledger — independent
+# of agent-side token accounting (which the spend cap covers). Includes
+# route_recovered: a restart-recovered mint is a REAL turn that already
+# happened (the session dir exists) — counting only route_approved would let a
+# host that crashes shortly after each mint take unbounded turns while the
+# cap reports zero used.
+_TURN_DECISIONS = ("route_approved", "route_recovered")
+
+
+def count_turns(ledger):
+    return sum(1 for r in ledger
+               if isinstance(r, dict) and r.get("decision") in _TURN_DECISIONS)
+
+
+def wall_clock_elapsed(ledger, now):
+    """Seconds since the conductor's first-ever ledger entry — the run's age
+    across restarts (the ledger persists). 0.0 when there is no history."""
+    for r in ledger:
+        if isinstance(r, dict) and isinstance(r.get("ts"), (int, float)):
+            return max(0.0, now - r["ts"])
+    return 0.0
+
+
+def provider_spend_usd(records):
+    """{provider: usd} summed from REAL costs.py micro-USD (R2: real spend, not
+    estimates or char counts). Records without a provider/cost are ignored —
+    KNOWN GAP: costs.py never guesses a price, so an unpriced (uncatalogued)
+    model's turns are invisible to the spend cap entirely; the turns/wall_clock
+    caps are the only backstop for such a provider."""
+    micro = {}
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        p, c = r.get("provider"), r.get("cost_micro_usd")
+        if isinstance(p, str) and p and isinstance(c, int) and not \
+                isinstance(c, bool):
+            micro[p] = micro.get(p, 0) + c
+    return {p: v / 1_000_000 for p, v in micro.items()}
+
+
+def provider_requests_today(records, today):
+    """{provider: count} of requests dated `today` ('YYYY-MM-DD' prefix of the
+    record ts) — the substrate the daily quota reads (one record == one
+    request; e.g. Gemini free tier ~20/day)."""
+    out = {}
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        p, ts = r.get("provider"), r.get("ts")
+        if isinstance(p, str) and p and isinstance(ts, str) and \
+                ts[:10] == today:
+            out[p] = out.get(p, 0) + 1
+    return out
+
+
+def _pos_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+
+
+def budget_check(budgets, ledger, records, now, today):
+    """Evaluate HARD caps (turns, wall_clock_s, per-provider spend USD) plus the
+    soft per-provider daily request quota. A hard cap hit -> {exhausted: True}
+    (the conductor halts ALL routing). Providers at/over their daily quota ->
+    over_quota set (routes to them DEFER, not halt). Deny-safe: a missing or
+    ill-typed cap is simply not enforced — never a fabricated limit."""
+    result = {"exhausted": False, "reason": None, "evidence": {},
+              "over_quota": set()}
+    if not isinstance(budgets, dict):
+        return result
+    ev = result["evidence"]
+    tcap = budgets.get("turns")
+    if _pos_num(tcap) and isinstance(tcap, int):
+        used = count_turns(ledger)
+        ev["turns"] = {"used": used, "cap": tcap}
+        if used >= tcap:
+            return {**result, "exhausted": True, "reason": "turns_exhausted"}
+    wcap = budgets.get("wall_clock_s")
+    if _pos_num(wcap):
+        used = wall_clock_elapsed(ledger, now)
+        ev["wall_clock_s"] = {"used": round(used, 1), "cap": wcap}
+        if used >= wcap:
+            return {**result, "exhausted": True,
+                    "reason": "wall_clock_exhausted"}
+    per = budgets.get("per_provider")
+    if isinstance(per, dict):
+        spend = provider_spend_usd(records)
+        reqs = provider_requests_today(records, today)
+        over = set()
+        for prov, caps in per.items():
+            if not isinstance(caps, dict):
+                continue
+            scap = caps.get("spend")
+            if _pos_num(scap):
+                used = spend.get(prov, 0.0)
+                ev.setdefault("spend_usd", {})[prov] = {
+                    "used": round(used, 6), "cap": scap}
+                if used >= scap:
+                    return {**result, "exhausted": True,
+                            "reason": "spend_exhausted", "provider": prov}
+            qcap = caps.get("requests_per_day")
+            if _pos_num(qcap) and isinstance(qcap, int) \
+                    and reqs.get(prov, 0) >= qcap:
+                over.add(prov)
+        if over:
+            ev["over_quota"] = sorted(over)
+        result["over_quota"] = over
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Stall (7.5b) — vote_undecided x2 or supersedes oscillation -> escalate
+# --------------------------------------------------------------------------- #
+def stall_check(app_dir, sstate, stall_cfg, on_warn=None):
+    """A session is stalled when it closed >= limit phases as 'vote_undecided'
+    (a forced vote that never decided — orchestrator records it in
+    agent_state.phase_resolutions) OR its artifact lineage is oscillating
+    (has_oscillation). A stalled session escalates to a human: routing into it
+    stops; other sessions keep going. Default vote limit is 2.
+
+    KNOWN LIMIT: phase_resolutions is keyed by phase name, so a phase key
+    force-voted undecided more than once (e.g. re-executed on retry) still
+    counts once, not per-occurrence — a session oscillating within one
+    repeatedly-retried phase relies on quiescence (if configured) rather than
+    this vote path to eventually stall out."""
+    limit = 2
+    if isinstance(stall_cfg, dict):
+        v = stall_cfg.get("vote_undecided_limit")
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            limit = v
+    pr = sstate.get("phase_resolutions") if isinstance(sstate, dict) else None
+    undecided = sum(1 for x in pr.values() if x == "vote_undecided") \
+        if isinstance(pr, dict) else 0
+    if undecided >= limit:
+        return {"stalled": True, "reason": "vote_undecided",
+                "evidence": {"undecided": undecided, "limit": limit},
+                "note": "escalated to human — routing into this session stops"}
+    if has_oscillation(app_dir, on_warn):
+        return {"stalled": True, "reason": "supersedes_oscillation",
+                "evidence": {"detail": "a lineage head re-derives an ancestor"},
+                "note": "escalated to human — routing into this session stops"}
+    return {"stalled": False, "reason": None, "evidence": {}}
 
 
 # --------------------------------------------------------------------------- #

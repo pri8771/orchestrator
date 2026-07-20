@@ -50,7 +50,7 @@ CONDUCTOR_DIRNAME = ".conductor"
 STAGES = ("idle", "scanning", "evaluating", "acting")
 # 7.5 terminal ledger decisions — replayed by reconcile_on_start to rebuild
 # state['terminated'] after a crash between the termination append and its save.
-_TERMINAL_DECISIONS = ("goal_met", "converged_open_items")
+_TERMINAL_DECISIONS = ("goal_met", "converged_open_items", "stalled")
 SCHEMA_VERSION = 1
 _MAX_LEDGER_LINE_BYTES = 3500   # same PIPE_BUF discipline as events.py
 
@@ -140,7 +140,10 @@ def default_state():
             "ledger_cursor": 0, "sessions": {}, "routed": {},
             # 7.5: terminal sessions (routing skips them) + per-session
             # quiescence idle-counter records. Defensive-loaded like the rest.
-            "terminated": {}, "quiescence": {}}
+            "terminated": {}, "quiescence": {},
+            # 7.5b: workspace budget halt (stops ALL routing when set) + the
+            # providers currently over their daily request quota (route defer).
+            "halted": None, "over_quota": []}
 
 
 def load_conductor_state(root):
@@ -159,6 +162,8 @@ def load_conductor_state(root):
     data.setdefault("routed", {})
     data.setdefault("terminated", {})   # 7.5: symmetry + defense-in-depth
     data.setdefault("quiescence", {})
+    data.setdefault("halted", None)     # 7.5b: symmetry + defense-in-depth
+    data.setdefault("over_quota", [])
     if not isinstance(data["sessions"], dict) \
             or not isinstance(data["routed"], dict) \
             or not isinstance(data["terminated"], dict) \
@@ -341,8 +346,17 @@ def reconcile_on_start(root, state, emit=print):
             detail = rec.get("detail") if isinstance(rec.get("detail"),
                                                      dict) else {}
             state.setdefault("terminated", {})[sid] = {
-                "reason": rec.get("decision"), "report": detail.get("report"),
-                "ts": rec.get("ts")}
+                "reason": (detail.get("reason") or rec.get("decision")),
+                "report": detail.get("report"), "ts": rec.get("ts")}
+            applied += 1
+        # 7.5b: a workspace budget halt in the tail also already happened —
+        # rebuild state['halted'] so routing stays stopped after a crash
+        # between the budget_exhausted append and its save.
+        if rec.get("decision") == "budget_exhausted" and not state.get("halted"):
+            detail = rec.get("detail") if isinstance(rec.get("detail"),
+                                                     dict) else {}
+            state["halted"] = {"reason": detail.get("reason"),
+                               "ts": rec.get("ts")}
             applied += 1
     state["ledger_cursor"] = length
     save_conductor_state(root, state)
@@ -375,19 +389,63 @@ def _record_termination(root, state, sid, reason, evidence, emit=print):
     emit("conductor: session %s terminated (%s) -> %s" % (sid, reason, report))
 
 
+def _recent_section_providers(root, sessions):
+    """{section_shortname: provider} — the provider each section has MOST
+    recently been running on, from its sessions' costs.jsonl. The honest basis
+    for 'this route would run on provider X' without coupling to model-routing:
+    a section with no cost history is simply absent (we never defer a route we
+    cannot attribute to an over-quota provider). ts is 'YYYY-MM-DD HH:MM:SS' so
+    string comparison orders it."""
+    import costs as costslib
+    latest = {}   # section -> (ts, provider)
+    for sid in sessions:
+        parts = sid.split("/")
+        if len(parts) < 2:
+            continue
+        section = parts[1]
+        for rec in costslib.read_records(os.path.join(root, sid)):
+            p, ts = rec.get("provider"), rec.get("ts")
+            if isinstance(p, str) and p and isinstance(ts, str) \
+                    and ts > latest.get(section, ("", ""))[0]:
+                latest[section] = (ts, p)
+    return {s: v[1] for s, v in latest.items()}
+
+
+def _record_workspace_termination(root, state, reason, evidence, emit=print):
+    """A WORKSPACE-level halt (7.5b budget exhaustion): one report + one ledger
+    line, and state['halted'] so route_engine stops ALL routing this and every
+    later poll. Not per-session — the whole autonomous run is capped."""
+    report = ctlib.write_report(root, "__workspace__", reason, evidence)
+    rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+           "decision": "budget_exhausted", "session": None,
+           "detail": {"reason": reason, "report": report, "evidence": evidence}}
+    new_len = ledger_append(root, rec)
+    state["halted"] = {"reason": reason, "report": report, "ts": rec["ts"]}
+    state["ledger_cursor"] = new_len
+    save_conductor_state(root, state)
+    emit("conductor: WORKSPACE HALTED — %s (%s)" % (reason, report))
+
+
 def evaluate_terminations(root, state, sessions, manifest, emit=print):
-    """7.5(a): decide per session whether the goal is met (done) or the
-    session has gone quiescent (converged with open items). Order goal ->
-    quiescence (7.5b inserts stall + budget between). A goal that is met wins
-    outright; otherwise the same goal verdict feeds the quiescence report so
-    'converged-with-open-items' can honestly enumerate the unmet checks.
-    Idempotent: an already-terminated session is never re-reported. A session
-    with no agent_state.json has not started — it is neither goal-eval'd nor
-    counted as quiescent (a freshly-minted, un-run session must never
-    terminate)."""
+    """The four-layer termination stack, evaluated in the card's specified
+    order goal -> stall -> budget -> quiescence. Goal/stall run PER SESSION
+    first (so a session that finishes or stalls this poll always gets its
+    record, even in the same poll a global budget also exhausts — a global
+    halt must never swallow an already-earned goal_met/stalled outcome). THEN
+    the global budget gate: a hard cap (turns / wall-clock / per-provider
+    spend) halts ALL routing for every later poll; providers over their daily
+    request quota are stashed for route deferral (soft, not a halt). Finally
+    quiescence runs for whatever sessions are still open — moot once halted,
+    since nothing will progress anyway, so it's skipped in that case.
+    Idempotent (an already-terminated session is skipped); a session with no
+    agent_state.json has not started and never terminates."""
+    import costs as costslib
     terminated = state.setdefault("terminated", {})
     quiescence = state.setdefault("quiescence", {})
-    limit = manifest.get("quiescence_cycles")
+    stall_cfg = manifest.get("stall")
+
+    # --- per-session: goal -> stall (runs BEFORE the global budget gate) --- #
+    verdicts = {}
     for sid in sessions:
         if sid in terminated:
             continue
@@ -399,17 +457,43 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
         if verdict["met"]:
             _record_termination(root, state, sid, "goal_met", verdict, emit)
             continue
-        if limit is None:
-            continue
-        record, converged = ctlib.quiescence_step(
-            quiescence.get(sid), app_dir, limit,
-            ctlib.progress_digest(sstate), on_warn=emit)
-        quiescence[sid] = record
-        if converged:
-            report = ctlib.converged_report(app_dir, verdict, record,
-                                            on_warn=emit)
-            _record_termination(root, state, sid, "converged_open_items",
-                                report, emit)
+        verdicts[sid] = (verdict, sstate)
+        if stall_cfg is not None:
+            st = ctlib.stall_check(app_dir, sstate, stall_cfg, on_warn=emit)
+            if st["stalled"]:
+                _record_termination(root, state, sid, "stalled", st, emit)
+                del verdicts[sid]
+
+    # --- global budgets (7.5b) --------------------------------------------- #
+    budgets = manifest.get("budgets")
+    if budgets:
+        records = []
+        for sid in sessions:
+            records.extend(costslib.read_records(os.path.join(root, sid)))
+        bc = ctlib.budget_check(budgets, read_ledger(root), records,
+                                time.time(), time.strftime("%Y-%m-%d"))
+        state["over_quota"] = sorted(bc.get("over_quota") or [])
+        if bc["exhausted"] and not state.get("halted"):
+            _record_workspace_termination(root, state, bc["reason"],
+                                          bc["evidence"], emit)
+    if state.get("halted"):
+        save_conductor_state(root, state)
+        return state   # capped: no routing, quiescence is moot
+
+    # --- quiescence, for sessions still open after goal/stall -------------- #
+    limit = manifest.get("quiescence_cycles")
+    if limit is not None:
+        for sid, (verdict, sstate) in verdicts.items():
+            app_dir = os.path.join(root, sid)
+            record, converged = ctlib.quiescence_step(
+                quiescence.get(sid), app_dir, limit,
+                ctlib.progress_digest(sstate), on_warn=emit)
+            quiescence[sid] = record
+            if converged:
+                report = ctlib.converged_report(app_dir, verdict, record,
+                                                on_warn=emit)
+                _record_termination(root, state, sid, "converged_open_items",
+                                    report, emit)
     save_conductor_state(root, state)
     return state
 
@@ -451,8 +535,20 @@ def full_poll(root, state, emit=print, route_engine=None):
     # budget). Runs inside the evaluating stage, BEFORE acting, so a session
     # that terminated this poll is not routed into. Zero cost + zero ledger
     # noise when no manifest enables any layer.
-    manifest = ctlib.load_goal_manifest(root, on_warn=emit)
-    if manifest.get("goal") or manifest.get("quiescence_cycles"):
+    manifest, mstatus = ctlib.load_goal_manifest_ex(root, on_warn=emit)
+    if mstatus == "ok" and isinstance(manifest.get("budgets"), dict):
+        state["_last_good_budgets"] = manifest["budgets"]
+    elif mstatus == "corrupt" and state.get("_last_good_budgets"):
+        # A torn/corrupt write must not silently drop budgets that were
+        # active a moment ago (deny-safe: never WIDEN by losing a cap).
+        # goal/quiescence/stall stay disabled — that's the conservative
+        # direction (never a false termination), only budgets need the
+        # fallback (an uncapped run is the unsafe direction for THIS layer).
+        manifest = dict(manifest, budgets=state["_last_good_budgets"])
+        emit("conductor: falling back to last-known budgets while "
+             "goal_manifest.json is corrupt")
+    if (manifest.get("goal") or manifest.get("quiescence_cycles")
+            or manifest.get("budgets") or manifest.get("stall")):
         state = evaluate_terminations(root, state, sessions, manifest, emit)
     # V3 7.2: act on this poll's admissible newly-final artifacts. Routing
     # is off unless a .conductor/routing enable + rules exist; the acting
@@ -560,6 +656,19 @@ def route_engine(root, state, sessions, emit=print):
     import artifacts as artlib
     import sessions as seslib_local
 
+    # 7.5b: a workspace budget halt stops ALL routing — the acting stage is a
+    # no-op until the cap is lifted (a new manifest / a new day for wall-clock).
+    if state.get("halted"):
+        return state
+
+    # 7.5b: providers over their daily request quota -> routes whose target
+    # section has been running on that provider DEFER (retry next cycle). The
+    # section->provider map is derived from real costs.jsonl activity and built
+    # once per poll, and only when some provider is actually over quota.
+    over_quota = set(state.get("over_quota") or [])
+    section_providers = _recent_section_providers(root, sessions) \
+        if over_quota else {}
+
     sections_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "sections")
     classify = _build_classifier(root)
@@ -610,6 +719,17 @@ def route_engine(root, state, sessions, emit=print):
                     "detail": {"target": action["target"], **action["payload"]}}
             if decision == "rejected":
                 _ledger_route(root, {**base, "decision": "route_denied"})
+            elif over_quota and section_providers.get(target) in over_quota:
+                # 7.5b: an approval must not bypass the quota-defer a fresh
+                # route would get — an approved-but-not-yet-executed action
+                # stays pending and is retried once the provider's daily
+                # quota resets (never removed, never marked routed).
+                _ledger_route(root, {
+                    **base, "decision": "route_deferred",
+                    "detail": {**base["detail"],
+                               "provider": section_providers.get(target),
+                               "reason": "provider over daily request quota"}})
+                continue
             else:  # approved -> execute the gated effect now
                 sdir = seslib_local.mint_delegation_session(
                     root, action["requested_by"].split("/")[0],
@@ -698,6 +818,17 @@ def route_engine(root, state, sessions, emit=print):
             # through to execute_intents' own terminal ledger lines.
             allowed_now, gated = [], []
             for i in fresh:
+                if over_quota and section_providers.get(i.target) in over_quota:
+                    # DEFER (not drop, not execute over-quota): don't mint and
+                    # don't mark routed, so the still-admissible source re-plans
+                    # next cycle once the provider's daily quota resets.
+                    _ledger_route(root, {
+                        "session": sid, "route_id": i.route_id,
+                        "route_key": i.route_key, "decision": "route_deferred",
+                        "detail": {"target": i.target,
+                                   "provider": section_providers.get(i.target),
+                                   "reason": "provider over daily request quota"}})
+                    continue
                 if cplib.is_pending(root, i.route_id):
                     # CRITICAL: once a route is queued for approval, its
                     # disposition belongs to _drain_pending alone. A fresh

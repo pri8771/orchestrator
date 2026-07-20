@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -407,6 +408,344 @@ class TestReconcileRebuildsTerminated(_Base):
         self.assertIn("p/documentation/c1", state["terminated"])
         self.assertEqual(state["terminated"]["p/documentation/c1"]["reason"],
                          "goal_met")
+
+
+# --------------------------------------------------------------------------- #
+# 7.5b: budgets (pure)
+# --------------------------------------------------------------------------- #
+class TestBudgets(_Base):
+    def _led(self, *decisions, ts0=100.0):
+        return [{"decision": d, "ts": ts0 + i}
+                for i, d in enumerate(decisions)]
+
+    def _rec(self, provider, cost_micro, ts):
+        return {"provider": provider, "cost_micro_usd": cost_micro, "ts": ts}
+
+    def test_count_turns_counts_only_mints(self):
+        led = self._led("observed", "route_approved", "route_denied",
+                        "route_approved")
+        self.assertEqual(ct.count_turns(led), 2)
+
+    def test_count_turns_includes_restart_recovered_mints(self):
+        # a route_recovered line means a mint ALREADY happened before a crash
+        # (7.3 restart recovery) — it must count as a real turn, or a host
+        # that crashes right after each mint could take unbounded turns while
+        # the cap reports 0 used.
+        led = self._led("route_approved", "route_recovered", "route_recovered")
+        self.assertEqual(ct.count_turns(led), 3)
+
+    def test_wall_clock_from_first_entry(self):
+        led = [{"decision": "observed", "ts": 100.0},
+               {"decision": "observed", "ts": 150.0}]
+        self.assertEqual(ct.wall_clock_elapsed(led, 250.0), 150.0)
+        self.assertEqual(ct.wall_clock_elapsed([], 250.0), 0.0)
+
+    def test_provider_spend_usd(self):
+        recs = [self._rec("google", 500_000, "t"),
+                self._rec("google", 500_000, "t"),
+                self._rec("anthropic", 2_000_000, "t")]
+        spend = ct.provider_spend_usd(recs)
+        self.assertEqual(spend["google"], 1.0)
+        self.assertEqual(spend["anthropic"], 2.0)
+
+    def test_provider_requests_today_filters_by_date(self):
+        recs = [self._rec("google", 0, "2026-07-20 09:00:00"),
+                self._rec("google", 0, "2026-07-20 10:00:00"),
+                self._rec("google", 0, "2026-07-19 23:59:00")]
+        self.assertEqual(
+            ct.provider_requests_today(recs, "2026-07-20")["google"], 2)
+
+    def test_turns_cap_exhausts(self):
+        bc = ct.budget_check({"turns": 2},
+                             self._led("route_approved", "route_approved"),
+                             [], 200.0, "2026-07-20")
+        self.assertTrue(bc["exhausted"])
+        self.assertEqual(bc["reason"], "turns_exhausted")
+
+    def test_wall_clock_cap_exhausts(self):
+        led = [{"decision": "observed", "ts": 100.0}]
+        bc = ct.budget_check({"wall_clock_s": 50}, led, [], 200.0, "2026-07-20")
+        self.assertTrue(bc["exhausted"])
+        self.assertEqual(bc["reason"], "wall_clock_exhausted")
+
+    def test_spend_cap_exhausts(self):
+        recs = [self._rec("google", 1_500_000, "t")]
+        bc = ct.budget_check({"per_provider": {"google": {"spend": 1.0}}},
+                             [], recs, 0.0, "2026-07-20")
+        self.assertTrue(bc["exhausted"])
+        self.assertEqual((bc["reason"], bc["provider"]),
+                         ("spend_exhausted", "google"))
+
+    def test_daily_quota_is_soft_over_quota_not_exhausted(self):
+        recs = [self._rec("google", 0, "2026-07-20 09:00:00"),
+                self._rec("google", 0, "2026-07-20 10:00:00")]
+        bc = ct.budget_check(
+            {"per_provider": {"google": {"requests_per_day": 2}}},
+            [], recs, 0.0, "2026-07-20")
+        self.assertFalse(bc["exhausted"])
+        self.assertIn("google", bc["over_quota"])
+
+    def test_missing_caps_not_enforced(self):
+        bc = ct.budget_check({"turns": None, "per_provider": "nope"},
+                             self._led("route_approved"), [], 0.0, "2026-07-20")
+        self.assertFalse(bc["exhausted"])
+        self.assertEqual(bc["over_quota"], set())
+
+
+# --------------------------------------------------------------------------- #
+# 7.5b: stall (real store for oscillation)
+# --------------------------------------------------------------------------- #
+class TestStall(_Base):
+    def test_vote_undecided_twice_stalls(self):
+        s = ct.stall_check(self._app(),
+                           {"phase_resolutions": {"p1": "vote_undecided",
+                                                  "p2": "vote_undecided",
+                                                  "p3": "idle_timeout"}},
+                           {"vote_undecided_limit": 2})
+        self.assertTrue(s["stalled"])
+        self.assertEqual(s["reason"], "vote_undecided")
+
+    def test_vote_undecided_once_not_stalled(self):
+        s = ct.stall_check(self._app(),
+                           {"phase_resolutions": {"p1": "vote_undecided"}}, {})
+        self.assertFalse(s["stalled"])
+
+    def test_default_limit_is_two(self):
+        s = ct.stall_check(self._app(),
+                           {"phase_resolutions": {"a": "vote_undecided",
+                                                  "b": "vote_undecided"}}, None)
+        self.assertTrue(s["stalled"])   # cfg None -> default limit 2
+
+    def test_oscillation_stalls(self):
+        app = self._app()
+        st = _Store(app)
+        a = st.idea("A", "one\n")
+        b = st.idea("A", "two\n", supersedes=a)
+        st.idea("A", "one\n", supersedes=b)   # re-derives ancestor A's content
+        s = ct.stall_check(app, {"phase_resolutions": {}}, {})
+        self.assertTrue(s["stalled"])
+        self.assertEqual(s["reason"], "supersedes_oscillation")
+
+
+# --------------------------------------------------------------------------- #
+# 7.5b: budget + stall wiring through full_poll / route_engine
+# --------------------------------------------------------------------------- #
+class TestBudgetStallWiring(_Base):
+    def _session(self, sid, sstate):
+        app_dir = self._app(sid)
+        project = sid.split("/")[0]
+        open(os.path.join(self.root, project, ".orch-sections"), "w").close()
+        os.makedirs(os.path.join(app_dir, "initial_prompt"), exist_ok=True)
+        with open(os.path.join(app_dir, "initial_prompt",
+                               "initial_prompt.md"), "w") as fh:
+            fh.write("x")
+        with open(os.path.join(app_dir, "agent_state.json"), "w") as fh:
+            json.dump(sstate, fh)
+        return app_dir
+
+    def test_turns_budget_halts_workspace(self):
+        self._session("p/documentation/c1", {"current_phase": "x"})
+        cond.ledger_append(self.root, {"decision": "route_approved", "ts": 1.0})
+        cond.ledger_append(self.root, {"decision": "route_approved", "ts": 2.0})
+        self._manifest({"budgets": {"turns": 2}})
+        st = cond.full_poll(self.root, cond.default_state(), emit=_quiet)
+        self.assertIsNotNone(st["halted"])
+        self.assertEqual(st["halted"]["reason"], "turns_exhausted")
+        led = cond.read_ledger(self.root)
+        self.assertTrue(any(r.get("decision") == "budget_exhausted"
+                            for r in led))
+
+    def test_halted_state_stops_routing(self):
+        # a genuinely routable scenario: without the halt this WOULD mint.
+        import conductor_routing as crlib
+        import artifacts as artlib
+        os.makedirs(os.path.join(self.root, "proj/ideas/chat-1"), exist_ok=True)
+        state = cond.default_state()
+        state["halted"] = {"reason": "turns_exhausted"}
+        meta = {"id": "a1", "artifact_type": "idea", "content_hash": "h1",
+                "lineage": [], "hop_count": 0, "status": "final"}
+        minted = []
+        with unittest.mock.patch.object(
+                crlib, "load_route_config",
+                lambda *a, **k: crlib.RouteConfig(routes={"idea": "research"})), \
+                unittest.mock.patch.object(artlib, "list_artifacts",
+                                           lambda *a, **k: [meta]), \
+                unittest.mock.patch.object(artlib, "is_admissible",
+                                           lambda *a, **k: True), \
+                unittest.mock.patch.object(artlib, "lineage_index",
+                                           lambda *a, **k: {}), \
+                unittest.mock.patch("sessions.mint_delegation_session",
+                                    lambda *a, **k: minted.append(a) or "x"):
+            cond.route_engine(self.root, state, ["proj/ideas/chat-1"],
+                              emit=_quiet)
+        self.assertEqual(minted, [])                 # halt short-circuits routing
+        self.assertEqual(cond.read_ledger(self.root), [])   # nothing even planned
+
+    def test_stall_terminates_session(self):
+        self._session("p/documentation/c1",
+                      {"current_phase": "x",
+                       "phase_resolutions": {"a": "vote_undecided",
+                                             "b": "vote_undecided"}})
+        self._manifest({"stall": {"vote_undecided_limit": 2}})
+        st = cond.full_poll(self.root, cond.default_state(), emit=_quiet)
+        self.assertEqual(st["terminated"]["p/documentation/c1"]["reason"],
+                         "stalled")
+
+    def test_over_quota_route_is_deferred_not_minted(self):
+        import conductor_routing as crlib
+        import artifacts as artlib
+        # target section "research" has been running on google (over quota)
+        research = self._app("proj/research/chat-1")
+        with open(os.path.join(research, "costs.jsonl"), "w") as fh:
+            fh.write(json.dumps({"provider": "google",
+                                 "ts": "2026-07-20 09:00:00"}) + "\n")
+        sid = "proj/ideas/chat-1"
+        os.makedirs(os.path.join(self.root, sid), exist_ok=True)
+        state = cond.default_state()
+        state["over_quota"] = ["google"]
+        meta = {"id": "a1", "artifact_type": "idea", "content_hash": "h1",
+                "lineage": [], "hop_count": 0, "status": "final"}
+        minted = []
+
+        def cfg_for(_sd, section, *_a, **_k):
+            return crlib.RouteConfig(routes={"idea": "research"}) \
+                if section == "ideas" else crlib.RouteConfig()
+
+        def arts(app_dir, *a, **k):
+            return [meta] if app_dir.endswith("ideas/chat-1") else []
+
+        with unittest.mock.patch.object(crlib, "load_route_config", cfg_for), \
+                unittest.mock.patch.object(artlib, "list_artifacts", arts), \
+                unittest.mock.patch.object(artlib, "is_admissible",
+                                           lambda *a, **k: True), \
+                unittest.mock.patch.object(artlib, "lineage_index",
+                                           lambda *a, **k: {}), \
+                unittest.mock.patch("sessions.mint_delegation_session",
+                                    lambda *a, **k: minted.append(a) or "x"):
+            cond.route_engine(self.root, state,
+                              ["proj/ideas/chat-1", "proj/research/chat-1"],
+                              emit=_quiet)
+        self.assertEqual(minted, [])   # deferred, never minted
+        led = cond.read_ledger(self.root)
+        deferred = [r for r in led if r and r.get("decision") == "route_deferred"]
+        self.assertTrue(deferred)
+        self.assertEqual(deferred[0]["detail"]["provider"], "google")
+
+    def test_goal_met_not_swallowed_by_same_poll_halt(self):
+        # order is goal -> stall -> budget -> quiescence: a session that
+        # genuinely finished its goal THIS poll must get its goal_met record
+        # even though the same poll's global budget also exhausts.
+        app = self._session("p/documentation/c1",
+                            {"current_phase": "done", "done": True})
+        self._gap_report(app)
+        _Store(app)
+        self._adherence(app, "PASS")
+        self._patch_eval(compile_ran=True, done=True, composite=90)
+        cond.ledger_append(self.root, {"decision": "route_approved", "ts": 1.0})
+        cond.ledger_append(self.root, {"decision": "route_approved", "ts": 2.0})
+        self._manifest({"goal": {"doc_gap_empty": True, "dod_tier": "v1",
+                                 "eval_threshold": 0},
+                        "budgets": {"turns": 2}})
+        st = cond.full_poll(self.root, cond.default_state(), emit=_quiet)
+        self.assertEqual(st["terminated"]["p/documentation/c1"]["reason"],
+                         "goal_met")
+        self.assertIsNotNone(st["halted"])   # both happened, neither swallowed
+
+    def test_corrupt_manifest_keeps_last_known_budget_enforced(self):
+        # a manifest that WAS valid (budgets active) and becomes corrupt on a
+        # later poll (a torn write) must not silently go uncapped.
+        self._session("p/documentation/c1", {"current_phase": "x"})
+        self._manifest({"budgets": {"turns": 2}})
+        state = cond.full_poll(self.root, cond.default_state(), emit=_quiet)
+        self.assertIsNone(state["halted"])   # not exhausted yet
+        with open(os.path.join(self.root, "goal_manifest.json"), "w") as fh:
+            fh.write("{broken")
+        cond.ledger_append(self.root, {"decision": "route_approved", "ts": 1.0})
+        cond.ledger_append(self.root, {"decision": "route_approved", "ts": 2.0})
+        state = cond.full_poll(self.root, state, emit=_quiet)
+        self.assertIsNotNone(state["halted"])   # still enforced, not dropped
+        self.assertEqual(state["halted"]["reason"], "turns_exhausted")
+
+    def test_quota_deferral_retries_after_quota_resets(self):
+        import conductor_routing as crlib
+        import artifacts as artlib
+        research = self._app("proj/research/chat-1")
+        with open(os.path.join(research, "costs.jsonl"), "w") as fh:
+            fh.write(json.dumps({"provider": "google",
+                                 "ts": "2026-07-20 09:00:00"}) + "\n")
+        os.makedirs(os.path.join(self.root, "proj/ideas/chat-1"), exist_ok=True)
+        meta = {"id": "a1", "artifact_type": "idea", "content_hash": "h1",
+               "lineage": [], "hop_count": 0, "status": "final"}
+        minted = []
+
+        def cfg_for(_sd, section, *_a, **_k):
+            return crlib.RouteConfig(routes={"idea": "research"}) \
+                if section == "ideas" else crlib.RouteConfig()
+
+        def arts(app_dir, *a, **k):
+            return [meta] if app_dir.endswith("ideas/chat-1") else []
+
+        state = cond.default_state()   # ONE state, carried across both polls —
+        # a deferred route must not be marked routed, or it would never retry.
+
+        def run(over_quota):
+            state["over_quota"] = over_quota
+            with unittest.mock.patch.object(crlib, "load_route_config",
+                                            cfg_for), \
+                    unittest.mock.patch.object(artlib, "list_artifacts", arts), \
+                    unittest.mock.patch.object(artlib, "is_admissible",
+                                               lambda *a, **k: True), \
+                    unittest.mock.patch.object(artlib, "lineage_index",
+                                               lambda *a, **k: {}), \
+                    unittest.mock.patch("sessions.mint_delegation_session",
+                                        lambda *a, **k: minted.append(a) or "x"):
+                return cond.route_engine(
+                    self.root, state,
+                    ["proj/ideas/chat-1", "proj/research/chat-1"],
+                    emit=_quiet)
+
+        run(["google"])
+        self.assertEqual(minted, [])   # deferred: quota still over
+        run([])                        # quota reset (a new day / freed budget)
+        self.assertEqual(len(minted), 1)   # the SAME route now fires
+
+    def test_drain_pending_defers_approved_route_over_quota(self):
+        import conductor_permissions as cplib
+        research = self._app("proj/research/chat-1")
+        with open(os.path.join(research, "costs.jsonl"), "w") as fh:
+            fh.write(json.dumps({"provider": "google",
+                                 "ts": "2026-07-20 09:00:00"}) + "\n")
+        action = {"action_id": "r1", "target": "research",
+                 "payload": {"artifact_id": "a1", "content_hash": "h1",
+                            "source_section": "ideas", "rule_id": "route:idea"},
+                 "requested_by": "proj/ideas/chat-1"}
+        cplib.enqueue_pending(self.root, action)
+        adir = cplib.approvals_dir(self.root)
+        os.makedirs(adir, exist_ok=True)
+        open(os.path.join(adir, "r1.ok"), "w").close()
+        state = cond.default_state()
+        state["over_quota"] = ["google"]
+        minted = []
+        import sessions as seslib_local
+        orig = seslib_local.mint_delegation_session
+        seslib_local.mint_delegation_session = \
+            lambda *a, **k: minted.append(a) or "x"
+        try:
+            cond.route_engine(self.root, state, ["proj/research/chat-1"],
+                              emit=_quiet)
+        finally:
+            seslib_local.mint_delegation_session = orig
+        self.assertEqual(minted, [])           # deferred, not executed
+        self.assertTrue(cplib.is_pending(self.root, "r1"))  # still queued
+
+    def test_budget_halt_survives_restart_via_reconcile(self):
+        cond.ledger_append(self.root, {
+            "decision": "budget_exhausted", "session": None, "ts": 5.0,
+            "detail": {"reason": "spend_exhausted", "report": "/tmp/r.json"}})
+        state = cond.reconcile_on_start(self.root, cond.default_state(),
+                                        emit=_quiet)
+        self.assertIsNotNone(state["halted"])
+        self.assertEqual(state["halted"]["reason"], "spend_exhausted")
 
 
 if __name__ == "__main__":
