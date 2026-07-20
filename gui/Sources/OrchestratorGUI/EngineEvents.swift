@@ -421,3 +421,101 @@ enum EventsScanner {
         return s
     }
 }
+
+// MARK: - Costs (V3 6.4 — <project>/costs.jsonl written by costs.py)
+
+// Aggregated spend for one scope (an agent, or a whole project). Honesty
+// invariants mirror costs.py's rollup: metered/unmetered/unpriced are kept
+// distinct so a mixed scope can never render as a bare dollar total, and
+// unmetered is NEVER shown as $0.00 (the engine has no numbers for it).
+struct CostTotals: Equatable {
+    var meteredTurns = 0
+    var unmeteredTurns = 0
+    var unpricedTurns = 0     // metered tokens, but no verified price
+    var costMicroUSD = 0
+
+    var isEmpty: Bool { meteredTurns == 0 && unmeteredTurns == 0 }
+
+    // The three honest states: "$X.XX" (fully metered+priced),
+    // "≥ $X.XX · N unmetered" (mixed — the true total is at least this),
+    // "unmetered" (no real numbers at all). Rounding happens ONLY here.
+    var display: String? {
+        if isEmpty { return nil }
+        let dollars = String(format: "$%.2f", Double(costMicroUSD) / 1_000_000)
+        let unknown = unmeteredTurns + unpricedTurns
+        if meteredTurns > unpricedTurns && unknown == 0 { return dollars }
+        if meteredTurns > unpricedTurns { return "≥ \(dollars) · \(unknown) unmetered" }
+        return "unmetered"
+    }
+
+    mutating func fold(metered: Bool, cost: Int?) {
+        if metered {
+            meteredTurns += 1
+            if let cost { costMicroUSD += cost } else { unpricedTurns += 1 }
+        } else {
+            unmeteredTurns += 1
+        }
+    }
+}
+
+struct ProjectCosts: Equatable {
+    var total = CostTotals()
+    var byAgent: [String: CostTotals] = [:]
+}
+
+// Background scanner over each project's costs.jsonl — same shape as
+// EventsScanner: static mtime/size cache behind an NSLock, called from the
+// store's scan tick, never the main thread. Reads the WHOLE file (records
+// are ~150 bytes each; rollups need every line, unlike the events tail) with
+// a sanity cap so a pathological file can't stall the tick.
+enum CostsScanner {
+    static let maxBytes = 4 * 1_048_576
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache:
+        [String: (mtime: Date, size: Int, costs: ProjectCosts)] = [:]
+
+    static func scan(rootURL: URL, names: [String]) -> [String: ProjectCosts] {
+        let fm = FileManager.default
+        var out: [String: ProjectCosts] = [:]
+        lock.lock()
+        defer { lock.unlock() }
+        for name in names {
+            let url = rootURL.appendingPathComponent(name)
+                .appendingPathComponent("costs.jsonl")
+            guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+                  let mtime = attrs[.modificationDate] as? Date,
+                  let size = attrs[.size] as? Int else { continue }
+            if let hit = cache[name], hit.mtime == mtime, hit.size == size {
+                out[name] = hit.costs
+                continue
+            }
+            if size > maxBytes {
+                // Append-only file over the cap: it will never shrink, so a
+                // hard skip would vanish the meter permanently on exactly the
+                // heaviest-spend projects. Serve the last parsed totals
+                // (stale floor — still honest: real spend is >= shown) and
+                // never re-read; cold starts with no cache show nothing.
+                if let hit = cache[name] { out[name] = hit.costs }
+                continue
+            }
+            guard let data = try? Data(contentsOf: url),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            var costs = ProjectCosts()
+            for line in text.split(separator: "\n") {
+                // Malformed/alien lines are skipped, mirroring costs.py's
+                // read_records: a corrupt record must not hide the rest.
+                guard let obj = (try? JSONSerialization.jsonObject(
+                        with: Data(line.utf8))) as? [String: Any] else { continue }
+                let metered = (obj["metered"] as? Bool) ?? false
+                let cost = obj["cost_micro_usd"] as? Int
+                let agent = (obj["agent"] as? String) ?? "?"
+                costs.total.fold(metered: metered, cost: cost)
+                costs.byAgent[agent, default: CostTotals()]
+                    .fold(metered: metered, cost: cost)
+            }
+            cache[name] = (mtime, size, costs)
+            out[name] = costs
+        }
+        return out
+    }
+}

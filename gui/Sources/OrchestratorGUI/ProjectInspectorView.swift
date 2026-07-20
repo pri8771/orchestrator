@@ -266,6 +266,14 @@ private struct PlanSummaryTab: View {
                 if id.supportsEffort, let level = cell.effort {
                     EffortGauge(level: level, tint: id.tint)
                 }
+                // V3 6.4: real recorded spend for this agent in this project.
+                // Absent records render nothing; unmetered renders the word.
+                if let meter = store.projectCosts[project.name]?
+                    .byAgent[agent]?.display {
+                    Text(meter)
+                        .font(DS.font.caption).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
     }

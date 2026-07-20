@@ -50,6 +50,7 @@ import gate as gatelib
 import sessions as seslib
 import memory as memlib
 import backfill as backfilllib
+import costs as costslib
 import events as evlib
 import localmodels as lmlib
 import modelrouting as mrlib
@@ -2312,6 +2313,14 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             # never vanish from the accounting record.
             if _tokens is None:
                 _tokens = traceslib.pop_last_usage()
+            if costslib.parse_usage(_tokens) is not None:
+                # V3 6.4: the provider billed this even though the turn
+                # failed — spend must reach the accounting record. Gate on
+                # PARSEABLE counts, not dict truthiness: a stash of all-None
+                # counts (Ollama omits eval counts on degenerate output) is
+                # an UNBILLED failure and must record nothing.
+                costslib.record_turn(_ev_dir, costslib.turn_record(
+                    agent, _tokens, now_str()))
             evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                              round=rnd, agent=str(agent), ok=False,
                              model_requested=_model_req, reason="agent_error",
@@ -2333,6 +2342,9 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             emit("%s produced NO stdout (exit=%s). stderr: %s"
                  % (DISPLAY[agent], code, (err or "").strip()[:400]))
             reslib.record_failure(health, reslib.classify_failure(code, err), time.time(), err)
+            if costslib.parse_usage(_tokens) is not None:
+                costslib.record_turn(_ev_dir, costslib.turn_record(
+                    agent, _tokens, now_str()))   # billed despite empty output
             evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                              round=rnd, agent=str(agent), ok=False, exit=code,
                              model_requested=_model_req, reason="empty_output",
@@ -2348,6 +2360,9 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
             emit("%s returned a provider limit/auth banner, not content (%r) — "
                  "treating the turn as failed." % (DISPLAY[agent], text[:160]))
             reslib.record_failure(health, "usage_limit", time.time(), text[:200])
+            if costslib.parse_usage(_tokens) is not None:
+                costslib.record_turn(_ev_dir, costslib.turn_record(
+                    agent, _tokens, now_str()))   # billed despite the banner
             evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                              round=rnd, agent=str(agent), ok=False, exit=code,
                              model_requested=_model_req, reason="provider_banner",
@@ -2361,11 +2376,21 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
         dur = time.time() - t0
         traceslib.finalize(_trace, response=out, stderr=err, exit=code,
                            tokens=_tokens, duration_s=dur, status="ok")
+        # V3 6.4: one costs record per completed turn — metered when the
+        # runner reported real usage, UNMETERED (tokens null) otherwise, so
+        # the meter's denominator equals total turns and coverage is never
+        # overstated. Event fields ride along; emit_event drops the Nones,
+        # so CLI turns carry no token fields at all (never a fake $0).
+        _cost_rec = costslib.turn_record(agent, _tokens, now_str())
+        costslib.record_turn(_ev_dir, _cost_rec)
         emit("%s responded, %s characters (%.1fs)" % (DISPLAY[agent], f"{len(text):,}", dur))
         evlib.emit_event(_ev_dir, "turn_completed", project=app, phase=phase,
                          round=rnd, agent=str(agent), ok=True, exit=code,
                          model_requested=_model_req, model_used=_model_req,
-                         output_len=len(text), dur=round(dur, 1))
+                         output_len=len(text), dur=round(dur, 1),
+                         tokens_in=_cost_rec.get("input_tokens"),
+                         tokens_out=_cost_rec.get("output_tokens"),
+                         cost_micro_usd=_cost_rec.get("cost_micro_usd"))
     finally:
         _hb_stop.set()
         # Every transcript/messages.jsonl append is downstream of this call

@@ -190,6 +190,14 @@ private struct AgentBoardRow: View {
                        let e = EffortLevel(configValue: store.agentEfforts[state.agent] ?? "") {
                         EffortGauge(level: e, tint: identity.tint)
                     }
+                    // V3 6.4: real spend beside the gauge — only when this
+                    // agent has cost records; unmetered is a word, never $0.
+                    if let meter = store.projectCosts[project.name]?
+                        .byAgent[state.agent]?.display {
+                        Text(meter)
+                            .font(DS.font.caption).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 // Planned→actual route diff — the canonical rendering of
                 // degradation (graft: Conductor). Rendered only when they differ.
@@ -799,7 +807,7 @@ struct ActivityView: View {
                 providerTiles(current: current, previous: previous)
 
                 // Always visible, directly beneath the tiles (§4.6).
-                Text("Subscription CLIs report invocations, not tokens. Counts are CLI calls; costs are not estimable.")
+                Text("Subscription CLIs report invocations, not tokens — their costs are not estimable and never shown. api: and local turns report real token counts; dollar meters cover only those (V3 6.4).")
                     .font(DS.font.caption).foregroundStyle(.secondary)
 
                 callsPerDay(current)

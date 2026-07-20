@@ -683,6 +683,9 @@ final class OrchestratorStore: ObservableObject {
     // tick by EventsScanner — views never read the files themselves.
     @Published var eventsByProject: [String: [EngineEvent]] = [:]
     @Published var fleetHealth = FleetHealthSummary()
+    // V3 6.4: per-project cost rollups from costs.jsonl (CostsScanner, same
+    // background tick). Empty until a project has cost records on disk.
+    @Published var projectCosts: [String: ProjectCosts] = [:]
 
     @Published var appLocks: [String: AppLockInfo] = [:]
     @Published var autorunDisabled: Set<String> = []
@@ -1024,6 +1027,7 @@ final class OrchestratorStore: ObservableObject {
                     bws[p.name] = workers
                 }
             }
+            let costsScan = CostsScanner.scan(rootURL: rootURL, names: names)
             let locks = FactoryScanner.scanLocks(rootURL: rootURL)
             // Dead/absent-pid detection on the scan thread: cheap kill(2)
             // probes over captured locals, same seam as every other scanner.
@@ -1071,6 +1075,7 @@ final class OrchestratorStore: ObservableObject {
                 if bws != self.buildWorkerStatus { self.buildWorkerStatus = bws }
                 if events != self.eventsByProject { self.eventsByProject = events }
                 if health != self.fleetHealth { self.fleetHealth = health }
+                if costsScan != self.projectCosts { self.projectCosts = costsScan }
                 self.escalateFallbacksIfNeeded(events)
                 if locks != self.appLocks { self.appLocks = locks }
                 if stale != self.staleLocks { self.staleLocks = stale }
