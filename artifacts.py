@@ -136,6 +136,8 @@ SEED_TYPES = {
                    "finalization": "requires_review_gate"},
     "positioning_brief": {"required": ["title", "body"],
                           "finalization": "auto_final_on_consensus"},
+    "plan": {"required": ["title", "body"],
+             "finalization": "auto_final_on_consensus"},
     "postmortem": {"required": ["title", "body"],
                    "finalization": "requires_human"},
     "release_checklist": {"required": ["title", "body"],
@@ -515,6 +517,49 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
         on_error("publish rejected: type %r missing required field(s): %s"
                  % (type_name, ", ".join(missing)))
         return None
+    if type_name == "plan":
+        errors = []
+        blocks = schemas.extract_structured_blocks(
+            body_text, "plan-json", required_fields=["steps"],
+            on_error=errors.append)
+        if errors or len(blocks) != 1:
+            for error in errors:
+                on_error("publish rejected: plan %s" % error)
+            if len(blocks) != 1:
+                on_error("publish rejected: plan body must contain exactly "
+                         "one fenced ```plan-json``` block")
+            return None
+        steps = blocks[0].get("steps")
+        if not isinstance(steps, list) or not steps:
+            on_error("publish rejected: plan-json.steps must be a non-empty "
+                     "list")
+            return None
+        seen_steps = set()
+        for index, step in enumerate(steps):
+            valid, absent = schemas.validate_required_fields(
+                step, ["id", "title"])
+            if not valid:
+                on_error("publish rejected: plan step %d missing required "
+                         "field(s): %s" % (index, ", ".join(absent)))
+                return None
+            step_id = step.get("id")
+            normalized_step_id = step_id.strip() if isinstance(
+                step_id, str) else ""
+            if not normalized_step_id or normalized_step_id in seen_steps:
+                on_error("publish rejected: plan step %d has an invalid or "
+                         "duplicate id" % index)
+                return None
+            seen_steps.add(normalized_step_id)
+            if not isinstance(step.get("title"), str) \
+                    or not step["title"].strip() \
+                    or not isinstance(step.get("target_section"), str) \
+                    or not step["target_section"].strip() \
+                    or not isinstance(step.get("expected_artifact_type"), str) \
+                    or not step["expected_artifact_type"].strip():
+                on_error("publish rejected: plan step %d must carry non-empty "
+                         "title, target_section, and expected_artifact_type"
+                         % index)
+                return None
 
     title = meta.get("title")
     if not isinstance(title, str):
@@ -566,6 +611,24 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
             src["preset_params"], sort_keys=True, separators=(",", ":")
         ).encode("utf-8")).hexdigest()
 
+    raw_plan_ref = meta.get("plan_ref")
+    if raw_plan_ref is None and isinstance(src.get("plan_ref"), dict):
+        raw_plan_ref = src.get("plan_ref")
+    plan_ref = None
+    if raw_plan_ref is not None:
+        if isinstance(raw_plan_ref, dict) \
+                and isinstance(raw_plan_ref.get("plan_id"), str) \
+                and isinstance(raw_plan_ref.get("plan_version"), int) \
+                and not isinstance(raw_plan_ref.get("plan_version"), bool) \
+                and raw_plan_ref.get("plan_version") > 0 \
+                and isinstance(raw_plan_ref.get("step_id"), str):
+            plan_ref = {key: raw_plan_ref[key] for key in
+                        ("plan_id", "plan_version", "step_id")}
+        else:
+            on_error("publish: plan_ref is malformed — preserving it under "
+                     "fields, not claiming intent provenance")
+            extras["plan_ref"] = raw_plan_ref
+
     def _take_string_list(key):
         raw = meta.get(key)
         value = _string_list(raw)
@@ -579,7 +642,7 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
     doc_slots = _take_string_list("doc_slots")
 
     consumed = {"type", "title", "source", "status", "keywords",
-                "doc_slots", "fields"}
+                "doc_slots", "fields", "plan_ref"}
     for key, value in meta.items():
         if key not in consumed:
             extras[key] = value
@@ -746,6 +809,8 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
                 # before this card.
                 if gate is not None:
                     record["gate"] = gate
+                if plan_ref is not None:
+                    record["plan_ref"] = plan_ref
                 _fsync_write(
                     os.path.join(tmp, "meta.json"),
                     json.dumps(record, indent=2,
@@ -1162,6 +1227,39 @@ def is_stale(project_dir, meta, on_error=None, *, index=None):
     live = [c for c in idx["children"].get(mid, [])
             if c.get("status") != "converged"]
     return len(live) == 1
+
+
+def is_intent_stale(project_dir, meta, on_error=None, *, index=None):
+    """True when an output cites a plan version with an authoritative edit.
+
+    Missing/malformed provenance is not guessed into staleness. A dangling
+    plan reference is reported but remains false because the store cannot
+    prove that a newer approved intent exists.
+    """
+    if on_error is None:
+        on_error = lambda _m: None
+    if not isinstance(meta, dict):
+        return False
+    ref = meta.get("plan_ref")
+    if not isinstance(ref, dict):
+        return False
+    plan_id = ref.get("plan_id")
+    version = ref.get("plan_version")
+    if not isinstance(plan_id, str) or not plan_id \
+            or not isinstance(version, int) or isinstance(version, bool) \
+            or version <= 0:
+        on_error("artifact %r has malformed plan_ref" % meta.get("id"))
+        return False
+    idx = index if index is not None else lineage_index(
+        project_dir, on_error=on_error)
+    plan = idx.get("by_id", {}).get(plan_id) if isinstance(idx, dict) else None
+    if not isinstance(plan, dict) or plan.get("type") != "plan":
+        on_error("artifact %r cites missing plan %r" %
+                 (meta.get("id"), plan_id))
+        return False
+    if plan.get("version") != version:
+        return True
+    return is_stale(project_dir, plan, on_error=on_error, index=idx)
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,8 @@ _TERMINAL_DECISIONS = ("goal_met", "converged_open_items", "stalled")
 # crash between the pipeline_loaded append and its state save (same class of
 # gap 7.5a's termination replay fixed).
 _PIPELINE_DECISIONS = ("pipeline_loaded",)
+_PLAN_DECISIONS = ("plan_published", "plan_edited", "plan_executed",
+                   "plan_rejected")
 # Terminal route decisions rebuild the exactly-once cache from the ledger.
 # Proposed/deferred/enqueue_failed/mint_failed are intentionally absent: they
 # did not complete an effect and must remain eligible after rollback/restart.
@@ -319,7 +321,9 @@ def default_state():
             # --pipeline and held in-memory/state — never re-read from the
             # preset FILE afterward, so a live edit to the file cannot mutate
             # a running Conductor's rules (the "run holds its own copy" gate).
-            "pipeline": None}
+            "pipeline": None,
+            # 7.12: deterministic plan-key -> published/executed lifecycle.
+            "plans": {}}
 
 
 def load_conductor_state(root):
@@ -349,6 +353,7 @@ def load_conductor_state(root):
     data.setdefault("halted", None)     # 7.5b: symmetry + defense-in-depth
     data.setdefault("over_quota", [])
     data.setdefault("pipeline", None)   # 7.11: symmetry + defense-in-depth
+    data.setdefault("plans", {})        # 7.12: plan-key lifecycle cache
     oversight = data.get("oversight")
     if not isinstance(oversight, dict) or oversight.get("dial") not in \
             OVERSIGHT_DIALS:
@@ -364,6 +369,7 @@ def load_conductor_state(root):
             or not isinstance(data["routed"], dict) \
             or not isinstance(data["terminated"], dict) \
             or not isinstance(data["quiescence"], dict) \
+            or not isinstance(data["plans"], dict) \
             or not isinstance(data["ledger_cursor"], int) \
             or data["ledger_cursor"] < 0:
         fallback = default_state()
@@ -401,6 +407,12 @@ def classify_route(route, dial, feedback=False, capability_exceeds=False):
     if dial == "loops_gated" and feedback:
         return "needs_approval"
     return "auto"
+
+
+def classify_plan(dial, feedback=False, capability_exceeds=False):
+    """Plan-wide 7.12 matrix; the strictest step controls the whole plan."""
+    return classify_route(None, dial, feedback=feedback,
+                          capability_exceeds=capability_exceeds)
 
 
 def _do_not_route_pair(artifact_id, rule_id):
@@ -720,6 +732,20 @@ def reconcile_on_start(root, state, emit=print):
                 else:
                     state["pipeline"] = preset
                     applied += 1
+        if rec.get("decision") in _PLAN_DECISIONS:
+            detail = rec.get("detail") if isinstance(rec.get("detail"), dict) \
+                else {}
+            plan_key = detail.get("plan_key")
+            if isinstance(plan_key, str) and plan_key:
+                status = {"plan_published": "published",
+                          "plan_edited": "approved",
+                          "plan_executed": "executed",
+                          "plan_rejected": "rejected"}[rec["decision"]]
+                state.setdefault("plans", {})[plan_key] = {
+                    "plan_id": detail.get("plan_id"),
+                    "plan_version": detail.get("plan_version"),
+                    "status": status}
+                applied += 1
         if rec.get("decision") in ("oversight_fallback", "oversight_changed"):
             detail = rec.get("detail") if isinstance(rec.get("detail"), dict) else {}
             dial = detail.get("dial")
@@ -1419,6 +1445,7 @@ def route_engine(root, state, sessions, emit=print):
     re-discovers (the O(N^2) trap)."""
     import conductor_routing as crlib
     import conductor_permissions as cplib
+    import conductor_plan as cplan
     import sections as seclib
     from orchestrator import create_session
     import artifacts as artlib
@@ -1493,6 +1520,8 @@ def route_engine(root, state, sessions, emit=print):
         # are the authoritative executor for gated routes — restart-safe, and
         # independent of whether the source artifact is still admissible.
         for action in cplib.read_pending(root):
+            if action.get("kind") == "plan":
+                continue   # the plan executor below owns plan decisions
             rid = action.get("action_id")
             target = action.get("target")
             payload = action.get("payload")
@@ -1545,7 +1574,7 @@ def route_engine(root, state, sessions, emit=print):
                                "provider": section_providers.get(target),
                                "reason": "provider over daily request quota"}})
                 continue
-            else:  # approved -> execute the gated effect now
+            elif decision == "approved":
                 _ensure_wave_snapshot()
                 sdir = seslib_local.mint_delegation_session(
                     root, action["requested_by"].split("/")[0],
@@ -1575,11 +1604,380 @@ def route_engine(root, state, sessions, emit=print):
                                      else "mint_failed"})
                 if not sdir:
                     continue   # retry on a later poll; routed stays unset
+            else:
+                # A stray route `.edit` is not an approval. Only plan actions
+                # have an edit-and-approve contract; fail closed here.
+                state["routed"][rid] = True
+                _ledger_route(root, {**base, "decision": "route_denied",
+                                     "detail": {**base["detail"],
+                                                "reason": "invalid route decision"}})
             cplib.remove_pending(root, rid)
             cplib.consume_decision(root, rid)
 
     sections_dir_parent = os.path.dirname(sections_dir)
+
+    def _plan_record(session_id, decision, plan_meta, plan_key, **detail):
+        payload = {"plan_id": plan_meta.get("id"),
+                   "plan_version": plan_meta.get("version"),
+                   "plan_key": plan_key, **detail}
+        _ledger_route(root, {"session": session_id, "decision": decision,
+                             "detail": payload})
+
+    def _current_plan(project_dir, plan_key):
+        candidates = []
+        for candidate in artlib.list_artifacts(
+                project_dir, type="plan", on_error=lambda m: emit(
+                    "conductor plan: %s" % m)):
+            fields = candidate.get("fields")
+            if isinstance(fields, dict) and fields.get("plan_key") == plan_key:
+                candidates.append(candidate)
+        if not candidates:
+            return None
+        roots = {((item.get("lineage") or [item.get("id")])[0])
+                 for item in candidates}
+        if len(roots) != 1:
+            emit("conductor: plan key %s has multiple lineages — refusing "
+                 "to guess which intent is current" % plan_key)
+            return None
+        return artlib.latest_final(
+            project_dir, next(iter(roots)),
+            on_error=lambda m: emit("conductor plan: %s" % m))
+
+    def _ensure_plan(project_dir, sid, section, meta, intents):
+        plan_key = cplan.plan_key(intents)
+        existing = _current_plan(project_dir, plan_key)
+        if existing is None:
+            steps = cplan.steps_from_intents(
+                intents, meta.get("artifact_type") or meta.get("type") or
+                "artifact")
+            body = cplan.render_plan_body(steps)
+            registry = artlib.load_registry(
+                os.path.dirname(os.path.abspath(__file__)),
+                on_error=lambda m: emit("conductor plan: %s" % m))
+            aid = artlib.publish(
+                project_dir, body,
+                {"type": "plan", "title": "Execution plan %s" % plan_key,
+                 "source": {"section": section,
+                            "session": sid.split("/")[-1],
+                            "phase": "conductor", "turn": ""},
+                 "plan_key": plan_key,
+                 "driving_artifact_id": meta.get("id"),
+                 "driving_content_hash": meta.get("content_hash"),
+                 "driving_artifact_type": (meta.get("artifact_type") or
+                                             meta.get("type") or "artifact"),
+                 "source_section": section,
+                 "origin_route_ids": [intent.route_id for intent in intents]},
+                registry, on_error=lambda m: emit("conductor plan: %s" % m),
+                consensus=True)
+            if aid is None:
+                emit("conductor: multi-step intent refused — a valid plan "
+                     "artifact could not be published")
+                return None, None, plan_key
+            existing = artlib.load_meta(
+                project_dir, aid,
+                on_error=lambda m: emit("conductor plan: %s" % m))
+            if not existing:
+                emit("conductor: multi-step intent refused — published plan "
+                     "metadata is unreadable")
+                return None, None, plan_key
+        body = artlib.read_body(
+            project_dir, existing["id"],
+            on_error=lambda m: emit("conductor plan: %s" % m))
+        if cplan.parse_plan_body(body, on_error=lambda m: emit(
+                "conductor plan: %s" % m)) is None:
+            emit("conductor: multi-step intent refused — plan body is not "
+                 "enumerable")
+            return None, None, plan_key
+        prior = state.setdefault("plans", {}).get(plan_key)
+        if not isinstance(prior, dict) or prior.get("plan_id") != existing["id"]:
+            state["plans"][plan_key] = {
+                "plan_id": existing["id"],
+                "plan_version": existing.get("version"),
+                "status": "published"}
+            _plan_record(sid, "plan_published", existing, plan_key,
+                         origin_route_ids=[intent.route_id for intent in intents])
+        return existing, body, plan_key
+
+    def _plan_action(plan_meta, body, plan_key, sid, project, section,
+                     driving_meta, intents, reason, feedback,
+                     capability_exceeds):
+        steps = cplan.parse_plan_body(body, on_error=lambda _m: None) or []
+        fields = plan_meta.get("fields") if isinstance(
+            plan_meta.get("fields"), dict) else {}
+        return {
+            "action_id": plan_meta["id"], "kind": "plan",
+            "requested_by": sid, "target": "multiple sections",
+            "reason": reason,
+            "payload": {
+                "plan_id": plan_meta["id"],
+                "plan_version": plan_meta.get("version", 1),
+                "plan_key": plan_key, "project": project,
+                "source_section": section,
+                "artifact_id": driving_meta.get("id"),
+                "content_hash": driving_meta.get("content_hash"),
+                "artifact_type": (driving_meta.get("artifact_type") or
+                                  driving_meta.get("type") or
+                                  fields.get("driving_artifact_type") or
+                                  "artifact"),
+                "origin_route_ids": [intent.route_id for intent in intents],
+                "feedback": bool(feedback),
+                "capability_exceeds": bool(capability_exceeds),
+                "step_summary": [
+                    {"id": step["id"], "title": step["title"][:120],
+                     "target_section": step["target_section"]}
+                    for step in steps[:20]],
+            }}
+
+    def _execute_plan(action, plan_meta, body):
+        payload = action.get("payload") if isinstance(
+            action.get("payload"), dict) else {}
+        plan_key = payload.get("plan_key")
+        sid = action.get("requested_by")
+        if not isinstance(plan_key, str) or not isinstance(sid, str):
+            return False
+        steps = cplan.parse_plan_body(
+            body, on_error=lambda m: emit("conductor plan: %s" % m))
+        if steps is None:
+            return False
+        try:
+            body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        except (AttributeError, UnicodeEncodeError):
+            body_hash = ""
+        if body_hash != plan_meta.get("content_hash"):
+            emit("conductor: plan %s refused — body.md no longer matches "
+                 "its published content hash; submit an .edit decision so "
+                 "the change becomes a new version" % plan_meta.get("id"))
+            return False
+        unknown = [step["target_section"] for step in steps
+                   if not os.path.isdir(os.path.join(
+                       sections_dir, step["target_section"]))]
+        if unknown:
+            emit("conductor: plan %s refused — unknown target section(s): %s"
+                 % (plan_meta.get("id"), ", ".join(sorted(set(unknown)))))
+            return False
+        registry = artlib.load_registry(
+            os.path.dirname(os.path.abspath(__file__)),
+            on_error=lambda m: emit("conductor plan: %s" % m))
+        known_types = registry.get("types") if isinstance(registry, dict) \
+            else {}
+        unknown_types = [step["expected_artifact_type"] for step in steps
+                         if step["expected_artifact_type"] not in known_types]
+        if unknown_types:
+            emit("conductor: plan %s refused — unknown expected artifact "
+                 "type(s): %s" % (plan_meta.get("id"), ", ".join(
+                     sorted(set(unknown_types)))))
+            return False
+        context = {"artifact_id": payload.get("artifact_id"),
+                   "content_hash": payload.get("content_hash"),
+                   "source_section": payload.get("source_section")}
+        if not all(isinstance(context[key], str) and context[key]
+                   for key in context):
+            emit("conductor: plan %s refused — driving artifact context is "
+                 "incomplete" % plan_meta.get("id"))
+            return False
+        intents = cplan.intents_from_steps(
+            steps, context, plan_meta.get("id"))
+        _ensure_wave_snapshot()
+        source_dir = os.path.join(root, sid)
+        for step, intent in zip(steps, intents):
+            ref = {"plan_id": plan_meta["id"],
+                   "plan_version": plan_meta.get("version", 1),
+                   "step_id": step["id"]}
+            activity = {**ref, "actor": "conductor",
+                        "action": "route:%s" % intent.target,
+                        "artifact_ids": [context["artifact_id"]]}
+            cplan.append_activity_pair(
+                root, source_dir, {**activity, "status": "started"})
+            if intent.route_id in state["routed"]:
+                cplan.append_activity_pair(
+                    root, source_dir, {**activity, "status": "completed"})
+                continue
+
+            def _mint_plan(target_section, request,
+                           _project=payload.get("project")):
+                _eval_crash("mid_inbox_injection")
+                session_dir = seslib_local.mint_delegation_session(
+                    root, _project, target_section, request,
+                    create_session=create_session,
+                    on_error=lambda m: emit("conductor mint: %s" % m))
+                _eval_crash("post_act_pre_record")
+                return session_dir
+
+            def _probe_plan(rid, target_section,
+                            _project=payload.get("project")):
+                key = (_project, target_section)
+                if key not in effected_cache:
+                    effected_cache[key] = seslib_local.scan_effected_routes(
+                        root, _project, target_section)
+                return rid in effected_cache[key]
+
+            def _plan_route_ledger(base, _ref=ref):
+                decorated = dict(base)
+                decorated["plan_ref"] = dict(_ref)
+                decorated["detail"] = {**(base.get("detail") or {}),
+                                       "plan_ref": dict(_ref)}
+                rid = decorated.get("route_id")
+                if decorated.get("decision") == "route_proposed":
+                    if rid in proposed_route_ids:
+                        return
+                    proposed_route_ids.add(rid)
+                _ledger_route(root, decorated)
+
+            outcomes = crlib.execute_intents(
+                [intent], sid, root, _mint_plan, _plan_route_ledger,
+                probe=_probe_plan,
+                request_extra=lambda _intent, _ref=ref: {
+                    "plan_ref": dict(_ref)})
+            outcome = outcomes[0] if outcomes else {"outcome": "mint_failed"}
+            if outcome.get("outcome") == "mint_failed":
+                cplan.append_activity_pair(
+                    root, source_dir, {**activity, "status": "failed"})
+                return False
+            state["routed"][intent.route_id] = True
+            cplan.append_activity_pair(
+                root, source_dir, {**activity, "status": "completed"})
+        for route_id in payload.get("origin_route_ids") or []:
+            if isinstance(route_id, str):
+                state["routed"][route_id] = True
+        state.setdefault("plans", {})[plan_key] = {
+            "plan_id": plan_meta["id"],
+            "plan_version": plan_meta.get("version", 1),
+            "status": "executed"}
+        _plan_record(sid, "plan_executed", plan_meta, plan_key,
+                     step_ids=[step["id"] for step in steps])
+        cplib.remove_pending(root, action["action_id"])
+        cplib.consume_decision(root, action["action_id"])
+        return True
+
+    def _drain_plans():
+        for action in cplib.read_pending(root):
+            if action.get("kind") != "plan":
+                continue
+            action_id = action.get("action_id")
+            payload = action.get("payload") if isinstance(
+                action.get("payload"), dict) else {}
+            plan_key = payload.get("plan_key")
+            project = payload.get("project")
+            plan_id = payload.get("plan_id")
+            sid = action.get("requested_by")
+            if not all(isinstance(value, str) and value
+                       for value in (action_id, plan_key, project, plan_id, sid)):
+                if action_id:
+                    cplib.remove_pending(root, action_id)
+                continue
+            lifecycle = state.setdefault("plans", {}).get(plan_key)
+            if isinstance(lifecycle, dict) and lifecycle.get("status") in \
+                    ("executed", "rejected"):
+                cplib.remove_pending(root, action_id)
+                cplib.consume_decision(root, action_id)
+                continue
+            if isinstance(lifecycle, dict) and \
+                    lifecycle.get("status") == "approved":
+                current_id = lifecycle.get("plan_id")
+                if isinstance(current_id, str) and current_id:
+                    plan_id = current_id
+                    payload["plan_id"] = current_id
+                    payload["plan_version"] = lifecycle.get("plan_version")
+                    payload["approved"] = True
+                    action["payload"] = payload
+            project_dir = os.path.join(root, project)
+            plan_meta = artlib.load_meta(
+                project_dir, plan_id,
+                on_error=lambda m: emit("conductor plan: %s" % m))
+            body = artlib.read_body(
+                project_dir, plan_id,
+                on_error=lambda m: emit("conductor plan: %s" % m))
+            if not plan_meta or body is None:
+                emit("conductor: pending plan %s is unreadable — left pending"
+                     % plan_id)
+                continue
+            if payload.get("approved") is True:
+                _execute_plan(action, plan_meta, body)
+                continue
+            decision_record = cplib.read_approval_decision(root, action_id)
+            if decision_record is None:
+                continue
+            decision = decision_record["decision"]
+            if decision == "rejected":
+                for route_id in payload.get("origin_route_ids") or []:
+                    if isinstance(route_id, str):
+                        state["routed"][route_id] = True
+                state["plans"][plan_key] = {
+                    "plan_id": plan_id,
+                    "plan_version": plan_meta.get("version", 1),
+                    "status": "rejected"}
+                _plan_record(
+                    sid, "plan_rejected", plan_meta, plan_key,
+                    reason=decision_record.get("reason") or
+                    "rejected by human")
+                cplib.remove_pending(root, action_id)
+                cplib.consume_decision(root, action_id)
+                continue
+            if decision == "edited":
+                edited_body = decision_record.get("reason") or ""
+                if cplan.parse_plan_body(
+                        edited_body, on_error=lambda m: emit(
+                            "conductor plan: %s" % m)) is None:
+                    _plan_record(sid, "plan_edit_refused", plan_meta,
+                                 plan_key, reason="edited plan is invalid")
+                    cplib.consume_decision(root, action_id)
+                    continue
+                fields = plan_meta.get("fields") if isinstance(
+                    plan_meta.get("fields"), dict) else {}
+                registry = artlib.load_registry(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    on_error=lambda m: emit("conductor plan: %s" % m))
+                edited_id = artlib.publish(
+                    project_dir, edited_body,
+                    {"type": "plan", "title": plan_meta.get("title") or
+                     "Edited execution plan",
+                     "source": {"section": payload.get("source_section", ""),
+                                "session": "human", "phase": "conductor",
+                                "turn": ""}, **fields},
+                    registry, on_error=lambda m: emit(
+                        "conductor plan: %s" % m),
+                    supersedes=plan_id, consensus=True)
+                edited_meta = artlib.load_meta(
+                    project_dir, edited_id,
+                    on_error=lambda m: emit("conductor plan: %s" % m)) \
+                    if edited_id else None
+                if not edited_meta:
+                    _plan_record(sid, "plan_edit_refused", plan_meta,
+                                 plan_key, reason="edited plan publish failed")
+                    cplib.consume_decision(root, action_id)
+                    continue
+                state["plans"][plan_key] = {
+                    "plan_id": edited_id,
+                    "plan_version": edited_meta.get("version", 1),
+                    "status": "approved"}
+                _plan_record(sid, "plan_edited", edited_meta, plan_key,
+                             supersedes=plan_id, by="human")
+                payload["plan_id"] = edited_id
+                payload["plan_version"] = edited_meta.get("version", 1)
+                payload["approved"] = True
+                action["payload"] = payload
+                cplib.enqueue_pending(root, action)
+                cplib.consume_decision(root, action_id)
+                _execute_plan(action, edited_meta, edited_body)
+                continue
+            if decision == "approved":
+                payload["approved"] = True
+                action["payload"] = payload
+                if not cplib.enqueue_pending(root, action):
+                    _plan_record(sid, "enqueue_failed", plan_meta, plan_key,
+                                 reason="could not persist approved plan")
+                    continue
+                cplib.consume_decision(root, action_id)
+                _execute_plan(action, plan_meta, body)
+                continue
+            # do_not_route/kill_session are route-only verbs. A plan never
+            # widens them into approval.
+            _plan_record(sid, "plan_decision_refused", plan_meta, plan_key,
+                         reason="decision is not valid for a plan")
+            cplib.consume_decision(root, action_id)
+
     _drain_pending()
+    _drain_plans()
 
     terminated = state.get("terminated", {})
     for sid in sessions:
@@ -1624,6 +2022,125 @@ def route_engine(root, state, sessions, emit=print):
             if not fresh:
                 continue
             _eval_crash("post_route_id")
+
+            # V3 7.12: two or more executable route effects are ONE
+            # autonomous multi-step intent. Materialize and classify the
+            # whole plan before any of those effects starts. Single routes
+            # continue through the byte-for-byte 7.6 path below.
+            plan_intents = [
+                intent for intent in fresh
+                if intent.verdict == crlib.ALLOW and intent.target
+                and not _is_do_not_route(
+                    state, intent.artifact_id, intent.rule_id)
+                and not (over_quota and section_providers.get(intent.target)
+                         in over_quota)
+                and not cplib.is_pending(root, intent.route_id)]
+            if len(plan_intents) > 1:
+                # Terminal/guarded siblings are still ledgered exactly once;
+                # they are not executable plan steps.
+                for intent in fresh:
+                    if intent in plan_intents:
+                        continue
+                    if _is_do_not_route(
+                            state, intent.artifact_id, intent.rule_id):
+                        state["routed"][intent.route_id] = True
+                        _ledger_route(root, {
+                            "session": sid, "route_id": intent.route_id,
+                            "route_key": intent.route_key,
+                            "decision": "route_suppressed",
+                            "detail": {**intent.as_ledger_detail(),
+                                       "reason": "do-not-route decision"}})
+                    elif over_quota and section_providers.get(intent.target) \
+                            in over_quota:
+                        _ledger_route(root, {
+                            "session": sid, "route_id": intent.route_id,
+                            "route_key": intent.route_key,
+                            "decision": "route_deferred",
+                            "detail": {"target": intent.target,
+                                       "provider": section_providers.get(
+                                           intent.target),
+                                       "reason": "provider over daily "
+                                                 "request quota"}})
+                    elif intent.verdict != crlib.ALLOW or not intent.target:
+                        crlib.execute_intents(
+                            [intent], sid, root,
+                            lambda _target, _request: None,
+                            lambda base: _ledger_route(root, base))
+                        state["routed"][intent.route_id] = True
+
+                plan_meta, plan_body, plan_key = _ensure_plan(
+                    project_dir, sid, section, meta, plan_intents)
+                if not plan_meta:
+                    continue   # refusal is visible; NOTHING executes
+                lifecycle = state.setdefault("plans", {}).get(plan_key)
+                if isinstance(lifecycle, dict) and lifecycle.get("status") \
+                        in ("executed", "rejected"):
+                    for intent in plan_intents:
+                        state["routed"][intent.route_id] = True
+                    save_conductor_state(root, state)
+                    continue
+                if isinstance(lifecycle, dict) and \
+                        lifecycle.get("status") == "approved":
+                    approved_action = _plan_action(
+                        plan_meta, plan_body, plan_key, sid, project, section,
+                        meta, plan_intents, "edited plan already approved",
+                        False, False)
+                    approved_action["payload"]["approved"] = True
+                    _execute_plan(approved_action, plan_meta, plan_body)
+                    continue
+                plan_feedback = any(route_revisits_section(
+                    intent, meta, lineage_metas) for intent in plan_intents)
+                plan_capability = any(seclib.exceeds_workspace_only(
+                    _caps_for(intent.target)) for intent in plan_intents)
+                classification = classify_plan(
+                    dial, feedback=plan_feedback,
+                    capability_exceeds=plan_capability)
+                if plan_capability:
+                    reason = "plan contains capability-exceeding steps"
+                elif plan_feedback:
+                    reason = "plan contains a feedback-loop step"
+                else:
+                    reason = "%s oversight requires plan approval" % dial
+                action = _plan_action(
+                    plan_meta, plan_body, plan_key, sid, project, section,
+                    meta, plan_intents, reason, plan_feedback,
+                    plan_capability)
+                if classification == "needs_approval":
+                    if not cplib.is_pending(root, action["action_id"]):
+                        if cplib.enqueue_pending(root, action):
+                            def _emit_plan_approval():
+                                import events as eventslib
+                                eventslib.emit_event(
+                                    app_dir, "approval_needed",
+                                    project=project, section=section,
+                                    session=sid, route_id=plan_meta["id"],
+                                    artifact_id=plan_meta["id"],
+                                    target="multi-step plan", reason=reason)
+                            _ledger_route(root, {
+                                "session": sid,
+                                "decision": "approval_requested",
+                                "detail": {
+                                    "kind": "plan",
+                                    "plan_id": plan_meta["id"],
+                                    "plan_version": plan_meta.get(
+                                        "version", 1),
+                                    "plan_key": plan_key, "dial": dial,
+                                    "feedback": plan_feedback,
+                                    "capability_exceeds": plan_capability,
+                                    "reason": reason}},
+                                after_append=_emit_plan_approval)
+                        else:
+                            _ledger_route(root, {
+                                "session": sid,
+                                "decision": "enqueue_failed",
+                                "detail": {"kind": "plan",
+                                           "plan_id": plan_meta["id"],
+                                           "plan_key": plan_key,
+                                           "reason": "pending plan write "
+                                                     "failed"}})
+                    continue
+                _execute_plan(action, plan_meta, plan_body)
+                continue
 
             def _mint(target_section, request, _proj=project):
                 # "mid_inbox_injection" is the historical state-machine name

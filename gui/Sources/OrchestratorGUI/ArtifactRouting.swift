@@ -16,6 +16,7 @@ struct ArtifactSummary: Equatable, Identifiable {
     let version: Int
     let status: String
     let stale: Bool
+    let intentStale: Bool
     let lineage: [String]
     let sourcePhase: String
     let sourceSession: String
@@ -30,7 +31,7 @@ struct ArtifactSummary: Equatable, Identifiable {
 }
 
 enum ArtifactCardState: Equatable {
-    case pendingReview, final, converged, stale, unreadable
+    case pendingReview, final, converged, stale, intentStale, unreadable
     case routing(target: String), routed(target: String), refused(reason: String)
 
     static func resolve(summary: ArtifactSummary,
@@ -44,6 +45,7 @@ enum ArtifactCardState: Equatable {
         }
         if summary.unreadableReason != nil { return .unreadable }
         if summary.stale { return .stale }
+        if summary.intentStale { return .intentStale }
         switch summary.status {
         case "final": return .final
         case "converged": return .converged
@@ -79,7 +81,8 @@ enum ArtifactIndex {
             else {
                 unreadable.append(ArtifactSummary(
                     id: name, type: "artifact", version: 0, status: "unreadable",
-                    stale: false, lineage: [], sourcePhase: "", sourceSession: "",
+                    stale: false, intentStale: false, lineage: [],
+                    sourcePhase: "", sourceSession: "",
                     finalizationPolicy: "", unreadableReason: "meta.json is unreadable"))
                 continue
             }
@@ -102,15 +105,28 @@ enum ArtifactIndex {
         // Match artifacts.is_stale: one live linear child is authoritative;
         // two branch heads are unresolved and must not make the parent stale.
         let stale = Set(ids.filter { liveChildren[$0] == 1 || reconciled.contains($0) })
+        let byID = Dictionary(uniqueKeysWithValues: parsed.compactMap { item ->
+            (String, [String: Any])? in
+            guard let id = item.meta["id"] as? String else { return nil }
+            return (id, item.meta)
+        })
         let summaries = parsed.map { item -> ArtifactSummary in
             let meta = item.meta
             let id = (meta["id"] as? String) ?? item.name
             let source = meta["source"] as? [String: Any]
             let type = (meta["type"] as? String) ?? "artifact"
+            let planRef = meta["plan_ref"] as? [String: Any]
+            let planID = planRef?["plan_id"] as? String
+            let citedVersion = planRef?["plan_version"] as? Int
+            let planMeta = planID.flatMap { byID[$0] }
+            let intentStale = planID.map(stale.contains) ?? false
+                || (citedVersion != nil && planMeta != nil
+                    && (planMeta?["version"] as? Int) != citedVersion)
             return ArtifactSummary(
                 id: id, type: type, version: (meta["version"] as? Int) ?? 1,
                 status: (meta["status"] as? String) ?? "pending_review",
-                stale: stale.contains(id), lineage: (meta["lineage"] as? [String]) ?? [id],
+                stale: stale.contains(id), intentStale: intentStale,
+                lineage: (meta["lineage"] as? [String]) ?? [id],
                 sourcePhase: (source?["phase"] as? String) ?? "",
                 sourceSession: (source?["session"] as? String) ?? "",
                 finalizationPolicy: policies[type] ?? "requires_human",

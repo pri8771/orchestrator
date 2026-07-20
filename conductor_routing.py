@@ -363,7 +363,7 @@ def route_marker(route_id):
 
 
 def execute_intents(intents, session_id, root, mint, ledger, permit=None,
-                    probe=None):
+                    probe=None, request_extra=None):
     """Execute planned intents, ledger-before-act with the 7.3 intent->done
     protocol. For each intent: a `route_proposed` line (carrying route_id) is
     durable FIRST; a guarded/denied intent gets its terminal line and no
@@ -377,7 +377,9 @@ def execute_intents(intents, session_id, root, mint, ledger, permit=None,
     id hashes the request) while the SAME version is idempotent. The seed
     title embeds the route marker so it survives into the minted session.
     `permit` is the 7.4 seam. `probe(route_id, target_section) -> bool` is the
-    restart-recovery check (default: none — rely on mint idempotency)."""
+    restart-recovery check (default: none — rely on mint idempotency).
+    `request_extra(intent)` may add a validated plan_ref to delegation.json;
+    core route identity fields can never be overwritten through this seam."""
     permit = permit or (lambda _intent: True)
     probe = probe or (lambda _rid, _tgt: False)
     outcomes = []
@@ -412,6 +414,11 @@ def execute_intents(intents, session_id, root, mint, ledger, permit=None,
                    "route_id": rid,                       # distinct minting
                    "source_section": intent.source_section,
                    "rule_id": intent.rule_id}
+        if request_extra is not None:
+            extra = request_extra(intent)
+            plan_ref = extra.get("plan_ref") if isinstance(extra, dict) else None
+            if isinstance(plan_ref, dict):
+                request["plan_ref"] = dict(plan_ref)
         session_dir = mint(intent.target, request)
         outcome = "routed" if session_dir else "mint_failed"
         outcomes.append({"outcome": outcome, "target": intent.target,

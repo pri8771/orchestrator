@@ -118,4 +118,52 @@ final class ConductorOversightTests: XCTestCase {
         XCTAssertEqual(files.filter { $0 == "\(routeID).ok" }.count, 1,
                        "double tap is one idempotent decision file")
     }
+
+    func testPendingPlanShowsStepsAndEditReadsCurrentArtifactBodyAtOpenTime() throws {
+        let planID = "execution-plan-0123456789abcdef"
+        let bodyURL = root.appendingPathComponent(
+            "proj/artifacts/\(planID)/body.md")
+        try FileManager.default.createDirectory(
+            at: bodyURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try "v1 on disk".write(to: bodyURL, atomically: true, encoding: .utf8)
+        try writeJSON([
+            "action_id": planID, "kind": "plan",
+            "target": "multiple sections",
+            "requested_by": "proj/ideas/chat-1",
+            "reason": "gated oversight requires plan approval",
+            "payload": [
+                "plan_id": planID, "plan_version": 1,
+                "step_summary": [
+                    ["id": "s1", "title": "Research",
+                     "target_section": "research"],
+                    ["id": "s2", "title": "Plan",
+                     "target_section": "planning"]]
+            ]
+        ], to: root.appendingPathComponent(
+            ".conductor/approvals/\(planID).pending"))
+
+        let pending = try XCTUnwrap(
+            ConductorOversightDisk.scan(rootURL: root).pending.first)
+        XCTAssertTrue(pending.isPlan)
+        XCTAssertEqual(pending.planVersion, 1)
+        XCTAssertEqual(pending.steps.map(\.targetSection),
+                       ["research", "planning"])
+
+        // The card carries identity only. Opening reads again, so an engine
+        // update after scan is what the editor actually presents.
+        try "v2 current on disk".write(
+            to: bodyURL, atomically: true, encoding: .utf8)
+        switch ConductorOversightDisk.readCurrentPlanBody(
+            rootURL: root, pending: pending) {
+        case .success(let body): XCTAssertEqual(body, "v2 current on disk")
+        case .failure(let error): XCTFail("unexpected read failure: \(error)")
+        }
+        XCTAssertNil(ConductorControlFiles.writeDecision(
+            rootURL: root, routeID: planID, suffix: "edit",
+            body: "edited plan body"))
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent(
+            ".conductor/approvals/\(planID).edit"), encoding: .utf8),
+                       "edited plan body\n")
+    }
 }

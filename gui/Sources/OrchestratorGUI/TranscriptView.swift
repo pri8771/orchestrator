@@ -341,7 +341,8 @@ struct ArtifactCard: View {
     }
 
     private var canDrag: Bool {
-        summary.unreadableReason == nil && summary.status == "final" && !summary.stale
+        summary.unreadableReason == nil && summary.status == "final"
+            && !summary.stale && !summary.intentStale
     }
 
     @ViewBuilder
@@ -377,6 +378,14 @@ struct ArtifactCard: View {
                         .padding(.horizontal, DS.space.xs)
                         .padding(.vertical, DS.space.xxs)
                         .background(Capsule().fill(DS.status.warning.fill))
+                }
+                if summary.intentStale {
+                    Text("intent stale")
+                        .font(DS.font.caption.weight(.medium))
+                        .foregroundStyle(DS.status.error.color)
+                        .padding(.horizontal, DS.space.xs)
+                        .padding(.vertical, DS.space.xxs)
+                        .background(Capsule().fill(DS.status.error.fill))
                 }
             }
             if let reason = summary.unreadableReason {
@@ -433,6 +442,7 @@ struct ArtifactCard: View {
         switch state {
         case .unreadable, .refused: return DS.status.error.color
         case .stale, .pendingReview: return DS.status.warning.color
+        case .intentStale: return DS.status.error.color
         case .routing: return DS.accent.color
         case .final, .converged, .routed: return DS.status.success.color
         }

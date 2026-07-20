@@ -626,34 +626,12 @@ struct MissionControlView: View {
     }
 
     private func pendingCard(_ route: ConductorPendingRoute) -> some View {
-        VStack(alignment: .leading, spacing: DS.space.xs) {
-            Text("\(route.artifactID) → \(route.target)").font(DS.font.headline)
-            Text("\(route.reason) · from \(route.requestedBy) · rule \(route.ruleID)")
-                .font(DS.font.caption).foregroundStyle(DS.textSecondary)
-            if route.decisionSubmitted {
-                Label("Decision submitted — waiting for Conductor confirmation",
-                      systemImage: "hourglass")
-                    .font(DS.font.caption).foregroundStyle(DS.status.warning.color)
-            } else {
-                HStack {
-                    Button("Approve") {
-                        store.decideConductorRoute(route, suffix: "ok")
-                    }.buttonStyle(.borderedProminent)
-                    Button("Reject") {
-                        store.decideConductorRoute(
-                            route, suffix: "changes", body: "Rejected in Mission Control")
-                    }
-                    Button("Do not route") {
-                        store.decideConductorRoute(route, suffix: "do_not_route")
-                    }
-                    Button("Kill session", role: .destructive) {
-                        store.decideConductorRoute(route, suffix: "kill_session")
-                    }
-                }.font(DS.font.caption)
-            }
-        }
-        .padding(DS.space.s).background(DS.raised)
-        .clipShape(RoundedRectangle(cornerRadius: DS.radius.card))
+        ConductorPendingApprovalCard(
+            pending: route, rootURL: store.rootURL,
+            decide: { suffix, body in
+                store.decideConductorRoute(
+                    route, suffix: suffix, body: body)
+            })
     }
 
     private var decisionLedger: some View {

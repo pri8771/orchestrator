@@ -75,6 +75,13 @@
         "body"
       ]
     },
+    "plan": {
+      "finalization": "auto_final_on_consensus",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
     "postmortem": {
       "finalization": "requires_human",
       "required": [

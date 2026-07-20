@@ -25,8 +25,18 @@ struct ConductorPendingRoute: Identifiable, Equatable, Sendable {
     let ruleID: String
     let requestedBy: String
     let reason: String
+    var kind = "route"
+    var planVersion: Int? = nil
+    var steps: [ConductorPlanStep] = []
     var decisionSubmitted = false
     var id: String { routeID }
+    var isPlan: Bool { kind == "plan" }
+}
+
+struct ConductorPlanStep: Equatable, Sendable {
+    let id: String
+    let title: String
+    let targetSection: String
 }
 
 struct ConductorOversightSnapshot: Equatable, Sendable {
@@ -91,10 +101,11 @@ enum ConductorOversightDisk {
                 byID[route.routeID] = byID[route.routeID] ?? route
             }
         }
-        let submittedSuffixes = ["ok", "changes", "do_not_route", "kill_session"]
+        let submittedSuffixes = ["ok", "changes", "do_not_route", "kill_session", "edit"]
         snapshot.pending = byID.values.map { route in
             var value = route
-            value.decisionSubmitted = submittedSuffixes.contains { suffix in
+            value.decisionSubmitted = value.decisionSubmitted
+                || submittedSuffixes.contains { suffix in
                 fm.fileExists(atPath: approvals.appendingPathComponent(
                     "\(route.routeID).\(suffix)").path)
             }
@@ -110,13 +121,52 @@ enum ConductorOversightDisk {
         guard let routeID = (obj["route_id"] ?? obj["action_id"]) as? String,
               !routeID.isEmpty,
               let target = obj["target"] as? String, !target.isEmpty else { return nil }
+        let kind = obj["kind"] as? String ?? "route"
+        let rawSteps = payload["step_summary"] as? [[String: Any]] ?? []
+        let steps = rawSteps.compactMap { step -> ConductorPlanStep? in
+            guard let id = step["id"] as? String, !id.isEmpty,
+                  let title = step["title"] as? String, !title.isEmpty,
+                  let target = step["target_section"] as? String,
+                  !target.isEmpty else { return nil }
+            return ConductorPlanStep(id: id, title: title,
+                                     targetSection: target)
+        }
         return ConductorPendingRoute(
             routeID: routeID,
-            artifactID: payload["artifact_id"] as? String ?? "unknown",
+            artifactID: (kind == "plan" ? payload["plan_id"] :
+                         payload["artifact_id"]) as? String ?? "unknown",
             target: target,
             ruleID: payload["rule_id"] as? String ?? "unknown",
             requestedBy: obj["requested_by"] as? String ?? "unknown",
-            reason: obj["reason"] as? String ?? "Route requires approval")
+            reason: obj["reason"] as? String ?? "Route requires approval",
+            kind: kind, planVersion: payload["plan_version"] as? Int,
+            steps: steps, decisionSubmitted: payload["approved"] as? Bool ?? false)
+    }
+
+    nonisolated static func readCurrentPlanBody(
+        rootURL: URL, pending: ConductorPendingRoute
+    ) -> Result<String, Error> {
+        guard pending.isPlan,
+              safeDecisionID(pending.artifactID),
+              let project = pending.requestedBy.split(separator: "/").first,
+              safeDecisionID(String(project))
+        else {
+            return .failure(NSError(
+                domain: "ConductorPlan", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Plan location is invalid."]))
+        }
+        let url = rootURL.appendingPathComponent(String(project), isDirectory: true)
+            .appendingPathComponent("artifacts", isDirectory: true)
+            .appendingPathComponent(pending.artifactID, isDirectory: true)
+            .appendingPathComponent("body.md")
+        do { return .success(try String(contentsOf: url, encoding: .utf8)) }
+        catch { return .failure(error) }
+    }
+
+    nonisolated static func safeDecisionID(_ value: String) -> Bool {
+        !value.isEmpty && value.count <= 160 && value.allSatisfy {
+            $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_"
+        }
     }
 }
 
@@ -152,9 +202,8 @@ enum ConductorControlFiles {
     nonisolated static func writeDecision(
         rootURL: URL, routeID: String, suffix: String, body: String = ""
     ) -> String? {
-        let validSuffixes = Set(["ok", "changes", "do_not_route", "kill_session"])
-        guard routeID.count == 16,
-              routeID.allSatisfy({ $0.isHexDigit }),
+        let validSuffixes = Set(["ok", "changes", "do_not_route", "kill_session", "edit"])
+        guard ConductorOversightDisk.safeDecisionID(routeID),
               validSuffixes.contains(suffix) else {
             return "Invalid Conductor decision target."
         }
@@ -208,7 +257,12 @@ struct ConductorOversightView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: DS.space.s) {
                         ForEach(store.conductorOversight.pending) { route in
-                            pendingCard(route)
+                            ConductorPendingApprovalCard(
+                                pending: route, rootURL: store.rootURL,
+                                decide: { suffix, body in
+                                    store.decideConductorRoute(
+                                        route, suffix: suffix, body: body)
+                                })
                         }
                     }
                 }
@@ -217,37 +271,104 @@ struct ConductorOversightView: View {
         .padding(DS.space.l)
     }
 
-    private func pendingCard(_ route: ConductorPendingRoute) -> some View {
+}
+
+struct ConductorPendingApprovalCard: View {
+    let pending: ConductorPendingRoute
+    let rootURL: URL
+    let decide: (String, String) -> Void
+    @State private var editing = false
+    @State private var editBody = ""
+    @State private var editError: String?
+
+    var body: some View {
         VStack(alignment: .leading, spacing: DS.space.xs) {
             HStack {
-                Text("\(route.artifactID) → \(route.target)")
+                Text(pending.isPlan
+                     ? "Plan \(pending.artifactID) v\(pending.planVersion ?? 1)"
+                     : "\(pending.artifactID) → \(pending.target)")
                     .font(DS.font.headline)
                 Spacer()
-                Text(route.routeID).font(DS.font.monoCaption)
+                Text(pending.routeID).font(DS.font.monoCaption)
                     .foregroundStyle(DS.textSecondary)
             }
-            Text(route.reason).font(DS.font.caption)
+            Text(pending.reason).font(DS.font.caption)
                 .foregroundStyle(DS.textSecondary)
-            Text("From \(route.requestedBy) · rule \(route.ruleID)")
+            if pending.isPlan {
+                ForEach(Array(pending.steps.enumerated()), id: \.element.id) { index, step in
+                    Text("\(index + 1). \(step.title) → \(step.targetSection)")
+                        .font(DS.font.caption)
+                }
+            } else {
+                Text("From \(pending.requestedBy) · rule \(pending.ruleID)")
+                    .font(DS.font.caption).foregroundStyle(DS.textSecondary)
+            }
+            if let editError {
+                Text(editError).font(DS.font.caption)
+                    .foregroundStyle(DS.status.error.color)
+            }
+            if pending.decisionSubmitted {
+                Label("Decision submitted — waiting for Conductor confirmation",
+                      systemImage: "hourglass")
                 .font(DS.font.caption).foregroundStyle(DS.textSecondary)
-            HStack {
-                Button("Approve") { store.decideConductorRoute(route, suffix: "ok") }
+            } else {
+                HStack {
+                Button("Approve") { decide("ok", "") }
                     .buttonStyle(.borderedProminent)
                 Button("Reject") {
-                    store.decideConductorRoute(
-                        route, suffix: "changes", body: "Rejected in Mission Control")
+                    decide("changes", "Rejected in Mission Control")
                 }
-                Button("Do not route") {
-                    store.decideConductorRoute(route, suffix: "do_not_route")
+                if pending.isPlan {
+                    Button("Edit & Approve") { openEditor() }
+                } else {
+                    Button("Do not route") { decide("do_not_route", "") }
+                    Button("Kill session", role: .destructive) {
+                        decide("kill_session", "")
+                    }
                 }
-                Button("Kill session", role: .destructive) {
-                    store.decideConductorRoute(route, suffix: "kill_session")
                 }
+                .font(DS.font.caption)
             }
-            .font(DS.font.caption)
         }
         .padding(DS.space.s)
         .background(DS.raised)
         .clipShape(RoundedRectangle(cornerRadius: DS.radius.card))
+        .sheet(isPresented: $editing) {
+            VStack(alignment: .leading, spacing: DS.space.m) {
+                Text("Edit plan before approval").font(DS.font.title)
+                Text("This is the current artifact body read from disk.")
+                    .font(DS.font.caption).foregroundStyle(DS.textSecondary)
+                TextEditor(text: $editBody)
+                    .font(DS.font.monoWell)
+                    .frame(minWidth: 620, minHeight: 420)
+                    .padding(DS.space.xs)
+                    .background(DS.insetBg)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.radius.control))
+                HStack {
+                    Spacer()
+                    Button("Cancel") { editing = false }
+                    Button("Edit & Approve") {
+                        decide("edit", editBody)
+                        editing = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(editBody.trimmingCharacters(
+                        in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(DS.space.l)
+        }
+    }
+
+    private func openEditor() {
+        switch ConductorOversightDisk.readCurrentPlanBody(
+            rootURL: rootURL, pending: pending) {
+        case .success(let body):
+            editBody = body
+            editError = nil
+            editing = true
+        case .failure(let error):
+            editError = "Could not read the current plan: \(error.localizedDescription)"
+        }
     }
 }

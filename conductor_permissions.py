@@ -24,7 +24,7 @@ import os
 CONDUCTOR_DIRNAME = ".conductor"
 PENDING_FILENAME = "pending_actions.jsonl"
 APPROVALS_DIRNAME = "approvals"
-DECISION_SUFFIXES = ("changes", "do_not_route", "kill_session", "ok")
+DECISION_SUFFIXES = ("changes", "do_not_route", "kill_session", "edit", "ok")
 
 
 def _cdir(root):
@@ -61,12 +61,12 @@ def _atomic_json(path, value):
         return False
 
 
-def _decision_body(root, route_id, suffix):
+def _decision_body(root, route_id, suffix, max_chars=1000):
     try:
         with open(os.path.join(approvals_dir(root),
                                "%s.%s" % (route_id, suffix)),
                   encoding="utf-8") as fh:
-            return fh.read()[:1000].strip()
+            return fh.read(max_chars + 1)[:max_chars].strip()
     except OSError:
         return ""
 
@@ -83,13 +83,18 @@ def read_approval_decision(root, route_id):
         choice = "rejected"
     elif "kill_session" in present:
         choice = "kill_session"
+    elif "edit" in present:
+        choice = "edited"
     elif "ok" in present:
         choice = "approved"
     else:
         return None
-    suffix = {"rejected": "changes", "approved": "ok"}.get(choice, choice)
+    suffix = {"rejected": "changes", "approved": "ok",
+              "edited": "edit"}.get(choice, choice)
     return {"decision": choice,
-            "reason": _decision_body(root, route_id, suffix)}
+            "reason": _decision_body(
+                root, route_id, suffix,
+                max_chars=65536 if choice == "edited" else 1000)}
 
 
 def approval_decision(root, route_id):
@@ -131,7 +136,7 @@ def read_pending(root):
     """Every queued action, oldest first; malformed lines skipped (a corrupt
     line must not hide the rest — §6.2)."""
     out = []
-    seen = set()
+    positions = {}
     try:
         with open(pending_path(root), encoding="utf-8") as fh:
             for line in fh:
@@ -140,8 +145,12 @@ def read_pending(root):
                 except ValueError:
                     continue
                 if isinstance(rec, dict) and rec.get("action_id"):
-                    out.append(rec)
-                    seen.add(rec["action_id"])
+                    action_id = rec["action_id"]
+                    if action_id in positions:
+                        out[positions[action_id]] = rec
+                    else:
+                        positions[action_id] = len(out)
+                        out.append(rec)
     except OSError:
         pass
     # Crash recovery: enqueue writes the atomic per-action mirror BEFORE the
@@ -161,10 +170,16 @@ def read_pending(root):
                 rec = json.load(fh)
         except (OSError, ValueError):
             continue
-        if isinstance(rec, dict) and rec.get("action_id") \
-                and rec["action_id"] not in seen:
-            out.append(rec)
-            seen.add(rec["action_id"])
+        if isinstance(rec, dict) and rec.get("action_id"):
+            action_id = rec["action_id"]
+            if action_id in positions:
+                # The atomic mirror is newer than the append-only queue line
+                # (plan approval/edit updates use it as the durable current
+                # action). It must override, not be hidden by, the old line.
+                out[positions[action_id]] = rec
+            else:
+                positions[action_id] = len(out)
+                out.append(rec)
     return out
 
 

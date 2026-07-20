@@ -36,6 +36,9 @@ class RouteHarness:
             by_id[aid] = ancestor
 
         def list_artifacts(app_dir, **kwargs):
+            if app_dir == os.path.join(root, "proj"):
+                assert kwargs.get("type") == "plan"
+                return []
             assert app_dir == os.path.join(root, sid)
             assert kwargs.get("status") == "final"
             return [meta]
@@ -138,7 +141,7 @@ class TestDialMatrix(unittest.TestCase, RouteHarness):
                     finally:
                         shutil.rmtree(root, ignore_errors=True)
 
-    def test_pending_feedback_does_not_block_forward_route(self):
+    def test_feedback_step_pends_the_whole_multi_step_plan(self):
         root, sid = self.make_root()
         try:
             state = cond.default_state()
@@ -150,9 +153,14 @@ class TestDialMatrix(unittest.TestCase, RouteHarness):
                     "hop_count": 1, "status": "final"}
             minted = self.run_route(
                 root, sid, state, meta, ["research", "planning"])
-            self.assertEqual([target for target, _rid in minted], ["planning"])
-            self.assertEqual([item["target"] for item in cp.read_pending(root)],
-                             ["research"])
+            self.assertEqual(minted, [])
+            pending = cp.read_pending(root)
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["kind"], "plan")
+            self.assertEqual(
+                [step["target_section"] for step in
+                 pending[0]["payload"]["step_summary"]],
+                ["research", "planning"])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

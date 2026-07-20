@@ -15,7 +15,8 @@ final class ArtifactRoutingTests: XCTestCase {
                       version: Int = 1, supersedes: String? = nil,
                       lineage: [String]? = nil, ts: String = "2026-01-01",
                       type: String = "idea", phase: String = "report",
-                      parents: [String]? = nil) throws {
+                      parents: [String]? = nil,
+                      planRef: [String: Any]? = nil) throws {
         let dir = project.appendingPathComponent("artifacts/\(id)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var obj: [String: Any] = ["id": id, "type": type, "status": status,
@@ -24,6 +25,7 @@ final class ArtifactRoutingTests: XCTestCase {
         if let supersedes { obj["supersedes"] = supersedes }
         if let lineage { obj["lineage"] = lineage }
         if let parents { obj["fields"] = ["parents": parents] }
+        if let planRef { obj["plan_ref"] = planRef }
         let data = try JSONSerialization.data(withJSONObject: obj)
         try data.write(to: dir.appendingPathComponent("meta.json"))
     }
@@ -123,7 +125,8 @@ final class ArtifactRoutingTests: XCTestCase {
         func summary(status: String, stale: Bool = false,
                      unreadable: String? = nil) -> ArtifactSummary {
             ArtifactSummary(id: "a", type: "idea", version: 1, status: status,
-                            stale: stale, lineage: ["a"], sourcePhase: "p",
+                            stale: stale, intentStale: false, lineage: ["a"],
+                            sourcePhase: "p",
                             sourceSession: "s", finalizationPolicy: "requires_human",
                             unreadableReason: unreadable)
         }
@@ -148,11 +151,28 @@ final class ArtifactRoutingTests: XCTestCase {
                        .refused(reason: "branched"))
     }
 
+    func testIntentStaleIsDerivedFromSupersededPlanAndDistinctFromContentStale() throws {
+        let project = try tempProject()
+        try meta(project, id: "plan", type: "plan")
+        try meta(project, id: "plan-2", version: 2, supersedes: "plan",
+                 lineage: ["plan"], type: "plan")
+        try meta(project, id: "output", type: "research_brief",
+                 planRef: ["plan_id": "plan", "plan_version": 1,
+                           "step_id": "research"])
+        let output = try XCTUnwrap(ArtifactIndex.scanProject(
+            project, policies: [:]).first { $0.id == "output" })
+        XCTAssertFalse(output.stale, "content lineage is still current")
+        XCTAssertTrue(output.intentStale, "approved intent has a newer version")
+        XCTAssertEqual(ArtifactCardState.resolve(summary: output, route: nil),
+                       .intentStale)
+    }
+
     func testFinalizeEligibilityRequiresPendingStateReadableMetaAndRealPolicy() {
         func summary(status: String = "pending_review", policy: String = "requires_human",
                      unreadable: String? = nil) -> ArtifactSummary {
             ArtifactSummary(id: "a", type: "spec_bundle", version: 1,
-                            status: status, stale: false, lineage: ["a"],
+                            status: status, stale: false, intentStale: false,
+                            lineage: ["a"],
                             sourcePhase: "report", sourceSession: "demo/planning/chat",
                             finalizationPolicy: policy, unreadableReason: unreadable)
         }

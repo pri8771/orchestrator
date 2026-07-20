@@ -8383,6 +8383,14 @@ def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
             src = {"section": section,
                    "session": os.path.basename(app_dir),
                    "phase": key, "turn": turn}
+            delegation = seslib.read_delegation(
+                app_dir, on_error=lambda m: _warn(m))
+            request = delegation.get("request") if isinstance(
+                delegation, dict) else None
+            plan_ref = request.get("plan_ref") if isinstance(
+                request, dict) else None
+            if isinstance(plan_ref, dict):
+                src["plan_ref"] = dict(plan_ref)
             # Crash-resume guard: a re-close of this same phase (publish
             # landed durably, skip-on-resume state didn't) must not mint
             # -2 duplicates of what it already published.
