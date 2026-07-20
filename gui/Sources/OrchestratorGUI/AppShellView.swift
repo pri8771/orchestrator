@@ -461,7 +461,7 @@ struct AppShellView: View {
         case .conductor:
             EmptyStateView(symbol: "point.3.connected.trianglepath.dotted",
                            title: "Conductor",
-                           message: "The Conductor workspace is available for this engine.")
+                           message: "The Conductor arrives with M7 — this surface is not yet available.")
         }
     }
 

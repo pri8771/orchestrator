@@ -54,14 +54,14 @@ enum RoutePreviewResolver {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return nil }
 
-        for key in ["artifact_routes", "default_routes", "defaults"] {
-            if let raw = root[key] as? [String: Any] { return normalize(raw) }
-        }
-        if let raw = root["routes"] as? [String: Any] { return normalize(raw) }
-        if let raw = root["routes"] as? [[String: Any]] { return normalize(raw) }
-        if let raw = root["rules"] as? [[String: Any]] { return normalize(raw) }
-        // 3.4's current model-only routing overlays contain only `phases`.
-        // They have no artifact route, so the honest preview is hidden.
+        // ONLY "artifact_routes" is recognized — the 7.2 routing-rules
+        // contract-to-be. Today's engine writes model-routing overlays
+        // (schema_version/enabled/fallback/phases) and no artifact routes at
+        // all, so on every real installation this returns [:] and the chip
+        // stays hidden (R2: never preview a route no engine would take).
+        // Guessing other key spellings would light the chip from fiction;
+        // 7.2 must update this reader in lockstep with its writer.
+        if let raw = root["artifact_routes"] as? [String: Any] { return normalize(raw) }
         return [:]
     }
 

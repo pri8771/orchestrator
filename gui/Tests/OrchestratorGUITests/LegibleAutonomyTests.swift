@@ -9,8 +9,8 @@ final class LegibleAutonomyTests: XCTestCase {
     }
 
     func testRoutePreviewHitMissAndProjectOverlayPrecedence() {
-        let fleet = Data(#"{"default_routes":{"idea":"research","gap":"documentation"}}"#.utf8)
-        let project = Data(#"{"default_routes":{"idea":"planning"}}"#.utf8)
+        let fleet = Data(#"{"artifact_routes":{"idea":"research","gap":"documentation"}}"#.utf8)
+        let project = Data(#"{"artifact_routes":{"idea":"planning"}}"#.utf8)
         XCTAssertEqual(RoutePreviewResolver.resolve(.init(
             section: "ideas", artifactType: "idea",
             fleetRouting: fleet, projectRouting: project)), "planning")
@@ -31,11 +31,22 @@ final class LegibleAutonomyTests: XCTestCase {
             fleetRouting: Data("{".utf8), projectRouting: nil)))
     }
 
-    func testRuleArrayShapeResolvesDeterministicTarget() {
-        let data = Data(#"{"routes":[{"match":{"artifact_type":"idea"},"strategy":"one","target":"research"}]}"#.utf8)
-        XCTAssertEqual(RoutePreviewResolver.resolve(.init(
+    func testEngineRealModelRoutingOverlayHidesPreview() {
+        // The ONLY routing.json the engine writes today (modelrouting.py):
+        // phases/model overlays, zero artifact routes. The chip must stay
+        // hidden on a real installation — and alias keys the 7.2 contract
+        // does not define must not light it either (R2).
+        let real = Data(#"{"schema_version":1,"enabled":true,"fallback":"claude","phases":{"tech_specs":{"claude":"claude-sonnet-5"}}}"#.utf8)
+        XCTAssertNil(RoutePreviewResolver.resolve(.init(
             section: "ideas", artifactType: "idea",
-            fleetRouting: data, projectRouting: nil)), "research")
+            fleetRouting: real, projectRouting: nil)))
+        for alias in ["default_routes", "defaults", "rules", "routes"] {
+            let data = Data("{\"\(alias)\":{\"idea\":\"research\"}}".utf8)
+            XCTAssertNil(RoutePreviewResolver.resolve(.init(
+                section: "ideas", artifactType: "idea",
+                fleetRouting: data, projectRouting: nil)),
+                "alias key \(alias) must not light the preview")
+        }
     }
 
     func testPreviewSourceIsInjectableForConductorUpgrade() {

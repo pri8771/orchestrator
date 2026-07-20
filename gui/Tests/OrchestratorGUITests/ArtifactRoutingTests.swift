@@ -14,7 +14,8 @@ final class ArtifactRoutingTests: XCTestCase {
     private func meta(_ project: URL, id: String, status: String = "final",
                       version: Int = 1, supersedes: String? = nil,
                       lineage: [String]? = nil, ts: String = "2026-01-01",
-                      type: String = "idea", phase: String = "report") throws {
+                      type: String = "idea", phase: String = "report",
+                      parents: [String]? = nil) throws {
         let dir = project.appendingPathComponent("artifacts/\(id)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var obj: [String: Any] = ["id": id, "type": type, "status": status,
@@ -22,6 +23,7 @@ final class ArtifactRoutingTests: XCTestCase {
                                   "source": ["phase": phase, "session": "chat"]]
         if let supersedes { obj["supersedes"] = supersedes }
         if let lineage { obj["lineage"] = lineage }
+        if let parents { obj["fields"] = ["parents": parents] }
         let data = try JSONSerialization.data(withJSONObject: obj)
         try data.write(to: dir.appendingPathComponent("meta.json"))
     }
@@ -228,5 +230,26 @@ final class ArtifactRoutingTests: XCTestCase {
         XCTAssertEqual(event.artifactType, "idea")
         XCTAssertEqual(event.artifactVersion, 2)
         XCTAssertEqual(event.artifactPath, "artifacts/idea")
+    }
+
+    func testReconcileRetiresBranchHeadsAndRestoresRoutability() throws {
+        // Engine reality: a reconcile lists merged heads in fields.parents
+        // (supersedes stays null). Before the fix those heads survived as
+        // rivals and the routable artifact vanished forever post-reconcile.
+        let project = try tempProject()
+        try meta(project, id: "root", status: "superseded",
+                 lineage: ["root"], ts: "2026-01-01")
+        try meta(project, id: "branchA", supersedes: "root",
+                 lineage: ["root", "branchA"], ts: "2026-01-02")
+        try meta(project, id: "branchB", supersedes: "root",
+                 lineage: ["root", "branchB"], ts: "2026-01-02")
+        // Two rival heads: nothing routable yet (ambiguous lineage).
+        XCTAssertNil(ArtifactRouteIndex.latestRoutable(projectDir: project))
+        try meta(project, id: "merged",
+                 lineage: ["root", "merged"], ts: "2026-01-03",
+                 type: "reconcile", parents: ["branchA", "branchB"])
+        let routable = ArtifactRouteIndex.latestRoutable(projectDir: project)
+        XCTAssertEqual(routable?.id, "merged",
+                       "post-reconcile lineage must be routable again")
     }
 }

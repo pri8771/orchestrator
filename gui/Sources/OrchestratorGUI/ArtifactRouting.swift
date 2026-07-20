@@ -174,10 +174,21 @@ enum ArtifactRouteIndex {
             metas.append(meta)
         }
         let ids = Set(metas.compactMap { $0["id"] as? String })
-        let superseded = Set(metas.compactMap { meta -> String? in
+        var superseded = Set(metas.compactMap { meta -> String? in
             guard let parent = meta["supersedes"] as? String, ids.contains(parent) else { return nil }
             return parent
         })
+        // Reconcile edges retire branch heads too: a reconcile artifact lists
+        // the merged heads in fields.parents (its supersedes stays null),
+        // matching ArtifactIndex.scanProject's staleness walk. Without this,
+        // one branch+reconcile left rival "heads" behind forever and
+        // permanently hid the project's routable artifact.
+        for meta in metas {
+            guard let fields = meta["fields"] as? [String: Any],
+                  let parents = fields["parents"] as? [Any] else { continue }
+            for parent in parents.compactMap({ $0 as? String })
+            where ids.contains(parent) { superseded.insert(parent) }
+        }
         let heads = metas.filter { meta in
             guard let id = meta["id"] as? String else { return false }
             return !superseded.contains(id) && (meta["status"] as? String) != "converged"
