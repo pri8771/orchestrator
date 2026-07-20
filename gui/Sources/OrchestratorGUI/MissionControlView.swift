@@ -32,6 +32,8 @@ struct MissionDecision: Identifiable, Equatable, Sendable {
         case "route_deferred": return "Route deferred"
         case "snapshot": return "Workspace snapshot"
         case "snapshot_failed": return "Snapshot failed"
+        case "pipeline_loaded": return "Pipeline loaded"
+        case "pipeline_load_failed": return "Pipeline refused"
         default: return decision.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
@@ -91,6 +93,8 @@ struct MissionControlSnapshot: Equatable, Sendable {
     var budget = MissionBudgetSnapshot()
     var newlyFiredRouteIDs: Set<String> = []
     var warnings: [String] = []
+    var activePipelineName: String?
+    var activePipelineLoadedAt: Date?
 
     var timeRange: ClosedRange<Date>? {
         guard let first = decisions.first?.timestamp,
@@ -205,6 +209,10 @@ enum MissionControlDisk {
             ["route_approved", "route_recovered"].contains($0.decision)
                 ? $0.routeID : nil
         })
+        snapshot.activePipelineName = ((state["pipeline"] as? [String: Any])?["preset_name"] as? String)
+        snapshot.activePipelineLoadedAt = ledger.decisions.reversed().first {
+            $0.decision == "pipeline_loaded"
+        }?.timestamp
         snapshot.snapshotTags = scanSnapshotTags(rootURL: rootURL)
         snapshot.decisions.append(contentsOf: snapshot.snapshotTags.map { tag in
             MissionDecision(id: "snapshot:\(tag.name)", timestamp: tag.timestamp,
@@ -301,6 +309,12 @@ enum MissionControlDisk {
         let detail = obj["detail"] as? [String: Any] ?? [:]
         let routeID = obj["route_id"] as? String ?? ""
         let id = routeID.isEmpty ? "line:\(index):\(raw)" : "\(routeID):\(raw):\(index)"
+        let reason = (detail["reason"] as? String)
+            ?? ((detail["evidence"] as? [String: Any])?["reason"] as? String)
+            ?? (detail["preset_name"] as? String).map { name in
+                let path = detail["preset_path"] as? String ?? "saved preset"
+                return "preset \(name) · \(path)"
+            } ?? ""
         return MissionDecision(
             id: id, timestamp: Date(timeIntervalSince1970: seconds), decision: raw,
             session: (obj["session"] as? String)
@@ -308,9 +322,7 @@ enum MissionControlDisk {
             artifactID: detail["artifact_id"] as? String ?? "",
             target: detail["target"] as? String ?? "",
             ruleID: detail["rule_id"] as? String ?? "",
-            reason: (detail["reason"] as? String)
-                ?? ((detail["evidence"] as? [String: Any])?["reason"] as? String)
-                ?? "", routeID: routeID)
+            reason: reason, routeID: routeID)
     }
 
     nonisolated private static func scanSnapshotTags(

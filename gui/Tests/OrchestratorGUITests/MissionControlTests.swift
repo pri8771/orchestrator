@@ -210,6 +210,26 @@ final class MissionControlTests: XCTestCase {
         XCTAssertEqual(snapshot.decisions[0].reason, "cursor 7")
     }
 
+    func testActivePipelineIdentityAndLoadTimeComeFromDurableStateAndLedger() throws {
+        try baseState(extra: [
+            "pipeline": ["preset_name": "Brainstorm to Plan"]
+        ])
+        try appendLedger([
+            ["ts": 42.0, "decision": "pipeline_loaded",
+             "detail": ["preset_name": "Brainstorm to Plan",
+                        "preset_path": "/tmp/preset.json"]],
+        ])
+        let snapshot = MissionControlDisk.scan(
+            rootURL: root, costs: [:], now: Date(timeIntervalSince1970: 50),
+            isPidAlive: { _ in false })
+        XCTAssertEqual(snapshot.activePipelineName, "Brainstorm to Plan")
+        XCTAssertEqual(snapshot.activePipelineLoadedAt,
+                       Date(timeIntervalSince1970: 42))
+        XCTAssertEqual(snapshot.decisions.first?.title, "Pipeline loaded")
+        XCTAssertTrue(snapshot.decisions.first?.explanation.contains(
+            "preset Brainstorm to Plan · /tmp/preset.json") == true)
+    }
+
     func testBudgetMetersUsePersistedProviderSpendAndDistinctLimits() throws {
         try baseState(extra: [
             "halted": ["reason": "turns_exhausted"],

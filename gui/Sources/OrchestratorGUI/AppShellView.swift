@@ -1241,6 +1241,7 @@ private struct FactoryOverviewView: View {
 private struct WorkflowsLibraryView: View {
     @EnvironmentObject var store: OrchestratorStore
     @State private var showBuilder = false
+    @State private var showPipelineBuilder = false
 
     var body: some View {
         ScrollView {
@@ -1248,6 +1249,7 @@ private struct WorkflowsLibraryView: View {
                 HStack {
                     Text("Workflows").font(DS.font.title)
                     Spacer()
+                    Button("Pipeline Canvas…") { showPipelineBuilder = true }
                     Button("Open Builder…") { showBuilder = true }
                 }
                 ForEach(store.workflows) { wf in
@@ -1278,6 +1280,9 @@ private struct WorkflowsLibraryView: View {
         }
         .sheet(isPresented: $showBuilder) {
             WorkflowBuilderSheet().environmentObject(store)
+        }
+        .sheet(isPresented: $showPipelineBuilder) {
+            PipelineBuilderSheet().environmentObject(store)
         }
     }
 }

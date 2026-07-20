@@ -940,6 +940,7 @@ final class OrchestratorStore: ObservableObject {
     @Published var conductorSurfaceAvailable = true
     @Published var conductorOversight = ConductorOversightSnapshot()
     @Published var missionControl = MissionControlSnapshot()
+    @Published var pipelinePresetWarning: String?
     @Published var artifactRouteStates: [String: ArtifactRouteState] = [:]
     @Published var artifactsByProject: [String: [ArtifactSummary]] = [:]
     @Published var artifactFinalizeInFlight: Set<String> = []
@@ -2548,6 +2549,114 @@ final class OrchestratorStore: ObservableObject {
     var libraryDirURL: URL { orchDirURL.appendingPathComponent("library", isDirectory: true) }
     var snippetsURL: URL { libraryDirURL.appendingPathComponent("snippets.json") }
     var profilesDirURL: URL { libraryDirURL.appendingPathComponent("profiles", isDirectory: true) }
+    var pipelinePresetsDirURL: URL {
+        Self.appSupportBaseURL.appendingPathComponent(
+            "pipeline_presets", isDirectory: true)
+    }
+
+    func knownPipelineSections() -> Set<String> {
+        let dir = orchDirURL.appendingPathComponent("sections")
+        return Set(((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter {
+            !$0.hasPrefix("_") && !$0.hasPrefix(".")
+                && fm.fileExists(atPath: dir.appendingPathComponent(
+                    "\($0)/section.json").path)
+        })
+    }
+
+    func listPipelinePresets() -> [PipelinePresetRecord] {
+        let loaded = PipelinePresetLibrary.load(
+            dir: pipelinePresetsDirURL,
+            knownSections: knownPipelineSections())
+        pipelinePresetWarning = loaded.warning
+        if let warning = loaded.warning { runLog += "\(warning)\n" }
+        return loaded.records
+    }
+
+    @discardableResult
+    func savePipelinePreset(_ canvas: PipelineCanvas,
+                            replacing: URL? = nil) -> URL? {
+        switch PipelineCodec.encode(canvas) {
+        case .failure(let error):
+            surfaceError(error); return nil
+        case .success(let data):
+            do {
+                let url = try PipelinePresetLibrary.save(
+                    data, name: canvas.name, dir: pipelinePresetsDirURL,
+                    replacing: replacing)
+                runLog += "Saved pipeline preset “\(canvas.name)”.\n"
+                return url
+            } catch {
+                surfaceError("Couldn't save pipeline preset: \(error.localizedDescription)")
+                return nil
+            }
+        }
+    }
+
+    func deletePipelinePreset(_ preset: PipelinePresetRecord) {
+        do {
+            try fm.trashItem(at: preset.url, resultingItemURL: nil)
+            runLog += "Moved pipeline preset “\(preset.name)” to the Trash.\n"
+        } catch {
+            surfaceError("Couldn't move pipeline preset to the Trash: \(error.localizedDescription)")
+        }
+    }
+
+    @discardableResult
+    func runPipeline(_ canvas: PipelineCanvas, presetURL: URL,
+                     project: String, idea: String) -> String? {
+        let cleanIdea = idea.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanIdea.isEmpty, !cleanProject.isEmpty else {
+            surfaceError("Run pipeline needs a project name and seed idea.")
+            return nil
+        }
+        if missionControl.conductorRunning
+            && !PipelineRunFiles.runningConductorHasRouting(root: rootURL) {
+            surfaceError("The running Conductor is observation-only (or its --route mode cannot be verified). Stop it, then run the pipeline so the GUI can launch routing explicitly.")
+            return nil
+        }
+        let manifestURL = orchDirURL.appendingPathComponent(
+            "sections/\(canvas.seedSection)/section.json")
+        guard let data = try? Data(contentsOf: manifestURL) else {
+            surfaceError("seed.section: no readable manifest for '\(canvas.seedSection)'")
+            return nil
+        }
+        // workflow.txt resolves only named fleet workflows. An inline
+        // section workflow has a display name but is not addressable by the
+        // engine resolver; treating that name as runnable would silently
+        // fall through to the wrong default workflow.
+        let workflow = PipelineRunFiles.namedWorkflow(fromSectionManifest: data)
+        guard let workflow, !workflow.isEmpty else {
+            surfaceError("seed.section: '\(canvas.seedSection)' uses an inline workflow that cannot be launched by name")
+            return nil
+        }
+        do {
+            let seeded = try PipelineRunFiles.seed(
+                root: rootURL, project: cleanProject, canvas: canvas,
+                idea: cleanIdea, workflow: workflow)
+            try PipelineRunFiles.writeRequest(root: rootURL, presetURL: presetURL)
+            if !runController.isRunning(seeded.sessionID) {
+                launch(args: ["orchestrator.py", "--root", rootURL.path,
+                              "--app", seeded.sessionID],
+                       project: seeded.sessionID)
+            }
+            // A live Conductor consumes the marker on its next ordinary poll;
+            // otherwise launch the exact same engine with routing enabled.
+            if !missionControl.conductorRunning
+                && !runController.isRunning("__conductor__") {
+                launch(args: ["conductor.py", "--root", rootURL.path,
+                              "--route"], project: "__conductor__")
+            }
+            runLog += seeded.newlyMinted
+                ? "Pipeline “\(canvas.name)” seeded \(seeded.sessionID).\n"
+                : "Pipeline seed already exists at \(seeded.sessionID); no duplicate minted.\n"
+            refresh()
+            return seeded.sessionID
+        } catch {
+            surfaceError("Couldn't run pipeline: \(error.localizedDescription)")
+            return nil
+        }
+    }
 
     func loadSnippets(section: String? = nil,
                       projectDir: URL? = nil) -> [PromptSnippet] {
