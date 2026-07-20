@@ -10,5 +10,6 @@
     "idea",
     "research_brief"
   ],
-  "dod_tier": "strict"
+  "dod_tier": "strict",
+  "local_pins": []
 }

@@ -4,7 +4,7 @@ A section is a chat studio described entirely by
 sections/<name>/section.json:
 
     {id, title, workflow, default_mode, artifact_types_emitted,
-     artifact_types_accepted, dod_tier}
+     artifact_types_accepted, dod_tier, local_pins}
 
 `workflow` is either a workflow NAME (resolved via workflows.load_workflow)
 or an inline workflow JSON object (workflows.Workflow.from_json). Unknown
@@ -38,6 +38,7 @@ import json
 import os
 
 import events as evlib
+import localmodels as lmlib
 import workflows as wflib
 
 SECTIONS_DIRNAME = "sections"
@@ -62,7 +63,8 @@ _BUILTINS = {
         "artifact_types_accepted": [
                 "opportunity_signal"
         ],
-        "dod_tier": "standard"
+        "dod_tier": "standard",
+        "local_pins": []
     },
     "research": {
         "id": "research",
@@ -76,7 +78,8 @@ _BUILTINS = {
         "artifact_types_accepted": [
                 "idea"
         ],
-        "dod_tier": "standard"
+        "dod_tier": "standard",
+        "local_pins": []
     },
     "qa": {
         "id": "qa",
@@ -89,7 +92,8 @@ _BUILTINS = {
         "artifact_types_accepted": [
                 "any"
         ],
-        "dod_tier": "strict"
+        "dod_tier": "strict",
+        "local_pins": []
     },
     "planning": {
         "id": "planning",
@@ -103,7 +107,8 @@ _BUILTINS = {
                 "idea",
                 "research_brief"
         ],
-        "dod_tier": "strict"
+        "dod_tier": "strict",
+        "local_pins": []
     },
 }
 
@@ -114,11 +119,11 @@ class Section(object):
 
     __slots__ = ("id", "title", "workflow", "workflow_name", "default_mode",
                  "artifact_types_emitted", "artifact_types_accepted",
-                 "dod_tier", "capabilities", "extra")
+                 "dod_tier", "capabilities", "local_pins", "extra")
 
     def __init__(self, id, title, workflow, workflow_name, default_mode,
                  artifact_types_emitted, artifact_types_accepted, dod_tier,
-                 capabilities=None, extra=None):
+                 capabilities=None, local_pins=None, extra=None):
         self.id = id
         self.title = title
         self.workflow = workflow            # a workflows.Workflow object
@@ -128,6 +133,7 @@ class Section(object):
         self.artifact_types_accepted = list(artifact_types_accepted)
         self.dod_tier = dod_tier
         self.capabilities = dict(capabilities or DEFAULT_CAPABILITIES)
+        self.local_pins = list(local_pins or [])
         self.extra = dict(extra or {})
 
     def to_json(self):
@@ -141,6 +147,7 @@ class Section(object):
             "artifact_types_accepted": list(self.artifact_types_accepted),
             "dod_tier": self.dod_tier,
             "capabilities": dict(self.capabilities),
+            "local_pins": list(self.local_pins),
         }
         for k, v in self.extra.items():
             d.setdefault(k, v)
@@ -149,7 +156,7 @@ class Section(object):
 
 _KNOWN_FIELDS = ("id", "title", "workflow", "default_mode",
                  "artifact_types_emitted", "artifact_types_accepted",
-                 "dod_tier", "capabilities")
+                 "dod_tier", "capabilities", "local_pins")
 
 
 # V3 7.4: per-section capability manifest. Default-DENY (§9.3): a section
@@ -197,6 +204,37 @@ def exceeds_workspace_only(caps):
     if not isinstance(caps, dict):
         return False
     return bool(caps.get("exec") or caps.get("external"))
+
+
+def normalize_local_pins(raw, installed=None, on_warn=None):
+    """Validate section-local Ollama residency pins.
+
+    A pin is an operational promise, so malformed, unknown, or uninstalled
+    tags are ignored with a visible warning instead of being accepted as a
+    fake feature. ``installed`` is injectable for lint/tests.
+    """
+    warn = on_warn or (lambda _message: None)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        warn("local_pins must be a list of installed model tags — ignoring it")
+        return []
+    if not raw:
+        return []
+    available = set(installed if installed is not None
+                    else lmlib.installed_models_cached())
+    result = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            warn("local_pins contains a non-string/empty tag — ignoring it")
+            continue
+        tag = value.strip()
+        if tag not in available:
+            warn("local_pins model %r is not installed — pin ignored" % tag)
+            continue
+        if tag not in result:
+            result.append(tag)
+    return result
 
 
 def _sections_dir(orch_dir):
@@ -275,6 +313,8 @@ def _from_raw(name, raw, orch_dir, path, app_dir, allow_banner=True):
         if allow_banner else None
     capabilities = normalize_capabilities(raw.get("capabilities"),
                                           on_warn=cap_warn)
+    local_pins = normalize_local_pins(raw.get("local_pins"),
+                                      on_warn=cap_warn)
     return Section(
         id=str(raw["id"]), title=str(raw["title"]),
         workflow=wf, workflow_name=wf_name,
@@ -282,7 +322,7 @@ def _from_raw(name, raw, orch_dir, path, app_dir, allow_banner=True):
         artifact_types_emitted=[str(t) for t in emitted],
         artifact_types_accepted=[str(t) for t in accepted],
         dod_tier=str(raw.get("dod_tier", DEFAULT_DOD_TIER)),
-        capabilities=capabilities, extra=extra)
+        capabilities=capabilities, local_pins=local_pins, extra=extra)
 
 
 def load_section(name, orch_dir, app_dir=None):

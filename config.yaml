@@ -72,6 +72,12 @@ models:
   # win the slots first (in roster order), then not-yet-pulled ones. 0 = no
   # limit (every roster entry joins, today's behavior).
   local_active_limit: 3
+  # Ollama residency policy for dynamic local:<model> HTTP turns. Pinned
+  # section models stay loaded indefinitely; other models use this duration.
+  local_keep_alive: "5m"
+  # Unified-memory budget for resident local models. 0 selects a conservative
+  # automatic budget (60% of detected physical RAM).
+  local_memory_budget_gb: 0
 
 # Optional, OFF by default: per-model dollar-cost estimates surfaced in
 # `--postmortem`'s turn-telemetry section. This engine measures OUTPUT

@@ -119,6 +119,59 @@ class TestOllamaListParsing(unittest.TestCase):
         self.assertEqual(lm.installed_models(run=fails), [])
 
 
+class _HTTPResponse:
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self.payload
+
+
+class TestOllamaLifecycleProbes(unittest.TestCase):
+    def test_loaded_models_ps_normalizes_response(self):
+        def opener(req, timeout=None):
+            self.assertEqual(req.full_url, lm.OLLAMA_PS_URL)
+            self.assertEqual(timeout, 7)
+            return _HTTPResponse({"models": [
+                {"name": "alpha", "size": 123, "expires_at": "later"},
+                {"model": "beta", "size_bytes": 456},
+                {"size": 999},
+            ]})
+        self.assertEqual(lm.loaded_models_ps(7, opener=opener), [
+            {"model": "alpha", "size_bytes": 123, "expires_at": "later"},
+            {"model": "beta", "size_bytes": 456, "expires_at": None},
+        ])
+
+    def test_loaded_models_ps_never_raises_and_warns(self):
+        warnings = []
+        result = lm.loaded_models_ps(
+            opener=lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("late")),
+            on_warn=warnings.append)
+        self.assertEqual(result, [])
+        self.assertIn("/api/ps unavailable", warnings[0])
+
+    def test_unload_posts_zero_keep_alive_and_never_raises(self):
+        bodies = []
+
+        def opener(req, timeout=None):
+            bodies.append(json.loads(req.data.decode("utf-8")))
+            return _HTTPResponse({"done": True})
+        self.assertTrue(lm.unload_model("alpha", opener=opener))
+        self.assertEqual(bodies, [{"model": "alpha", "prompt": "",
+                                  "stream": False, "keep_alive": 0}])
+        warnings = []
+        self.assertFalse(lm.unload_model(
+            "alpha", opener=lambda *_a, **_k: (_ for _ in ()).throw(OSError("no")),
+            on_warn=warnings.append))
+        self.assertIn("Could not unload", warnings[0])
+
+
 class TestRosterGating(unittest.TestCase):
     """enabled_agents() includes/excludes local identities per config."""
 

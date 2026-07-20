@@ -9,5 +9,6 @@
   "artifact_types_accepted": [
     "any"
   ],
-  "dod_tier": "strict"
+  "dod_tier": "strict",
+  "local_pins": []
 }

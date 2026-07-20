@@ -1652,6 +1652,10 @@ def run_ollama(cfg, prompt, timeout):
     if not model:
         raise AgentError("Local (Ollama) has no model selected — set models.ollama "
                          "in config.yaml (see local_models.json for the curated list).")
+    # V3 8.10 lifecycle policy (keep_alive, pins, /api/ps LRU eviction) is
+    # intentionally HTTP-only. This CLI path has no request-body seam for
+    # those controls, so it remains accepted-but-noop just like reasoning
+    # below rather than pretending the policy was enforced.
     # models.ollama_reasoning IS honored on the HTTP path (run_local, used by
     # dynamic local:<model> agents) as Ollama's /api/generate "think" field —
     # but this function shells out to the plain `ollama run <model>` CLI with
@@ -1687,8 +1691,33 @@ def run_local(cfg, prompt, timeout, model=None):
     (out, err, code, command) shape as the CLI runners."""
     model = (model or cget(cfg, "models.local_default", "")
              or cget(cfg, "models.ollama", "") or "llama3.1:8b")
-    url = "http://127.0.0.1:11434/api/generate"
-    body = {"model": model, "prompt": prompt, "stream": False}
+    url = lmlib.OLLAMA_GENERATE_URL
+    # V3 8.10: derive section pins from the manifest without mutating cfg —
+    # concurrent lanes share cfg, so lifecycle state belongs in the flocked
+    # runtime ledger and explicit arguments only.
+    pins = []
+    section_dir = _section_dir(cfg)
+    if section_dir:
+        section = seclib.load_section(os.path.basename(section_dir), HERE,
+                                      app_dir=cfg.get("_app_dir"))
+        pins = section.local_pins
+    keep_alive = -1 if model in pins else cget(
+        cfg, "models.local_keep_alive", "5m")
+    budget = cget(cfg, "models.local_memory_budget_gb", 0)
+    try:
+        budget = float(budget)
+    except (TypeError, ValueError):
+        budget = 0
+    if budget <= 0:
+        budget = lmlib.default_memory_budget_gb()
+
+    def lifecycle_warning(message):
+        emit("Local-model lifecycle: %s" % message)
+
+    lmlib.ensure_capacity(model, budget, pins=pins,
+                          on_warn=lifecycle_warning, here=HERE)
+    body = {"model": model, "prompt": prompt, "stream": False,
+            "keep_alive": keep_alive}
     # Real Ollama capability (verified against /api/generate's documented
     # request schema, not invented): reasoning-capable models (deepseek-r1,
     # qwen3, ...) accept a boolean "think" field. Effort levels below
@@ -1709,6 +1738,7 @@ def run_local(cfg, prompt, timeout, model=None):
         body["format"] = _sf["schema"]
     payload = json.dumps(body).encode("utf-8")
     cmd = "ollama:generate model=%s" % model
+    lifecycle_completed = False
     try:
         req = urllib.request.Request(url, data=payload,
                                      headers={"Content-Type": "application/json"},
@@ -1720,6 +1750,9 @@ def run_local(cfg, prompt, timeout, model=None):
         traceslib.set_last_usage({
             "prompt_tokens": body.get("prompt_eval_count"),
             "completion_tokens": body.get("eval_count")})
+        lmlib.mark_model_used(model, here=HERE, pins=pins,
+                              on_warn=lifecycle_warning)
+        lifecycle_completed = True
         return (body.get("response", ""), "", 0, cmd)
     except urllib.error.HTTPError as exc:
         return ("", "ollama HTTP %s: %s" % (exc.code, exc.reason), 1, cmd)
@@ -1727,6 +1760,10 @@ def run_local(cfg, prompt, timeout, model=None):
         return ("", "ollama unreachable (is `ollama serve` running?): %s" % exc.reason, 1, cmd)
     except Exception as exc:  # noqa: BLE001 - defensive; never crash the pipeline
         return ("", "ollama error: %s" % exc, 1, cmd)
+    finally:
+        if not lifecycle_completed:
+            lmlib.release_model_reservation(
+                model, here=HERE, on_warn=lifecycle_warning)
 
 
 # Roster runners ("ollama" = the configured local model via `ollama run`);

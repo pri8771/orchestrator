@@ -4,6 +4,8 @@ __pycache__/
 *.log
 logs/
 locks/
+runtime/loaded_models.json
+runtime/loaded_models.lock
 .codex_model_probe.json
 .gemini_probe.json
 

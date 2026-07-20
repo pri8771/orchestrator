@@ -6,5 +6,6 @@
   "default_mode": "manual",
   "artifact_types_emitted": [],
   "artifact_types_accepted": [],
-  "dod_tier": "standard"
+  "dod_tier": "standard",
+  "local_pins": []
 }

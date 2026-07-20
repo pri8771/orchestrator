@@ -13,5 +13,6 @@
     "spec_bundle",
     "finding_report"
   ],
-  "dod_tier": "standard"
+  "dod_tier": "standard",
+  "local_pins": []
 }

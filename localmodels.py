@@ -11,16 +11,19 @@ One small, dependency-free module for everything local-model:
 * a machine-readable report merged into `--doctor --json` (spec §27) and
   consumed by the GUI's Local Models settings.
 
-Everything here is best-effort and side-effect free: probes never raise, they
-just answer False/empty. Tests inject fake runners / monkeypatch the probes so
-the suite passes with or without Ollama installed.
+Probes are best-effort and never raise. Lifecycle mutations are confined to
+Ollama's loopback API and a flocked runtime ledger; tests inject fake runners /
+openers so the suite passes with or without Ollama installed.
 """
 
+import errno
+import fcntl
 import json
 import os
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -38,6 +41,11 @@ REGISTRY_PUBLIC_FIELDS = (
 # about the server; `ollama ps` spins up a client that can hang on a wedged
 # daemon — the HTTP probe has a hard timeout).
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
+OLLAMA_PS_URL = "http://127.0.0.1:11434/api/ps"
+OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
+LOADED_MODELS_FILENAME = "loaded_models.json"
+LOADED_MODELS_LOCK_FILENAME = "loaded_models.lock"
+DEFAULT_UNKNOWN_SIZE_GB = 8.0
 
 
 _STRING_FIELDS = ("label", "runtime", "license", "license_url", "notes")
@@ -239,6 +247,316 @@ def server_running(timeout=3):
             return True
     except Exception:   # noqa: BLE001 - any failure just means "not running"
         return False
+
+
+def loaded_models_ps(timeout=3, opener=None, on_warn=None):
+    """Return Ollama's live resident models in a stable, small shape.
+
+    ``/api/ps`` is ground truth for residency. The probe never raises; a dead
+    or malformed endpoint yields ``[]`` and a specific warning when supplied.
+    ``opener`` is injectable for deterministic tests.
+    """
+    warn = on_warn or (lambda _message: None)
+    opener = opener or urllib.request.urlopen
+    try:
+        req = urllib.request.Request(OLLAMA_PS_URL, method="GET")
+        with opener(req, timeout=timeout) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        models = raw.get("models") if isinstance(raw, dict) else None
+        if not isinstance(models, list):
+            raise ValueError("response has no models list")
+        result = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            model = str(item.get("name") or item.get("model") or "").strip()
+            if not model:
+                continue
+            try:
+                size = max(0, int(item.get("size") or item.get("size_bytes") or 0))
+            except (TypeError, ValueError):
+                size = 0
+            result.append({"model": model, "size_bytes": size,
+                           "expires_at": item.get("expires_at")})
+        return result
+    except Exception as exc:  # noqa: BLE001 - probe degradation is non-fatal
+        warn("Ollama /api/ps unavailable (%s); continuing without eviction" % exc)
+        return []
+
+
+def unload_model(model, timeout=10, opener=None, on_warn=None):
+    """Ask Ollama to unload ``model`` immediately. Never raises."""
+    warn = on_warn or (lambda _message: None)
+    opener = opener or urllib.request.urlopen
+    payload = json.dumps({"model": str(model), "prompt": "", "stream": False,
+                          "keep_alive": 0}).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            OLLAMA_GENERATE_URL, data=payload,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with opener(req, timeout=timeout) as resp:
+            resp.read()
+        return True
+    except Exception as exc:  # noqa: BLE001 - current generation must proceed
+        warn("Could not unload local model %s (%s); continuing over budget"
+             % (model, exc))
+        return False
+
+
+def _runtime_paths(here):
+    runtime = os.path.join(here, "runtime")
+    return (runtime, os.path.join(runtime, LOADED_MODELS_FILENAME),
+            os.path.join(runtime, LOADED_MODELS_LOCK_FILENAME))
+
+
+def _lock_file(lock_path, timeout, on_warn):
+    """Acquire an exclusive flock by a deadline, returning an open file."""
+    try:
+        fh = open(lock_path, "a+", encoding="utf-8")
+    except OSError as exc:
+        on_warn("Local-model ledger lock could not open (%s); continuing unlocked"
+                % exc)
+        return None
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                fh.close()
+                on_warn("Local-model ledger lock failed (%s); continuing unlocked"
+                        % exc)
+                return None
+            if time.monotonic() >= deadline:
+                fh.close()
+                on_warn("Local-model ledger lock timed out; continuing without "
+                        "lifecycle bookkeeping")
+                return None
+            time.sleep(0.01)
+
+
+def _read_ledger_unlocked(path, on_warn):
+    if not os.path.exists(path):
+        return {"schema_version": 1, "models": {}}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or not isinstance(data.get("models"), dict):
+            raise ValueError("expected an object with a models object")
+        for name, entry in data["models"].items():
+            if not isinstance(name, str) or not isinstance(entry, dict):
+                raise ValueError("models entries must be objects keyed by tag")
+            int(entry.get("size_bytes") or 0)
+            float(entry.get("last_used") or 0)
+        reservations = data.get("reservations", {})
+        if not isinstance(reservations, dict):
+            raise ValueError("reservations must be an object")
+        for name, entry in reservations.items():
+            if not isinstance(name, str) or not isinstance(entry, dict):
+                raise ValueError("reservation entries must be objects keyed by tag")
+            int(entry.get("size_bytes") or 0)
+            float(entry.get("created_at") or 0)
+        return data
+    except (OSError, ValueError) as exc:
+        on_warn("Local-model ledger is corrupt (%s); rebuilding from Ollama /api/ps"
+                % exc)
+        return {"schema_version": 1, "models": {}}
+
+
+def _write_ledger_unlocked(path, data):
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _ledger_update(here, update, on_warn=None, lock_timeout=2.0):
+    warn = on_warn or (lambda _message: None)
+    runtime, path, lock_path = _runtime_paths(here)
+    try:
+        os.makedirs(runtime, exist_ok=True)
+    except OSError as exc:
+        warn("Local-model runtime directory unavailable (%s); continuing without "
+             "lifecycle bookkeeping" % exc)
+        return None
+    lock = _lock_file(lock_path, lock_timeout, warn)
+    if lock is None:
+        return None
+    try:
+        data = _read_ledger_unlocked(path, warn)
+        result = update(data)
+        _write_ledger_unlocked(path, data)
+        return result
+    except Exception as exc:  # noqa: BLE001 - bookkeeping cannot fail a turn
+        warn("Local-model lifecycle bookkeeping failed (%s); continuing generation"
+             % exc)
+        return None
+    finally:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock.close()
+
+
+def read_loaded_ledger(here, on_warn=None):
+    """Return a snapshot of the flock-protected lifecycle ledger."""
+    holder = {}
+
+    def capture(data):
+        holder.update(json.loads(json.dumps(data)))
+    result = _ledger_update(here, capture, on_warn=on_warn)
+    return holder if result is not None or holder else {"schema_version": 1,
+                                                        "models": {}}
+
+
+def _registry_size_bytes(model, here):
+    for item in load_registry(here).get("models", []):
+        if item.get("id") == model and item.get("size_gb"):
+            return int(float(item["size_gb"]) * (1024 ** 3))
+    return 0
+
+
+def default_memory_budget_gb():
+    """A conservative automatic budget: 60% of RAM, or 8GB if unknown."""
+    total = total_ram_gb()
+    return max(1.0, total * 0.60) if total else DEFAULT_UNKNOWN_SIZE_GB
+
+
+def ensure_capacity(model, budget_gb, pins=(), on_warn=None, here=None,
+                    ps_probe=None, unload=None, lock_timeout=2.0, now=None):
+    """Evict LRU non-pinned residents until ``model`` fits the memory budget.
+
+    Decisions are serialized with the ledger flock. Failure to probe, lock, or
+    unload is visible but never prevents the caller's current generation.
+    Returns the model ids successfully evicted, in order.
+    """
+    here = here or os.path.dirname(os.path.abspath(__file__))
+    warn = on_warn or (lambda _message: None)
+    ps_probe = ps_probe or (lambda: loaded_models_ps(on_warn=warn))
+    unload = unload or (lambda victim: unload_model(victim, on_warn=warn))
+    pinset = set(str(p) for p in pins)
+    try:
+        budget_bytes = int(float(budget_gb) * (1024 ** 3))
+    except (TypeError, ValueError):
+        budget_bytes = int(default_memory_budget_gb() * (1024 ** 3))
+        warn("Invalid local-model memory budget %r; using %.1fGB"
+             % (budget_gb, budget_bytes / float(1024 ** 3)))
+    evicted = []
+
+    def plan_and_apply(data):
+        # Probe under the same flock that protects the decision and incoming
+        # reservation. Two processes therefore cannot both plan from one
+        # pre-eviction snapshot and over-admit concurrent loads.
+        try:
+            resident = list(ps_probe())
+        except Exception as exc:
+            warn("Ollama /api/ps unavailable (%s); continuing without eviction"
+                 % exc)
+            resident = []
+        history = data.setdefault("models", {})
+        # /api/ps is residency truth: drop stale history from the working
+        # ledger and rebuild live entries while retaining last_used.
+        live = {}
+        for item in resident:
+            name = item["model"]
+            previous = history.get(name) if isinstance(history.get(name), dict) else {}
+            live[name] = {"size_bytes": int(item.get("size_bytes") or 0),
+                          "expires_at": item.get("expires_at"),
+                          "last_used": float(previous.get("last_used") or 0),
+                          "pinned": name in pinset}
+        history.clear()
+        history.update(live)
+        timestamp = float(time.time() if now is None else now)
+        reservations = data.setdefault("reservations", {})
+        # A killed process must not reserve memory forever. Reservations are
+        # planning state, not residency claims; /api/ps remains truth for the
+        # models mapping above.
+        reservations = {
+            name: value for name, value in reservations.items()
+            if isinstance(value, dict)
+            and timestamp - float(value.get("created_at") or 0) < 120
+        }
+        data["reservations"] = reservations
+        incoming_size = _registry_size_bytes(model, here)
+        if not incoming_size:
+            incoming_size = live.get(model, {}).get("size_bytes", 0)
+        if not incoming_size:
+            incoming_size = int(DEFAULT_UNKNOWN_SIZE_GB * (1024 ** 3))
+            warn("Unknown size for local model %s; reserving conservative %.1fGB"
+                 % (model, DEFAULT_UNKNOWN_SIZE_GB))
+        used = sum(v["size_bytes"] for v in live.values())
+        used += sum(int(v.get("size_bytes") or 0)
+                    for name, v in reservations.items() if name != model)
+        required = 0 if model in live else incoming_size
+        candidates = sorted(
+            (name for name in live if name not in pinset and name != model),
+            key=lambda name: (live[name]["last_used"], name))
+        while used + required > budget_bytes and candidates:
+            victim = candidates.pop(0)
+            try:
+                unloaded = bool(unload(victim))
+            except Exception as exc:  # noqa: BLE001 - injected/alternate unloaders
+                unloaded = False
+                warn("Could not unload local model %s (%s); continuing over budget"
+                     % (victim, exc))
+            if unloaded:
+                used -= live[victim]["size_bytes"]
+                history.pop(victim, None)
+                evicted.append(victim)
+                warn("Evicted local model %s for %s under %.1fGB budget"
+                     % (victim, model, budget_bytes / float(1024 ** 3)))
+            else:
+                # Do not spin forever retrying a daemon that refused unload.
+                break
+        if used + required > budget_bytes:
+            warn("Local model %s will run over %.1fGB budget: remaining models "
+                 "are pinned or could not be unloaded" %
+                 (model, budget_bytes / float(1024 ** 3)))
+        if model not in live:
+            reservations[model] = {"size_bytes": incoming_size,
+                                   "created_at": timestamp,
+                                   "pinned": model in pinset}
+        return list(evicted)
+
+    result = _ledger_update(here, plan_and_apply, on_warn=warn,
+                            lock_timeout=lock_timeout)
+    return result or []
+
+
+def mark_model_used(model, here=None, pins=(), size_bytes=0, on_warn=None,
+                    lock_timeout=2.0, now=None):
+    """Flocked last-used update; concurrent processes cannot lose entries."""
+    here = here or os.path.dirname(os.path.abspath(__file__))
+    timestamp = float(time.time() if now is None else now)
+
+    def mark(data):
+        data.setdefault("reservations", {}).pop(model, None)
+        models = data.setdefault("models", {})
+        old = models.get(model) if isinstance(models.get(model), dict) else {}
+        models[model] = {"size_bytes": int(size_bytes or old.get("size_bytes") or
+                                           _registry_size_bytes(model, here)),
+                         "expires_at": old.get("expires_at"),
+                         "last_used": timestamp,
+                         "pinned": model in set(pins)}
+        return True
+    return bool(_ledger_update(here, mark, on_warn=on_warn,
+                               lock_timeout=lock_timeout))
+
+
+def release_model_reservation(model, here=None, on_warn=None,
+                              lock_timeout=2.0):
+    """Drop a before-load reservation after a failed generate request."""
+    here = here or os.path.dirname(os.path.abspath(__file__))
+
+    def release(data):
+        data.setdefault("reservations", {}).pop(model, None)
+        return True
+    return bool(_ledger_update(here, release, on_warn=on_warn,
+                               lock_timeout=lock_timeout))
 
 
 def report(here, selected):

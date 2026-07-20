@@ -9,5 +9,6 @@
   "artifact_types_accepted": [
     "opportunity_signal"
   ],
-  "dod_tier": "standard"
+  "dod_tier": "standard",
+  "local_pins": []
 }
