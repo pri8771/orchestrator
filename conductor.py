@@ -43,14 +43,25 @@ import time
 
 import sessions as seslib
 import conductor_termination as ctlib
+import pipeline_presets as pplib
 
 CONDUCTOR_DIRNAME = ".conductor"
+# V3 7.11: a marker the GUI (or any external caller) drops to request the
+# active preset for the NEXT poll, without restarting the conductor process
+# — the "equivalent state field for GUI launches" the card calls for
+# alongside --pipeline. Consumed (deleted) the moment it's read, same as
+# human_inbox.txt's peek-and-clear discipline.
+PIPELINE_REQUEST_FILENAME = "pipeline_request.json"
 # R4 explicit lifecycle (precedent: sessions.STATUS): the stage is persisted
 # on every transition so a kill at ANY point resumes into a known state.
 STAGES = ("idle", "scanning", "evaluating", "acting")
 # 7.5 terminal ledger decisions — replayed by reconcile_on_start to rebuild
 # state['terminated'] after a crash between the termination append and its save.
 _TERMINAL_DECISIONS = ("goal_met", "converged_open_items", "stalled")
+# V3 7.11: replayed by reconcile_on_start to rebuild state['pipeline'] after a
+# crash between the pipeline_loaded append and its state save (same class of
+# gap 7.5a's termination replay fixed).
+_PIPELINE_DECISIONS = ("pipeline_loaded",)
 SCHEMA_VERSION = 1
 _MAX_LEDGER_LINE_BYTES = 3500   # same PIPE_BUF discipline as events.py
 
@@ -62,6 +73,11 @@ _DECISION_FIELDS = ("current_phase", "done", "error", "awaiting_approval",
 
 def conductor_dir(root):
     return os.path.join(root, CONDUCTOR_DIRNAME)
+
+
+def _sections_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "sections")
 
 
 def lock_path(root):
@@ -143,7 +159,13 @@ def default_state():
             "terminated": {}, "quiescence": {},
             # 7.5b: workspace budget halt (stops ALL routing when set) + the
             # providers currently over their daily request quota (route defer).
-            "halted": None, "over_quota": []}
+            "halted": None, "over_quota": [],
+            # 7.11: the active pipeline preset (None = normal per-section
+            # routing/goal-manifest). Loaded ONCE from the request marker or
+            # --pipeline and held in-memory/state — never re-read from the
+            # preset FILE afterward, so a live edit to the file cannot mutate
+            # a running Conductor's rules (the "run holds its own copy" gate).
+            "pipeline": None}
 
 
 def load_conductor_state(root):
@@ -164,6 +186,7 @@ def load_conductor_state(root):
     data.setdefault("quiescence", {})
     data.setdefault("halted", None)     # 7.5b: symmetry + defense-in-depth
     data.setdefault("over_quota", [])
+    data.setdefault("pipeline", None)   # 7.11: symmetry + defense-in-depth
     if not isinstance(data["sessions"], dict) \
             or not isinstance(data["routed"], dict) \
             or not isinstance(data["terminated"], dict) \
@@ -358,6 +381,28 @@ def reconcile_on_start(root, state, emit=print):
             state["halted"] = {"reason": detail.get("reason"),
                                "ts": rec.get("ts")}
             applied += 1
+        # 7.11: a pipeline_loaded decision in the tail already happened.
+        # The ledger stores only the preset's PATH (the normalized preset
+        # itself could exceed the line-size cap and get truncated, which
+        # would corrupt a naive replay) — re-validate fresh from that path to
+        # rebuild state['pipeline']. This is a RESTART, not a live mutation:
+        # re-reading here doesn't violate "a live run holds its own copy"
+        # (that guarantee is about NOT re-reading while a single process
+        # keeps running, not about what a fresh restart re-derives).
+        if rec.get("decision") in _PIPELINE_DECISIONS:
+            detail = rec.get("detail") if isinstance(rec.get("detail"),
+                                                     dict) else {}
+            path = detail.get("preset_path")
+            if isinstance(path, str) and path:
+                preset, err = pplib.load_preset_file(
+                    path, pplib.known_sections_in_workspace(_sections_dir()))
+                if err:
+                    emit("conductor: resume could not re-validate pipeline "
+                         "preset %r (%s) — pipeline NOT reactivated" %
+                         (path, err))
+                else:
+                    state["pipeline"] = preset
+                    applied += 1
     state["ledger_cursor"] = length
     save_conductor_state(root, state)
     emit("conductor: resumed — reconciled %d un-cursored ledger entr%s "
@@ -387,6 +432,72 @@ def _record_termination(root, state, sid, reason, evidence, emit=print):
     state["ledger_cursor"] = new_len
     save_conductor_state(root, state)
     emit("conductor: session %s terminated (%s) -> %s" % (sid, reason, report))
+
+
+def pipeline_request_path(root):
+    return os.path.join(conductor_dir(root), PIPELINE_REQUEST_FILENAME)
+
+
+def _consume_pipeline_request(root, state, emit=print):
+    """Peek-and-clear the pipeline-request marker (same discipline as
+    orchestrator.py's _peek_command_from_inbox): if present, drain it
+    immediately regardless of outcome, so a broken request can't retry-loop
+    forever. On a VALID preset, ledger `pipeline_loaded` (path + name only —
+    the full preset could exceed the ledger's line-size cap) BEFORE updating
+    state (crash-safe: reconcile_on_start replays this to rebuild
+    state['pipeline']), then activate it. On an invalid preset, ledger the
+    specific refusal and leave any PRIOR active preset untouched — the
+    Conductor never partially applies a broken request."""
+    path = pipeline_request_path(root)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            req = json.load(fh)
+    except (OSError, ValueError):
+        return state
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    preset_path = req.get("preset_path") if isinstance(req, dict) else None
+    if not isinstance(preset_path, str) or not preset_path:
+        return state
+    preset, err = pplib.load_preset_file(
+        preset_path, pplib.known_sections_in_workspace(_sections_dir()))
+    if err:
+        rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+              "session": None, "decision": "pipeline_load_failed",
+              "detail": {"preset_path": preset_path, "error": err}}
+        new_len = ledger_append(root, rec)
+        state["ledger_cursor"] = new_len
+        save_conductor_state(root, state)
+        emit("conductor: pipeline request refused — %s" % err)
+        return state
+    return _activate_pipeline(root, state, preset, preset_path, emit)
+
+
+def _activate_pipeline(root, state, preset, preset_path, emit=print):
+    """Ledger + activate an already-validated preset — shared by the
+    request-marker path and --pipeline so both dedup identically. A no-op
+    (no ledger line, no save) when the SAME normalized preset is already
+    active: a restart with an unchanged --pipeline, or a reconcile-replay
+    racing a fresh request for the same content, must never double-ledger
+    'pipeline_loaded' (the ledger's own 'never a lost or doubled decision'
+    invariant)."""
+    if state.get("pipeline") == preset:
+        emit("conductor: pipeline preset %r already active — no-op"
+             % preset["preset_name"])
+        return state
+    rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+          "session": None, "decision": "pipeline_loaded",
+          "detail": {"preset_path": preset_path,
+                    "preset_name": preset["preset_name"]}}
+    new_len = ledger_append(root, rec)
+    state["pipeline"] = preset
+    state["ledger_cursor"] = new_len
+    save_conductor_state(root, state)
+    emit("conductor: pipeline preset %r activated (%s)"
+         % (preset["preset_name"], preset_path))
+    return state
 
 
 def _recent_section_providers(root, sessions):
@@ -531,22 +642,33 @@ def full_poll(root, state, emit=print, route_engine=None):
         state["sessions"][sid] = digest
         state["ledger_cursor"] = new_len
         save_conductor_state(root, state)
+    # V3 7.11: consume a pending pipeline-request marker (the GUI's "Run
+    # pipeline" verb, or any external caller) before this poll's termination
+    # stack, so a preset activated this cycle takes effect immediately.
+    state = _consume_pipeline_request(root, state, emit)
+    active_preset = state.get("pipeline")
     # V3 7.5: termination stack (goal -> quiescence; 7.5b inserts stall +
     # budget). Runs inside the evaluating stage, BEFORE acting, so a session
     # that terminated this poll is not routed into. Zero cost + zero ledger
     # noise when no manifest enables any layer.
-    manifest, mstatus = ctlib.load_goal_manifest_ex(root, on_warn=emit)
-    if mstatus == "ok" and isinstance(manifest.get("budgets"), dict):
-        state["_last_good_budgets"] = manifest["budgets"]
-    elif mstatus == "corrupt" and state.get("_last_good_budgets"):
-        # A torn/corrupt write must not silently drop budgets that were
-        # active a moment ago (deny-safe: never WIDEN by losing a cap).
-        # goal/quiescence/stall stay disabled — that's the conservative
-        # direction (never a false termination), only budgets need the
-        # fallback (an uncapped run is the unsafe direction for THIS layer).
-        manifest = dict(manifest, budgets=state["_last_good_budgets"])
-        emit("conductor: falling back to last-known budgets while "
-             "goal_manifest.json is corrupt")
+    if active_preset:
+        # 7.11: a preset's goal_manifest was fully validated at load time and
+        # is held in-memory (state) — never re-read from the preset FILE, so
+        # a live edit can't mutate a running Conductor's rules.
+        manifest = active_preset["goal_manifest"]
+    else:
+        manifest, mstatus = ctlib.load_goal_manifest_ex(root, on_warn=emit)
+        if mstatus == "ok" and isinstance(manifest.get("budgets"), dict):
+            state["_last_good_budgets"] = manifest["budgets"]
+        elif mstatus == "corrupt" and state.get("_last_good_budgets"):
+            # A torn/corrupt write must not silently drop budgets that were
+            # active a moment ago (deny-safe: never WIDEN by losing a cap).
+            # goal/quiescence/stall stay disabled — that's the conservative
+            # direction (never a false termination), only budgets need the
+            # fallback (an uncapped run is the unsafe direction here).
+            manifest = dict(manifest, budgets=state["_last_good_budgets"])
+            emit("conductor: falling back to last-known budgets while "
+                 "goal_manifest.json is corrupt")
     if (manifest.get("goal") or manifest.get("quiescence_cycles")
             or manifest.get("budgets") or manifest.get("stall")):
         state = evaluate_terminations(root, state, sessions, manifest, emit)
@@ -581,6 +703,11 @@ def main(argv=None):
                          "the safety layers (7.4 permissions, 7.5 "
                          "termination, 7.6 oversight dials) are not built "
                          "yet, so live routing stays opt-in until they are.")
+    ap.add_argument("--pipeline",
+                    help="V3 7.11: activate this pipeline preset JSON for the "
+                         "run's routing + goal manifest. Validated up front — "
+                         "an invalid preset refuses to start rather than "
+                         "running with partially-applied config.")
     args = ap.parse_args(argv)
     root = os.path.abspath(args.root)
     try:
@@ -590,6 +717,16 @@ def main(argv=None):
         return 2
 
     state = reconcile_on_start(root, load_conductor_state(root))
+    if args.pipeline:
+        preset_path = os.path.abspath(args.pipeline)
+        preset, err = pplib.load_preset_file(
+            preset_path, pplib.known_sections_in_workspace(_sections_dir()))
+        if err:
+            print("conductor: --pipeline refused — %s" % err, file=sys.stderr)
+            release_singleton(lock_fd)
+            return 2
+        state = _activate_pipeline(root, state, preset, preset_path,
+                                   emit=lambda m: print(m, file=sys.stderr))
 
     def _shutdown(*_a):
         # Persist honestly (whatever stage we were in), release, exit 0 —
@@ -669,8 +806,8 @@ def route_engine(root, state, sessions, emit=print):
     section_providers = _recent_section_providers(root, sessions) \
         if over_quota else {}
 
-    sections_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "sections")
+    sections_dir = _sections_dir()
+    active_preset = state.get("pipeline")
     classify = _build_classifier(root)
     effected_cache = {}   # (project, section) -> set, scanned once per poll
 
@@ -760,7 +897,12 @@ def route_engine(root, state, sessions, emit=print):
         project, section = parts[0], parts[1]
         project_dir = os.path.join(root, project)
         app_dir = os.path.join(root, sid)
-        config = crlib.load_route_config(sections_dir, section, project_dir,
+        # 7.11: an active pipeline preset supplies ITS routing config for
+        # every section in the run — zero pipeline-specific execution code,
+        # this is the same RouteConfig shape a normal routing.json produces.
+        # No per-section routing.json is consulted while a preset is active.
+        config = pplib.as_route_config(active_preset) if active_preset \
+            else crlib.load_route_config(sections_dir, section, project_dir,
                                          on_warn=emit)
         if not config.ok or (not config.routes and not config.rules):
             continue

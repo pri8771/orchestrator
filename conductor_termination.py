@@ -26,6 +26,7 @@ Drift handled (verified against the tree, not the card's stale citations):
   every named check passes; a goal with no recognized checks never fires
   (guards against all([]) == True trivially terminating a run).
 """
+import copy
 import hashlib
 import json
 import os
@@ -117,9 +118,15 @@ def normalize_manifest(data, on_warn=None):
     elif qc is not None:
         _warn(on_warn, "quiescence_cycles must be a positive int — disabled")
     if isinstance(data.get("budgets"), dict):
-        out["budgets"] = data["budgets"]
+        # deep-copied: a caller (e.g. pipeline_presets.validate_preset, whose
+        # own docstring promises "mutates nothing") must not hand back a
+        # structure that ALIASES the input — a caller mutating their own
+        # dict after normalization would otherwise retroactively corrupt the
+        # already-returned manifest (the exact "editing a live preset must
+        # not mutate the running Conductor" guarantee 7.11 depends on).
+        out["budgets"] = copy.deepcopy(data["budgets"])
     if isinstance(data.get("stall"), dict):
-        out["stall"] = data["stall"]
+        out["stall"] = copy.deepcopy(data["stall"])
     return out
 
 

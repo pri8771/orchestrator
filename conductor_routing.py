@@ -68,7 +68,7 @@ def _read_layer(path):
     return data, None
 
 
-def _normalize_routes(raw):
+def normalize_routes(raw):
     """The GUI-shared artifact_routes map, tolerant of both shapes the GUI
     resolver accepts: a flat {type: target} object, or a list of
     {match:{artifact_type}, target} rule-lite objects. Returns {type:
@@ -171,8 +171,8 @@ def load_route_config(sections_dir, section, project_dir, on_warn=None):
         warn(banner)
         return RouteConfig(ok=False, banner=banner)
 
-    routes = _merge_layer(_normalize_routes(layers[0].get("artifact_routes")),
-                          _normalize_routes(layers[1].get("artifact_routes")))
+    routes = _merge_layer(normalize_routes(layers[0].get("artifact_routes")),
+                          normalize_routes(layers[1].get("artifact_routes")))
     # Rules override by (artifact_type, source_section): a project rule for
     # the same match REPLACES the section default, matching the routes map's
     # non-empty-wins precedence (blind concatenation would let a project only
