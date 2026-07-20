@@ -30,7 +30,7 @@ dev = ["ruff", "mypy"]
 [tool.setuptools]
 py-modules = [
     "orchestrator", "workflows", "phase_rules", "schemas", "verify", "docs",
-    "artifacts", "backfill", "completeness", "conductor", "conductor_routing", "costs", "designlint", "evalharness", "events",
+    "artifacts", "backfill", "completeness", "conductor", "conductor_permissions", "conductor_routing", "costs", "designlint", "evalharness", "events",
     "fleetlearn", "gate", "global_resource", "knowledge",
     "localmodels", "memory", "messages", "miniyaml", "mistakes", "modelrouting", "portfolio",
     "postmortem", "procutil",

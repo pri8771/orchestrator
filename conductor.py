@@ -462,6 +462,8 @@ def route_engine(root, state, sessions, emit=print):
     the observation loop. Reuses THIS poll's `sessions` list — never
     re-discovers (the O(N^2) trap)."""
     import conductor_routing as crlib
+    import conductor_permissions as cplib
+    import sections as seclib
     from orchestrator import create_session
     import artifacts as artlib
     import sessions as seslib_local
@@ -477,6 +479,62 @@ def route_engine(root, state, sessions, emit=print):
         new_len = ledger_append(root_, rec)
         state["ledger_cursor"] = new_len
         save_conductor_state(root_, state)
+
+    def _caps_for(target_section):
+        return seclib.load_section(target_section, sections_dir_parent,
+                                   app_dir=None).capabilities
+
+    def _mint_request(action):
+        rid = action["route_id"]
+        p = action["payload"]
+        return {"title": "%s route:%s -> %s"
+                        % (crlib.route_marker(rid), p["artifact_id"],
+                           action["target"]),
+                "artifact_id": p["artifact_id"],
+                "content_hash": p["content_hash"], "route_id": rid,
+                "source_section": p["source_section"], "rule_id": p["rule_id"]}
+
+    def _drain_pending():
+        # 7.4b: approvals that landed (possibly while the conductor was down)
+        # are the authoritative executor for gated routes — restart-safe, and
+        # independent of whether the source artifact is still admissible.
+        for action in cplib.read_pending(root):
+            rid = action.get("action_id")
+            target = action.get("target")
+            payload = action.get("payload")
+            requested_by = action.get("requested_by")
+            if not (rid and target and isinstance(payload, dict)
+                    and requested_by):
+                if rid:
+                    cplib.remove_pending(root, rid)   # drop the malformed rec
+                continue
+            if rid in state["routed"]:
+                cplib.remove_pending(root, rid)
+                continue
+            decision = cplib.approval_decision(root, rid)
+            if decision is None:
+                continue   # still awaiting a human — never blocks the poll
+            base = {"session": action.get("requested_by"), "route_id": rid,
+                    "detail": {"target": action["target"], **action["payload"]}}
+            if decision == "rejected":
+                _ledger_route(root, {**base, "decision": "route_denied"})
+            else:  # approved -> execute the gated effect now
+                sdir = seslib_local.mint_delegation_session(
+                    root, action["requested_by"].split("/")[0],
+                    action["target"], _mint_request(action),
+                    create_session=create_session,
+                    on_error=lambda m: emit("conductor mint: %s" % m))
+                _ledger_route(root, {**base, "session_dir": sdir,
+                                     "decision": "route_approved" if sdir
+                                     else "mint_failed"})
+                if not sdir:
+                    continue   # retry on a later poll
+            state["routed"][rid] = True
+            cplib.remove_pending(root, rid)
+            save_conductor_state(root, state)
+
+    sections_dir_parent = os.path.dirname(sections_dir)
+    _drain_pending()
 
     for sid in sessions:
         parts = sid.split("/")
@@ -536,9 +594,48 @@ def route_engine(root, state, sessions, emit=print):
                         in effected
                 return False
 
-            by_rid = {i.route_id: i for i in fresh}
+            # 7.4b capability gate: a route into a section that escalates
+            # beyond workspace-only NEVER mints directly — it enqueues a
+            # pending action and waits (across polls) for an approval file.
+            # Only ALLOW intents can be gated; guarded/unroutable ones fall
+            # through to execute_intents' own terminal ledger lines.
+            allowed_now, gated = [], []
+            for i in fresh:
+                if cplib.is_pending(root, i.route_id):
+                    # CRITICAL: once a route is queued for approval, its
+                    # disposition belongs to _drain_pending alone. A fresh
+                    # capability read (a torn manifest read, a GUI edit
+                    # lowering caps) must NEVER reclassify it into the direct
+                    # mint path — that would bypass approval entirely.
+                    continue
+                if i.verdict != crlib.ALLOW or not i.target:
+                    allowed_now.append(i)
+                elif seclib.exceeds_workspace_only(_caps_for(i.target)):
+                    gated.append(i)
+                else:
+                    allowed_now.append(i)
+            for i in gated:
+                base = {"session": sid, "route_id": i.route_id,
+                        "route_key": i.route_key}
+                if cplib.enqueue_pending(root, cplib.pending_action(i, sid)):
+                    _ledger_route(root, {
+                        **base, "decision": "approval_requested",
+                        "detail": {**i.as_ledger_detail(),
+                                   "capability": "exceeds workspace-only"}})
+                else:
+                    # FIX: a failed durable enqueue must NOT be ledgered as a
+                    # successful approval request (§6.2, §23) — record the miss
+                    # so the audit trail is honest; the route retries next poll.
+                    _ledger_route(root, {
+                        **base, "decision": "enqueue_failed",
+                        "detail": {**i.as_ledger_detail(),
+                                   "reason": "pending queue write failed"}})
+            if not allowed_now:
+                continue
+
+            by_rid = {i.route_id: i for i in allowed_now}
             outcomes = crlib.execute_intents(
-                fresh, sid, root, _mint,
+                allowed_now, sid, root, _mint,
                 lambda base: _ledger_route(root, base),
                 probe=lambda rid, tgt: _probe(rid, tgt, _intent_by_rid=by_rid))
             # Record only routes that actually fired or were terminally
