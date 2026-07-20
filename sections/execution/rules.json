@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "execution_release_plan": {"rules": ["Require evidence for readiness; do not treat a planned check as a passed check.", "Name owners, dependencies, rollout stages, and rollback authority.", "Separate blockers, waivers, and follow-up work."], "required_output": ["Release checklist", "Go/no-go conditions", "Rollout and rollback plan", "Ownership matrix"], "acceptance_checks": ["Every item has an observable completion signal.", "A failed gate leads to a named safe action."]},
+    "execution_runbook": {"rules": ["Organize procedures around signals and decisions, not a flat command list.", "Cover diagnosis, mitigation, rollback, escalation, and evidence capture.", "Mark unsupported operational details unresolved rather than inventing them."], "required_output": ["Signal map", "Normal and incident procedures", "Rollback", "Escalation"], "acceptance_checks": ["A responder can choose the next step from observed evidence.", "No unverified command is presented as safe to execute."]},
+    "execution_postmortem": {"rules": ["Separate facts from hypotheses and avoid blame.", "Trace contributing conditions across process, system, and response.", "Make corrective actions specific, owned, prioritized, and verifiable."], "required_output": ["Timeline", "Impact", "Contributing conditions", "Corrective actions", "Follow-on project candidates"], "acceptance_checks": ["The analysis explains why defenses failed, not only what broke.", "Each action has a completion test."]}
+  }
+}

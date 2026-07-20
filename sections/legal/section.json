@@ -1,0 +1,23 @@
+{
+  "id": "legal",
+  "title": "Legal & Compliance",
+  "workflow": {
+    "name": "legal_review",
+    "title": "Legal and compliance review",
+    "description": "Identify legal, privacy, policy, licensing, and claims risks; distinguish blockers from questions for qualified counsel.",
+    "target": "legal",
+    "build_phase": null,
+    "budget": null,
+    "overrides": null,
+    "phases": [
+      {"key": "legal_issue_spotting", "folder": "legal_issue_spotting", "file": "legal_issue_spotting.md", "title": "Issue spotting", "purpose": "Map data flows, jurisdictions, audiences, commercial claims, third-party terms, intellectual-property inputs, regulated activities, and contractual dependencies. Identify which facts are known and which must be confirmed; do not impersonate qualified legal advice.", "rounds": 3, "roles": ["legal_analyst", "privacy_reviewer", "risk_counsel"], "writes": false, "reads_target": false, "verify": null, "checkpoint": false, "structurally_required": true, "requires_verification": false, "doc_sections": ["privacy", "legal", "compliance"], "test_deliverable": null, "conversational": false},
+      {"key": "legal_disposition", "folder": "legal_disposition", "file": "legal_disposition.md", "title": "Risk disposition", "purpose": "Classify each supported concern by severity, trigger, impacted promise, evidence, mitigation, owner, and release disposition. Emit a legal_flag artifact for every unresolved blocker; uncertainty alone is not a blocker unless its consequence and required decision are named.", "rounds": 2, "roles": ["risk_counsel", "privacy_reviewer", "legal_analyst"], "writes": false, "reads_target": false, "verify": null, "checkpoint": true, "structurally_required": true, "requires_verification": false, "doc_sections": ["legal_risks", "privacy_controls", "release_conditions"], "test_deliverable": null, "conversational": false}
+    ]
+  },
+  "default_mode": "manual",
+  "artifact_types_emitted": ["legal_flag"],
+  "artifact_types_accepted": ["idea", "research_brief", "spec_bundle", "design_brief", "positioning_brief", "launch_plan"],
+  "dod_tier": "strict",
+  "capabilities": {"writes": "workspace", "exec": false, "external": false},
+  "local_pins": []
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "gtm_positioning": {"rules": ["Define one primary audience and job before broadening segments.", "Distinguish evidence, assumption, and strategic choice.", "Position against the real alternative, including doing nothing."], "required_output": ["Audience and job", "Category and alternatives", "Differentiated promise", "Proof and assumptions", "Pricing hypothesis"], "acceptance_checks": ["The promise is specific enough to be disproven.", "No invented market fact is presented as research."]},
+    "gtm_launch": {"rules": ["Sequence launch work by dependency and learning value.", "Tie each message to a segment and each channel to an objective.", "Define measurement and stop/scale thresholds before launch."], "required_output": ["Segment-message matrix", "Channel plan", "Milestones and owners", "Metrics and decision thresholds"], "acceptance_checks": ["The plan can be executed without guessing ownership.", "Success and failure are measurable."]}
+  }
+}

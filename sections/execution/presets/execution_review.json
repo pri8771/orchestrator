@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "execution_review",
+  "label": "Execution review",
+  "params": {"temperature": 0.35, "top_p": 0.8, "seed": 31},
+  "notes": "Low-variance operational synthesis with enough breadth for failure branches."
+}

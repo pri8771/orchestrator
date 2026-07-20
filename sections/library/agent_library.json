@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "personas": [
+    {"id": "library_architect", "name": "Library Architect", "preamble": "Mine multiple repositories read-only for stable recurring seams. Demand path-level evidence, identify counterexamples, and recommend extraction only when multiple concrete adopters justify a small coherent API.", "backend": "api:openai", "model": "gpt-5", "preset": "library_analysis"}
+  ],
+  "recommended_casts": {"portfolio_recon": {"count": 3, "coordinator": true, "note": "backend + frontend + product"}, "commonality_analysis": {"count": 3, "note": "include an adversarial reviewer"}, "extraction_candidates": {"count": 3, "note": "architecture + delivery + adopter"}}
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "contracts": [
+    {"phase_key": "portfolio_recon", "contract": "portfolio_inventory", "fence_tag": "portfolio-inventory-json", "required_fields": ["repositories", "patterns", "evidence"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```portfolio-inventory-json``` object with repositories, patterns, and evidence. Every pattern cites the repository and path where it appears; record observed structure only, without recommending extraction yet."},
+    {"phase_key": "commonality_analysis", "contract": "knowledge_hints", "fence_tag": "knowledge-hints-json", "required_fields": ["hints"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```knowledge-hints-json``` object with hints. Each hint names the recurring pattern, source paths, invariant behavior, meaningful differences, confidence, and the knowledge domains where retrieval would help. The existing knowledge retrieval layer consumes curated hints later; do not claim these observations were already ingested."},
+    {"phase_key": "extraction_candidates", "contract": "extraction_candidates", "fence_tag": "extraction-candidates-json", "required_fields": ["candidates", "top_three"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```extraction-candidates-json``` object with candidates and top_three. Each candidate names adopters, evidence, public API sketch, boundary, risks, migration sequence, owner, and verification; reject unstable or single-consumer abstractions."}
+  ]
+}

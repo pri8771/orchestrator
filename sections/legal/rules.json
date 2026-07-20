@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "legal_issue_spotting": {"rules": ["Trace the concrete product fact that triggers each concern.", "Separate known facts, assumptions, and questions requiring qualified counsel.", "Cover data, claims, contracts, licensing, intellectual property, audience, and jurisdiction where relevant."], "required_output": ["Fact and assumption inventory", "Issue register", "Questions for counsel"], "acceptance_checks": ["No generic warning appears without a triggering fact.", "The output does not claim to be legal advice."]},
+    "legal_disposition": {"rules": ["Classify supported concerns by severity and release impact.", "Emit legal_flag only for unresolved blocking concerns.", "Every blocker names mitigation, owner, and objective clearance evidence."], "required_output": ["Risk dispositions", "Release recommendation", "Blocking legal_flag artifacts"], "acceptance_checks": ["A reviewer can tell exactly what blocks release and how it clears.", "Non-blocking uncertainty is not mislabeled as a gate."]}
+  }
+}

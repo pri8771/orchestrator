@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "contracts": [
+    {"phase_key": "execution_release_plan", "contract": "release_checklist", "fence_tag": "release-checklist-json", "required_fields": ["items", "go_no_go", "rollback"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```release-checklist-json``` object with items, go_no_go, and rollback. Every item names owner, prerequisite, evidence, and blocking status; rollback names triggers and authority. Describe verification but do not claim it ran."},
+    {"phase_key": "execution_runbook", "contract": "runbook", "fence_tag": "runbook-json", "required_fields": ["signals", "procedures", "rollback", "escalation"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```runbook-json``` object with signals, procedures, rollback, and escalation. Every step states its precondition, expected evidence, failure branch, and owner; unsupported commands or thresholds must be marked unresolved."},
+    {"phase_key": "execution_postmortem", "contract": "postmortem", "fence_tag": "postmortem-json", "required_fields": ["timeline", "impact", "contributing_conditions", "actions", "follow_ons"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```postmortem-json``` object with timeline, impact, contributing_conditions, actions, and follow_ons. Facts cite evidence, hypotheses are labeled, actions name owner and verification, and follow_ons are suitable inputs for the existing portfolio project-minting workflow."}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "library",
+  "title": "Library",
+  "workflow": "library_mining",
+  "default_mode": "manual",
+  "artifact_types_emitted": ["knowledge_hint", "extraction_plan"],
+  "artifact_types_accepted": ["research_brief", "finding_report", "postmortem", "spec_bundle"],
+  "dod_tier": "standard",
+  "capabilities": {"writes": "workspace", "exec": true, "external": false},
+  "local_pins": []
+}

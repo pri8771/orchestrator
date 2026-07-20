@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "legal_review",
+  "label": "Legal review",
+  "params": {"temperature": 0.25, "top_p": 0.75, "seed": 23},
+  "notes": "Low-variance, evidence-first review for reproducible risk disposition."
+}

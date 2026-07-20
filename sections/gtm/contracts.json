@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "contracts": [
+    {"phase_key": "gtm_positioning", "contract": "positioning", "fence_tag": "positioning-json", "required_fields": ["audience", "job", "alternatives", "promise", "proof", "assumptions"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```positioning-json``` object with audience, job, alternatives, promise, proof, and assumptions. Proof must cite available evidence; unsupported claims belong in assumptions."},
+    {"phase_key": "gtm_launch", "contract": "launch_plan", "fence_tag": "launch-plan-json", "required_fields": ["segments", "messages", "channels", "milestones", "metrics", "owners"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```launch-plan-json``` object with segments, messages, channels, milestones, metrics, and owners. Every channel names its role, cost assumption, measurement, and stop/continue criterion."}
+  ]
+}

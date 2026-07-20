@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "gtm_planning",
+  "label": "GTM planning",
+  "params": {"temperature": 0.55, "top_p": 0.85},
+  "notes": "Moderate variance for creative positioning constrained by evidence and execution detail."
+}

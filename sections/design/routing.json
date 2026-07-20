@@ -1,0 +1,6 @@
+{
+  "artifact_routes": {"design_brief": "documentation"},
+  "rules": [
+    {"rule_id": "design-brief-to-build-and-docs", "match": {"artifact_type": "design_brief", "source_section": "design"}, "strategy": "every", "targets": ["build", "documentation"], "hop_budget": 4}
+  ]
+}

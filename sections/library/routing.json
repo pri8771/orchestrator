@@ -1,0 +1,7 @@
+{
+  "artifact_routes": {"knowledge_hint": "ideas", "extraction_plan": "planning"},
+  "rules": [
+    {"rule_id": "knowledge-hint-to-ideas-and-planning", "match": {"artifact_type": "knowledge_hint", "source_section": "library"}, "strategy": "every", "targets": ["ideas", "planning"], "hop_budget": 4},
+    {"rule_id": "extraction-plan-to-planning", "match": {"artifact_type": "extraction_plan", "source_section": "library"}, "strategy": "one", "targets": ["planning"], "hop_budget": 4}
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "contracts": [
+    {"phase_key": "legal_issue_spotting", "contract": "legal_inventory", "fence_tag": "legal-inventory-json", "required_fields": ["facts", "assumptions", "issues", "questions_for_counsel"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```legal-inventory-json``` object with facts, assumptions, issues, and questions_for_counsel. Every issue names its trigger and evidence; do not present general information as legal advice."},
+    {"phase_key": "legal_disposition", "contract": "legal_disposition", "fence_tag": "legal-disposition-json", "required_fields": ["concerns", "release_disposition"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```legal-disposition-json``` object with concerns and release_disposition. Each concern names severity, blocking_concern, trigger, evidence, mitigation, owner, and clearance evidence. Separately emit one artifact-json legal_flag for each unresolved blocker; its body must name the blocking concern and the concrete condition for clearance."}
+  ]
+}

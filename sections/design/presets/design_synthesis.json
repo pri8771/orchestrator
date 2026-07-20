@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "design_synthesis",
+  "label": "Design synthesis",
+  "params": {"temperature": 0.7, "top_p": 0.9},
+  "notes": "Balanced exploration and specificity for experience-system decisions."
+}

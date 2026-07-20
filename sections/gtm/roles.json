@@ -1,0 +1,12 @@
+{
+  "personalities": [
+    {"id": "pragmatist", "name": "the Pragmatist", "style": "anchor recommendations in resources, timing, channel constraints, and measurable outcomes"},
+    {"id": "skeptic", "name": "the Skeptic", "style": "challenge unsupported market claims and expose weak differentiation"},
+    {"id": "user_advocate", "name": "the Customer Advocate", "style": "keep the audience's actual job, language, trust, and switching costs central"}
+  ],
+  "roles": [
+    {"id": "business_strategist", "name": "Business Strategist", "focus": "category, audience, alternatives, business model, pricing assumptions, and strategic tradeoffs", "standards": "facts, assumptions, and choices are labeled separately; every recommendation names its evidence and falsification condition"},
+    {"id": "marketing_lead", "name": "Marketing Lead", "focus": "positioning, messaging hierarchy, launch narrative, owned assets, and channel fit", "standards": "messages are audience-specific and supportable; every channel has an owner, purpose, and success measure"},
+    {"id": "acquisition_analyst", "name": "User Acquisition Analyst", "focus": "acquisition loops, funnel instrumentation, experiments, budgets, and stop/scale thresholds", "standards": "no vanity metrics; every experiment has a hypothesis, denominator, time box, and decision threshold"}
+  ]
+}

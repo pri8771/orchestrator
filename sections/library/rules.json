@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "portfolio_recon": {"rules": ["Inspect each repository read-only and cite concrete paths.", "Record language, frameworks, dependencies, and structural patterns without recommending extraction.", "Use the existing knowledge retrieval path for context but distinguish retrieved guidance from repository evidence."], "required_output": ["Per-repository inventory", "Recurring-pattern candidates", "Evidence map"], "acceptance_checks": ["Every claimed pattern cites at least one concrete source path.", "Recon does not prematurely label code reusable."]},
+    "commonality_analysis": {"rules": ["Require independent recurrence across consumers.", "Separate stable invariant behavior from product-specific differences.", "Reject false commonality and abstractions without a coherent ownership boundary."], "required_output": ["Commonality analysis", "Differences and counterexamples", "Curated knowledge hints"], "acceptance_checks": ["Each retained pattern has multiple concrete consumers.", "Confidence and evidence limits are explicit."]},
+    "extraction_candidates": {"rules": ["Rank by portfolio benefit, stability, extraction cost, and migration risk.", "Sketch the smallest public API that serves the proven common behavior.", "Name source, first adopter, owner, staged migration, rollback, and verification."], "required_output": ["Ranked candidates", "Public API sketches", "Adoption and migration plan", "Top three"], "acceptance_checks": ["No single-consumer helper is marketed as a portfolio library.", "Each top candidate has a reversible first extraction step."]}
+  }
+}

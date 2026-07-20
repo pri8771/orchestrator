@@ -1,0 +1,7 @@
+{
+  "artifact_routes": {"positioning_brief": "documentation", "launch_plan": "documentation"},
+  "rules": [
+    {"rule_id": "positioning-to-docs", "match": {"artifact_type": "positioning_brief", "source_section": "gtm"}, "strategy": "one", "targets": ["documentation"], "hop_budget": 4},
+    {"rule_id": "launch-plan-to-docs", "match": {"artifact_type": "launch_plan", "source_section": "gtm"}, "strategy": "one", "targets": ["documentation"], "hop_budget": 4}
+  ]
+}

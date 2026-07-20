@@ -1,0 +1,23 @@
+{
+  "id": "gtm",
+  "title": "Go-to-Market",
+  "workflow": {
+    "name": "go_to_market",
+    "title": "Go-to-market studio",
+    "description": "Unify business strategy, positioning, launch planning, and user acquisition into one evidence-aware operating plan.",
+    "target": "gtm",
+    "build_phase": null,
+    "budget": null,
+    "overrides": null,
+    "phases": [
+      {"key": "gtm_positioning", "folder": "gtm_positioning", "file": "gtm_positioning.md", "title": "Positioning", "purpose": "Define the category, specific audience, urgent job, alternatives, differentiated promise, proof, pricing hypothesis, and claims that still require evidence. Keep customer fact, assumption, and strategic choice visibly separate.", "rounds": 3, "roles": ["business_strategist", "marketing_lead", "acquisition_analyst"], "writes": false, "reads_target": false, "verify": null, "checkpoint": false, "structurally_required": true, "requires_verification": false, "doc_sections": ["market_position", "business_model", "pricing"], "test_deliverable": null, "conversational": false},
+      {"key": "gtm_launch", "folder": "gtm_launch", "file": "gtm_launch.md", "title": "Launch plan", "purpose": "Build a sequenced launch plan with audience segments, messages, channels, owned assets, responsible owners, dates or relative milestones, budget assumptions, measurable leading and lagging indicators, and stop/continue criteria.", "rounds": 3, "roles": ["marketing_lead", "acquisition_analyst", "business_strategist"], "writes": false, "reads_target": false, "verify": null, "checkpoint": true, "structurally_required": true, "requires_verification": false, "doc_sections": ["launch_plan", "marketing", "user_acquisition"], "test_deliverable": null, "conversational": false}
+    ]
+  },
+  "default_mode": "manual",
+  "artifact_types_emitted": ["positioning_brief", "launch_plan"],
+  "artifact_types_accepted": ["idea", "research_brief", "spec_bundle"],
+  "dod_tier": "standard",
+  "capabilities": {"writes": "workspace", "exec": false, "external": false},
+  "local_pins": []
+}

@@ -1,0 +1,14 @@
+{
+  "personalities": [
+    {"id": "systems_thinker", "name": "the Systems Thinker", "style": "trace how recurring components, interfaces, constraints, and consumers fit across repositories"},
+    {"id": "skeptic", "name": "the Skeptic", "style": "reject coincidental similarity, unstable abstractions, and extraction without adoption evidence"},
+    {"id": "pragmatist", "name": "the Pragmatist", "style": "favor the smallest reusable surface with clear adopters and migration steps"}
+  ],
+  "roles": [
+    {"id": "backend", "name": "Backend / Systems Analyst", "focus": "shared data models, services, persistence, networking, concurrency, and package boundaries", "standards": "cite repository paths and distinguish stable reusable seams from copied implementation detail"},
+    {"id": "frontend", "name": "Frontend Systems Analyst", "focus": "shared UI architecture, design tokens, state management, navigation, accessibility, and interaction utilities", "standards": "a candidate is reusable only when multiple consumers share behavior and constraints, not merely appearance"},
+    {"id": "product", "name": "Product Portfolio Analyst", "focus": "consumer needs, repeated product capabilities, adoption value, and portfolio-level leverage", "standards": "every proposed library names concrete adopters, avoided duplication, and the product cost of extraction"},
+    {"id": "qa", "name": "Reuse Risk Reviewer", "focus": "compatibility, testability, versioning, migration hazards, and false commonality", "standards": "challenge each abstraction with a counterexample and require a verification strategy before recommending extraction"},
+    {"id": "delivery", "name": "Extraction Planner", "focus": "package boundary, public API, sequencing, ownership, migration, and rollout", "standards": "plans are incremental, reversible, assigned, and explicit about source repositories and first adopters"}
+  ]
+}

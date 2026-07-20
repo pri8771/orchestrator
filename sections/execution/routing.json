@@ -1,0 +1,8 @@
+{
+  "artifact_routes": {"release_checklist": "documentation", "runbook": "documentation", "postmortem": "library"},
+  "rules": [
+    {"rule_id": "release-checklist-to-docs", "match": {"artifact_type": "release_checklist", "source_section": "execution"}, "strategy": "one", "targets": ["documentation"], "hop_budget": 4},
+    {"rule_id": "runbook-to-docs", "match": {"artifact_type": "runbook", "source_section": "execution"}, "strategy": "one", "targets": ["documentation"], "hop_budget": 4},
+    {"rule_id": "postmortem-to-library", "match": {"artifact_type": "postmortem", "source_section": "execution"}, "strategy": "one", "targets": ["library"], "hop_budget": 4}
+  ]
+}

@@ -1,6 +1,20 @@
 {
   "schema_version": 1,
   "types": {
+    "design_brief": {
+      "finalization": "auto_final_on_consensus",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
+    "extraction_plan": {
+      "finalization": "requires_human",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
     "finding_report": {
       "finalization": "requires_review_gate",
       "required": [
@@ -23,12 +37,49 @@
         "body"
       ]
     },
+    "knowledge_hint": {
+      "finalization": "auto_final_on_consensus",
+      "required": [
+        "title",
+        "body",
+        "evidence"
+      ]
+    },
+    "launch_plan": {
+      "finalization": "requires_human",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
+    "legal_flag": {
+      "finalization": "requires_review_gate",
+      "required": [
+        "title",
+        "body",
+        "blocking_concern"
+      ]
+    },
     "opportunity_signal": {
       "finalization": "auto_final_on_consensus",
       "required": [
         "title",
         "body",
         "evidence"
+      ]
+    },
+    "positioning_brief": {
+      "finalization": "auto_final_on_consensus",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
+    "postmortem": {
+      "finalization": "requires_human",
+      "required": [
+        "title",
+        "body"
       ]
     },
     "reconcile": {
@@ -45,6 +96,20 @@
         "title",
         "body",
         "sources"
+      ]
+    },
+    "release_checklist": {
+      "finalization": "requires_human",
+      "required": [
+        "title",
+        "body"
+      ]
+    },
+    "runbook": {
+      "finalization": "requires_human",
+      "required": [
+        "title",
+        "body"
       ]
     },
     "spec_bundle": {

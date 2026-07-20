@@ -108,11 +108,14 @@ REGISTRY_BASENAME = "artifact_types.json"
 # Seed registry: "required" lists the keys a publish (or a 4.2 artifact-json
 # block) must carry — "body" is satisfied by a non-blank body.md. The five
 # board types each pin the per-type payload key 4.3+ consumes (notably
-# reconcile.parents, the branch-head list); finding_report and spec_bundle
-# are included because the SHIPPED section manifests already declare them
-# (a shipped section prompting for a type the shipped registry rejects
-# would be broken by design — pinned by a consistency test).
+# reconcile.parents, the branch-head list). Every type declared by a shipped
+# section is included because a section prompting for a type the shipped
+# registry rejects would be broken by design — pinned by a consistency test.
 SEED_TYPES = {
+    "design_brief": {"required": ["title", "body"],
+                     "finalization": "auto_final_on_consensus"},
+    "extraction_plan": {"required": ["title", "body"],
+                        "finalization": "requires_human"},
     "idea": {"required": ["title", "body"],
              "finalization": "auto_final_on_consensus"},
     "research_brief": {"required": ["title", "body", "sources"],
@@ -125,6 +128,20 @@ SEED_TYPES = {
                   "finalization": "auto_final_on_consensus"},
     "finding_report": {"required": ["title", "body"],
                        "finalization": "requires_review_gate"},
+    "knowledge_hint": {"required": ["title", "body", "evidence"],
+                       "finalization": "auto_final_on_consensus"},
+    "launch_plan": {"required": ["title", "body"],
+                    "finalization": "requires_human"},
+    "legal_flag": {"required": ["title", "body", "blocking_concern"],
+                   "finalization": "requires_review_gate"},
+    "positioning_brief": {"required": ["title", "body"],
+                          "finalization": "auto_final_on_consensus"},
+    "postmortem": {"required": ["title", "body"],
+                   "finalization": "requires_human"},
+    "release_checklist": {"required": ["title", "body"],
+                          "finalization": "requires_human"},
+    "runbook": {"required": ["title", "body"],
+                "finalization": "requires_human"},
     "spec_bundle": {"required": ["title", "body"],
                     "finalization": "requires_human"},
 }

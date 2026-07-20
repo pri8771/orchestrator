@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "phases": {
+    "design_foundation": {"rules": ["Name a product-specific design language and explain why it fits.", "State the emotional target and signature interaction.", "Reject the generic default with at least three concrete differences."], "required_output": ["Named design language", "Emotional target", "Signature interaction", "Rejected default"], "acceptance_checks": ["The guidance would be wrong if copied unchanged to an unrelated product.", "Accessibility and content are part of the foundation."]},
+    "experience_architecture": {"rules": ["Map primary, alternate, and recovery flows before styling details.", "Specify empty, loading, error, offline, permission, and completion states where applicable.", "Keep navigation depth and decision count proportional to the user goal."], "required_output": ["Screen inventory", "Information architecture", "End-to-end flows", "State matrix"], "acceptance_checks": ["Every promised workflow has a traversable path.", "No failure state strands the user."]},
+    "design_delivery": {"rules": ["Resolve component, token, motion, content, and responsive decisions explicitly.", "Write measurable acceptance checks tied to the handoff.", "Name remaining unknowns honestly; do not present placeholders as final guidance."], "required_output": ["Screen specifications", "Component inventory", "Token vocabulary", "Acceptance checks"], "acceptance_checks": ["A builder can implement without inventing a second design system.", "The handoff covers interaction and accessibility states, not screenshots alone."]}
+  }
+}

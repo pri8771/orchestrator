@@ -1,0 +1,24 @@
+{
+  "id": "execution",
+  "title": "Execution",
+  "workflow": {
+    "name": "execution_operations",
+    "title": "Execution and operations",
+    "description": "Create release checklists, operational runbooks, and evidence-based postmortems without executing commands or mutating the target.",
+    "target": "execution",
+    "build_phase": null,
+    "budget": null,
+    "overrides": null,
+    "phases": [
+      {"key": "execution_release_plan", "folder": "execution_release_plan", "file": "execution_release_plan.md", "title": "Release readiness", "purpose": "Translate the current artifact set into a release checklist with prerequisites, owners, evidence, ordering, rollout stages, observability, rollback triggers, and explicit go/no-go conditions. Describe checks; do not run them.", "rounds": 3, "roles": ["release_manager", "operations_lead", "incident_reviewer"], "writes": false, "reads_target": false, "verify": null, "checkpoint": true, "structurally_required": true, "requires_verification": false, "doc_sections": ["release_checklist", "operations"], "test_deliverable": null, "conversational": false},
+      {"key": "execution_runbook", "folder": "execution_runbook", "file": "execution_runbook.md", "title": "Operational runbook", "purpose": "Write a decision-oriented runbook covering normal operation, observability, alerts, first response, diagnosis, safe mitigation, rollback, escalation, ownership, and evidence capture. Never invent commands or thresholds that are not supported by project artifacts.", "rounds": 2, "roles": ["operations_lead", "release_manager"], "writes": false, "reads_target": false, "verify": null, "checkpoint": false, "structurally_required": true, "requires_verification": false, "doc_sections": ["runbook", "rollback", "incident_response"], "test_deliverable": null, "conversational": false},
+      {"key": "execution_postmortem", "folder": "execution_postmortem", "file": "execution_postmortem.md", "title": "Postmortem and follow-ons", "purpose": "Reconstruct the evidence-backed timeline, impact, contributing conditions, detection and response gaps, what worked, and corrective actions. Separate facts from hypotheses, avoid blame, and identify follow-on project candidates that can be handed to the existing portfolio minting flow.", "rounds": 2, "roles": ["incident_reviewer", "operations_lead", "release_manager"], "writes": false, "reads_target": false, "verify": null, "checkpoint": false, "structurally_required": true, "requires_verification": false, "doc_sections": ["postmortem", "follow_ons"], "test_deliverable": null, "conversational": false}
+    ]
+  },
+  "default_mode": "manual",
+  "artifact_types_emitted": ["release_checklist", "runbook", "postmortem"],
+  "artifact_types_accepted": ["spec_bundle", "design_brief", "finding_report", "legal_flag"],
+  "dod_tier": "strict",
+  "capabilities": {"writes": "workspace", "exec": false, "external": false},
+  "local_pins": []
+}

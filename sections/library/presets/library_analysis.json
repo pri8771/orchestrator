@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "library_analysis",
+  "label": "Library analysis",
+  "params": {"temperature": 0.3, "top_p": 0.8, "seed": 41},
+  "notes": "Evidence-first portfolio comparison with stable, reproducible ranking."
+}

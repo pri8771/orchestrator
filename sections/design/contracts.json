@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "contracts": [
+    {"phase_key": "design_foundation", "contract": "design_foundation", "fence_tag": "design-foundation-json", "required_fields": ["design_language", "emotional_target", "principles", "rejected_default"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```design-foundation-json``` object with design_language (a specific name), emotional_target, principles (concrete rules), and rejected_default (the generic treatment and exact differences). Do not use filler adjectives as guidance."},
+    {"phase_key": "experience_architecture", "contract": "experience_architecture", "fence_tag": "experience-architecture-json", "required_fields": ["screens", "flows", "states"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```experience-architecture-json``` object with screens, flows, and states. Each flow names its goal, ordered screens, decision points, recovery path, and accessibility considerations; states cover empty/loading/error/offline/permission where relevant."},
+    {"phase_key": "design_delivery", "contract": "design_delivery", "fence_tag": "design-delivery-json", "required_fields": ["screens", "components", "tokens", "acceptance_checks"], "prompt_snippet": "MACHINE CONTRACT (required): emit one fenced ```design-delivery-json``` object with screens, components, tokens, and acceptance_checks. Values must be implementation-ready decisions, including interaction states and responsive behavior, not mood-board placeholders."}
+  ]
+}
