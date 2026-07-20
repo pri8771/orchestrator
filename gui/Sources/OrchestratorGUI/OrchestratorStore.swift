@@ -871,6 +871,7 @@ final class OrchestratorStore: ObservableObject {
     // A failed action's message, shown as a dismissible top banner so errors
     // don't hide in the ⌘L-collapsed run log. Set via surfaceError().
     @Published var lastError: String?
+    @Published var snippetWarnings: [String] = []
 
     /// Report a user-facing error both in the run log and as a banner.
     func surfaceError(_ msg: String) {
@@ -2475,8 +2476,8 @@ final class OrchestratorStore: ObservableObject {
 
     // MARK: - Library: reusable phase-prompt snippets + saved run profiles
     //
-    // Snippets: <engine>/library/snippets.json — [{name, phase, text}]; phase
-    // "" = usable anywhere. Profiles: <engine>/library/profiles/<slug>.json —
+    // Snippets layer fleet -> section -> project by name; phase "" means
+    // usable anywhere. Profiles: <engine>/library/profiles/<slug>.json —
     // a model_routing.json-shaped file (per-phase models/effort/rounds/
     // instructions + fallback chains) plus profile_name/workflow keys the
     // engine loader ignores. Applying a profile materializes the project's
@@ -2487,25 +2488,29 @@ final class OrchestratorStore: ObservableObject {
     var snippetsURL: URL { libraryDirURL.appendingPathComponent("snippets.json") }
     var profilesDirURL: URL { libraryDirURL.appendingPathComponent("profiles", isDirectory: true) }
 
-    func loadSnippets() -> [PromptSnippet] {
-        guard let data = try? Data(contentsOf: snippetsURL),
-              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
-        else { return [] }
-        return arr.compactMap { o in
-            guard let name = o["name"] as? String, !name.isEmpty,
-                  let text = o["text"] as? String, !text.isEmpty else { return nil }
-            return PromptSnippet(name: name, phase: (o["phase"] as? String) ?? "",
-                                 text: text)
+    func loadSnippets(section: String? = nil,
+                      projectDir: URL? = nil) -> [PromptSnippet] {
+        let sectionURL = section.map {
+            orchDirURL.appendingPathComponent("sections/\($0)/snippets.json")
         }
+        let result = SnippetLibrary.load(
+            fleetURL: snippetsURL, sectionURL: sectionURL,
+            projectURL: projectDir?.appendingPathComponent("snippets.json"))
+        snippetWarnings = result.warnings
+        return result.snippets
     }
 
-    func saveSnippets(_ snippets: [PromptSnippet]) {
-        try? fm.createDirectory(at: libraryDirURL, withIntermediateDirectories: true)
-        let arr = snippets.map { ["name": $0.name, "phase": $0.phase, "text": $0.text] }
-        if let data = try? JSONSerialization.data(withJSONObject: arr,
-                                                  options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: snippetsURL, options: .atomic)
+    func saveSnippets(_ snippets: [PromptSnippet],
+                      scope: SnippetSaveScope = .fleet) {
+        let url: URL
+        switch scope {
+        case .fleet: url = snippetsURL
+        case .section(let section):
+            url = orchDirURL.appendingPathComponent("sections/\(section)/snippets.json")
+        case .project(let projectDir):
+            url = projectDir.appendingPathComponent("snippets.json")
         }
+        SnippetLibrary.save(snippets, to: url)
         objectWillChange.send()
     }
 

@@ -1,0 +1,58 @@
+[
+  {
+    "name": "audit-this",
+    "phase": "",
+    "text": "Audit this for correctness, risks, and missing evidence, focusing on {{focus}}.",
+    "variables": [
+      {
+        "name": "focus",
+        "label": "Focus",
+        "type": "string",
+        "required": false
+      }
+    ]
+  },
+  {
+    "name": "poke-holes",
+    "phase": "",
+    "text": "Poke holes in this proposal and name the strongest counterargument."
+  },
+  {
+    "name": "simplify",
+    "phase": "",
+    "text": "Simplify this without losing the important constraints or edge cases."
+  },
+  {
+    "name": "devils-advocate",
+    "phase": "",
+    "text": "Take the devil's-advocate position and make the best case against this."
+  },
+  {
+    "name": "whats-missing",
+    "phase": "",
+    "text": "What is missing, assumed, or insufficiently supported here?"
+  },
+  {
+    "name": "summarize-decisions",
+    "phase": "",
+    "text": "Summarize the decisions, rationale, owners, and unresolved questions."
+  },
+  {
+    "name": "make-it-concrete",
+    "phase": "",
+    "text": "Make this concrete with specific steps, examples, and acceptance criteria."
+  },
+  {
+    "name": "ship-check",
+    "phase": "",
+    "text": "Run a ship-readiness check focused on {{focus}} and list only actionable blockers.",
+    "variables": [
+      {
+        "name": "focus",
+        "label": "Focus",
+        "type": "string",
+        "required": false
+      }
+    ]
+  }
+]

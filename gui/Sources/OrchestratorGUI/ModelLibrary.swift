@@ -291,6 +291,8 @@ struct PromptSnippet: Identifiable, Equatable {
     var name: String
     var phase: String      // "" = usable in any phase
     var text: String
+    var variables: [SnippetVariable] = []
+    var warning: String? = nil
     var id: String { name }
 }
 

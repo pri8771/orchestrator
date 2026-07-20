@@ -56,6 +56,11 @@ DEFAULT_COMMANDS = {
              "Constraints, Output format, and Acceptance criteria. End "
              "with explicit Insert and Cancel actions; neither action is "
              "automatic and the command itself sends nothing."},
+        {"name": "snippet", "kind": "template",
+         "template": "Choose a saved snippet in the composer; review the "
+                     "rendered text before sending.",
+         "description": "Insert a named saved snippet into the composer; "
+                        "never auto-send it."},
     ],
 }
 

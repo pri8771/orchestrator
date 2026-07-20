@@ -64,6 +64,9 @@ struct ChatSessionView: View {
     // message_produced event / a new transcript block), never by timers.
     @State private var pendingSwap: [String: String] = [:]   // agent -> model
     @State private var retryPending = false
+    @State private var snippets: [PromptSnippet] = []
+    @State private var snippetForm: SnippetFormDraft?
+    @State private var snippetNotice: String?
 
     private var session: ChatSession? { store.chatSessions[sessionID] }
     // The background scan discovers the minted dir on its next tick; until
@@ -89,6 +92,12 @@ struct ChatSessionView: View {
         .task(id: "\(sessionID)/\(phaseKey)") { await poll() }
         .onAppear {
             if session?.state.isAlive == true { store.setFocusedLivePane(sessionID) }
+            snippets = store.loadSnippets(
+                section: session?.section,
+                projectDir: session.map {
+                    store.rootURL.appendingPathComponent($0.project)
+                })
+            snippetNotice = store.snippetWarnings.first
         }
         .onDisappear {
             if store.focusedLivePane == sessionID { store.setFocusedLivePane(nil) }
@@ -102,6 +111,17 @@ struct ChatSessionView: View {
                     pendingSwap[ev.agent] = nil
                 }
             }
+        }
+        .sheet(item: $snippetForm) { form in
+            SnippetVariableForm(
+                draft: Binding(get: { snippetForm ?? form },
+                               set: { snippetForm = $0 }),
+                onInsert: { rendered, warnings in
+                    draft = rendered
+                    snippetNotice = warnings.first
+                    snippetForm = nil
+                },
+                onCancel: { snippetForm = nil })
         }
     }
 
@@ -390,34 +410,80 @@ struct ChatSessionView: View {
     }
 
     private func inputBar(placeholder: String) -> some View {
-        HStack(spacing: 8) {
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .textBackgroundColor))
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.secondary.opacity(0.25))
-                if draft.isEmpty {
-                    Text(placeholder)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 9).padding(.vertical, 7)
-                        .allowsHitTesting(false)
-                }
-                TextField("", text: $draft)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 9).padding(.vertical, 7)
-                    .onSubmit(send)
-                    .accessibilityLabel("Message to the room")
+        VStack(alignment: .leading, spacing: DS.space.xxs) {
+            if let snippetNotice {
+                Label(snippetNotice, systemImage: "exclamationmark.triangle")
+                    .font(DS.font.caption)
+                    .foregroundStyle(DS.status.warning.color)
             }
-            .frame(height: 36)
-            Button(action: send) { Image(systemName: "paperplane.fill") }
-                .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                .keyboardShortcut(.return, modifiers: [])
-                .accessibilityLabel("Send message")
+            if !snippetMatches.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: DS.space.xxs) {
+                        ForEach(snippetMatches.prefix(6)) { snippet in
+                            Button("/\(snippet.name)") { chooseSnippet(snippet) }
+                                .buttonStyle(.bordered)
+                                .font(DS.font.caption)
+                        }
+                    }
+                }
+            }
+            HStack(spacing: DS.space.xs) {
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: DS.radius.chip)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                    RoundedRectangle(cornerRadius: DS.radius.chip)
+                        .stroke(Color.secondary.opacity(0.25))
+                    if draft.isEmpty {
+                        Text(placeholder)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, DS.space.s)
+                            .padding(.vertical, DS.space.xs)
+                            .allowsHitTesting(false)
+                    }
+                    TextField("", text: $draft)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, DS.space.s)
+                        .padding(.vertical, DS.space.xs)
+                        .onSubmit(send)
+                        .accessibilityLabel("Message to the room")
+                }
+                .frame(height: 36)
+                Button(action: send) { Image(systemName: "paperplane.fill") }
+                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .keyboardShortcut(.return, modifiers: [])
+                    .accessibilityLabel("Send message")
+            }
         }
-        .padding(10)
+        .padding(DS.space.s)
+    }
+
+    private var snippetMatches: [PromptSnippet] {
+        SnippetComposerLogic.matches(draft: draft, snippets: snippets)
+    }
+
+    private func chooseSnippet(_ snippet: PromptSnippet) {
+        snippetNotice = snippet.warning
+        if snippet.variables.isEmpty {
+            draft = snippet.text
+        } else {
+            snippetForm = SnippetFormDraft(snippet: snippet)
+        }
+    }
+
+    private func handleSnippetCommand() -> Bool {
+        switch SnippetComposerLogic.resolveCommand(draft, snippets: snippets) {
+        case .notCommand:
+            return false
+        case .refusal(let message):
+            snippetNotice = message
+        case .snippet(let snippet):
+            chooseSnippet(snippet)
+        }
+        return true
     }
 
     private func send() {
+        if handleSnippetCommand() { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let p = project else { return }
         // sendHumanMessage appends to <chat>/human_inbox.txt; the engine
@@ -447,5 +513,72 @@ struct ChatSessionView: View {
                 && (session?.state.isAlive ?? false)
             try? await Task.sleep(nanoseconds: fast ? 500_000_000 : 1_500_000_000)
         }
+    }
+}
+
+private struct SnippetVariableForm: View {
+    @Binding var draft: SnippetFormDraft
+    let onInsert: (String, [String]) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.space.s) {
+            Text(draft.snippet.name).font(DS.font.title)
+            Text("Fill the fields, then insert the result into the composer. Nothing is sent automatically.")
+                .font(DS.font.caption).foregroundStyle(.secondary)
+            ForEach(draft.snippet.variables) { variable in
+                VStack(alignment: .leading, spacing: DS.space.xxs) {
+                    Text(variable.label + (variable.required ? " · Required" : ""))
+                        .font(DS.font.callout)
+                    control(for: variable)
+                    if draft.blockingVariables.contains(variable) {
+                        Text("Enter a valid \(variable.kind.rawValue) value.")
+                            .font(DS.font.caption)
+                            .foregroundStyle(DS.status.warning.color)
+                    }
+                }
+            }
+            ForEach(draft.lintWarnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(DS.font.caption)
+                    .foregroundStyle(DS.status.warning.color)
+            }
+            HStack {
+                Button("Cancel", action: onCancel)
+                Spacer()
+                Button("Insert") {
+                    onInsert(draft.renderedText, draft.lintWarnings)
+                }
+                .disabled(!draft.canInsert)
+            }
+        }
+        .padding(DS.space.l)
+        .frame(minWidth: 420)
+    }
+
+    @ViewBuilder
+    private func control(for variable: SnippetVariable) -> some View {
+        switch variable.kind {
+        case .string:
+            TextField(variable.label, text: valueBinding(variable.name))
+                .textFieldStyle(.roundedBorder)
+        case .number:
+            TextField(variable.label, text: valueBinding(variable.name))
+                .textFieldStyle(.roundedBorder)
+        case .boolean:
+            Toggle(variable.label, isOn: Binding(
+                get: { draft.values[variable.name] == "true" },
+                set: { draft.values[variable.name] = $0 ? "true" : "false" }))
+        case .choice:
+            Picker(variable.label, selection: valueBinding(variable.name)) {
+                Text("Choose…").tag("")
+                ForEach(variable.options, id: \.self) { Text($0).tag($0) }
+            }
+        }
+    }
+
+    private func valueBinding(_ name: String) -> Binding<String> {
+        Binding(get: { draft.values[name] ?? "" },
+                set: { draft.values[name] = $0 })
     }
 }
