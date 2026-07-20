@@ -11660,6 +11660,11 @@ def main():
                     help="search open-source local models (curated registry + "
                          "Hugging Face GGUF, pullable via ollama) and exit; "
                          "combine with --json for machine-readable output")
+    ap.add_argument("--export-notion", action="store_true",
+                    help="write a dry-run Notion diff for --app/--project and exit")
+    ap.add_argument("--deliver", action="store_true",
+                    help="with --export-notion: explicitly record the freshly "
+                         "generated snapshot (no remote delivery is wired)")
     args = ap.parse_args()
 
     # --json means stdout must be ONLY the JSON blob (any consumer — CI, the
@@ -11729,6 +11734,19 @@ def main():
                      "the workspace root, or a nested session id "
                      "project/section/chat (no '..', hidden or empty segments)"
                      % _slug)
+
+    if args.deliver and not args.export_notion:
+        ap.error("--deliver requires --export-notion")
+    if args.export_notion:
+        if not target_app:
+            ap.error("--export-notion requires --app/--project SLUG")
+        result = docsynclib.export_notion(
+            os.path.join(cfg["root"], target_app), deliver=args.deliver,
+            on_warn=emit)
+        print(result["message"])
+        if result.get("report_path"):
+            print("DIFF: %s" % result["report_path"])
+        return 0 if result.get("ok") else 2
 
     if args.continue_with:
         # Validate the combination before any slug is processed.

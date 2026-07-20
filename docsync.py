@@ -30,6 +30,9 @@ import procutil
 
 STATE_FILENAME = ".docsync_state.json"
 STATE_SCHEMA_VERSION = 1
+NOTION_STATE_FILENAME = "notion_export_state.json"
+NOTION_DIFF_FILENAME = "NOTION_EXPORT_DIFF.md"
+NOTION_STATE_SCHEMA_VERSION = 1
 BOT_NAME = "orchestrator-docs"
 BOT_EMAIL = "docs@orchestrator.local"
 GIT_TIMEOUT = 30
@@ -71,6 +74,20 @@ def _atomic_json(path, value):
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(value, fh, indent=2, sort_keys=True)
             fh.write("\n")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_text(path, value):
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(value)
         os.replace(tmp, path)
     except OSError:
         try:
@@ -432,3 +449,279 @@ def override_note(overrides):
             "The renderer intentionally preserved these files verbatim; their "
             "contents may differ from current artifacts until reconciliation:\n"
             + "\n".join("- `%s`" % path for path in paths) + "\n")
+
+
+def _content_hash(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _notion_paths(app_dir):
+    integrations = os.path.join(app_dir, "integrations")
+    return {
+        "dir": integrations,
+        "payload": os.path.join(integrations,
+                                "project_management_backfill.json"),
+        "state": os.path.join(integrations, NOTION_STATE_FILENAME),
+        "diff": os.path.join(integrations, NOTION_DIFF_FILENAME),
+    }
+
+
+def _load_notion_payload(path, on_warn=None):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except FileNotFoundError:
+        _warn(on_warn, "nothing to export — project management backfill is missing")
+        return None
+    except (OSError, ValueError) as exc:
+        _warn(on_warn, "nothing to export — project management backfill is "
+              "unreadable (%s)" % exc)
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("notion"), dict):
+        _warn(on_warn, "nothing to export — backfill notion payload must be an object")
+        return None
+    return payload
+
+
+def _entity_hashes(payload, on_warn=None):
+    """Return the stable Notion snapshot, or None for structurally unsafe data."""
+    notion = payload["notion"]
+    properties = notion.get("project_properties")
+    pages = notion.get("pages")
+    rows = notion.get("task_database_rows")
+    if not isinstance(properties, dict) or not isinstance(pages, list) or \
+            not isinstance(rows, list):
+        _warn(on_warn, "notion payload requires project_properties object, "
+              "pages array, and task_database_rows array")
+        return None
+
+    page_hashes = {}
+    for index, page in enumerate(pages):
+        if not isinstance(page, dict) or not isinstance(page.get("title"), str) \
+                or not isinstance(page.get("path", ""), str):
+            _warn(on_warn, "notion page %d lacks a string title/path; refusing "
+                  "an ambiguous diff" % index)
+            return None
+        key = json.dumps([page["title"], page.get("path", "")],
+                         ensure_ascii=False, separators=(",", ":"))
+        if key in page_hashes:
+            _warn(on_warn, "duplicate notion page identity %s; refusing an "
+                  "ambiguous diff" % key)
+            return None
+        page_hashes[key] = _content_hash(page)
+
+    row_hashes = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or not isinstance(row.get("external_id"), str) \
+                or not row.get("external_id"):
+            _warn(on_warn, "notion task row %d lacks external_id; refusing an "
+                  "ambiguous diff" % index)
+            return None
+        key = row["external_id"]
+        if key in row_hashes:
+            _warn(on_warn, "duplicate notion task external_id %s; refusing an "
+                  "ambiguous diff" % key)
+            return None
+        row_hashes[key] = _content_hash(row)
+
+    return {
+        "schema_version": NOTION_STATE_SCHEMA_VERSION,
+        "payload_hash": _content_hash(notion),
+        "entities": {
+            "pages": page_hashes,
+            "task_database_rows": row_hashes,
+            "project_properties": {
+                "project_properties": _content_hash(properties),
+            },
+        },
+    }
+
+
+def _empty_notion_state():
+    return {
+        "schema_version": NOTION_STATE_SCHEMA_VERSION,
+        "payload_hash": "",
+        "entities": {
+            "pages": {}, "task_database_rows": {},
+            "project_properties": {},
+        },
+    }
+
+
+def _load_notion_state(path, on_warn=None):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        entities = state.get("entities") if isinstance(state, dict) else None
+        if not isinstance(entities, dict) or any(
+                not isinstance(entities.get(name), dict) for name in
+                ("pages", "task_database_rows", "project_properties")):
+            raise ValueError("state must contain all entity hash maps")
+        return state, "ok"
+    except FileNotFoundError:
+        return _empty_notion_state(), "missing"
+    except (OSError, ValueError) as exc:
+        _warn(on_warn, "notion export state unreadable (%s) — the diff will "
+              "explicitly show the current payload as added" % exc)
+        return _empty_notion_state(), "corrupt"
+
+
+def _notion_diff(previous, current):
+    result = {}
+    for name in ("pages", "task_database_rows", "project_properties"):
+        before = previous["entities"].get(name, {})
+        after = current["entities"].get(name, {})
+        before_keys = set(before)
+        after_keys = set(after)
+        result[name] = {
+            "added": sorted(after_keys - before_keys),
+            "changed": sorted(key for key in before_keys & after_keys
+                              if before[key] != after[key]),
+            "removed": sorted(before_keys - after_keys),
+        }
+    return result
+
+
+def _diff_has_changes(diff):
+    return any(values[kind] for values in diff.values()
+               for kind in ("added", "changed", "removed"))
+
+
+def _render_notion_diff(diff, state_status):
+    lines = [
+        "# Notion Export Diff", "",
+        "_Dry run only. This report does not contact Notion._", "",
+    ]
+    if state_status == "corrupt":
+        lines += [
+            "> Previous export state was unreadable. Every current entity is "
+            "therefore shown explicitly as added; review before authorizing "
+            "snapshot recording.", "",
+        ]
+    if not _diff_has_changes(diff):
+        lines += ["No changes since the last recorded export snapshot.", ""]
+        return "\n".join(lines)
+    labels = {
+        "pages": "Pages",
+        "task_database_rows": "Task database rows",
+        "project_properties": "Project properties",
+    }
+    for name in ("pages", "task_database_rows", "project_properties"):
+        lines += ["## %s" % labels[name], ""]
+        values = diff[name]
+        if not any(values.values()):
+            lines += ["No changes.", ""]
+            continue
+        for kind in ("added", "changed", "removed"):
+            for key in values[kind]:
+                lines.append("- %s: `%s`" % (kind, key.replace("`", "\\`")))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def record_notion_snapshot(app_dir, snapshot, on_warn=None):
+    """Shipped delivery seam: record hashes only; perform no remote delivery.
+
+    A future HTTP implementation belongs behind this same injected-callable
+    seam and must follow the API key-file/header-only rules.  This implementation
+    deliberately has no network or token handling.
+    """
+    paths = _notion_paths(app_dir)
+    os.makedirs(paths["dir"], exist_ok=True)
+    _atomic_json(paths["state"], snapshot)
+    message = "snapshot recorded; no remote Notion delivery is wired"
+    _warn(on_warn, message)
+    return {"recorded": True, "remote_delivered": False, "message": message}
+
+
+def export_notion(app_dir, deliver=False, delivery_fn=None, on_warn=None):
+    """Create a fresh dry-run diff, optionally recording its snapshot.
+
+    ``delivery_fn`` receives ``(app_dir, snapshot, on_warn=...)``.  It is never
+    called unless this invocation successfully wrote the diff report.  The only
+    shipped implementation is :func:`record_notion_snapshot`, which records
+    local state and truthfully performs no remote delivery.
+    """
+    warnings = []
+
+    def warn(message):
+        message = str(message)
+        if message.startswith("docsync: "):
+            message = message[len("docsync: "):]
+        warnings.append(message)
+        _warn(on_warn, message)
+
+    paths = _notion_paths(app_dir)
+    payload = _load_notion_payload(paths["payload"], warn)
+    if payload is None:
+        return {
+            "ok": True, "status": "nothing-to-export", "fresh_diff": False,
+            "delivered": False, "remote_delivered": False, "diff": None,
+            "report_path": None, "warnings": warnings,
+            "message": "nothing to export",
+        }
+    snapshot = _entity_hashes(payload, warn)
+    if snapshot is None:
+        return {
+            "ok": False, "status": "refused", "fresh_diff": False,
+            "delivered": False, "remote_delivered": False, "diff": None,
+            "report_path": None, "warnings": warnings,
+            "message": "unsafe notion payload; export refused",
+        }
+    previous, state_status = _load_notion_state(paths["state"], warn)
+    diff = _notion_diff(previous, snapshot)
+    report = _render_notion_diff(diff, state_status)
+    try:
+        os.makedirs(paths["dir"], exist_ok=True)
+        _atomic_text(paths["diff"], report)
+    except OSError as exc:
+        warn("could not atomically write the fresh Notion diff (%s)" % exc)
+        return {
+            "ok": False, "status": "refused", "fresh_diff": False,
+            "delivered": False, "remote_delivered": False, "diff": diff,
+            "report_path": None, "warnings": warnings,
+            "message": "delivery refused because no fresh diff was recorded",
+        }
+
+    result = {
+        "ok": True, "status": "dry-run", "fresh_diff": True,
+        "delivered": False, "remote_delivered": False, "diff": diff,
+        "report_path": paths["diff"], "warnings": warnings,
+        "message": ("dry-run diff generated with changes" if
+                    _diff_has_changes(diff) else "dry-run diff: no changes"),
+    }
+    if not deliver:
+        return result
+    if not _diff_has_changes(diff):
+        result.update({"status": "no-changes",
+                       "message": "no changes; snapshot delivery was not run"})
+        return result
+
+    fn = delivery_fn or record_notion_snapshot
+    try:
+        delivery = fn(app_dir, snapshot, on_warn=warn)
+    except Exception as exc:
+        warn("snapshot delivery step failed (%s)" % exc)
+        result.update({"ok": False, "status": "delivery-failed",
+                       "message": "snapshot delivery step failed"})
+        return result
+    if not isinstance(delivery, dict) or not delivery.get("recorded"):
+        warn("delivery callable did not confirm snapshot recording")
+        result.update({"ok": False, "status": "delivery-failed",
+                       "message": "snapshot delivery was not confirmed"})
+        return result
+    recorded, recorded_status = _load_notion_state(paths["state"], warn)
+    if recorded_status != "ok" or recorded != snapshot:
+        warn("delivery callable confirmation lacked a matching durable snapshot")
+        result.update({"ok": False, "status": "delivery-failed",
+                       "message": "snapshot delivery was not durably verified"})
+        return result
+    result.update({
+        "status": "snapshot-recorded", "delivered": True,
+        "remote_delivered": bool(delivery.get("remote_delivered", False)),
+        "message": str(delivery.get("message") or
+                       "snapshot recorded; no remote delivery wired"),
+    })
+    return result
