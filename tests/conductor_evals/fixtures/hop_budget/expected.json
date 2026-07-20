@@ -1,0 +1,1 @@
+{"decisions": ["route_proposed", "budget_exhausted"], "routes": [{"decision":"route_proposed","artifact_id":"hop-002","target":"research"},{"decision":"budget_exhausted","artifact_id":"hop-002","target":"research"}], "terminal": {}}

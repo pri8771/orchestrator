@@ -1,0 +1,2 @@
+{"batch":0,"session":"eval/ideas/oscillation","artifact":{"id":"osc-a","type":"idea","status":"superseded","content_hash":"same-hash","lineage":[],"supersedes":null,"depth":0},"body":"first\n"}
+{"batch":0,"session":"eval/ideas/oscillation","artifact":{"id":"osc-b","type":"idea","status":"final","content_hash":"same-hash","lineage":["osc-a"],"supersedes":"osc-a","depth":1},"body":"again\n"}

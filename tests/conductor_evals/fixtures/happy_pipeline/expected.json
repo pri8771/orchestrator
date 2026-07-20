@@ -1,0 +1,12 @@
+{
+ "decisions": ["route_proposed", "route_approved", "route_proposed", "route_approved", "route_proposed", "route_approved"],
+ "routes": [
+  {"decision":"route_proposed","artifact_id":"idea-001","target":"research"},
+  {"decision":"route_approved","artifact_id":"idea-001","target":"research"},
+  {"decision":"route_proposed","artifact_id":"research-001","target":"planning"},
+  {"decision":"route_approved","artifact_id":"research-001","target":"planning"},
+  {"decision":"route_proposed","artifact_id":"plan-001","target":"documentation"},
+  {"decision":"route_approved","artifact_id":"plan-001","target":"documentation"}
+ ],
+ "terminal": {}
+}

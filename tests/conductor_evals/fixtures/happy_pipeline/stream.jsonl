@@ -1,0 +1,3 @@
+{"batch":0,"session":"eval/ideas/source","artifact":{"id":"idea-001","type":"concept"},"body":"A recorded product idea.\n"}
+{"batch":1,"session":"eval/research/source","artifact":{"id":"research-001","type":"research_brief"},"body":"Recorded research evidence.\n"}
+{"batch":2,"session":"eval/planning/source","artifact":{"id":"plan-001","type":"spec_bundle"},"body":"A recorded implementation plan.\n"}

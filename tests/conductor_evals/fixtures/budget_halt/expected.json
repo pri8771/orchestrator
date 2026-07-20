@@ -1,0 +1,1 @@
+{"decisions": ["route_proposed", "route_approved", "budget_exhausted"], "routes": [{"decision":"route_proposed","artifact_id":"budget-idea","target":"research"},{"decision":"route_approved","artifact_id":"budget-idea","target":"research"}], "terminal": {"__workspace__": "turns_exhausted"}, "extra_polls": 1}

@@ -1,0 +1,1 @@
+{"rules": [{"match": {"artifact_type": "idea", "source_section": "ideas"}, "strategy": "chain", "targets": ["research"], "hop_budget": 2}]}

@@ -83,6 +83,19 @@ DEFAULT_OVERSIGHT_DIAL = "loops_gated"
 SCHEMA_VERSION = 1
 _MAX_LEDGER_LINE_BYTES = 3500   # same PIPE_BUF discipline as events.py
 
+
+def _eval_crash(stage):
+    """SIGKILL at a named routing boundary for the offline 7.9 eval suite.
+
+    This is deliberately an environment-only, private seam: without the
+    variable it is one comparison and has no observable production effect.
+    SIGKILL (rather than an exception) is required to exercise the actual
+    durability boundaries -- no finally block or broad routing catch may
+    make the test gentler than a process crash.
+    """
+    if os.environ.get("ORCH_CONDUCTOR_EVAL_CRASH") == stage:
+        os.kill(os.getpid(), signal.SIGKILL)
+
 # The authoritative agent_state.json fields a conductor decision may read.
 # Everything else (transcripts, event payloads) is either hint or content.
 _DECISION_FIELDS = ("current_phase", "done", "error", "awaiting_approval",
@@ -1429,6 +1442,14 @@ def route_engine(root, state, sessions, emit=print):
     sections_dir = _sections_dir()
     active_preset = state.get("pipeline")
     classify = _build_classifier(root)
+    # A durable proposal may outlive the process that wrote it.  Replaying
+    # after that crash must continue the effect, not append a second proposal
+    # for the same deterministic route id.
+    proposed_route_ids = {
+        rec.get("route_id") for rec in read_ledger(root)
+        if isinstance(rec, dict) and rec.get("decision") == "route_proposed"
+        and isinstance(rec.get("route_id"), str)
+    }
     effected_cache = {}   # (project, section) -> set, scanned once per poll
     wave_snapshot_taken = False
 
@@ -1591,6 +1612,7 @@ def route_engine(root, state, sessions, emit=print):
             if not artlib.is_admissible(app_dir, meta, index=index,
                                         on_error=lambda _m: None):
                 continue
+            _eval_crash("pre_guard")
             intents = crlib.plan_routes(meta, section, config, lineage_metas,
                                         classify=classify)
             # Already-routed dedupe: a still-admissible artifact stays
@@ -1601,12 +1623,20 @@ def route_engine(root, state, sessions, emit=print):
                      if route_digest(i.route_key) not in state["routed"]]
             if not fresh:
                 continue
+            _eval_crash("post_route_id")
 
             def _mint(target_section, request, _proj=project):
-                return seslib_local.mint_delegation_session(
+                # "mid_inbox_injection" is the historical state-machine name
+                # from 7.3; the landed delivery model mints a delegation
+                # session directly, so this boundary is immediately before
+                # that durable effect.
+                _eval_crash("mid_inbox_injection")
+                session_dir = seslib_local.mint_delegation_session(
                     root, _proj, target_section, request,
                     create_session=create_session,
                     on_error=lambda m: emit("conductor mint: %s" % m))
+                _eval_crash("post_act_pre_record")
+                return session_dir
 
             def _probe(rid, target_section, _proj=project, _intent_by_rid=None):
                 # 7.3 restart recovery, cost-bounded: scan each target
@@ -1722,9 +1752,22 @@ def route_engine(root, state, sessions, emit=print):
             if any(i.verdict == crlib.ALLOW and i.target
                    for i in allowed_now):
                 _ensure_wave_snapshot()
+            def _route_ledger(base):
+                rid = base.get("route_id")
+                if base.get("decision") == "route_proposed":
+                    if rid in proposed_route_ids:
+                        return
+                    _ledger_route(
+                        root, base,
+                        after_append=lambda: _eval_crash(
+                            "post_ledger_append"))
+                    proposed_route_ids.add(rid)
+                    return
+                _ledger_route(root, base)
+
             outcomes = crlib.execute_intents(
                 allowed_now, sid, root, _mint,
-                lambda base: _ledger_route(root, base),
+                _route_ledger,
                 probe=lambda rid, tgt: _probe(rid, tgt, _intent_by_rid=by_rid))
             # Record only routes that actually fired or were terminally
             # decided (converged/budget/unroutable/denied) — a mint_failed

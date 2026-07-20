@@ -1,0 +1,7 @@
+{
+ "rules": [
+  {"match": {"artifact_type": "research_brief", "source_section": "research"}, "strategy": "one", "targets": ["planning"]},
+  {"match": {"artifact_type": "spec_bundle", "source_section": "planning"}, "strategy": "one", "targets": ["documentation"]},
+  {"match": {"artifact_type": "idea", "source_section": "ideas"}, "strategy": "one", "targets": ["research"]}
+ ]
+}
