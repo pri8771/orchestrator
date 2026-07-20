@@ -107,6 +107,15 @@ def _derive_display(agent_id):
     like 'local:qwen2.5-coder:7b' (-> 'Qwen2.5 Coder'). V2 spec §4.1 / gap 28:
     no display/signature lookup may KeyError on an unknown identity."""
     s = str(agent_id or "")
+    if s.startswith("api:"):
+        # api:<provider>:<model> -> label from the model portion ('api'
+        # alone would label every provider identically).
+        parts = s.split(":", 2)
+        base = parts[2] if len(parts) > 2 and parts[2] else \
+            (parts[1] if len(parts) > 1 else s)
+        label = base.split(":")[0].replace("-", " ").replace("_", " ") \
+            .strip().title()
+        return "%s (api)" % label if label else s
     base = s.split(":", 1)[1] if s.startswith("local:") else s
     base = base.split(":")[0]  # drop a size tag like ':7b'
     label = base.replace("-", " ").replace("_", " ").strip().title()
@@ -657,6 +666,321 @@ def _gemini_api_key(cfg):
     return None
 
 
+# V3 6.2: direct-API runners (api:<provider>:<model>). Pure stdlib HTTP —
+# no subprocess, no child env, and the key is read from a file OUTSIDE the
+# repo and placed ONLY in an HTTP auth header (§9.4): never argv, never a
+# URL, never any environ, never the cmd display string. Non-streaming
+# (6.3 adds stream mode); token usage rides the traces side-channel exactly
+# like run_local because the 4-tuple runner contract is frozen and a
+# cfg-resident usage field would race across concurrent lanes.
+_API_PROVIDERS = ("anthropic", "openai", "google")
+_API_KEY_FILES = {
+    "anthropic": ("anthropic_api_key",),
+    "openai": ("openai_api_key",),
+    # google api: ids bill the same Generative Language credential the gemini
+    # CLI uses, so the existing key file works as a fallback.
+    "google": ("google_api_key", "gemini_api_key"),
+}
+
+
+def _api_key_path(provider):
+    """The canonical key-file path, for error messages (§5.2: the auth error
+    names the exact file to fix)."""
+    name = _API_KEY_FILES.get(provider, (provider + "_api_key",))[0]
+    return os.path.expanduser("~/.orchestrator/%s" % name)
+
+
+def _api_key(provider):
+    """A provider API key for the api: runners, read ONLY from
+    ~/.orchestrator/<provider>_api_key. Deliberately NO environment fallback
+    (unlike _gemini_api_key): run.sh unsets every key env var anyway, and env
+    transport is exactly the leak vector the api: design forbids.
+    Missing/empty files -> None."""
+    for name in _API_KEY_FILES.get(provider, ()):
+        try:
+            with open(os.path.expanduser("~/.orchestrator/%s" % name),
+                      encoding="utf-8") as fh:
+                k = fh.read().strip()
+                if k:
+                    return k
+        except OSError:
+            continue
+    return None
+
+
+def _api_key_source(provider):
+    """The key file an api: call would ACTUALLY use (fallback-aware, e.g.
+    google reading gemini_api_key) — for error messages and probe-cache
+    invalidation. Falls back to the canonical path when no candidate file
+    yields a key, so "create this file" advice stays actionable."""
+    for name in _API_KEY_FILES.get(provider, ()):
+        path = os.path.expanduser("~/.orchestrator/%s" % name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                if fh.read().strip():
+                    return path
+        except OSError:
+            continue
+    return _api_key_path(provider)
+
+
+def _apply_api_optin(tctx, run_cfg):
+    """V3 6.2 opt-in wiring: unconditional reset THEN explicit enable, like
+    the sibling per-app flags (round_multiplier/autonomy) — a long-lived
+    --watch cfg must forget a removed opt-in, or de-opted projects keep
+    billing the provider account."""
+    tctx.api_agents_enabled = None
+    if run_cfg.get("api_agents"):
+        tctx.api_agents_enabled = True
+        emit("api agents ENABLED for this project: api:<provider>:<model> "
+             "turns bill the provider account directly (per-token cost).")
+
+
+def _api_refusal(cfg, provider, model):
+    """Per-project opt-in gate. api: turns bill a real account, so absent
+    opt-in refuses fast and VISIBLY (R2: never silently swap agents or
+    fabricate output) with the fix spelled out."""
+    if tcxlib.TurnContext(cfg).api_agents_enabled:
+        return None
+    msg = ("api:%s:%s refused: direct-API agents are per-project opt-in "
+           "because every turn costs real money. Enable with \"api_agents\": "
+           "true in the project's run_config.json." % (provider, model))
+    emit(msg)
+    return msg
+
+
+def _api_http(provider, url, headers, body, timeout):
+    """Shared HTTP core for the api: runners: POST JSON, map failures onto
+    the three DISTINCT §5.2 classes — auth (names the key file), rate/quota,
+    network — plus malformed-JSON parse. Returns (parsed, err, code). No
+    secret ever appears in err: only the key-file PATH is named."""
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers=headers,
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:  # noqa: BLE001 - detail is best-effort garnish
+            detail = ""
+        if exc.code in (401, 403):
+            return None, ("%s auth failed (HTTP %s): the API key in %s was "
+                          "rejected — fix or replace that file. %s"
+                          % (provider, exc.code, _api_key_source(provider),
+                             detail)), 1
+        if exc.code == 429:
+            return None, ("%s rate/quota limit (HTTP 429): the account "
+                          "behind %s is rate-limited or out of quota — wait "
+                          "or raise the limit. %s"
+                          % (provider, _api_key_source(provider), detail)), 1
+        return None, "%s HTTP %s: %s %s" % (provider, exc.code, exc.reason,
+                                            detail), 1
+    except urllib.error.URLError as exc:
+        return None, ("%s unreachable (network): %s — check connectivity; "
+                      "nothing was billed." % (provider, exc.reason)), 1
+    except OSError as exc:
+        # urllib only wraps SEND-phase failures into URLError; a timeout or
+        # reset while RECEIVING the response raises raw socket errors
+        # (TimeoutError et al). Same §5.2 network class — never a crashed
+        # turn that skips trace finalization.
+        return None, ("%s unreachable (network): %s — the response timed "
+                      "out or the connection dropped mid-read."
+                      % (provider, exc)), 1
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        return None, "%s returned malformed JSON: %s" % (provider, exc), 1
+    if not isinstance(parsed, dict):
+        return None, "%s returned a non-object JSON payload" % provider, 1
+    return parsed, "", 0
+
+
+def _api_preflight(cfg, provider, model, cmd):
+    """Common gate for every api: turn: opt-in, cached availability probe,
+    key presence. Returns an (out, err, code, cmd) refusal tuple or None."""
+    refusal = _api_refusal(cfg, provider, model)
+    if refusal:
+        return ("", refusal, 1, cmd)
+    ok, reason = detect_api_available(cfg, provider)
+    if not ok:
+        return ("", reason, 1, cmd)
+    return None
+
+
+def run_anthropic_api(cfg, prompt, timeout, model):
+    cmd = "api:anthropic model=%s" % model
+    early = _api_preflight(cfg, "anthropic", model, cmd)
+    if early:
+        return early
+    data, err, code = _api_http(
+        "anthropic", "https://api.anthropic.com/v1/messages",
+        {"Content-Type": "application/json", "x-api-key": _api_key("anthropic"),
+         "anthropic-version": "2023-06-01"},
+        {"model": model, "max_tokens": 8192,
+         "messages": [{"role": "user", "content": prompt}]},
+        timeout)
+    if err:
+        return ("", err, code, cmd)
+    blocks = data.get("content")
+    if not isinstance(blocks, list):
+        return ("", "anthropic returned an unexpected payload shape "
+                "(no content list)", 1, cmd)
+    text = "".join(b.get("text", "") for b in blocks
+                   if isinstance(b, dict) and b.get("type") == "text")
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        traceslib.set_last_usage({
+            "provider": "anthropic", "model": model,
+            "prompt_tokens": usage.get("input_tokens"),
+            "completion_tokens": usage.get("output_tokens")})
+    return (text, "", 0, cmd)
+
+
+def run_openai_api(cfg, prompt, timeout, model):
+    cmd = "api:openai model=%s" % model
+    early = _api_preflight(cfg, "openai", model, cmd)
+    if early:
+        return early
+    data, err, code = _api_http(
+        "openai", "https://api.openai.com/v1/chat/completions",
+        {"Content-Type": "application/json",
+         "Authorization": "Bearer %s" % _api_key("openai")},
+        {"model": model, "messages": [{"role": "user", "content": prompt}]},
+        timeout)
+    if err:
+        return ("", err, code, cmd)
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices \
+            or not isinstance(choices[0], dict):
+        return ("", "openai returned an unexpected payload shape "
+                "(no choices)", 1, cmd)
+    message = choices[0].get("message")
+    text = message.get("content") if isinstance(message, dict) else None
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        traceslib.set_last_usage({
+            "provider": "openai", "model": model,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens")})
+    return (text or "", "", 0, cmd)
+
+
+def run_google_api(cfg, prompt, timeout, model):
+    cmd = "api:google model=%s" % model
+    early = _api_preflight(cfg, "google", model, cmd)
+    if early:
+        return early
+    # Key travels in the x-goog-api-key HEADER, never a URL query param —
+    # URLs reach logs and error strings; headers never do.
+    data, err, code = _api_http(
+        "google", "https://generativelanguage.googleapis.com/v1beta/models/"
+        "%s:generateContent" % model,
+        {"Content-Type": "application/json",
+         "x-goog-api-key": _api_key("google")},
+        {"contents": [{"parts": [{"text": prompt}]}]},
+        timeout)
+    if err:
+        return ("", err, code, cmd)
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates \
+            or not isinstance(candidates[0], dict):
+        return ("", "google returned an unexpected payload shape "
+                "(no candidates)", 1, cmd)
+    parts = (candidates[0].get("content") or {}).get("parts") \
+        if isinstance(candidates[0].get("content"), dict) else None
+    text = "".join(p.get("text", "") for p in parts
+                   if isinstance(p, dict)) if isinstance(parts, list) else ""
+    usage = data.get("usageMetadata")
+    if isinstance(usage, dict):
+        traceslib.set_last_usage({
+            "provider": "google", "model": model,
+            "prompt_tokens": usage.get("promptTokenCount"),
+            "completion_tokens": usage.get("candidatesTokenCount")})
+    return (text, "", 0, cmd)
+
+
+_API_RUNNERS = {"anthropic": run_anthropic_api, "openai": run_openai_api,
+                "google": run_google_api}
+_API_PROBE_URLS = {
+    "anthropic": "https://api.anthropic.com/v1/models?limit=1",
+    "openai": "https://api.openai.com/v1/models",
+    "google": "https://generativelanguage.googleapis.com/v1beta/models"
+              "?pageSize=1",
+}
+
+
+def _api_probe_headers(provider, key):
+    if provider == "anthropic":
+        return {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    if provider == "openai":
+        return {"Authorization": "Bearer %s" % key}
+    return {"x-goog-api-key": key}
+
+
+def detect_api_available(cfg, provider):
+    """Cheap models-list GET per provider (key from file ONLY), verdict
+    cached 4h on disk mirroring detect_gemini_available — a dead key fails
+    the roster once, not every turn. The cache also stores the key file's
+    mtime, so a fixed key is picked up on the next turn instead of waiting
+    out the TTL. Returns (ok, reason)."""
+    if provider not in _API_PROVIDERS:
+        return False, "unknown api provider %r (valid: %s)" % (
+            provider, ", ".join(_API_PROVIDERS))
+    try:
+        # Stat the file a call would ACTUALLY read (fallback-aware): pinning
+        # the canonical path would never notice a fixed gemini_api_key.
+        key_mtime = os.path.getmtime(_api_key_source(provider))
+    except OSError:
+        key_mtime = 0.0
+    cache_p = _probe_cache_path(".api_probe_%s.json" % provider)
+    try:
+        with open(cache_p, encoding="utf-8") as fh:
+            c = json.load(fh)
+        if (time.time() - c.get("ts", 0) < 4 * 3600
+                and c.get("key_mtime") == key_mtime):
+            return bool(c.get("ok")), str(c.get("reason", ""))
+    except (OSError, ValueError):
+        pass
+    key = _api_key(provider)
+    if not key:
+        ok, reason = False, ("%s: no API key — create %s containing the key "
+                             "(file-only; environment variables are "
+                             "deliberately ignored)."
+                             % (provider, _api_key_path(provider)))
+    else:
+        req = urllib.request.Request(_API_PROBE_URLS[provider],
+                                     headers=_api_probe_headers(provider, key))
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp.read()
+            ok, reason = True, ""
+        except urllib.error.HTTPError as exc:
+            ok = False
+            if exc.code in (401, 403):
+                reason = ("%s auth failed (HTTP %s): the API key in %s was "
+                          "rejected — fix or replace that file."
+                          % (provider, exc.code, _api_key_source(provider)))
+            else:
+                reason = "%s probe HTTP %s: %s" % (provider, exc.code,
+                                                   exc.reason)
+        except urllib.error.URLError as exc:
+            ok, reason = False, ("%s unreachable (network): %s"
+                                 % (provider, exc.reason))
+        except OSError as exc:
+            # Receive-phase timeout/reset — urllib leaves these unwrapped.
+            ok, reason = False, ("%s unreachable (network): %s"
+                                 % (provider, exc))
+    try:
+        with open(cache_p, "w", encoding="utf-8") as fh:
+            json.dump({"ok": ok, "reason": reason, "ts": time.time(),
+                       "key_mtime": key_mtime}, fh)
+    except OSError:
+        pass  # cache is an optimization; the verdict stands without it
+    return ok, reason
+
+
 def _agent_cwd(cfg):
     """Return (cwd, ephemeral). During the build phase (when writes are allowed)
     agents work directly in the app's persistent build dir; otherwise they run in
@@ -1083,11 +1407,13 @@ AGENT_CAPABILITIES = {
 
 # Dynamic identities resolve by prefix, mirroring resolve_runner: local:<model>
 # runs through run_local (reasoning honored, nothing else); api:<provider>:<model>
-# (6.2) will stream and meter tokens but exposes no effort knob yet.
+# (6.2) meters real token usage via the traces side-channel but is
+# non-streaming until 6.3 lands stream mode (streams flips then — a True
+# here today would promise an affordance the runner lacks, R2).
 DYNAMIC_CAPABILITY_PREFIXES = {
     "local:": {"streams": False, "token_usage": False,
                "effort_control": True, "session_resume": False},
-    "api:": {"streams": True, "token_usage": True,
+    "api:": {"streams": False, "token_usage": True,
              "effort_control": False, "session_resume": False},
 }
 
@@ -1111,10 +1437,27 @@ def resolve_capabilities(agent):
 
 def resolve_runner(agent):
     """Return a callable (cfg, prompt, timeout)->(out,err,code,cmd) for any agent
-    id, including dynamic 'local:<model>' identities (V2 spec §4.1/§12)."""
+    id, including dynamic 'local:<model>' (V2 spec §4.1/§12) and
+    'api:<provider>:<model>' (V3 6.2) identities."""
     if isinstance(agent, str) and agent.startswith("local:"):
         model = agent.split(":", 1)[1]
         return lambda cfg, prompt, timeout: run_local(cfg, prompt, timeout, model=model)
+    if isinstance(agent, str) and agent.startswith("api:"):
+        parts = agent.split(":", 2)
+        provider = parts[1] if len(parts) > 1 else ""
+        model = parts[2] if len(parts) > 2 else ""
+        runner = _API_RUNNERS.get(provider)
+        if runner is None or not model:
+            # A malformed id resolves to a runner that fails with a §5.2
+            # message instead of raising here: the caller's fallback ladder
+            # and error surfaces apply uniformly.
+            def _bad_api_id(cfg, prompt, timeout, _agent=agent):
+                return ("", "unknown api id %r: expected api:<provider>:"
+                        "<model> with provider in {%s}"
+                        % (_agent, ", ".join(_API_PROVIDERS)), 1,
+                        "api:<invalid>")
+            return _bad_api_id
+        return lambda cfg, prompt, timeout: runner(cfg, prompt, timeout, model)
     return RUNNERS[agent]
 
 
@@ -1433,9 +1776,17 @@ _PACE_LAST = {}  # type: dict[str, float]
 
 
 def _pace_provider(cfg, agent):
-    base = str(agent).split(":", 1)[0]
-    if base not in ("codex", "claude", "gemini"):
-        return
+    s = str(agent)
+    if s.startswith("api:"):
+        # api:<provider>:<model> — pace per provider account (its own pool,
+        # distinct from the same vendor's CLI: separate limiters/quotas).
+        base = s.split(":", 2)[1] if s.count(":") >= 2 else ""
+        if base not in _API_PROVIDERS:
+            return
+    else:
+        base = s.split(":", 1)[0]
+        if base not in ("codex", "claude", "gemini"):
+            return
     try:
         gap = float(cget(cfg, "runtime.provider_min_gap_seconds", 8) or 0)
     except (TypeError, ValueError):
@@ -9130,6 +9481,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             emit("Stop target: run will stop after '%s'." % _rc["stop_after_phase"])
     if _rc.get("autonomy"):
         tctx.autonomy = _rc["autonomy"]
+    _apply_api_optin(tctx, _rc)   # V3 6.2: reset-then-enable, cost warning
     tctx.workflow_name = workflow.name
     tctx.workflow_target = workflow.target
     # First verify spec any phase carries (usually build_verification's): the

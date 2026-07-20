@@ -222,6 +222,11 @@ class TurnContext(object):
     role_by_id = _prop(
         "_role_by_id", "Precomputed id->role map (once per run).")
     autonomy = _prop("_autonomy", "Run-config autonomy level or None.")
+    api_agents_enabled = _prop(
+        "_api_agents_enabled",
+        "V3 6.2: per-project opt-in for direct-API agents (run_config.json "
+        "api_agents: true). api: turns cost real money, so absent/falsy "
+        "means every api: turn refuses fast and visibly.")
     round_multiplier = _prop(
         "_round_multiplier", "Completeness round-budget multiplier or None.")
     completeness = _prop("_completeness", "Completeness profile name.")
