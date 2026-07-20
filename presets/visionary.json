@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "visionary",
+  "label": "Visionary",
+  "params": {"temperature": 1.1, "top_p": 0.95},
+  "notes": "Higher-variance exploration for ideation casts."
+}

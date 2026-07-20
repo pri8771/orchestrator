@@ -27,6 +27,10 @@ enum RoutingScope: Equatable {
         if case .project(let name) = self { return name }
         return ""
     }
+    var sectionName: String {
+        if case .section(let name) = self { return name }
+        return ""
+    }
 }
 
 // MARK: - RoutingMatrix (phase × agent → model/effort, with provenance)
@@ -243,6 +247,7 @@ struct RoutingGridView: View {
     @State private var editingRoles: String?    // phaseKey with the roles popover open
     @State private var clipboard: CellClipboard?
     @State private var selectedPreset = "balanced"
+    @State private var agentLibrary = AgentLibraryDocument()
     @FocusState private var gridFocused: Bool
 
     private var phases: [PhaseDef] { workflow.phases }
@@ -282,6 +287,10 @@ struct RoutingGridView: View {
     // MARK: Load / apply / revert
 
     private func load() {
+        agentLibrary = AgentLibraryDocument.loadLayered(
+            fleetURL: store.orchDirURL.appendingPathComponent("agent_library.json"),
+            sectionURL: scope.sectionName.isEmpty ? nil : store.orchDirURL
+                .appendingPathComponent("sections/\(scope.sectionName)/agent_library.json"))
         let draft = ModelRouting.load(from: routingURL)
         var m = RoutingMatrix(
             scope: scope,
@@ -415,8 +424,8 @@ struct RoutingGridView: View {
     // whose leading gutter is pinned by rendering it OUTSIDE the scroll view,
     // with row heights fixed so the two columns stay aligned.
 
-    private static let rowHeight: CGFloat = 52
-    private static let gutterWidth: CGFloat = 140
+    private static let rowHeight: CGFloat = 76
+    private static let gutterWidth: CGFloat = 236
     private static let columnWidth: CGFloat = 132
 
     private var gridCard: some View {
@@ -490,6 +499,14 @@ struct RoutingGridView: View {
                 }
                 RoundsStepper(workflowName: workflow.name, phase: phase)
             }
+            phaseRosterControls(phase)
+            if let hint = recommendedHint(for: phase) {
+                Text("recommended: \(hint)")
+                    .font(DS.font.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("roster-hint-\(phase.key)")
+            }
         }
         .padding(.leading, DS.space.s)
         .frame(width: Self.gutterWidth + DS.space.s, height: Self.rowHeight, alignment: .leading)
@@ -510,6 +527,56 @@ struct RoutingGridView: View {
                         modelOptions: modelOptions)
                 .environmentObject(store)
         }
+    }
+
+    private func recommendedHint(for phase: PhaseDef) -> String? {
+        agentLibrary.recommendedHint(forPhase: phase.key)
+    }
+
+    private func phaseRosterControls(_ phase: PhaseDef) -> some View {
+        HStack(spacing: DS.space.xxs) {
+            Stepper(value: Binding(
+                get: { matrix?.draft.phases[phase.key]?.castSize ?? activeRosterCount(phase) },
+                set: { value in
+                    edit { m in
+                        var route = m.draft.phases[phase.key] ?? PhaseRoute()
+                        route.castSize = max(1, value)
+                        m.draft.phases[phase.key] = route
+                    }
+                }), in: 1...12) {
+                    Text("\(matrix?.draft.phases[phase.key]?.castSize ?? activeRosterCount(phase))")
+                        .font(DS.font.caption)
+                        .monospacedDigit()
+                }
+                .labelsHidden()
+                .help("Roster size. Recommendations are informational only.")
+                .accessibilityLabel("\(phase.title) roster size")
+            Picker("Composition", selection: Binding(
+                get: { matrix?.draft.phases[phase.key]?.composition ?? "" },
+                set: { value in
+                    edit { m in
+                        var route = m.draft.phases[phase.key] ?? PhaseRoute()
+                        route.composition = value
+                        m.draft.phases[phase.key] = route.isEmpty ? nil : route
+                    }
+                })) {
+                    Text("All").tag("")
+                    Text("Cloud").tag("cloud")
+                    Text("Local").tag("local")
+                    Text("Claude + Codex").tag("claude,codex")
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .font(DS.font.caption)
+                .accessibilityIdentifier("composition-picker-\(phase.key)")
+        }
+    }
+
+    private func activeRosterCount(_ phase: PhaseDef) -> Int {
+        max(1, RoutingMatrix.agents.filter {
+            store.enabledAgents[$0] ?? false
+                && !(matrix?.cell(phase.key, $0).off ?? false)
+        }.count)
     }
 
     // Round-trips PhaseRoute.roles through the draft matrix — nil collapses

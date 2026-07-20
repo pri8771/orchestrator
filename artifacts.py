@@ -532,6 +532,16 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
     src = src if isinstance(src, dict) else {}
     source = {k: (src.get(k) if isinstance(src.get(k), str) else "")
               for k in ("section", "session", "phase", "turn")}
+    # V3 9.4: persona/preset provenance is optional. Preset-less turns stay
+    # byte-identical; a bound turn records enough to reproduce its sampling.
+    for key in ("persona_id", "preset_id", "preset_params_hash"):
+        if isinstance(src.get(key), str) and src[key]:
+            source[key] = src[key]
+    if ("preset_params_hash" not in source
+            and isinstance(src.get("preset_params"), dict)):
+        source["preset_params_hash"] = hashlib.sha256(json.dumps(
+            src["preset_params"], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
 
     def _take_string_list(key):
         raw = meta.get(key)

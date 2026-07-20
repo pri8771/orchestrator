@@ -802,11 +802,13 @@ struct AdvancedSettings: View {
     @EnvironmentObject var store: OrchestratorStore
     @State private var showSubAgents = false
     @State private var showUsage = false
+    @State private var showAgentLibrary = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Button("Sub-agents…") { showSubAgents = true }
+                Button("Agent Library…") { showAgentLibrary = true }
                 Button("Usage…") { showUsage = true }
                 Spacer()
             }
@@ -815,6 +817,7 @@ struct AdvancedSettings: View {
             LocalModelSettings()
         }
         .sheet(isPresented: $showSubAgents) { SubAgentsEditor().environmentObject(store) }
+        .sheet(isPresented: $showAgentLibrary) { AgentLibraryView().environmentObject(store) }
         .sheet(isPresented: $showUsage) { UsageSheet().environmentObject(store) }
     }
 }

@@ -76,7 +76,7 @@ ROUTING_FILENAME = "model_routing.json"
 # path (run_ollama) — see module docstring.
 PHASE_FIELDS = ("claude", "claude_reasoning", "codex", "codex_reasoning",
                 "gemini", "gemini_reasoning", "ollama", "ollama_reasoning",
-                "agents")
+                "agents", "composition")
 
 # Role names honored inside a phase's "roles" sub-dict.
 ROLE_NAMES = ("worker", "integrator")
@@ -205,6 +205,14 @@ def load_routing(here, on_warn=None):
                     r = None
                 if r is not None and 0 <= r <= 99:
                     clean["rounds"] = r
+            if "cast_size" in ov:
+                try:
+                    raw_size = ov.get("cast_size")
+                    size = None if isinstance(raw_size, bool) else int(raw_size)
+                except (TypeError, ValueError):
+                    size = None
+                if size is not None and -1 <= size <= 64:
+                    clean["cast_size"] = size
             # Per-phase free-text instructions, spliced into every turn's
             # context for the phase. Control characters (except newline/tab)
             # are stripped and length is capped so a runaway paste can't
@@ -318,32 +326,50 @@ def filter_agents(routing, phase_key, active):
     Returns (kept_roster, note). The note is a human line for the run log
     ("" when nothing changed). Fail-open: a filter that matches nobody is
     ignored so a typo can never strand a phase with zero speakers."""
-    spec = overrides_for(routing, phase_key).get("agents", "")
+    override = overrides_for(routing, phase_key)
+    spec = override.get("composition") or override.get("agents", "")
     active = list(active)
+    note = ""
     if not spec:
-        return active, ""
-    wanted = [t.strip().lower() for t in re.split(r"[;,]", spec) if t.strip()]
+        kept = active
+    else:
+        wanted = [t.strip().lower() for t in re.split(r"[;,]", spec) if t.strip()]
 
-    def keep(agent):
-        a = str(agent).lower()
-        local = _is_local(agent)
-        for t in wanted:
-            if t == "cloud" and not local:
-                return True
-            if t == "local" and local:
-                return True
-            if t == a or (local and a == "local:" + t):
-                return True
-        return False
+        def keep(agent):
+            a = str(agent).lower()
+            local = _is_local(agent)
+            for t in wanted:
+                if t == "cloud" and not local:
+                    return True
+                if t == "local" and local:
+                    return True
+                if t == a or (local and a == "local:" + t):
+                    return True
+            return False
 
-    kept = [a for a in active if keep(a)]
+        kept = [a for a in active if keep(a)]
+        if not kept:
+            kept = active
+            note = ("Phase '%s': routing agent filter '%s' matched no enabled "
+                    "agent — ignoring it." % (phase_key, spec))
+        elif kept != active:
+            note = ("Phase '%s': routing restricts participants to %s."
+                    % (phase_key, ", ".join(kept)))
+    if "cast_size" not in override:
+        return kept, note
+    size = override.get("cast_size")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        suffix = ("Phase '%s': cast_size %r would empty the roster — ignoring it."
+                  % (phase_key, size))
+        return kept, " ".join(x for x in (note, suffix) if x)
     if not kept:
-        return active, ("Phase '%s': routing agent filter '%s' matched no enabled "
-                        "agent — ignoring it." % (phase_key, spec))
-    if kept != active:
-        return kept, ("Phase '%s': routing restricts participants to %s."
-                      % (phase_key, ", ".join(kept)))
-    return kept, ""
+        suffix = ("Phase '%s': cast_size %r has no enabled roster to resize — "
+                  "ignoring it." % (phase_key, size))
+        return active, " ".join(x for x in (note, suffix) if x)
+    resized = [kept[i % len(kept)] for i in range(size)]
+    suffix = ("Phase '%s': roster size %d resolves deterministically to %s."
+              % (phase_key, size, ", ".join(resized)))
+    return resized, " ".join(x for x in (note, suffix) if x)
 
 
 def fallback_chain(routing, agent):

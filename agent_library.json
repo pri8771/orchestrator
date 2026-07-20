@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "personas": [
+    {
+      "id": "visionary_api",
+      "name": "Visionary",
+      "preamble": "Explore high-variance possibilities, make assumptions explicit, and propose the boldest coherent option.",
+      "backend": "api:openai",
+      "model": "gpt-5",
+      "preset": "visionary"
+    },
+    {
+      "id": "verifier_local",
+      "name": "Verifier",
+      "preamble": "Demand evidence, reproduce claims, and look for the smallest counterexample before accepting a conclusion.",
+      "backend": "local:qwen3",
+      "model": "qwen3",
+      "default_effort": "high",
+      "preset": "verifier"
+    }
+  ],
+  "recommended_casts": {
+    "ideation": {"count": 3, "coordinator": true, "note": "diverse + coordinator"},
+    "verification": {"count": 2, "note": "skeptics"},
+    "mechanical": {"count": 1, "note": "fast"},
+    "synthesis": {"count": 1, "note": "strong @ high"}
+  }
+}

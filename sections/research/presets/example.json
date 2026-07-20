@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "example",
+  "label": "Example research preset",
+  "params": {"temperature": 0.7, "top_p": 0.9},
+  "notes": "A section preset shadows a fleet preset with the same id."
+}

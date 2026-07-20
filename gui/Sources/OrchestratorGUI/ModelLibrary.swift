@@ -135,6 +135,10 @@ struct PhaseRoute: Equatable {
     var gemini = ""
     var ollama = ""
     var agents = ""
+    // V3 9.4: roster intent. composition uses the engine's existing agent
+    // filter vocabulary; castSize deterministically truncates/repeats it.
+    var composition = ""
+    var castSize: Int? = nil
     var timeout = 0            // seconds per turn; 0 = run default
     // Per-role (worker/integrator) overrides within this phase; nil when the
     // phase carries none. Kept separate from isEmpty's field list below so a
@@ -149,7 +153,8 @@ struct PhaseRoute: Equatable {
     var isEmpty: Bool {
         claude.isEmpty && codex.isEmpty && codexReasoning.isEmpty
             && claudeReasoning.isEmpty && gemini.isEmpty && ollama.isEmpty
-            && agents.isEmpty && timeout == 0 && (roles?.isEmpty ?? true)
+            && agents.isEmpty && composition.isEmpty && castSize == nil
+            && timeout == 0 && (roles?.isEmpty ?? true)
             && rounds == nil && instructions.isEmpty
     }
 
@@ -222,6 +227,8 @@ struct ModelRouting: Equatable {
             p.gemini = (ov["gemini"] as? String) ?? ""
             p.ollama = (ov["ollama"] as? String) ?? ""
             p.agents = (ov["agents"] as? String) ?? ""
+            p.composition = (ov["composition"] as? String) ?? ""
+            p.castSize = ov["cast_size"] as? Int
             p.timeout = (ov["timeout"] as? Int) ?? 0
             if let rolesRaw = ov["roles"] as? [String: Any] {
                 var ro = RoleOverrides()
@@ -247,6 +254,8 @@ struct ModelRouting: Equatable {
             if !p.gemini.isEmpty { ov["gemini"] = p.gemini }
             if !p.ollama.isEmpty { ov["ollama"] = p.ollama }
             if !p.agents.isEmpty { ov["agents"] = p.agents }
+            if !p.composition.isEmpty { ov["composition"] = p.composition }
+            if let size = p.castSize { ov["cast_size"] = size }
             if p.timeout > 0 { ov["timeout"] = p.timeout }
             if let ro = p.roles, !ro.isEmpty {
                 var rolesObj: [String: Any] = [:]

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "verifier",
+  "label": "Verifier",
+  "params": {"temperature": 0.3, "top_p": 0.8, "seed": 17},
+  "notes": "Lower-variance checking for verification casts."
+}

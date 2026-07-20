@@ -1,5 +1,6 @@
 {
   "_comment": "Sub-agent roles + rotating personalities. Editable from the GUI (Sub-agents editor) or by hand. `roles` = the discipline/lens an agent argues from; add/remove freely. `personalities` = temperaments that ROTATE per phase so no agent is stuck to one voice. If this file is deleted or invalid, orchestrator falls back to built-in defaults in roles.py.",
+  "_comment_agent_library": "Reusable bound personas live in agent_library.json; sampling controls live in presets/*.json. Phase casts reference persona ids through the same roles.py resolution path.",
   "agent_role_overrides": {},
   "personalities": [
     {
