@@ -114,11 +114,11 @@ class Section(object):
 
     __slots__ = ("id", "title", "workflow", "workflow_name", "default_mode",
                  "artifact_types_emitted", "artifact_types_accepted",
-                 "dod_tier", "extra")
+                 "dod_tier", "capabilities", "extra")
 
     def __init__(self, id, title, workflow, workflow_name, default_mode,
                  artifact_types_emitted, artifact_types_accepted, dod_tier,
-                 extra=None):
+                 capabilities=None, extra=None):
         self.id = id
         self.title = title
         self.workflow = workflow            # a workflows.Workflow object
@@ -127,6 +127,7 @@ class Section(object):
         self.artifact_types_emitted = list(artifact_types_emitted)
         self.artifact_types_accepted = list(artifact_types_accepted)
         self.dod_tier = dod_tier
+        self.capabilities = dict(capabilities or DEFAULT_CAPABILITIES)
         self.extra = dict(extra or {})
 
     def to_json(self):
@@ -139,6 +140,7 @@ class Section(object):
             "artifact_types_emitted": list(self.artifact_types_emitted),
             "artifact_types_accepted": list(self.artifact_types_accepted),
             "dod_tier": self.dod_tier,
+            "capabilities": dict(self.capabilities),
         }
         for k, v in self.extra.items():
             d.setdefault(k, v)
@@ -147,7 +149,54 @@ class Section(object):
 
 _KNOWN_FIELDS = ("id", "title", "workflow", "default_mode",
                  "artifact_types_emitted", "artifact_types_accepted",
-                 "dod_tier")
+                 "dod_tier", "capabilities")
+
+
+# V3 7.4: per-section capability manifest. Default-DENY (§9.3): a section
+# with no declared block is chat-only — workspace writes at most, no exec, no
+# external effects — so the default overnight run is provably side-effect-free
+# and any escalation is an explicit, visible opt-in. The Conductor gates
+# routes into a >workspace-only section through approval; the engine gates the
+# writes/exec/external effects themselves at the seams where they fire (7.4b/c).
+WRITES_LEVELS = ("none", "workspace")
+DEFAULT_CAPABILITIES = {"writes": "workspace", "exec": False, "external": False}
+
+
+def normalize_capabilities(raw, on_warn=None):
+    """Coerce a section's raw `capabilities` block to the validated shape,
+    defaulting anything missing/invalid to the deny-safe value with a visible
+    warning (never a silent escalation; an invalid exec/external is treated as
+    False, an invalid writes as 'workspace'). Returns a fresh dict."""
+    warn = on_warn or (lambda _m: None)
+    caps = dict(DEFAULT_CAPABILITIES)
+    if raw is None:
+        return caps
+    if not isinstance(raw, dict):
+        warn("capabilities must be an object — using workspace-only default")
+        return caps
+    writes = raw.get("writes", caps["writes"])
+    if writes not in WRITES_LEVELS:
+        warn("capabilities.writes %r invalid (want none|workspace) — "
+             "defaulting to workspace" % (writes,))
+        writes = "workspace"
+    caps["writes"] = writes
+    for flag in ("exec", "external"):
+        val = raw.get(flag, False)
+        if not isinstance(val, bool):
+            warn("capabilities.%s must be true/false — defaulting to false"
+                 % flag)
+            val = False
+        caps[flag] = val
+    return caps
+
+
+def exceeds_workspace_only(caps):
+    """True when a section's capabilities go beyond side-effect-free
+    workspace chat — the Conductor requires approval for any route into
+    such a section regardless of the oversight dial (plan §11.1)."""
+    if not isinstance(caps, dict):
+        return False
+    return bool(caps.get("exec") or caps.get("external"))
 
 
 def _sections_dir(orch_dir):
@@ -215,6 +264,17 @@ def _from_raw(name, raw, orch_dir, path, app_dir, allow_banner=True):
     if not isinstance(emitted, list) or not isinstance(accepted, list):
         raise ValueError("artifact type fields must be lists")
     extra = {k: v for k, v in raw.items() if k not in _KNOWN_FIELDS}
+    # A missing capabilities block is the SAFE, expected default for a
+    # chat-only section (default-deny, §9.3) — not a misconfiguration, so it
+    # emits NO banner (healthy loads stay silent). Only INVALID declared
+    # values banner, since those are silently deny-corrected and the author
+    # should know their escalation didn't take. (Deviation from the card's
+    # "absent block -> banner": every shipped section omits the block and
+    # must load bannerless.)
+    cap_warn = (lambda m: _banner(app_dir, name, path, m)) \
+        if allow_banner else None
+    capabilities = normalize_capabilities(raw.get("capabilities"),
+                                          on_warn=cap_warn)
     return Section(
         id=str(raw["id"]), title=str(raw["title"]),
         workflow=wf, workflow_name=wf_name,
@@ -222,7 +282,7 @@ def _from_raw(name, raw, orch_dir, path, app_dir, allow_banner=True):
         artifact_types_emitted=[str(t) for t in emitted],
         artifact_types_accepted=[str(t) for t in accepted],
         dod_tier=str(raw.get("dod_tier", DEFAULT_DOD_TIER)),
-        extra=extra)
+        capabilities=capabilities, extra=extra)
 
 
 def load_section(name, orch_dir, app_dir=None):
@@ -535,6 +595,22 @@ def lint_section(name, orch_dir):
                 "error", SECTION_FILENAME, "workflow",
                 "workflow %r not found — the run would banner and fall "
                 "back to %r" % (wf_field.strip(), wflib.DEFAULT_WORKFLOW)))
+        # V3 7.4: capability block — invalid values are silently deny-
+        # defaulted at runtime (runnable-but-ignored config), so warn.
+        if isinstance(raw, dict):
+            cap_notes = []
+            normalize_capabilities(raw.get("capabilities"),
+                                   on_warn=cap_notes.append)
+            for note in cap_notes:
+                report.append(_lint_entry("warning", SECTION_FILENAME,
+                                          "capabilities", note))
+            caps = normalize_capabilities(raw.get("capabilities"))
+            if exceeds_workspace_only(caps):
+                report.append(_lint_entry(
+                    "warning", SECTION_FILENAME, "capabilities",
+                    "declares %s beyond workspace-only — Conductor routes "
+                    "into this section require approval (7.4)"
+                    % ", ".join(k for k in ("exec", "external") if caps[k])))
 
     # roles.json — pool validity via the same _valid_pool the loader uses.
     raw, present = parse("roles.json")
