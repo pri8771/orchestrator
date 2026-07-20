@@ -32,6 +32,8 @@ struct EngineEvent: Equatable, Identifiable {
     var artifactType = ""
     var artifactVersion: Int?
     var artifactPath = ""
+    var target = ""
+    var targetSession = ""
 
     var isFallback: Bool { kind == "agent_fallback" }
     var isError: Bool {
@@ -120,6 +122,8 @@ struct EngineEvent: Equatable, Identifiable {
         e.artifactType = (obj["type"] as? String) ?? ""
         e.artifactVersion = obj["version"] as? Int
         e.artifactPath = (obj["path"] as? String) ?? ""
+        e.target = (obj["target"] as? String) ?? ""
+        e.targetSession = (obj["target_session"] as? String) ?? ""
         return e
     }
 

@@ -477,7 +477,7 @@ enum FactoryScanner {
 // state the actions need. One action layer, several invocation surfaces.
 enum UICommand: Equatable, Hashable {
     case newChat, runSelected, toggleLog
-    case newBrainstorm, sendToSection, openConductor
+    case newBrainstorm, sendToSection, openConductor, showOnboarding
     case toggleInspector   // ⌥⌘I — Native Pro shell inspector
     case focusSearch       // ⌘F — focus the sidebar project filter
     case openPlanTab       // Inspector "Open Plan tab" jump (§3 region 3)
@@ -654,6 +654,17 @@ final class OrchestratorStore: ObservableObject {
     // V3 3.8: the section rail (explicit R4 state) + selected section.
     @Published var sectionRail: SectionRailState = .loading
     @Published var selectedSection: String?
+    // V3 8.7: persisted first-run + progressive-disclosure state. Only Ideas
+    // and Research begin visible; real routes or an explicit reveal grow it.
+    @Published var onboardingProgress = OnboardingProgress.load(
+        from: OrchestratorStore.defaults)
+    @Published var showOnboarding = false
+    @Published var visibleSectionIDs = OnboardingPersistence.visibleSections(
+        from: OrchestratorStore.defaults)
+    @Published var newlyRevealedSection: String?
+    private var onboardingEvaluated = false
+    private var onboardingStartedAt = OrchestratorStore.defaults.object(
+        forKey: OnboardingPersistence.startedAtKey) as? Date
     // 4.10 seam: 7.10 can replace default-file resolution with actual pending
     // Conductor route truth without changing the transcript view.
     var routePreviewSource = RoutePreviewSource.defaults
@@ -1074,6 +1085,7 @@ final class OrchestratorStore: ObservableObject {
                 self.reloadSectionRail()
                 self.detectTransitions(result.projects)
                 self.applyProjects(result.projects, workers: result.workers)
+                self.evaluateOnboarding(projectCount: result.projects.count)
                 if result.chat.metadata != self.chatMetadata {
                     self.chatMetadata = result.chat.metadata
                 }
@@ -1094,6 +1106,7 @@ final class OrchestratorStore: ObservableObject {
                     self.artifactsByProject = result.artifacts
                 }
                 if result.events != self.eventsByProject { self.eventsByProject = result.events }
+                self.revealSectionsFromRoutes(result.events)
                 if result.health != self.fleetHealth { self.fleetHealth = result.health }
                 if result.costs != self.projectCosts { self.projectCosts = result.costs }
                 self.escalateFallbacksIfNeeded(result.events)
@@ -1805,13 +1818,22 @@ final class OrchestratorStore: ObservableObject {
     // friends); this published copy exists so SwiftUI invalidates observing
     // views the moment the block lands or changes.
     @Published var agentCapabilities: AgentCapabilitiesInfo?
-    private var doctorFetchInFlight = false
+    @Published private(set) var doctorProbeInFlight = false
+    @Published private(set) var doctorProbeCompleted = false
+    private var doctorProbeGeneration = 0
 
     // Re-run the engine doctor and republish the local_models block. Async and
     // best-effort: a dead python/engine just leaves the previous value in place.
     func refreshLocalModels() {
-        guard engineAvailable, !doctorFetchInFlight else { return }
-        doctorFetchInFlight = true
+        guard !doctorProbeInFlight else { return }
+        guard engineAvailable else {
+            doctorProbeCompleted = true
+            return
+        }
+        doctorProbeInFlight = true
+        doctorProbeCompleted = false
+        doctorProbeGeneration += 1
+        let generation = doctorProbeGeneration
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: resolvePython())
         proc.arguments = [orchDirURL.appendingPathComponent("orchestrator.py").path,
@@ -1823,7 +1845,9 @@ final class OrchestratorStore: ObservableObject {
         proc.terminationHandler = { [weak self] _ in
             let data = out.fileHandleForReading.readDataToEndOfFile()
             Task { @MainActor in
-                self?.doctorFetchInFlight = false
+                guard self?.doctorProbeGeneration == generation else { return }
+                self?.doctorProbeInFlight = false
+                self?.doctorProbeCompleted = true
                 if let info = DoctorReportParser.localModels(fromDoctorJSON: data) {
                     self?.localModels = info
                 }
@@ -1836,7 +1860,18 @@ final class OrchestratorStore: ObservableObject {
                 }
             }
         }
-        do { try proc.run() } catch { doctorFetchInFlight = false }
+        do { try proc.run() } catch {
+            doctorProbeInFlight = false
+            doctorProbeCompleted = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, self.doctorProbeGeneration == generation,
+                  self.doctorProbeInFlight else { return }
+            self.doctorProbeGeneration += 1
+            if proc.isRunning { proc.terminate() }
+            self.doctorProbeInFlight = false
+            self.doctorProbeCompleted = true
+        }
     }
 
     // Pull a local model — but ONLY one named by the engine's curated registry
@@ -2408,6 +2443,106 @@ final class OrchestratorStore: ObservableObject {
                 self.probeAllInFlight = false
                 if self.cliVersions != versions { self.cliVersions = versions }
             }
+        }
+    }
+
+    // MARK: - V3 8.7 onboarding + progressive disclosure
+
+    var onboardingChecklistRows: [BackendChecklistRow] {
+        OnboardingProbeLogic.rows(
+            cliVersions: cliVersions, cliAvailable: cliAvailable,
+            localModels: localModels, cliProbeInFlight: probeAllInFlight,
+            doctorProbeInFlight: doctorProbeInFlight,
+            doctorProbeCompleted: doctorProbeCompleted,
+            capabilities: agentCapabilities)
+    }
+
+    func probeOnboardingBackends() {
+        probeAgentVersions()
+        refreshLocalModels()
+    }
+
+    func evaluateOnboarding(projectCount: Int) {
+        guard !onboardingEvaluated else { return }
+        onboardingEvaluated = true
+        if OnboardingPersistence.shouldPresent(
+            progress: onboardingProgress, projectCount: projectCount) {
+            beginOnboarding()
+        } else if projectCount > 0 && onboardingProgress != .complete {
+            revealAllSections()
+            completeOnboarding()
+        }
+    }
+
+    func beginOnboarding() {
+        if onboardingProgress == .notStarted {
+            onboardingProgress = .inProgress(step: 1)
+            onboardingStartedAt = Date()
+            if let onboardingStartedAt {
+                Self.defaults.set(onboardingStartedAt,
+                                  forKey: OnboardingPersistence.startedAtKey)
+            }
+            OnboardingPersistence.save(onboardingProgress, to: Self.defaults)
+        }
+        showOnboarding = true
+    }
+
+    func advanceOnboarding() {
+        let next: Int
+        if case .inProgress(let step) = onboardingProgress {
+            next = min(4, step + 1)
+        } else {
+            next = 1
+        }
+        onboardingProgress = .inProgress(step: next)
+        OnboardingPersistence.save(onboardingProgress, to: Self.defaults)
+    }
+
+    func skipOnboarding() { completeOnboarding() }
+
+    func completeOnboarding() {
+        onboardingProgress = .complete
+        showOnboarding = false
+        onboardingStartedAt = nil
+        OnboardingPersistence.save(.complete, to: Self.defaults)
+    }
+
+    func revealSection(_ id: String, announce: Bool = true) {
+        guard !id.isEmpty, visibleSectionIDs.insert(id).inserted else { return }
+        OnboardingPersistence.saveVisibleSections(visibleSectionIDs,
+                                                   to: Self.defaults)
+        if announce { newlyRevealedSection = id }
+    }
+
+    func revealAllSections() {
+        if case .populated(let metas) = sectionRail {
+            for meta in metas { revealSection(meta.id, announce: false) }
+        }
+        newlyRevealedSection = nil
+    }
+
+    private func revealSectionsFromRoutes(_ events: [String: [EngineEvent]]) {
+        let allEvents = events.values.flatMap({ $0 })
+        let guideEvents = onboardingStartedAt.map { started in
+            allEvents.filter { $0.ts >= started }
+        } ?? []
+        let kinds = Set(guideEvents.map(\.kind))
+        var routedSection: String?
+        for event in allEvents where event.kind == "artifact_routed" {
+            if let section = SectionDisclosureLogic.routedSection(
+                targetSession: event.targetSession, target: event.target) {
+                revealSection(section)
+                if guideEvents.contains(where: { $0 == event }) {
+                    routedSection = section
+                }
+            }
+        }
+        if case .inProgress(let step) = onboardingProgress,
+           let progress = OnboardingGuideLogic.progressed(
+               step: step, eventKinds: kinds, routedSection: routedSection) {
+            onboardingProgress = progress
+            OnboardingPersistence.save(progress, to: Self.defaults)
+            if progress == .complete { showOnboarding = false }
         }
     }
 

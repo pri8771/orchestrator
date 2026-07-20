@@ -317,6 +317,8 @@ struct CommandPaletteView: View {
             spec(.newChat, symbol: "plus"),
             Command(title: "New brainstorm", symbol: "lightbulb",
                     shortcut: "", action: .newBrainstorm),
+            Command(title: "Show onboarding guide", symbol: "questionmark.circle",
+                    shortcut: "", action: .showOnboarding),
             spec(.runSelected, symbol: "play.fill"),
             Command(title: store.enginePaused ? "Resume Engine" : "Pause Engine",
                     symbol: store.enginePaused ? "play.circle" : "pause.circle",

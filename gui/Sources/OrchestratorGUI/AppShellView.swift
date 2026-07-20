@@ -150,6 +150,11 @@ struct AppShellView: View {
                 if let err = store.lastError {
                     ActionErrorBanner(message: err) { store.lastError = nil }
                 }
+                if case .inProgress(let step) = store.onboardingProgress,
+                   step > 1, !store.showOnboarding {
+                    OnboardingCoachBar { store.showOnboarding = true }
+                        .environmentObject(store)
+                }
             }
         }
         .sheet(isPresented: $showNewApp) {
@@ -188,6 +193,8 @@ struct AppShellView: View {
             case .openConductor:
                 if let target = AppShellLogic.conductorDestination(
                     available: store.conductorSurfaceAvailable) { selection = target }
+            case .showOnboarding:
+                store.beginOnboarding()
             case .runSelected:
                 if let p = selectedProject, !p.running, anyRunnable,
                    !store.runQueue.contains(p.name) {
@@ -204,6 +211,19 @@ struct AppShellView: View {
         .onAppear { store.updateCommandContext(projectName: selectedProject?.name) }
         .onChange(of: selection) { _, _ in
             store.updateCommandContext(projectName: selectedProject?.name)
+        }
+        .sheet(isPresented: $store.showOnboarding) {
+            OnboardingView(
+                onStartBrainstorm: {
+                    store.showOnboarding = false
+                    store.uiCommand = .newBrainstorm
+                },
+                onOpenModels: {
+                    store.showOnboarding = false
+                    selection = .models
+                },
+                onDismiss: { store.showOnboarding = false })
+                .environmentObject(store)
         }
         .frame(minWidth: 860, minHeight: 560)
     }
@@ -484,13 +504,27 @@ struct AppShellView: View {
                     .font(DS.font.caption)
                     .foregroundStyle(DS.status.warning.color)
             case .populated(let metas):
-                ForEach(metas) { meta in
+                ForEach(SectionDisclosureLogic.visible(
+                    metas, revealed: store.visibleSectionIDs)) { meta in
                     SectionRailDropRow(
                         section: meta,
                         status: SectionRailLogic.statusLine(
                             section: meta.id, projects: store.projects),
                         lint: store.sectionLint[meta.id] ?? nil)
                         .tag(ShellSelection.section(meta.id))
+                }
+                if metas.contains(where: {
+                    !store.visibleSectionIDs.contains($0.id)
+                }) {
+                    Button("Show all sections") { store.revealAllSections() }
+                        .font(DS.font.caption)
+                }
+                if let revealed = store.newlyRevealedSection {
+                    Label("\(revealed.capitalized) just appeared",
+                          systemImage: "sparkles")
+                        .font(DS.font.caption)
+                        .foregroundStyle(DS.accent.color)
+                        .onTapGesture { store.newlyRevealedSection = nil }
                 }
             }
         }
