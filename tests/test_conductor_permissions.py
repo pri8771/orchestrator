@@ -174,6 +174,71 @@ class TestCapabilityGate(_RouteBase):
         self.assertEqual(len(reqs), 1, "approval requested once, not per poll")
 
 
+class TestApprovedRouteCrashSafety(_RouteBase):
+    """A crash between _drain_pending's ledger+state save and its
+    remove_pending call (real SIGKILL-style: no exception handler runs) must
+    not re-ledger a duplicate decision or re-mint on restart. Simulated by
+    letting the ledger+state save happen for real, then preventing
+    remove_pending from running (as a real crash would), reloading state from
+    disk (what a fresh process actually sees), and re-draining."""
+
+    def _approve(self):
+        state = cond.default_state()
+        self._run(state, lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("no mint before approval")))
+        rid = cp.read_pending(self.root)[0]["route_id"]
+        os.makedirs(cp.approvals_dir(self.root), exist_ok=True)
+        open(os.path.join(cp.approvals_dir(self.root), "%s.ok" % rid),
+             "w").close()
+        return rid
+
+    def test_crash_before_remove_pending_does_not_double_ledger_or_remint(self):
+        rid = self._approve()
+        minted = []
+
+        def mint(*a, **k):
+            minted.append(1)
+            return "/some/dir"
+
+        # First drain: mint + ledger + state save happen for real, THEN
+        # remove_pending raises — standing in for a hard crash (SIGKILL)
+        # that kills the process at exactly that line. A no-op stub here
+        # would NOT reproduce the bug: execution would still reach whatever
+        # save happens after remove_pending in the buggy version, silently
+        # making the crash window untestable. Raising is what actually stops
+        # execution at that point, the way a real crash would.
+        with unittest.mock.patch.object(
+                cp, "remove_pending",
+                lambda *a, **k: (_ for _ in ()).throw(
+                    RuntimeError("simulated crash"))):
+            state = cond.default_state()
+            with self.assertRaises(RuntimeError):
+                self._run(state, mint)
+        self.assertEqual(minted, [1])
+        self.assertEqual(len(cp.read_pending(self.root)), 1,
+                         "pending file is stale, as a real crash would leave it")
+
+        # "Restart": a fresh process loads state from what was actually
+        # persisted to disk — NOT the in-memory `state` dict from above.
+        reloaded = cond.load_conductor_state(self.root)
+        self.assertIn(rid, reloaded["routed"],
+                     "routed must have been persisted in the SAME save as "
+                     "the ledger line, or this assertion is exactly what "
+                     "the bug violates")
+
+        # Re-drain with the real remove_pending restored.
+        self._run(reloaded, mint)
+
+        self.assertEqual(minted, [1], "must NOT mint a second time")
+        self.assertEqual(cp.read_pending(self.root), [],
+                         "the stale pending record is cleaned up on restart")
+        approved = [r for r in cond.read_ledger(self.root)
+                   if r and r.get("decision") == "route_approved"]
+        self.assertEqual(len(approved), 1,
+                         "must NOT double-ledger route_approved for the "
+                         "same rid across the crash+restart")
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -855,6 +855,11 @@ def route_engine(root, state, sessions, emit=print):
             base = {"session": action.get("requested_by"), "route_id": rid,
                     "detail": {"target": action["target"], **action["payload"]}}
             if decision == "rejected":
+                # Same atomicity fix as the approved branch: routed must be
+                # set before the one save this decision's ledger line uses,
+                # or a crash in the gap re-ledgers a duplicate route_denied
+                # on restart.
+                state["routed"][rid] = True
                 _ledger_route(root, {**base, "decision": "route_denied"})
             elif over_quota and section_providers.get(target) in over_quota:
                 # 7.5b: an approval must not bypass the quota-defer a fresh
@@ -873,14 +878,30 @@ def route_engine(root, state, sessions, emit=print):
                     action["target"], _mint_request(action),
                     create_session=create_session,
                     on_error=lambda m: emit("conductor mint: %s" % m))
+                if sdir:
+                    # CRASH-SAFETY: routed must land in the SAME save as the
+                    # ledger cursor advance for this decision. The prior code
+                    # ledgered+saved via _ledger_route, THEN set routed and
+                    # saved AGAIN two lines later — a crash in that window
+                    # left the ledger holding 'route_approved' (cursor
+                    # already past it) while state['routed'] and
+                    # pending_actions.jsonl both still said "not yet done."
+                    # A restart's _drain_pending would then re-run this same
+                    # branch: mint_delegation_session is itself idempotent
+                    # (delegation_id is deterministic from the SAME action
+                    # payload, so no second session is ever actually
+                    # created — see sessions.py) but the ledger would still
+                    # gain a DUPLICATE 'route_approved' line for the same
+                    # rid, violating "never a doubled decision." Setting
+                    # routed here, before the one save this decision uses,
+                    # closes that window.
+                    state["routed"][rid] = True
                 _ledger_route(root, {**base, "session_dir": sdir,
                                      "decision": "route_approved" if sdir
                                      else "mint_failed"})
                 if not sdir:
-                    continue   # retry on a later poll
-            state["routed"][rid] = True
+                    continue   # retry on a later poll; routed stays unset
             cplib.remove_pending(root, rid)
-            save_conductor_state(root, state)
 
     sections_dir_parent = os.path.dirname(sections_dir)
     _drain_pending()
