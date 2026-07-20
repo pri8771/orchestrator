@@ -21,7 +21,9 @@ final class SessionModel: ObservableObject, Identifiable {
     @Published var chatThinking = false
     @Published var buildWorkers: [BuildWorker]?
 
-    var transcriptCache: [String: (mtime: Date, value: PhaseTranscript)] = [:]
+    var transcriptCache: [String: (fingerprint: FileFingerprint,
+                                   value: PhaseTranscript)] = [:]
+    var projectScanCache: ProjectScanCacheEntry?
     var streamTailCache: StreamTailCache?
     weak var runController: RunController?
 

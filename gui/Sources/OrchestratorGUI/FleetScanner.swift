@@ -15,6 +15,9 @@ struct FleetScanInput: Sendable {
     let runningProcessNames: Set<String>
     let commandProjectName: String?
     let delayForTests: TimeInterval
+    let projectCache: [String: ProjectScanCacheEntry]
+    let projectIntervals: [String: TimeInterval]
+    let scanDate: Date
 }
 
 struct FleetScanSnapshot {
@@ -31,6 +34,7 @@ struct FleetScanSnapshot {
     let queueFile: (order: [String], lanes: Int)?
     let events: [String: [EngineEvent]]
     let health: FleetHealthSummary
+    let projectCache: [String: ProjectScanCacheEntry]
 }
 
 enum FleetScanner {
@@ -46,13 +50,17 @@ enum FleetScanner {
         let workflowIndex = Dictionary(config.workflows.map { ($0.name, $0) },
                                        uniquingKeysWith: { current, _ in current })
         let names = BackgroundProjectLoader.discoverApps(rootURL: input.rootURL)
-        let projects = BackgroundProjectLoader.loadProjects(
+        let projectBatch = BackgroundProjectLoader.loadProjectsCached(
             names: names,
             rootURL: input.rootURL,
             workflowsByName: workflowIndex,
             defaultWorkflow: workflowIndex["app_build"],
             manualStops: input.manualStops,
-            runningProcessNames: input.runningProcessNames)
+            runningProcessNames: input.runningProcessNames,
+            cache: input.projectCache,
+            dueIntervals: input.projectIntervals,
+            now: input.scanDate)
+        let projects = projectBatch.projects
         let chat = ChatMetadataIndex.scan(rootURL: input.rootURL)
         let commandArtifact = input.commandProjectName.flatMap { name -> ArtifactRouteRef? in
             let projectID = name.components(separatedBy: "/").first ?? name
@@ -91,6 +99,7 @@ enum FleetScanner {
             commandArtifact: commandArtifact, artifacts: artifacts,
             workers: workers, costs: costs, locks: locks,
             staleLocks: staleLocks, autorunDisabled: autorunDisabled,
-            queueFile: queueFile, events: events, health: health)
+            queueFile: queueFile, events: events, health: health,
+            projectCache: projectBatch.cache)
     }
 }

@@ -91,7 +91,8 @@ struct AppShellView: View {
 
     private var selectedProject: Project? {
         if case .project(let name) = selection {
-            return store.projects.first { $0.name == name }
+            let focused = store.paneCanvas.focusedSessionID ?? name
+            return store.projects.first { $0.name == focused }
         }
         return nil
     }
@@ -195,6 +196,10 @@ struct AppShellView: View {
                     available: store.conductorSurfaceAvailable) { selection = target }
             case .showOnboarding:
                 store.beginOnboarding()
+            case .focusPane1: store.focusPane(at: 0)
+            case .focusPane2: store.focusPane(at: 1)
+            case .focusPane3: store.focusPane(at: 2)
+            case .closeFocusedPane: store.closeFocusedPane()
             case .runSelected:
                 if let p = selectedProject, !p.running, anyRunnable,
                    !store.runQueue.contains(p.name) {
@@ -210,6 +215,9 @@ struct AppShellView: View {
         }
         .onAppear { store.updateCommandContext(projectName: selectedProject?.name) }
         .onChange(of: selection) { _, _ in
+            if case .project(let name) = selection {
+                store.openPane(name, asSplit: false)
+            }
             store.updateCommandContext(projectName: selectedProject?.name)
         }
         .sheet(isPresented: $store.showOnboarding) {
@@ -311,6 +319,7 @@ struct AppShellView: View {
                                         ? .fallback
                                         : (store.fleetHealth.stalled.contains(p.name) ? .warning : .running),
                                     detail: p.currentPhase.map { p.titleFor($0) } ?? "starting")
+                        .onDrag { PaneSessionDrag.provider(for: p.name) }
                         .tag(ShellSelection.project(p.name))
                 }
             } header: {
@@ -321,6 +330,7 @@ struct AppShellView: View {
                 ForEach(queuedApps) { p in
                     ShellProjectRow(project: p, health: .idle, detail: p.workflowTitle,
                                     position: queuedApps.firstIndex { $0.name == p.name }.map { $0 + 1 })
+                        .onDrag { PaneSessionDrag.provider(for: p.name) }
                         .tag(ShellSelection.project(p.name))
                 }
                 .onMove(perform: moveQueued)
@@ -335,6 +345,7 @@ struct AppShellView: View {
                         ShellProjectRow(project: p,
                                         health: p.status == .aborted ? .error : .warning,
                                         detail: attentionDetail(p))
+                            .onDrag { PaneSessionDrag.provider(for: p.name) }
                             .tag(ShellSelection.project(p.name))
                     }
                 } header: {
@@ -346,6 +357,7 @@ struct AppShellView: View {
             Section("Done", isExpanded: $doneExpanded) {
                 ForEach(doneApps) { p in
                     ShellProjectRow(project: p, health: .success, detail: p.workflowTitle)
+                        .onDrag { PaneSessionDrag.provider(for: p.name) }
                         .tag(ShellSelection.project(p.name))
                 }
             }
@@ -356,6 +368,7 @@ struct AppShellView: View {
                 Section("Archived", isExpanded: $archivedExpanded) {
                     ForEach(archivedApps) { p in
                         ShellProjectRow(project: p, health: .idle, detail: "archived")
+                            .onDrag { PaneSessionDrag.provider(for: p.name) }
                             .tag(ShellSelection.project(p.name))
                     }
                 }
@@ -469,9 +482,8 @@ struct AppShellView: View {
         case .models:
             ModelsLibraryPane()
         case .project:
-            if let p = selectedProject {
-                ProjectShellContent(project: p)
-                    .id(p.name)
+            if !store.paneCanvas.panes.isEmpty {
+                PaneCanvasView()
             } else {
                 shellPlaceholder("Project not found", "questionmark.folder")
             }
@@ -532,6 +544,155 @@ struct AppShellView: View {
 
     private func shellPlaceholder(_ title: String, _ symbol: String) -> some View {
         EmptyStateView(symbol: symbol, title: title)
+    }
+}
+
+enum PaneSessionDrag {
+    private static let prefix = "orchestrator-session:"
+
+    static func provider(for sessionID: String) -> NSItemProvider {
+        NSItemProvider(object: (prefix + sessionID) as NSString)
+    }
+
+    static func decode(_ text: String) -> String? {
+        guard text.hasPrefix(prefix) else { return nil }
+        let id = String(text.dropFirst(prefix.count))
+        return id.isEmpty ? nil : id
+    }
+
+    static func load(_ providers: [NSItemProvider], perform: @escaping (String) -> Void)
+        -> Bool {
+        guard let provider = providers.first(where: {
+            $0.canLoadObject(ofClass: NSString.self)
+        }) else { return false }
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let text = object as? String, let id = decode(text) else { return }
+            DispatchQueue.main.async { perform(id) }
+        }
+        return true
+    }
+}
+
+private struct PaneCanvasView: View {
+    @EnvironmentObject var store: OrchestratorStore
+    @State private var canvasDropTarget = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let count = store.paneCanvas.visibleCount(
+                availableWidth: geometry.size.width)
+            let visible = Array(store.paneCanvas.panes.prefix(count))
+            let compact = Array(store.paneCanvas.panes.dropFirst(count))
+                + store.paneCanvas.overflow
+            VStack(spacing: 0) {
+                HSplitView {
+                    ForEach(visible, id: \.self) { sessionID in
+                        PaneCanvasPane(sessionID: sessionID)
+                            .frame(minWidth: 0, maxWidth: .infinity,
+                                   maxHeight: .infinity)
+                    }
+                }
+                .background(canvasDropTarget ? DS.accent.fill : Color.clear)
+                .onDrop(of: [UTType.text], isTargeted: $canvasDropTarget) { providers in
+                    PaneSessionDrag.load(providers) {
+                        store.openPane($0, asSplit: true)
+                    }
+                }
+                if !compact.isEmpty {
+                    Divider()
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: DS.space.xs) {
+                            Text("More")
+                                .font(DS.font.caption)
+                                .foregroundStyle(DS.textSecondary)
+                            ForEach(compact, id: \.self) { sessionID in
+                                Button {
+                                    if store.paneCanvas.overflow.contains(sessionID) {
+                                        store.activateOverflowPane(sessionID)
+                                    } else {
+                                        store.bringPaneIntoVisiblePrefix(
+                                            sessionID, count: count)
+                                    }
+                                } label: {
+                                    Label(sessionID.components(separatedBy: "/").last
+                                          ?? sessionID,
+                                          systemImage: "rectangle.split.3x1")
+                                        .font(DS.font.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .help("Swap (sessionID) into the focused pane")
+                            }
+                        }
+                        .padding(.horizontal, DS.space.s)
+                        .padding(.vertical, DS.space.xs)
+                    }
+                    .background(.bar)
+                }
+            }
+        }
+    }
+}
+
+private struct PaneCanvasPane: View {
+    @EnvironmentObject var store: OrchestratorStore
+    let sessionID: String
+    @State private var paneDropTarget = false
+
+    private var project: Project? {
+        store.projects.first { $0.name == sessionID }
+    }
+
+    private var focused: Bool {
+        store.paneCanvas.focusedSessionID == sessionID
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: DS.space.xs) {
+                Circle()
+                    .fill(focused ? DS.accent.color : DS.textTertiary)
+                    .frame(width: 7, height: 7)
+                Text(sessionID)
+                    .font(DS.font.caption)
+                    .lineLimit(1)
+                Spacer()
+                Button { store.closePane(sessionID) } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .help("Close pane")
+                .accessibilityLabel("Close (sessionID) pane")
+            }
+            .padding(.horizontal, DS.space.s)
+            .padding(.vertical, DS.space.xs)
+            .background(focused ? DS.accent.fill : Color.clear)
+            Divider()
+            if let project {
+                ProjectShellContent(project: project)
+                    .id(project.name)
+            } else {
+                EmptyStateView(symbol: "questionmark.folder",
+                               title: "Session not found",
+                               message: sessionID)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { store.focusPane(sessionID) }
+        .overlay {
+            RoundedRectangle(cornerRadius: DS.radius.control, style: .continuous)
+                .stroke(focused || paneDropTarget
+                        ? DS.accent.color : Color.clear,
+                        lineWidth: focused ? 2 : 1)
+                .allowsHitTesting(false)
+        }
+        .onDrop(of: [UTType.text], isTargeted: $paneDropTarget) { providers in
+            PaneSessionDrag.load(providers) {
+                store.replacePane(sessionID, with: $0)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Pane (sessionID)")
+        .accessibilityValue(focused ? "Focused" : "Not focused")
     }
 }
 

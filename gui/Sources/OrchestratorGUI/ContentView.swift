@@ -326,6 +326,14 @@ struct CommandPaletteView: View {
             spec(.toggleLog, symbol: "terminal"),
             spec(.toggleInspector, symbol: "sidebar.trailing"),
             spec(.focusSearch, symbol: "magnifyingglass"),
+            Command(title: "Focus pane 1", symbol: "rectangle.leadinghalf.inset.filled",
+                    shortcut: "", action: .focusPane1),
+            Command(title: "Focus pane 2", symbol: "rectangle.split.2x1",
+                    shortcut: "", action: .focusPane2),
+            Command(title: "Focus pane 3", symbol: "rectangle.split.3x1",
+                    shortcut: "", action: .focusPane3),
+            Command(title: "Close focused pane", symbol: "xmark.rectangle",
+                    shortcut: "", action: .closeFocusedPane),
         ]
         if store.commandRoutableArtifact != nil {
             result.append(Command(title: "Send to …", symbol: "arrow.turn.up.right",
@@ -386,6 +394,10 @@ struct CommandPaletteView: View {
         if hasRoutableArtifact { actions.append(.sendToSection) }
         if conductorAvailable { actions.append(.openConductor) }
         return actions
+    }
+
+    nonisolated static var paneVerbActions: [UICommand] {
+        [.focusPane1, .focusPane2, .focusPane3, .closeFocusedPane]
     }
 
     nonisolated static func dispatch(_ action: UICommand,

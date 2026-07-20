@@ -4,6 +4,32 @@ import Combine
 import UserNotifications
 import SwiftUI
 
+struct FileFingerprint: Equatable, Sendable {
+    let mtime: Date
+    let size: UInt64
+
+    static func read(_ url: URL, fileManager: FileManager = .default) -> FileFingerprint {
+        guard let attrs = try? fileManager.attributesOfItem(atPath: url.path) else {
+            return FileFingerprint(mtime: .distantPast, size: 0)
+        }
+        let mtime = attrs[.modificationDate] as? Date ?? .distantPast
+        let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
+        return FileFingerprint(mtime: mtime, size: size)
+    }
+}
+
+struct ProjectScanCacheEntry: @unchecked Sendable {
+    var fingerprints: [String: FileFingerprint]
+    var workflowSignature: Int
+    var project: Project
+    var scannedAt: Date
+}
+
+struct ProjectScanBatch {
+    var projects: [Project]
+    var cache: [String: ProjectScanCacheEntry]
+}
+
 enum BackgroundProjectLoader {
     static func discoverApps(rootURL: URL) -> [String] {
         // V3 3.0: flat + nested (marker-gated) — one shared implementation.
@@ -16,22 +42,123 @@ enum BackgroundProjectLoader {
                              defaultWorkflow: WorkflowDef?,
                              manualStops: [String: Date],
                              runningProcessNames: Set<String>) -> [Project] {
-        guard !names.isEmpty else { return [] }
+        loadProjectsCached(
+            names: names, rootURL: rootURL,
+            workflowsByName: workflowsByName,
+            defaultWorkflow: defaultWorkflow, manualStops: manualStops,
+            runningProcessNames: runningProcessNames,
+            cache: [:], dueIntervals: [:], now: Date()).projects
+    }
+
+    static func loadProjectsCached(
+        names: [String], rootURL: URL,
+        workflowsByName: [String: WorkflowDef], defaultWorkflow: WorkflowDef?,
+        manualStops: [String: Date], runningProcessNames: Set<String>,
+        cache: [String: ProjectScanCacheEntry],
+        dueIntervals: [String: TimeInterval], now: Date,
+        onParse: ((String) -> Void)? = nil
+    ) -> ProjectScanBatch {
+        guard !names.isEmpty else { return ProjectScanBatch(projects: [], cache: [:]) }
         let lock = NSLock()
         var results = Array<Project?>(repeating: nil, count: names.count)
+        var nextCache = cache.filter { names.contains($0.key) }
         DispatchQueue.concurrentPerform(iterations: names.count) { idx in
             let name = names[idx]
-            let project = loadProject(name: name,
-                                      rootURL: rootURL,
-                                      workflowsByName: workflowsByName,
-                                      defaultWorkflow: defaultWorkflow,
-                                      stopAt: manualStops[name],
-                                      processRunning: runningProcessNames.contains(name))
+            let prior = cache[name]
+            let interval = dueIntervals[name] ?? 5.0
+            let due = prior == nil || now.timeIntervalSince(prior!.scannedAt) >= interval
+            let project: Project?
+            let entry: ProjectScanCacheEntry?
+            if let prior, !due {
+                project = prior.project
+                entry = prior
+            } else {
+                let fingerprints = scanFingerprints(name: name, rootURL: rootURL)
+                let signature = workflowSignature(
+                    for: prior?.project.workflow,
+                    workflowsByName: workflowsByName,
+                    defaultWorkflow: defaultWorkflow)
+                if let prior, prior.fingerprints == fingerprints,
+                   prior.workflowSignature == signature {
+                    let refreshed = refreshDerivedState(
+                        prior.project, fingerprints: fingerprints,
+                        stopAt: manualStops[name],
+                        processRunning: runningProcessNames.contains(name), now: now)
+                    project = refreshed
+                    entry = ProjectScanCacheEntry(fingerprints: fingerprints,
+                                                  workflowSignature: signature,
+                                                  project: refreshed,
+                                                  scannedAt: now)
+                } else {
+                    onParse?(name)
+                    project = loadProject(
+                        name: name, rootURL: rootURL,
+                        workflowsByName: workflowsByName,
+                        defaultWorkflow: defaultWorkflow,
+                        stopAt: manualStops[name],
+                        processRunning: runningProcessNames.contains(name))
+                    entry = project.map {
+                        ProjectScanCacheEntry(fingerprints: fingerprints,
+                                              workflowSignature: workflowSignature(
+                                                for: $0.workflow,
+                                                workflowsByName: workflowsByName,
+                                                defaultWorkflow: defaultWorkflow),
+                                              project: $0, scannedAt: now)
+                    }
+                }
+            }
             lock.lock()
             results[idx] = project
+            nextCache[name] = entry
             lock.unlock()
         }
-        return results.compactMap { $0 }
+        return ProjectScanBatch(projects: results.compactMap { $0 },
+                                cache: nextCache)
+    }
+
+    private static func workflowSignature(
+        for name: String?, workflowsByName: [String: WorkflowDef],
+        defaultWorkflow: WorkflowDef?
+    ) -> Int {
+        (name.flatMap { workflowsByName[$0] } ?? defaultWorkflow)?.hashValue ?? 0
+    }
+
+    private static func refreshDerivedState(
+        _ cached: Project, fingerprints: [String: FileFingerprint],
+        stopAt: Date?, processRunning: Bool, now: Date
+    ) -> Project {
+        var project = cached
+        let statePath = project.dirURL.appendingPathComponent("agent_state.json").path
+        let stateMTime = fingerprints[statePath]?.mtime
+        var running = project.status == .inProgress
+            && stateMTime.map { now.timeIntervalSince($0) < 240 } == true
+        var stopped = false
+        if let stopAt {
+            if let stateMTime, stateMTime.timeIntervalSince(stopAt) > 10 {
+                // A later run owns the unchanged cached parse.
+            } else if !processRunning {
+                running = false
+                stopped = project.status == .inProgress
+            }
+        }
+        project.running = running
+        project.manuallyStopped = stopped
+        return project
+    }
+
+    private static func scanFingerprints(name: String, rootURL: URL)
+        -> [String: FileFingerprint] {
+        let dir = rootURL.appendingPathComponent(name, isDirectory: true)
+        let urls = [
+            dir.appendingPathComponent("agent_state.json"),
+            dir.appendingPathComponent("workflow.txt"),
+            dir.appendingPathComponent("initial_prompt/initial_prompt.md"),
+            dir.appendingPathComponent("verify_results.json"),
+            dir.appendingPathComponent(".orch_archived")
+        ]
+        return Dictionary(uniqueKeysWithValues: urls.map {
+            ($0.path, FileFingerprint.read($0))
+        })
     }
 
     private static func loadProject(name: String,
@@ -478,10 +605,147 @@ enum FactoryScanner {
 enum UICommand: Equatable, Hashable {
     case newChat, runSelected, toggleLog
     case newBrainstorm, sendToSection, openConductor, showOnboarding
+    case focusPane1, focusPane2, focusPane3, closeFocusedPane
     case toggleInspector   // ⌥⌘I — Native Pro shell inspector
     case focusSearch       // ⌘F — focus the sidebar project filter
     case openPlanTab       // Inspector "Open Plan tab" jump (§3 region 3)
     case togglePause       // Pause/Resume Engine (toolbar + Command Palette)
+}
+
+struct PaneCanvasState: Equatable {
+    static let maximumPanes = 3
+    var panes: [String] = []
+    var focusedSessionID: String?
+    var overflow: [String] = []
+
+    mutating func open(_ sessionID: String, split: Bool) {
+        if panes.contains(sessionID) {
+            focusedSessionID = sessionID
+            return
+        }
+        removeEverywhere(sessionID)
+        if panes.isEmpty {
+            panes = [sessionID]
+        } else if split && panes.count < Self.maximumPanes {
+            panes.append(sessionID)
+        } else if split {
+            overflow.append(sessionID)
+        } else if let focusedSessionID,
+                  let index = panes.firstIndex(of: focusedSessionID) {
+            panes[index] = sessionID
+        } else {
+            panes[0] = sessionID
+        }
+        focusedSessionID = panes.contains(sessionID) ? sessionID : focusedSessionID
+        normalize()
+    }
+
+    mutating func replace(pane target: String, with sessionID: String) {
+        guard target != sessionID else {
+            focus(sessionID)
+            return
+        }
+        guard panes.contains(target) else {
+            open(sessionID, split: true)
+            return
+        }
+        removeEverywhere(sessionID)
+        guard let index = panes.firstIndex(of: target) else {
+            open(sessionID, split: true)
+            return
+        }
+        let displaced = panes[index]
+        panes[index] = sessionID
+        if displaced != sessionID { appendOverflow(displaced) }
+        focusedSessionID = sessionID
+        normalize()
+    }
+
+    mutating func focus(_ sessionID: String) {
+        guard panes.contains(sessionID) else { return }
+        focusedSessionID = sessionID
+    }
+
+    mutating func focusPane(at index: Int) {
+        guard panes.indices.contains(index) else { return }
+        focusedSessionID = panes[index]
+    }
+
+    mutating func closeFocused() {
+        guard let focusedSessionID else { return }
+        close(focusedSessionID)
+    }
+
+    mutating func close(_ sessionID: String) {
+        guard let index = panes.firstIndex(of: sessionID) else {
+            overflow.removeAll { $0 == sessionID }
+            return
+        }
+        panes.remove(at: index)
+        if focusedSessionID == sessionID {
+            self.focusedSessionID = panes.isEmpty
+                ? nil : panes[min(index, panes.count - 1)]
+        }
+        normalize()
+    }
+
+    mutating func activateOverflow(_ sessionID: String) {
+        guard overflow.contains(sessionID) else { return }
+        let target = focusedSessionID ?? panes.first
+        guard let target else {
+            open(sessionID, split: false)
+            return
+        }
+        replace(pane: target, with: sessionID)
+    }
+
+    mutating func bringIntoVisiblePrefix(_ sessionID: String, count: Int) {
+        guard let source = panes.firstIndex(of: sessionID), source >= count,
+              count > 0 else {
+            focus(sessionID)
+            return
+        }
+        let target = min(max(0, count - 1), panes.count - 1)
+        panes.swapAt(source, target)
+        focusedSessionID = sessionID
+    }
+
+    func pollingInterval(for sessionID: String) -> TimeInterval {
+        if focusedSessionID == sessionID { return 0.5 }
+        if panes.contains(sessionID) { return 1.5 }
+        return 5.0
+    }
+
+    func visibleCount(availableWidth: CGFloat, minimumPaneWidth: CGFloat = 300) -> Int {
+        guard !panes.isEmpty else { return 0 }
+        return min(panes.count, max(1, Int(availableWidth / minimumPaneWidth)))
+    }
+
+    private mutating func removeEverywhere(_ sessionID: String) {
+        panes.removeAll { $0 == sessionID }
+        overflow.removeAll { $0 == sessionID }
+    }
+
+    private mutating func appendOverflow(_ sessionID: String) {
+        guard !panes.contains(sessionID), !overflow.contains(sessionID) else { return }
+        overflow.append(sessionID)
+    }
+
+    private mutating func normalize() {
+        var seen = Set<String>()
+        panes = panes.filter { seen.insert($0).inserted }
+        if panes.count > Self.maximumPanes {
+            let extra = panes.dropFirst(Self.maximumPanes)
+            panes = Array(panes.prefix(Self.maximumPanes))
+            overflow.append(contentsOf: extra)
+        }
+        overflow = overflow.filter { !panes.contains($0) && seen.insert($0).inserted }
+        if let focusedSessionID, !panes.contains(focusedSessionID) {
+            self.focusedSessionID = panes.first
+        } else if focusedSessionID == nil {
+            focusedSessionID = panes.first
+        }
+    }
 }
 
 // Single source of truth for the commands that appear in both the menu bar
@@ -640,6 +904,7 @@ final class OrchestratorStore: ObservableObject {
     // ⌘K command palette overlay (design §3/§8). Commands chosen in it are
     // dispatched through uiCommand, so there's one command path.
     @Published var showCommandPalette = false
+    @Published private(set) var paneCanvas = PaneCanvasState()
     // V3 board 2.6: transcript search (search.py index) surfaced in the
     // palette. searchStatus carries the engine's degraded signal verbatim —
     // the palette must render it, never show silently-empty results.
@@ -813,6 +1078,60 @@ final class OrchestratorStore: ObservableObject {
         return model
     }
 
+    func openPane(_ sessionID: String, asSplit: Bool) {
+        let hadFocus = paneCanvas.focusedSessionID != nil
+        paneCanvas.open(sessionID, split: asSplit)
+        syncFocusedPane(rescheduleFrom: hadFocus)
+    }
+
+    func replacePane(_ target: String, with sessionID: String) {
+        let hadFocus = paneCanvas.focusedSessionID != nil
+        paneCanvas.replace(pane: target, with: sessionID)
+        syncFocusedPane(rescheduleFrom: hadFocus)
+    }
+
+    func focusPane(_ sessionID: String) {
+        let hadFocus = paneCanvas.focusedSessionID != nil
+        paneCanvas.focus(sessionID)
+        syncFocusedPane(rescheduleFrom: hadFocus)
+    }
+
+    func focusPane(at index: Int) {
+        let hadFocus = paneCanvas.focusedSessionID != nil
+        paneCanvas.focusPane(at: index)
+        syncFocusedPane(rescheduleFrom: hadFocus)
+    }
+
+    func closeFocusedPane() {
+        let hadFocus = paneCanvas.focusedSessionID != nil
+        paneCanvas.closeFocused()
+        syncFocusedPane(rescheduleFrom: hadFocus)
+    }
+
+    func closePane(_ sessionID: String) {
+        let hadFocus = paneCanvas.focusedSessionID != nil
+        paneCanvas.close(sessionID)
+        syncFocusedPane(rescheduleFrom: hadFocus)
+    }
+
+    func activateOverflowPane(_ sessionID: String) {
+        let hadFocus = paneCanvas.focusedSessionID != nil
+        paneCanvas.activateOverflow(sessionID)
+        syncFocusedPane(rescheduleFrom: hadFocus)
+    }
+
+    func bringPaneIntoVisiblePrefix(_ sessionID: String, count: Int) {
+        paneCanvas.bringIntoVisiblePrefix(sessionID, count: count)
+        syncFocusedPane(rescheduleFrom: true)
+    }
+
+    private func syncFocusedPane(rescheduleFrom hadFocus: Bool) {
+        focusedLivePane = paneCanvas.focusedSessionID
+        updateCommandContext(projectName: focusedLivePane)
+        let hasFocus = focusedLivePane != nil
+        if hadFocus != hasFocus { rescheduleRefreshTimer() }
+    }
+
     private func setChatSession(_ session: ChatSession?, for name: String) {
         sessionModel(for: name).chatSession = session
     }
@@ -936,6 +1255,8 @@ final class OrchestratorStore: ObservableObject {
         staleLockFirstSeen = [:]
         crashedRuns = []
         staleLocks = []
+        paneCanvas = PaneCanvasState()
+        focusedLivePane = nil
         try? fm.createDirectory(at: url, withIntermediateDirectories: true)
         refresh()
     }
@@ -959,12 +1280,9 @@ final class OrchestratorStore: ObservableObject {
         scheduleRefreshTimer()
     }
 
-    // V3 board 1.10: one timer, ever — but its cadence follows focus. 500ms
-    // while a LIVE session pane is focused (render latency the user is
-    // actively watching), 1.5s otherwise. Cadence parameter ONLY: the
-    // refresh coalescing / generation guard / watchdog machinery is
-    // untouched, and time-based throttles inside refresh (shepherd poll,
-    // routing-cache TTL) stay time-based so 3x ticks never mean 3x work.
+    // One scheduler, never one timer per pane. A focused canvas runs the base
+    // tick at 500ms; the project-cache schedule below admits other visible
+    // panes every 1.5s and background sessions every 5s.
     private(set) var focusedLivePane: String? = nil
 
     nonisolated static func refreshInterval(focusedLive: Bool) -> Double {
@@ -972,11 +1290,12 @@ final class OrchestratorStore: ObservableObject {
     }
 
     func setFocusedLivePane(_ name: String?) {
-        guard focusedLivePane != name else { return }
-        let before = Self.refreshInterval(focusedLive: focusedLivePane != nil)
-        focusedLivePane = name
-        let after = Self.refreshInterval(focusedLive: focusedLivePane != nil)
-        if before != after { rescheduleRefreshTimer() }
+        if let name, paneCanvas.focusedSessionID != name { return }
+        let desired = paneCanvas.focusedSessionID
+        guard focusedLivePane != desired else { return }
+        let before = focusedLivePane != nil
+        focusedLivePane = desired
+        if before != (desired != nil) { rescheduleRefreshTimer() }
     }
 
     private func scheduleRefreshTimer() {
@@ -1062,6 +1381,13 @@ final class OrchestratorStore: ObservableObject {
         let commandProjectName = self.commandProjectName
         let runningProcessNames = runController.runningProcessNames
         let delayForTests = Self.scanDelayForTests
+        let scanDate = Date()
+        let projectCache = Dictionary(uniqueKeysWithValues:
+            sessionModels.compactMap { id, model in
+                model.projectScanCache.map { (id, $0) }
+            })
+        let projectIntervals = Dictionary(uniqueKeysWithValues:
+            projects.map { ($0.name, paneCanvas.pollingInterval(for: $0.name)) })
         let input = FleetScanInput(
             rootURL: rootURL, logsDirURL: logsDirURL,
             workflowsDirURL: workflowsDirURL, rolesURL: rolesURL,
@@ -1069,7 +1395,10 @@ final class OrchestratorStore: ObservableObject {
             artifactRegistryURL: artifactRegistryURL, manualStops: manualStops,
             runningProcessNames: runningProcessNames,
             commandProjectName: commandProjectName,
-            delayForTests: delayForTests)
+            delayForTests: delayForTests,
+            projectCache: projectCache,
+            projectIntervals: projectIntervals,
+            scanDate: scanDate)
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let result = FleetScanner.scan(input)
@@ -1085,6 +1414,9 @@ final class OrchestratorStore: ObservableObject {
                 self.reloadSectionRail()
                 self.detectTransitions(result.projects)
                 self.applyProjects(result.projects, workers: result.workers)
+                for (id, entry) in result.projectCache {
+                    self.sessionModel(for: id).projectScanCache = entry
+                }
                 self.evaluateOnboarding(projectCount: result.projects.count)
                 if result.chat.metadata != self.chatMetadata {
                     self.chatMetadata = result.chat.metadata
@@ -3594,21 +3926,42 @@ final class OrchestratorStore: ObservableObject {
             return PhaseTranscript()
         }
         let url = project.dirURL.appendingPathComponent(def.folder).appendingPathComponent(def.file)
-        let cachedMtime = model.transcriptCache[url.path]?.mtime
-        let (mtime, fresh) = await Task.detached(priority: .utility) {
-            Self.readAndParseTranscript(at: url, ifChangedSince: cachedMtime)
+        let cachedFingerprint = model.transcriptCache[url.path]?.fingerprint
+        let (fingerprint, fresh) = await Task.detached(priority: .utility) {
+            Self.readAndParseTranscript(
+                at: url, ifFingerprintDiffersFrom: cachedFingerprint)
         }.value
-        if let fresh { model.transcriptCache[url.path] = (mtime, fresh) }
+        if let fresh {
+            model.transcriptCache[url.path] = (fingerprint, fresh)
+        }
         return model.transcriptCache[url.path]?.value ?? PhaseTranscript()
     }
 
-    // fresh == nil means the file hasn't changed since `ifChangedSince` (keep
-    // the cached parse). Runs off the main actor — see transcript(for:phaseKey:).
+    // fresh == nil means both mtime and size are unchanged. The optional hook
+    // instruments actual read/parse work in tests; stat-only cache hits never
+    // call it.
+    nonisolated static func readAndParseTranscript(
+        at url: URL, ifFingerprintDiffersFrom cached: FileFingerprint?,
+        onParse: (() -> Void)? = nil
+    ) -> (fingerprint: FileFingerprint, fresh: PhaseTranscript?) {
+        let fingerprint = FileFingerprint.read(url)
+        if let cached, cached == fingerprint { return (fingerprint, nil) }
+        onParse?()
+        guard let text = readTranscriptText(at: url) else {
+            var empty = PhaseTranscript()
+            empty.exists = false
+            return (fingerprint, empty)
+        }
+        return (fingerprint, TranscriptParser.parse(text))
+    }
+
+    // Compatibility seam for the 6.3 streaming regression test. New callers
+    // use the two-field fingerprint overload above.
     nonisolated static func readAndParseTranscript(
         at url: URL, ifChangedSince cachedMtime: Date?
     ) -> (mtime: Date, fresh: PhaseTranscript?) {
-        let mtime = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)
-            ?? .distantPast
+        let fingerprint = FileFingerprint.read(url)
+        let mtime = fingerprint.mtime
         if let cachedMtime, cachedMtime == mtime { return (mtime, nil) }
         guard let text = readTranscriptText(at: url) else {
             var empty = PhaseTranscript()
