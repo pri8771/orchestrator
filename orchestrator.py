@@ -1088,6 +1088,11 @@ def _api_sse(provider, url, headers, body, timeout, on_event):
 def _api_preflight(cfg, provider, model, cmd):
     """Common gate for every api: turn: opt-in, cached availability probe,
     key presence. Returns an (out, err, code, cmd) refusal tuple or None."""
+    if not _section_external_allowed(cfg):
+        _project, section = _session_coords(cfg)
+        return ("", "section %r denies external effects — api:%s refused "
+                "(set capabilities.external true in the section manifest to "
+                "allow network calls)." % (section, provider), 1, cmd)
     refusal = _api_refusal(cfg, provider, model)
     if refusal:
         return ("", refusal, 1, cmd)
@@ -2969,6 +2974,59 @@ def _section_dir(cfg):
     session, else None — routing and roles layer on it (V3 3.4)."""
     _project, section = _session_coords(cfg)
     return os.path.join(HERE, "sections", section) if section else None
+
+
+def _section_capabilities(cfg):
+    """The running section's capability manifest (V3 7.4c), or None for a
+    flat/legacy session. None means UNRESTRICTED: capability enforcement is a
+    V3-sections overlay and must never impose a new restriction on a legacy
+    run (a flat app has no section.json). A nested session gets its declared
+    caps, defaulting deny-safe (workspace-only, no exec, no external) when the
+    manifest omits the block — load_section never raises."""
+    _project, section = _session_coords(cfg)
+    if not section:
+        return None
+    return seclib.load_section(section, HERE,
+                               app_dir=cfg.get("_app_dir")).capabilities
+
+
+def _section_writes_allowed(cfg):
+    """True when the running section may write to the workspace — unrestricted
+    for flat/legacy (caps None), else its writes level is 'workspace'."""
+    caps = _section_capabilities(cfg)
+    return caps is None or caps.get("writes") == "workspace"
+
+
+def _section_exec_allowed(cfg):
+    """True when the running section may execute a build/verify toolchain —
+    unrestricted for flat/legacy (caps None), else the section's exec flag."""
+    caps = _section_capabilities(cfg)
+    return caps is None or bool(caps.get("exec"))
+
+
+def _section_external_allowed(cfg):
+    """True when the running section may cause external (network) effects —
+    unrestricted for flat/legacy, else the section's external flag."""
+    caps = _section_capabilities(cfg)
+    return caps is None or bool(caps.get("external"))
+
+
+def _gated_run_verification(cfg, *args, **kw):
+    """verifylib.run_verification gated on the section's exec capability
+    (V3 7.4c). exec-denied sections get a NOT-RAN result in the shape every
+    downstream persist/log path already branches on (res.get("ran")), plus a
+    visible banner naming the capability — the phase fails honestly rather
+    than silently skipping or silently running the toolchain."""
+    if not _section_exec_allowed(cfg):
+        _project, section = _session_coords(cfg)
+        emit("CAPABILITY: section exec DENIED — build/verify toolchain not "
+             "run for section %r (capabilities.exec is false). Set "
+             "\"exec\": true in the section manifest to allow builds."
+             % section)
+        return {"ran": False, "ok": False, "status": "unverified",
+                "tool": "none",
+                "summary": "exec capability denied for section %r" % section}
+    return verifylib.run_verification(*args, **kw)
 
 
 def _phase_rule_layers(cfg):
@@ -5850,7 +5908,7 @@ def _run_iteration_verify(cfg, app, app_dir, phasedef, state, md_path, rnd):
         timeout = min(timeout, hard)
     if cfg.get("_deadline"):
         timeout = max(10, min(timeout, int(cfg["_deadline"] - time.time())))
-    res = verifylib.run_verification(build_dir, spec, timeout)
+    res = _gated_run_verification(cfg, build_dir, spec, timeout)
     verifylib.persist_verify_result(app_dir, key, res, attempt=0,
                                     prompt_hash=state.get("prompt_hash"),
                                     workflow=cfg.get("_workflow_name"))
@@ -6321,7 +6379,7 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
 
     emit("VERIFY: compiling the build in %s (%s)…" % (build_dir, spec.get("type", "auto")))
     append_md(md_path, "\n### Verification\n\n")
-    res = verifylib.run_verification(build_dir, spec, _compile_timeout())
+    res = _gated_run_verification(cfg, build_dir, spec, _compile_timeout())
 
     def _log_result(r, attempt_label):
         icon = "✅" if r.get("ok") else ("⚠️" if not r.get("ran") else "❌")
@@ -6392,7 +6450,7 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
                               rnd=attempt)
         transcript += "\n" + rblock
 
-        res = verifylib.run_verification(build_dir, spec, _compile_timeout())
+        res = _gated_run_verification(cfg, build_dir, spec, _compile_timeout())
         verifylib.persist_verify_result(app_dir, key, res, attempt=attempt,
                                         prompt_hash=state.get("prompt_hash"),
                                         workflow=cfg.get("_workflow_name"))
@@ -7544,14 +7602,22 @@ def _hook_library_mining(cfg, app, app_dir, phasedef, state, *,
             pkg, perrs = parse_extraction_blocks(transcript + "\n" + (final_output or ""))
             for e in perrs:
                 emit("LIBRARY_MINING extraction-json: %s" % e)
-            if pkg:
+            _lm_missing = [c for c, ok in
+                           (("writes", _section_writes_allowed(cfg)),
+                            ("exec", _section_exec_allowed(cfg))) if not ok]
+            if pkg and _lm_missing:
+                emit("CAPABILITY: section %s DENIED — skipping library_mining "
+                     "scaffold+build (it both writes app_build and runs swift "
+                     "build; the section must declare writes:workspace AND "
+                     "exec:true)." % " and ".join(_lm_missing))
+            elif pkg:
                 manifest = swiftscaffoldlib.scaffold_spm_package(
                     pkg, os.path.join(app_dir, "app_build"))
                 if manifest.get("ok"):
                     emit("LIBRARY_MINING: scaffolded package '%s' (%d public API stub(s)) at %s"
                          % (pkg["package_name"], manifest["api_count"], manifest["package_dir"]))
                     if shutil.which("swift"):
-                        res = verifylib.run_verification(manifest["package_dir"], {"type": "spm"})
+                        res = _gated_run_verification(cfg, manifest["package_dir"], {"type": "spm"})
                         verifylib.persist_verify_result(
                             app_dir, key, res, prompt_hash=state.get("prompt_hash"),
                             workflow=cfg.get("_workflow_name"))
@@ -8085,6 +8151,20 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # persistent build folder; otherwise no writes are allowed.
     allow_writes = (is_build or is_verify_repair) and \
         bool(cget(cfg, "runtime.build_code_changes_enabled", False))
+    # V3 7.4c: a section may write only if its capability permits it. Flat/
+    # legacy sessions (caps None) are unrestricted. A phase that WOULD have
+    # been granted writes but is capability-denied runs read-only with a
+    # VISIBLE banner — never a silent escalation, never a silent suppression
+    # (distinct from the runtime.build_code_changes_enabled=False case, which
+    # already has its own reason).
+    _sec_caps = _section_capabilities(cfg)
+    if allow_writes and _sec_caps is not None \
+            and _sec_caps.get("writes") != "workspace":
+        allow_writes = False
+        emit("CAPABILITY: section writes DENIED — this build/verify phase "
+             "runs read-only (section capabilities.writes != 'workspace'). "
+             "Set \"writes\": \"workspace\" in the section manifest to "
+             "enable code changes.")
     tctx.allow_writes = allow_writes
     tctx.build_dir = os.path.join(app_dir, "app_build") if allow_writes else None
     if allow_writes and cfg.get("_workflow_target", "app") == "app" \
@@ -10118,7 +10198,13 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # the product-definition phases only. Best-effort: failures inject an
     # explicit UNVERIFIED warning, and nothing here may take the run down.
     tctx.url_context = ""
-    if bool(cget(cfg, "runtime.fetch_prompt_urls", True)):
+    if bool(cget(cfg, "runtime.fetch_prompt_urls", True)) \
+            and not _section_external_allowed(cfg):
+        _project, _section = _session_coords(cfg)
+        emit("CAPABILITY: section %r denies external effects — skipping "
+             "prompt-URL prefetch (capabilities.external is false)."
+             % _section)
+    elif bool(cget(cfg, "runtime.fetch_prompt_urls", True)):
         try:
             _prepare_url_context(cfg, app, app_dir, prompt)
         except Exception as exc:  # noqa: BLE001 - prefetch is strictly best-effort
