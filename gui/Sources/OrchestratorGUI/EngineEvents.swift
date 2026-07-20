@@ -28,6 +28,10 @@ struct EngineEvent: Equatable, Identifiable {
     var toModel = ""
     var outputLen: Int?
     var dur: Double?
+    var artifactID = ""
+    var artifactType = ""
+    var artifactVersion: Int?
+    var artifactPath = ""
 
     var isFallback: Bool { kind == "agent_fallback" }
     var isError: Bool {
@@ -112,6 +116,10 @@ struct EngineEvent: Equatable, Identifiable {
         e.toModel = (obj["to_model"] as? String) ?? ""
         e.outputLen = obj["output_len"] as? Int
         e.dur = obj["dur"] as? Double
+        e.artifactID = (obj["artifact_id"] as? String) ?? ""
+        e.artifactType = (obj["type"] as? String) ?? ""
+        e.artifactVersion = obj["version"] as? Int
+        e.artifactPath = (obj["path"] as? String) ?? ""
         return e
     }
 

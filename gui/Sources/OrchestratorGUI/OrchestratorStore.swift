@@ -641,6 +641,13 @@ final class OrchestratorStore: ObservableObject {
     @Published var commandRoutableArtifact: ArtifactRouteRef?
     @Published var conductorSurfaceAvailable = false
     @Published var artifactRouteStates: [String: ArtifactRouteState] = [:]
+    @Published var artifactsByProject: [String: [ArtifactSummary]] = [:]
+    @Published var artifactFinalizeInFlight: Set<String> = []
+    @Published var artifactFinalizeErrors: [String: String] = [:]
+    // No manual message-publish entry point exists in the engine as of 4.9.
+    // Keep the context action absent; a later engine card flips this only when
+    // it can perform a real publish rather than mutate pixels.
+    @Published var manualArtifactPublishAvailable = false
     // Per-section lint: missing key = not yet run; .some(nil) = the lint
     // run FAILED (surfaced as unavailable, never as "clean"); .some(.some)
     // = a parsed report.
@@ -976,6 +983,7 @@ final class OrchestratorStore: ObservableObject {
         let rolesURL = self.rolesURL
         let modelPresetsURL = self.modelPresetsURL
         let configURL = self.configURL
+        let artifactRegistryURL = self.orchDirURL.appendingPathComponent("artifact_types.json")
         let manualStops = self.manualStops
         let commandProjectName = self.commandProjectName
         let runningProcessNames = Set(runningProcesses.compactMap { $0.value.isRunning ? $0.key : nil })
@@ -1007,6 +1015,8 @@ final class OrchestratorStore: ObservableObject {
                 return ArtifactRouteIndex.latestRoutable(
                     projectDir: rootURL.appendingPathComponent(projectID))
             }
+            let artifactIndex = ArtifactIndex.scan(
+                rootURL: rootURL, projectNames: names, registryURL: artifactRegistryURL)
             var bws: [String: [BuildWorker]] = [:]
             for p in loaded where p.running && (p.nextAgent?.contains("+") ?? false) {
                 if let workers = BackgroundProjectLoader.computeParallelBuildWorkers(for: p,
@@ -1054,6 +1064,9 @@ final class OrchestratorStore: ObservableObject {
                 if commandProjectName == self.commandProjectName,
                    commandArtifact != self.commandRoutableArtifact {
                     self.commandRoutableArtifact = commandArtifact
+                }
+                if artifactIndex != self.artifactsByProject {
+                    self.artifactsByProject = artifactIndex
                 }
                 if bws != self.buildWorkerStatus { self.buildWorkerStatus = bws }
                 if events != self.eventsByProject { self.eventsByProject = events }
@@ -1487,14 +1500,15 @@ final class OrchestratorStore: ObservableObject {
 
     func routeArtifact(_ artifact: ArtifactRouteRef, from sourceSession: String,
                        to targetSection: String) {
+        let stateKey = artifactRouteStateKey(artifact.id, sourceSession: sourceSession)
         let parts = sourceSession.components(separatedBy: "/")
         guard let projectID = parts.first, !projectID.isEmpty,
               SessionLayout.validSlug(targetSection) else {
-            artifactRouteStates[artifact.id] = .refused(reason: "Invalid route target")
+            artifactRouteStates[stateKey] = .refused(reason: "Invalid route target")
             return
         }
         let targetSession = "\(projectID)/\(targetSection)/\(artifact.id)"
-        artifactRouteStates[artifact.id] = .routing(target: targetSection)
+        artifactRouteStates[stateKey] = .routing(target: targetSection)
         let python = resolvePython()
         let engine = orchDirURL.appendingPathComponent("orchestrator.py").path
         let root = rootURL.path
@@ -1510,14 +1524,85 @@ final class OrchestratorStore: ObservableObject {
                 self.runLog += result.output.hasSuffix("\n")
                     ? result.output : result.output + "\n"
                 if result.code == 0 {
-                    self.artifactRouteStates[artifact.id] = .routed(target: targetSection)
+                    self.artifactRouteStates[stateKey] = .routed(target: targetSection)
                     self.refresh()
                 } else {
-                    self.artifactRouteStates[artifact.id] = .refused(reason: message)
+                    self.artifactRouteStates[stateKey] = .refused(reason: message)
                     self.surfaceError(message)
                 }
             }
         }
+    }
+
+    func artifactRouteState(_ artifactID: String,
+                            sourceSession: String) -> ArtifactRouteState? {
+        artifactRouteStates[artifactRouteStateKey(
+            artifactID, sourceSession: sourceSession)]
+    }
+
+    private func artifactRouteStateKey(_ artifactID: String,
+                                       sourceSession: String) -> String {
+        sourceSession + "\u{1f}" + artifactID
+    }
+
+    func artifacts(for project: Project, phaseKey: String) -> [ArtifactSummary] {
+        let projectID = project.name.components(separatedBy: "/").first ?? project.name
+        let all = artifactsByProject[projectID] ?? []
+        let eventIDs = Set((eventsByProject[project.name] ?? []).compactMap { event in
+            event.kind == "artifact_published" && event.phase == phaseKey
+                && !event.artifactID.isEmpty ? event.artifactID : nil
+        })
+        return all.filter { summary in
+            summary.sourcePhase == phaseKey || eventIDs.contains(summary.id)
+        }
+    }
+
+    func finalizeArtifact(_ artifact: ArtifactSummary, in sourceSession: String) {
+        let stateKey = artifactActionStateKey(artifact.id, sourceSession: sourceSession)
+        guard artifact.canHumanFinalize,
+              !artifactFinalizeInFlight.contains(stateKey) else { return }
+        artifactFinalizeErrors[stateKey] = nil
+        artifactFinalizeInFlight.insert(stateKey)
+        let python = resolvePython()
+        let engine = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let root = rootURL.path
+        Task.detached { [weak self] in
+            let result = ArtifactFinalizeCommand.run(
+                python: python, engine: engine, root: root,
+                artifactID: artifact.id, sourceSession: sourceSession)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.artifactFinalizeInFlight.remove(stateKey)
+                self.runLog += result.output.hasSuffix("\n")
+                    ? result.output : result.output + "\n"
+                if result.code == 0 {
+                    self.artifactFinalizeErrors[stateKey] = nil
+                    self.refresh()
+                } else {
+                    let reason = ArtifactRouteCommand.summary(
+                        result.output, fallback: "finalize exited \(result.code)")
+                    self.artifactFinalizeErrors[stateKey] = reason
+                    self.surfaceError(reason)
+                }
+            }
+        }
+    }
+
+    func artifactFinalizeIsInFlight(_ artifactID: String,
+                                    sourceSession: String) -> Bool {
+        artifactFinalizeInFlight.contains(artifactActionStateKey(
+            artifactID, sourceSession: sourceSession))
+    }
+
+    func artifactFinalizeError(_ artifactID: String,
+                               sourceSession: String) -> String? {
+        artifactFinalizeErrors[artifactActionStateKey(
+            artifactID, sourceSession: sourceSession)]
+    }
+
+    private func artifactActionStateKey(_ artifactID: String,
+                                        sourceSession: String) -> String {
+        sourceSession + "\u{1f}" + artifactID
     }
 
     // MARK: - Config (agents on/off) — edits config.yaml lines in place so the

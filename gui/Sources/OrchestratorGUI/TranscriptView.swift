@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct TranscriptView: View {
     @EnvironmentObject var store: OrchestratorStore
@@ -51,6 +52,7 @@ struct TranscriptView: View {
     var body: some View {
         let t = loadedID == transcriptID ? transcript : PhaseTranscript()
         let phasePurpose = store.phasePurposes(for: project)[phaseKey]
+        let artifacts = store.artifacts(for: project, phaseKey: phaseKey)
         let pending = store.pendingHuman(project)
         let nextAgent = project.nextAgent
         let turnState = PaneTurnState.resolve(
@@ -94,6 +96,10 @@ struct TranscriptView: View {
                                     }
                                 }
                                 if !pending.isEmpty { PendingHumanBubble(text: pending) }
+                                ForEach(artifacts) { artifact in
+                                    ArtifactCard(summary: artifact,
+                                                 sourceSession: project.name)
+                                }
                                 if let fo = t.finalOutput {
                                     FinalOutputCard(
                                         text: fo,
@@ -316,6 +322,158 @@ struct TranscriptView: View {
                        message: project.status == .new
                            ? "Run the project to begin the discussion."
                            : "The agents' conversation appears here when the run reaches this phase.")
+    }
+}
+
+struct ArtifactCard: View {
+    @EnvironmentObject var store: OrchestratorStore
+    let summary: ArtifactSummary
+    let sourceSession: String
+    @State private var showLineage = false
+
+    private var state: ArtifactCardState {
+        ArtifactCardState.resolve(summary: summary,
+                                  route: store.artifactRouteState(
+                                    summary.id, sourceSession: sourceSession))
+    }
+
+    private var canDrag: Bool {
+        summary.unreadableReason == nil && summary.status == "final" && !summary.stale
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if canDrag, let payload = ArtifactDragPayload(
+            artifactID: summary.id, type: summary.type, version: summary.version,
+            sourceSession: sourceSession).encode() {
+            content.onDrag { NSItemProvider(object: payload as NSString) }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: DS.space.xs) {
+            HStack(spacing: DS.space.xs) {
+                Image(systemName: Self.glyph(for: summary.type))
+                    .foregroundStyle(tint)
+                Text(summary.unreadableReason == nil
+                     ? summary.type.replacingOccurrences(of: "_", with: " ").capitalized
+                     : "Unreadable artifact")
+                    .font(DS.font.body.weight(.medium))
+                Text("v\(summary.version)")
+                    .font(DS.font.monoInline)
+                    .padding(.horizontal, DS.space.xxs)
+                    .background(Capsule().fill(DS.cardBg))
+                Spacer()
+                statusChip
+                if summary.stale {
+                    Text("stale")
+                        .font(DS.font.caption.weight(.medium))
+                        .foregroundStyle(DS.status.warning.color)
+                        .padding(.horizontal, DS.space.xs)
+                        .padding(.vertical, DS.space.xxs)
+                        .background(Capsule().fill(DS.status.warning.fill))
+                }
+            }
+            if let reason = summary.unreadableReason {
+                Text(reason).font(DS.font.caption).foregroundStyle(DS.status.error.color)
+            } else {
+                HStack(spacing: DS.space.xs) {
+                    Button {
+                        showLineage.toggle()
+                    } label: {
+                        Label(Self.lineageLabel(summary.lineage),
+                              systemImage: "point.3.connected.trianglepath.dotted")
+                            .font(DS.font.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showLineage) {
+                        VStack(alignment: .leading, spacing: DS.space.xs) {
+                            Text("Version chain").font(DS.font.headline)
+                            ForEach(Array(summary.lineage.enumerated()), id: \.offset) { idx, id in
+                                Text("v\(idx + 1) · \(id)").font(DS.font.monoInline)
+                            }
+                        }
+                        .padding(DS.space.m)
+                    }
+                    Spacer()
+                    if summary.canHumanFinalize {
+                        Button("Finalize") {
+                            store.finalizeArtifact(summary, in: sourceSession)
+                        }
+                        .controlSize(.small)
+                        .disabled(store.artifactFinalizeIsInFlight(
+                            summary.id, sourceSession: sourceSession))
+                    }
+                }
+                stateDetail
+                if let error = store.artifactFinalizeError(
+                        summary.id, sourceSession: sourceSession) {
+                    Text(error).font(DS.font.caption).foregroundStyle(DS.status.error.color)
+                }
+            }
+        }
+        .padding(DS.space.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: DS.radius.card, style: .continuous)
+            .fill(tint.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius.card, style: .continuous)
+            .stroke(tint.opacity(0.28), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(summary.unreadableReason == nil
+            ? "Artifact \(summary.id), version \(summary.version), \(summary.status)"
+            : "Unreadable artifact \(summary.id)")
+    }
+
+    private var tint: Color {
+        switch state {
+        case .unreadable, .refused: return DS.status.error.color
+        case .stale, .pendingReview: return DS.status.warning.color
+        case .routing: return DS.accent.color
+        case .final, .converged, .routed: return DS.status.success.color
+        }
+    }
+
+    private var statusChip: some View {
+        Text(summary.status.replacingOccurrences(of: "_", with: " "))
+            .font(DS.font.caption.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, DS.space.xs)
+            .padding(.vertical, DS.space.xxs)
+            .background(Capsule().fill(tint.opacity(0.14)))
+    }
+
+    @ViewBuilder
+    private var stateDetail: some View {
+        switch state {
+        case .routing(let target):
+            ProgressView("Routing to \(target)…").font(DS.font.caption)
+        case .routed(let target):
+            Label("Routed to \(target)", systemImage: "checkmark.circle.fill")
+                .font(DS.font.caption).foregroundStyle(DS.status.success.color)
+        case .refused(let reason):
+            Label(reason, systemImage: "xmark.octagon.fill")
+                .font(DS.font.caption).foregroundStyle(DS.status.error.color)
+        default:
+            EmptyView()
+        }
+    }
+
+    static func glyph(for type: String) -> String {
+        switch type {
+        case "idea": return "lightbulb"
+        case "research_brief", "opportunity_signal": return "doc.text.magnifyingglass"
+        case "spec_bundle": return "shippingbox"
+        case "finding_report": return "exclamationmark.magnifyingglass"
+        case "gap": return "square.dashed"
+        case "reconcile": return "arrow.triangle.merge"
+        default: return "doc.richtext"
+        }
+    }
+
+    static func lineageLabel(_ lineage: [String]) -> String {
+        lineage.isEmpty ? "No lineage" : lineage.joined(separator: " → ")
     }
 }
 

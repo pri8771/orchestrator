@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Native Pro shell (DESIGN-NATIVE-PRO.md §3)
 //
@@ -484,33 +485,12 @@ struct AppShellView: View {
                     .foregroundStyle(DS.status.warning.color)
             case .populated(let metas):
                 ForEach(metas) { meta in
-                    HStack(spacing: DS.space.xs) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(meta.title).font(DS.font.body)
-                            Text(SectionRailLogic.statusLine(
-                                    section: meta.id, projects: store.projects))
-                                .font(DS.font.caption)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                        // Lint badge (3.7's report): errors red, warnings
-                        // amber; absent = not linted or clean.
-                        if let summary = store.sectionLint[meta.id] ?? nil,
-                           summary.errors + summary.warnings > 0 {
-                            Image(systemName: summary.errors > 0
-                                  ? "xmark.octagon.fill"
-                                  : "exclamationmark.triangle.fill")
-                                .font(DS.font.caption)
-                                .foregroundStyle(summary.errors > 0
-                                                 ? DS.status.error.color
-                                                 : DS.status.warning.color)
-                                .help("\(summary.errors) error(s), "
-                                      + "\(summary.warnings) warning(s) — "
-                                      + "open Section Settings › Lint")
-                        }
-                    }
-                    .tag(ShellSelection.section(meta.id))
+                    SectionRailDropRow(
+                        section: meta,
+                        status: SectionRailLogic.statusLine(
+                            section: meta.id, projects: store.projects),
+                        lint: store.sectionLint[meta.id] ?? nil)
+                        .tag(ShellSelection.section(meta.id))
                 }
             }
         }
@@ -518,6 +498,59 @@ struct AppShellView: View {
 
     private func shellPlaceholder(_ title: String, _ symbol: String) -> some View {
         EmptyStateView(symbol: symbol, title: title)
+    }
+}
+
+private struct SectionRailDropRow: View {
+    @EnvironmentObject var store: OrchestratorStore
+    let section: SectionMeta
+    let status: String
+    let lint: SectionLintSummary?
+    @State private var isDropTarget = false
+
+    var body: some View {
+        HStack(spacing: DS.space.xs) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(section.title).font(DS.font.body)
+                Text(status).font(DS.font.caption)
+                    .foregroundStyle(.tertiary).lineLimit(1)
+            }
+            Spacer()
+            if isDropTarget {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(DS.accent.color)
+                    .accessibilityLabel("Drop to route here")
+            } else if let lint, lint.errors + lint.warnings > 0 {
+                Image(systemName: lint.errors > 0
+                      ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    .font(DS.font.caption)
+                    .foregroundStyle(lint.errors > 0
+                                     ? DS.status.error.color : DS.status.warning.color)
+                    .help("\(lint.errors) error(s), \(lint.warnings) warning(s) — "
+                          + "open Section Settings › Lint")
+            }
+        }
+        .padding(.vertical, DS.space.xxs)
+        .background(RoundedRectangle(cornerRadius: DS.radius.control, style: .continuous)
+            .fill(isDropTarget ? AnyShapeStyle(DS.accent.fill) : AnyShapeStyle(Color.clear)))
+        .onDrop(of: [UTType.text], isTargeted: $isDropTarget) { providers in
+            guard let provider = providers.first(where: {
+                $0.canLoadObject(ofClass: NSString.self)
+            }) else { return false }
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let text = object as? String,
+                      let payload = ArtifactDragPayload.decode(text) else { return }
+                let sourceParts = payload.sourceSession.components(separatedBy: "/")
+                guard sourceParts.count != 3 || sourceParts[1] != section.id else { return }
+                DispatchQueue.main.async {
+                    store.routeArtifact(
+                        ArtifactRouteRef(id: payload.artifactID, type: payload.type,
+                                         version: payload.version),
+                        from: payload.sourceSession, to: section.id)
+                }
+            }
+            return true
+        }
     }
 }
 
@@ -564,7 +597,8 @@ private struct ArtifactRoutePicker: View {
             case .error(let message):
                 Text(message).foregroundStyle(DS.status.error.color)
             }
-            if let state = store.artifactRouteStates[request.artifact.id] {
+            if let state = store.artifactRouteState(
+                    request.artifact.id, sourceSession: request.sourceSession) {
                 routeStatus(state)
             }
             HStack {
@@ -577,7 +611,8 @@ private struct ArtifactRoutePicker: View {
     }
 
     private var isRouting: Bool {
-        if case .routing = store.artifactRouteStates[request.artifact.id] { return true }
+        if case .routing = store.artifactRouteState(
+                request.artifact.id, sourceSession: request.sourceSession) { return true }
         return false
     }
 
