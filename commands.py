@@ -24,9 +24,8 @@ KINDS = ("builtin", "template", "delegation", "meta")
 
 # Base set per the sections plan's command table (§14.4): fully functional
 # template/delegation entries; builtin dispatch (which verb each name maps
-# to) is 9.8's wiring, meta content (advisory prompts) is 9.6's — this seed
-# only needs valid, registrable entries so the mechanism has something real
-# to parse/layer/test against from a fresh workspace.
+# to) is 9.8's wiring. Meta entries are advisory-card content: the 9.5
+# executor quotes their arguments as data and performs exactly one turn.
 DEFAULT_COMMANDS = {
     "schema_version": SCHEMA_VERSION,
     "commands": [
@@ -42,6 +41,21 @@ DEFAULT_COMMANDS = {
          "description": "Deep-dive: Research investigates a question."},
         {"name": "vote", "kind": "builtin",
          "description": "Force a vote on the current phase (wired by 9.8)."},
+        {"name": "model-effort", "kind": "meta",
+         "description":
+             "Return an advisory card only; do not perform the task. Use "
+             "the seeded model-effort rubric to recommend one model and "
+             "one supported effort, with a one-line rationale. Label a "
+             "known-price estimate with ≈; otherwise say unmetered. End "
+             "with 'Run with this' as an explicit next action that would "
+             "use the original input unchanged."},
+        {"name": "gen-prompt", "kind": "meta",
+         "description":
+             "Return an editable structured-prompt card only; do not run "
+             "or answer the rough input. Organize it into Goal, Context, "
+             "Constraints, Output format, and Acceptance criteria. End "
+             "with explicit Insert and Cancel actions; neither action is "
+             "automatic and the command itself sends nothing."},
     ],
 }
 

@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "source": "orchestrator-v3-engineering-plan.md §11",
+  "default": {
+    "model": "claude-fable-5",
+    "effort": "high",
+    "rationale": "Default for engine and GUI work."
+  },
+  "tiers": [
+    {
+      "id": "correctness-catastrophic",
+      "signals": [
+        "security or privacy boundary",
+        "concurrency, crash recovery, or atomic persistence",
+        "cost or permission enforcement",
+        "cross-provider runner lifecycle"
+      ],
+      "model": "claude-fable-5",
+      "effort": "max",
+      "rationale": "Failure can corrupt state, leak data, or silently violate a hard invariant."
+    },
+    {
+      "id": "cross-cutting-engine",
+      "signals": [
+        "multiple engine subsystems",
+        "shared protocol or schema migration",
+        "routing, lineage, or lifecycle semantics"
+      ],
+      "model": "claude-fable-5",
+      "effort": "xhigh",
+      "rationale": "Cross-cutting engine work needs deep integration reasoning and adversarial tests."
+    },
+    {
+      "id": "engine-or-gui",
+      "signals": [
+        "bounded engine feature",
+        "GUI behavior with testable state",
+        "ordinary implementation or repair"
+      ],
+      "model": "claude-fable-5",
+      "effort": "high",
+      "rationale": "Strong default for production engine and GUI changes."
+    },
+    {
+      "id": "config-and-data",
+      "signals": [
+        "configuration seed",
+        "JSON plumbing",
+        "registration or section data",
+        "mechanical documentation mapping"
+      ],
+      "model": "claude-sonnet-5",
+      "effort": "high",
+      "rationale": "A smaller model is sufficient for bounded data plumbing with validation."
+    }
+  ],
+  "constraints": {
+    "effort": "Recommend an effort only when the selected backend advertises effort_control; otherwise set effort to null.",
+    "cost": "Use integer micro-USD math from a verified price only and label the display estimate with ≈. Unknown or unpriced models must display unmetered, never $0.00.",
+    "haiku": "Not recommended for this repository because the large single-file engine requires deep context.",
+    "execution": "The advisor never runs or rewrites the input. Running requires a separate explicit action and must use the original input unchanged."
+  },
+  "card_fields": [
+    "model",
+    "effort",
+    "rationale",
+    "estimated_cost",
+    "run_with_this"
+  ]
+}

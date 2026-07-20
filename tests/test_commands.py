@@ -71,7 +71,33 @@ class TestRegistry(unittest.TestCase):
                                    on_warn=warned.append)
         self.assertEqual(warned, [])
         self.assertIn("summarize", reg)
+        self.assertEqual(reg["model-effort"]["kind"], "meta")
+        self.assertEqual(reg["gen-prompt"]["kind"], "meta")
         self.assertTrue(os.path.exists(cmdlib.commands_path(self.orch_dir)))
+
+    def test_model_effort_rubric_is_plan_derived_and_honest(self):
+        path = os.path.join(cmdlib.HERE, "commands",
+                            "model_effort_rubric.json")
+        with open(path, encoding="utf-8") as fh:
+            rubric = json.load(fh)
+        self.assertEqual(rubric["source"],
+                         "orchestrator-v3-engineering-plan.md §11")
+        tiers = {row["id"]: row for row in rubric["tiers"]}
+        self.assertEqual(tiers["correctness-catastrophic"]["effort"],
+                         "max")
+        self.assertEqual(tiers["cross-cutting-engine"]["effort"],
+                         "xhigh")
+        self.assertEqual(tiers["engine-or-gui"]["effort"], "high")
+        self.assertEqual(tiers["config-and-data"]["model"],
+                         "claude-sonnet-5")
+        self.assertIn("effort_control", rubric["constraints"]["effort"])
+        self.assertIn("unmetered", rubric["constraints"]["cost"])
+        self.assertIn("never $0.00", rubric["constraints"]["cost"])
+
+    def test_shipped_fleet_commands_match_in_memory_seed(self):
+        with open(cmdlib.commands_path(cmdlib.HERE), encoding="utf-8") as fh:
+            shipped = json.load(fh)
+        self.assertEqual(shipped, cmdlib.DEFAULT_COMMANDS)
 
     def test_seed_never_clobbers_existing_file(self):
         path = cmdlib.commands_path(self.orch_dir)
@@ -275,9 +301,11 @@ class TestMetaCommandGuarantee(_DispatchBase):
         # a real meta entry, distinct from the seeded defaults, so this test
         # doesn't depend on what the fleet seed happens to contain.
         existing = {}
+        original = None
         if os.path.exists(path):
-            with open(path) as fh:
-                existing = json.load(fh)
+            with open(path, "rb") as fh:
+                original = fh.read()
+            existing = json.loads(original.decode("utf-8"))
         existing.setdefault("commands", [])
         existing["commands"] = [c for c in existing["commands"]
                                 if c.get("name") != "advise"] + [
@@ -286,7 +314,7 @@ class TestMetaCommandGuarantee(_DispatchBase):
         existing.setdefault("schema_version", 1)
         with open(path, "w") as fh:
             json.dump(existing, fh)
-        self.addCleanup(self._restore_commands_json, path)
+        self.addCleanup(self._restore_commands_json, path, original)
         self.calls = []
         self._orig_call = orch.call_agent
         def fake_call(cfg, app, key, rnd, ident, prompt):
@@ -295,11 +323,15 @@ class TestMetaCommandGuarantee(_DispatchBase):
         orch.call_agent = fake_call
         self.addCleanup(self._restore_call)
 
-    def _restore_commands_json(self, path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    def _restore_commands_json(self, path, original):
+        if original is None:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return
+        with open(path, "wb") as fh:
+            fh.write(original)
 
     def _restore_call(self):
         orch.call_agent = self._orig_call
@@ -360,6 +392,54 @@ class TestMetaCommandGuarantee(_DispatchBase):
         orch.call_agent = boom
         out = self._dispatch("/advise x", transcript="T")
         self.assertEqual(out, "T")   # never crashes the conversation
+
+
+class TestSeededMetaCommandContent(_DispatchBase):
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self._orig_call = orch.call_agent
+
+        def fake_call(cfg, app, key, rnd, ident, prompt):
+            self.calls.append((ident, prompt))
+            return "ADVISORY CARD — explicit action required"
+
+        orch.call_agent = fake_call
+        self.addCleanup(self._restore_call)
+
+    def _restore_call(self):
+        orch.call_agent = self._orig_call
+
+    def test_both_seeded_entries_take_one_advisory_turn_and_never_send(self):
+        cases = (("model-effort", "build a crash-safe queue"),
+                 ("gen-prompt", "rough notes for a launch plan"))
+        for name, user_input in cases:
+            with self.subTest(command=name):
+                self.calls = []
+                before = self._md_text()
+                out = self._dispatch("/%s %s" % (name, user_input),
+                                     transcript="LIVE")
+                self.assertEqual(out, "LIVE")
+                self.assertEqual(len(self.calls), 1)
+                ident, prompt = self.calls[0]
+                self.assertEqual(ident, "ollama")
+                self.assertIn("<user_input>\n%s\n</user_input>" % user_input,
+                              prompt)
+                self.assertIn("do not", prompt.lower())
+                new_card = self._md_text()[len(before):]
+                self.assertIn("ADVISORY CARD", new_card)
+                self.assertNotIn("You (human)", new_card)
+
+    def test_seed_content_names_only_explicit_follow_up_actions(self):
+        registry = cmdlib.load_commands(cmdlib.HERE)
+        advisor = registry["model-effort"]["description"]
+        structurer = registry["gen-prompt"]["description"]
+        self.assertIn("Run with this", advisor)
+        self.assertIn("original input unchanged", advisor)
+        self.assertIn("unmetered", advisor)
+        self.assertIn("Insert", structurer)
+        self.assertIn("Cancel", structurer)
+        self.assertIn("sends nothing", structurer)
 
 
 # --------------------------------------------------------------------------- #

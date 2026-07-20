@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "commands": [
+    {
+      "name": "summarize",
+      "kind": "template",
+      "template": "@Documentation summarize this conversation so far.",
+      "description": "Ask Documentation to summarize the conversation."
+    },
+    {
+      "name": "decision",
+      "kind": "template",
+      "template": "@Planning what decision are we converging on here?",
+      "description": "Ask Planning to name the emerging decision."
+    },
+    {
+      "name": "audit",
+      "kind": "delegation",
+      "target": "qa",
+      "description": "Deep-dive: QA audits this conversation."
+    },
+    {
+      "name": "research",
+      "kind": "delegation",
+      "target": "research",
+      "description": "Deep-dive: Research investigates a question."
+    },
+    {
+      "name": "vote",
+      "kind": "builtin",
+      "description": "Force a vote on the current phase (wired by 9.8)."
+    },
+    {
+      "name": "model-effort",
+      "kind": "meta",
+      "description": "Return an advisory card only; do not perform the task. Use the seeded model-effort rubric to recommend one model and one supported effort, with a one-line rationale. Label a known-price estimate with ≈; otherwise say unmetered. End with 'Run with this' as an explicit next action that would use the original input unchanged."
+    },
+    {
+      "name": "gen-prompt",
+      "kind": "meta",
+      "description": "Return an editable structured-prompt card only; do not run or answer the rough input. Organize it into Goal, Context, Constraints, Output format, and Acceptance criteria. End with explicit Insert and Cancel actions; neither action is automatic and the command itself sends nothing."
+    }
+  ]
+}
