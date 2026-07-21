@@ -134,6 +134,7 @@ struct SituationWorkflowPhase: Equatable, Sendable {
 struct SituationImpact: Equatable, Sendable {
     let sections: [String]
     let phaseCount: Int
+    let phaseKeys: [String]
 }
 
 enum SituationImpactCompiler {
@@ -146,12 +147,16 @@ enum SituationImpactCompiler {
         var seen = Set<String>()
         let known = slotIDs.filter { byID[$0] != nil && seen.insert($0).inserted }
         let sections = Array(Set(known.compactMap { byID[$0]?.ownerSection })).sorted()
-        guard !known.isEmpty else { return SituationImpact(sections: sections, phaseCount: phases.count) }
+        guard !known.isEmpty else {
+            return SituationImpact(sections: sections, phaseCount: phases.count,
+                                   phaseKeys: phases.map(\.key))
+        }
         let required = Set(known)
         var kept = phases.filter { !required.isDisjoint(with: $0.docSections) }
         if let last = phases.last, !kept.contains(last) { kept.append(last) }
         if kept.count < min(3, phases.count) { kept = phases }
-        return SituationImpact(sections: sections, phaseCount: kept.count)
+        return SituationImpact(sections: sections, phaseCount: kept.count,
+                               phaseKeys: kept.map(\.key))
     }
 }
 
@@ -161,6 +166,7 @@ struct SituationFileRecord: Identifiable, Equatable {
     let data: Data
     let error: String?
     var id: String { url.path }
+    var engineRef: String { url.deletingLastPathComponent().lastPathComponent }
 }
 
 enum SituationFileIO {
@@ -210,23 +216,32 @@ struct DocumentBuilderSheet: View {
     @State private var gap = GapReportSnapshot(statuses: [:], error: nil)
     @State private var baselineData: Data?
     @State private var changedOnDisk = false
+    var initialSituationURL: URL? = nil
+    var compact = false
+    var onApply: (() -> Void)? = nil
 
     private var selectedRecord: SituationFileRecord? { records.first { $0.url == selectedURL } }
     private var selectedProject: Project? { store.projects.first { $0.name == selectedProjectName } }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Document Builder").font(DS.font.headline)
-                Spacer()
-                Button("Close") { dismiss() }.accessibilityIdentifier("document-builder-close")
-            }
-            .padding(.horizontal, DS.space.m).frame(height: 44)
-            Divider()
-            HStack(spacing: 0) {
-                situationList.frame(minWidth: 190, idealWidth: 220, maxWidth: 260)
-                Divider()
+        Group {
+            if compact {
                 editor
+            } else {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Document Builder").font(DS.font.headline)
+                        Spacer()
+                        Button("Close") { dismiss() }.accessibilityIdentifier("document-builder-close")
+                    }
+                    .padding(.horizontal, DS.space.m).frame(height: 44)
+                    Divider()
+                    HStack(spacing: 0) {
+                        situationList.frame(minWidth: 190, idealWidth: 220, maxWidth: 260)
+                        Divider()
+                        editor
+                    }
+                }
             }
         }
         .frame(minWidth: 760, idealWidth: 1040, minHeight: 540, idealHeight: 700)
@@ -423,7 +438,9 @@ struct DocumentBuilderSheet: View {
         case .success(let map): docMap = map
         }
         records = store.readSituationFiles()
-        if let first = records.first { select(first) }
+        if let requested = initialSituationURL,
+           let record = records.first(where: { $0.url == requested }) { select(record) }
+        else if let first = records.first { select(first) }
     }
 
     private func select(_ record: SituationFileRecord) {
@@ -452,6 +469,7 @@ struct DocumentBuilderSheet: View {
             baselineData = data; changedOnDisk = false
             var saved = value; saved.originalData = data; saved.isDirty = false; canvas = saved
             records = store.readSituationFiles()
+            onApply?()
         } catch { loadError = error.localizedDescription }
     }
 

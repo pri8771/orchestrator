@@ -1939,6 +1939,26 @@ final class OrchestratorStore: ObservableObject {
         return try SituationFileIO.save(canvas, to: url)
     }
 
+    func duplicateSituation(_ source: SituationCanvas) -> URL? {
+        let names = Set(readSituationFiles().map(\.name))
+        let occupied = Set(((try? fm.contentsOfDirectory(atPath: situationsDirURL.path)) ?? [])
+            .map { $0.lowercased() })
+        let candidate = SituationLibraryNaming.copyName(
+            source: source.name, existingNames: names, occupiedSlugs: occupied)
+        var copy = source
+        copy.name = candidate; copy.rawRoot["name"] = .string(candidate)
+        copy.originalData = nil; copy.isDirty = true
+        let url = situationsDirURL.appendingPathComponent(Self.slugify(candidate), isDirectory: true)
+            .appendingPathComponent("situation.json")
+        do { _ = try SituationFileIO.save(copy, to: url); return url }
+        catch { surfaceError("Couldn't duplicate Situation: \(error.localizedDescription)"); return nil }
+    }
+
+    func deleteSituation(_ record: SituationFileRecord) {
+        removeRecoverably(record.url.deletingLastPathComponent())
+        runLog += "Moved Situation \(record.name) to the Trash.\n"
+    }
+
     func situationWorkflowPhases(named name: String) -> [SituationWorkflowPhase] {
         guard let pair = readRawWorkflows().first(where: {
             (($0.obj["name"] as? String) ?? $0.fileURL.deletingPathExtension().lastPathComponent) == name
@@ -1949,6 +1969,26 @@ final class OrchestratorStore: ObservableObject {
                 title: (raw["title"] as? String) ?? (raw["key"] as? String) ?? "Phase \(index + 1)",
                 docSections: (raw["doc_sections"] as? [String]) ?? [])
         }
+    }
+
+    func allSituationWorkflowPhases() -> [SituationWorkflowPhase] {
+        var seen = Set<String>(), result: [SituationWorkflowPhase] = []
+        for pair in readRawWorkflows() {
+            for (index, raw) in ((pair.obj["phases"] as? [[String: Any]]) ?? []).enumerated() {
+                let key = (raw["key"] as? String) ?? "phase\(index + 1)"
+                guard seen.insert(key).inserted else { continue }
+                result.append(SituationWorkflowPhase(
+                    key: key, title: (raw["title"] as? String) ?? key,
+                    docSections: (raw["doc_sections"] as? [String]) ?? []))
+            }
+        }
+        return result
+    }
+
+    func engineSituationDiff(project: Project, candidate: String) -> PipelineResult<SituationApplyDiff> {
+        SituationEngineQuery.diff(python: resolvePython(), moduleRoot: orchDirURL,
+                                  orchDir: orchDirURL, projectDir: project.dirURL,
+                                  workflow: project.workflow, candidate: candidate)
     }
 
     // The phases a given project runs (from its workflow; falls back to app_build).

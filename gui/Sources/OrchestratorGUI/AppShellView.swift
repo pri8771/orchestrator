@@ -1251,7 +1251,7 @@ private struct WorkflowsLibraryView: View {
                 HStack {
                     Text("Workflows").font(DS.font.title)
                     Spacer()
-                    Button("Document Flow…") { showDocumentBuilder = true }
+                    Button("Situation Editor…") { showDocumentBuilder = true }
                         .accessibilityIdentifier("open-document-builder")
                     Button("Pipeline Canvas…") { showPipelineBuilder = true }
                     Button("Open Builder…") { showBuilder = true }
@@ -1289,7 +1289,7 @@ private struct WorkflowsLibraryView: View {
             PipelineBuilderSheet().environmentObject(store)
         }
         .sheet(isPresented: $showDocumentBuilder) {
-            DocumentBuilderSheet().environmentObject(store)
+            SituationEditorSheet().environmentObject(store)
         }
     }
 }

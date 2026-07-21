@@ -481,6 +481,8 @@ struct PipelineBuilderSheet: View {
     @State private var showRun = false
     @State private var runProject = ""
     @State private var runIdea = ""
+    var initialPresetName: String? = nil
+    var compact = false
 
     private var sections: [String] { store.knownPipelineSections().sorted() }
     private var selectedRecord: PipelinePresetRecord? {
@@ -488,19 +490,25 @@ struct PipelineBuilderSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Pipelines").font(DS.font.headline)
-                Text("Cross-section Conductor presets")
-                    .font(DS.font.caption).foregroundStyle(DS.textSecondary)
-                Spacer()
-                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
-            }
-            .padding(.horizontal, DS.space.m).frame(height: 44)
-            Divider()
-            HSplitView {
-                presetList.frame(minWidth: 210, idealWidth: 240)
-                editor.frame(minWidth: 520)
+        Group {
+            if compact {
+                editor
+            } else {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Pipelines").font(DS.font.headline)
+                        Text("Cross-section Conductor presets")
+                            .font(DS.font.caption).foregroundStyle(DS.textSecondary)
+                        Spacer()
+                        Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                    }
+                    .padding(.horizontal, DS.space.m).frame(height: 44)
+                    Divider()
+                    HSplitView {
+                        presetList.frame(minWidth: 210, idealWidth: 240)
+                        editor.frame(minWidth: 520)
+                    }
+                }
             }
         }
         .frame(minWidth: 780, minHeight: 560)
@@ -770,6 +778,7 @@ struct PipelineBuilderSheet: View {
         records = store.listPipelinePresets()
         if let warning = store.pipelinePresetWarning { note = warning }
         let target = url.flatMap { wanted in records.first { $0.url == wanted } }
+            ?? initialPresetName.flatMap { wanted in records.first { $0.name == wanted } }
             ?? selectedRecord ?? records.first
         if let target { select(target) }
         else { selectedID = nil; canvas = nil; loadError = nil }
