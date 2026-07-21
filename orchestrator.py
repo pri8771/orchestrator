@@ -4606,6 +4606,7 @@ def load_state(app_dir):
         "runner_pid": None,
         "done": False,
         "error": None,
+        "enrollment_gate": None,
         # Per-run fallback rescues by agent (spec §6 fallback visibility):
         # {"claude": 2, ...} — bumped by _bump_fallback_count so any UI can
         # badge degraded operation straight from agent_state.json.
@@ -4617,13 +4618,16 @@ def derive_run_status(state):
     """V2 spec §6 status enum, derived from the legacy flags on every save.
     Additive: 'done'/'error'/'blocked_conflict'/'awaiting_approval' stay the
     authoritative raw fields for existing readers; 'status' is the one-word
-    rollup (running | done | aborted | blocked_conflict | awaiting_approval)."""
+    rollup (running | done | aborted | blocked_conflict | awaiting_approval |
+    enrolled_awaiting_approval)."""
     if state.get("blocked_conflict"):
         return "blocked_conflict"
     if state.get("error"):
         return "aborted"
     if state.get("awaiting_approval"):
         return "awaiting_approval"
+    if state.get("enrollment_gate"):
+        return "enrolled_awaiting_approval"
     if state.get("done"):
         return "done"
     return "running"
@@ -4677,6 +4681,7 @@ def reset_state_for_new_prompt(state, phash):
         "error": None,
         "release_gate_repairs": 0,
         "phase_resolutions": {},
+        "enrollment_gate": None,
     })
     return state
 
@@ -11185,6 +11190,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     elif state.get("done"):
         emit("App '%s': unchanged and already done — skipping." % app)
         return
+    elif workflow.target == "enroll" and state.get("enrollment_gate"):
+        emit("App '%s': enrollment report awaits human approval — skipping."
+             % app)
+        return
     else:
         emit("App '%s': resuming from incomplete pipeline." % app)
         if state.get("blocked_conflict") and not cfg.get("_explicit_app"):
@@ -11533,12 +11542,20 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                     "inspect docs/adherence.json."
                     % (state.get("current_phase") or "unknown"), state, cfg)
             return
-        state["done"] = True
+        is_enroll_gate = (workflow.target == "enroll"
+                          and bool(phases)
+                          and phases[-1].key == "enroll_report"
+                          and "enroll_report" in state.get("completed_phases", []))
+        state["done"] = not is_enroll_gate
         state["error"] = None
         # A finished run can't still be blocked or awaiting anything — without
         # this, derive_run_status reports those over 'done' forever.
         state["blocked_conflict"] = None
         state["awaiting_approval"] = None
+        state["enrollment_gate"] = ({
+            "phase": "enroll_report",
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        } if is_enroll_gate else None)
         save_state(app_dir, state)
         # V2 §24: deterministically render project docs from the phase outputs.
         try:
@@ -11585,6 +11602,14 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 emit("Rendered docs: %s" % ", ".join(written))
         except Exception as exc:  # noqa: BLE001 - docs are best-effort, never fatal
             emit("WARN docs render failed: %s" % exc)
+        if is_enroll_gate:
+            emit("App '%s': enrollment report complete; awaiting human approval."
+                 % app)
+            evlib.emit_event(
+                app_dir, "run_finished", project=app,
+                status="enrolled_awaiting_approval",
+                verification=state.get("verification"))
+            return
         emit("App '%s': ALL phases complete. Marked done." % app)
         # Fleet learning: refresh the anti-pattern ledger after every
         # finished run (deterministic text only — no model call).
@@ -12061,6 +12086,110 @@ _CHAT_PROMOTE_TARGETS = {"chat_ideas": "brainstorm", "chat_research": "research"
 _PROMOTE_TRANSCRIPT_CAP = 60000
 
 
+def _write_workflow_atomic(app_dir, workflow_name):
+    path = os.path.join(app_dir, "workflow.txt")
+    tmp = path + ".promote.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(workflow_name + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def promote_enrollment(root, slug, to_workflow=None, clone_func=None):
+    """Cross the enrollment's human gate only with positive evidence.
+
+    The writable clone is prepared before workflow/state mutation.  Until E5
+    installs that clone seam, production promotion therefore fails closed;
+    tests may inject the same contract to verify the gate independently.
+    """
+    app_dir = os.path.join(root, slug)
+    if not os.path.isdir(app_dir) or not os.path.exists(state_path(app_dir)):
+        emit("--promote: enrollment '%s' has no saved state." % slug)
+        return 2, None
+    if _app_lock_has_live_owner(slug):
+        emit("--promote: enrollment '%s' is still running; wait for its report."
+             % slug)
+        return 3, None
+    workflow = wflib.resolve_workflow_for_app(app_dir, orch_dir=HERE)
+    state = load_state(app_dir)
+    gate = state.get("enrollment_gate") or {}
+    report = (state.get("phase_outputs") or {}).get("enroll_report")
+    if workflow.target != "enroll" or gate.get("phase") != "enroll_report" \
+            or "enroll_report" not in state.get("completed_phases", []) \
+            or not str(report or "").strip():
+        emit("--promote: '%s' has not completed enroll_report; promotion refused."
+             % slug)
+        return 2, None
+    evidence = artifactslib.list_artifacts(
+        app_dir, type="compliance_report", status="final")
+    if not evidence:
+        emit("--promote: '%s' has no final compliance_report artifact; "
+             "promotion refused." % slug)
+        return 2, None
+    target = to_workflow or "iterate"
+    available = wflib.list_workflows(HERE)
+    if target not in available:
+        emit("--promote: unknown target workflow '%s' (available: %s)"
+             % (target, ", ".join(available)))
+        return 2, None
+    target_wf = wflib.load_workflow(target, HERE)
+    if target_wf.target != "app" or not any(bool(p.get("writes"))
+                                             for p in target_wf.phases):
+        emit("--promote: target '%s' is not a writable app workflow." % target)
+        return 2, None
+    prepare = clone_func or getattr(enrolllib, "prepare_writable_clone", None)
+    if prepare is None:
+        emit("--promote: writable enrollment clone support is unavailable; "
+             "promotion refused without changing project state.")
+        return 2, None
+    source = wflib.read_target_path(app_dir, HERE)
+    if not source:
+        emit("--promote: enrollment '%s' has no readable target_path." % slug)
+        return 2, None
+    try:
+        prepare(app_dir, source, slug)
+        _write_workflow_atomic(app_dir, target)
+    except (OSError, enrolllib.EnrollError) as exc:
+        emit("--promote: writable clone failed for '%s': %s" % (slug, exc))
+        return 2, None
+
+    carry = dict(state.get("carryover_outputs") or {})
+    carry["enroll_report"] = report
+    state.update({
+        "workflow": target,
+        "carryover_outputs": carry,
+        "completed_phases": [],
+        "phase_outputs": {},
+        "consensus_status": {},
+        "vote_results": {},
+        "current_phase": None,
+        "current_round": 0,
+        "next_agent": None,
+        "done": False,
+        "error": None,
+        "blocked_conflict": None,
+        "awaiting_approval": None,
+        "awaiting_human": None,
+        "enrollment_gate": None,
+        "promoted_from_enroll": {
+            "workflow": workflow.name,
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+    })
+    save_state(app_dir, state)
+    emit("--promote: '%s' approved and promoted %s -> %s on a writable clone."
+         % (slug, workflow.name, target))
+    return 0, slug
+
+
 def promote_chat(root, slug, to_workflow=None, wait_seconds=600):
     """'Let them discuss' (V3 board 1.8): promote a conversational chat
     session into an auto debate workflow in the SAME dir.
@@ -12088,6 +12217,8 @@ def promote_chat(root, slug, to_workflow=None, wait_seconds=600):
         emit("--promote: '%s' has never run — there is no chat to promote." % slug)
         return 2, None
     cur_wf = wflib.resolve_workflow_for_app(app_dir, orch_dir=HERE)
+    if cur_wf.target == "enroll":
+        return promote_enrollment(root, slug, to_workflow=to_workflow)
     conv_phases = [p for p in cur_wf.phases if p.get("conversational", False)]
     if not conv_phases:
         st = load_state(app_dir)

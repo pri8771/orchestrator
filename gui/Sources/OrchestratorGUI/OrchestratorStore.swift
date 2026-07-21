@@ -208,13 +208,8 @@ enum BackgroundProjectLoader {
             sensitivity = (obj["sensitivity"] as? String) == "private"
                 ? "private" : "normal"
             let done = (obj["done"] as? Bool) ?? false
-            if let e = error, !e.isEmpty {
-                status = .aborted
-            } else if done {
-                status = .done
-            } else {
-                status = .inProgress
-            }
+            status = ProjectStatus.decode(engineValue: obj["status"] as? String,
+                                          error: error, done: done)
         }
 
         let resolvedName = workflowName ?? readWorkflowFile(dir)
@@ -261,6 +256,8 @@ enum BackgroundProjectLoader {
             : dir
         proj.sensitivity = ProjectSensitivityFile.effective(
             projectDir: projectDir, sessionDir: dir) ?? sensitivity
+        proj.hasFinalComplianceReport = EnrollmentEvidence
+            .hasFinalComplianceReport(projectDir: dir)
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
         proj.latestVerify = VerifyResultsParser.latest(verifyRecords)
@@ -1806,6 +1803,19 @@ final class OrchestratorStore: ObservableObject {
         performPromotion(id)
     }
 
+    func promoteEnrollment(_ project: Project) {
+        guard project.status == .enrolledAwaitingApproval else {
+            surfaceError("Enrollment report is not awaiting approval.")
+            return
+        }
+        guard project.hasFinalComplianceReport else {
+            surfaceError("A final compliance report is required before promotion.")
+            return
+        }
+        launch(args: ["orchestrator.py", "--root", rootURL.path,
+                      "--promote", project.name], project: project.name)
+    }
+
     private func performPromotion(_ id: String) {
         pendingPromote.remove(id)
         setChatSession(nil, for: id)
@@ -2267,6 +2277,7 @@ final class OrchestratorStore: ObservableObject {
         case .aborted: return "aborted"
         case .inProgress: return "running"
         case .new: return "new"
+        case .enrolledAwaitingApproval: return "enrolled_awaiting_approval"
         }
     }
 
@@ -4101,13 +4112,8 @@ final class OrchestratorStore: ObservableObject {
             blocked = BlockedConflict.parse(fromStateObject: obj)
             resolutions = (obj["phase_resolutions"] as? [String: String]) ?? [:]
             let done = (obj["done"] as? Bool) ?? false
-            if let e = error, !e.isEmpty {
-                status = .aborted
-            } else if done {
-                status = .done
-            } else {
-                status = .inProgress
-            }
+            status = ProjectStatus.decode(engineValue: obj["status"] as? String,
+                                          error: error, done: done)
         }
 
         // Resolve the workflow the same way the engine does (workflows.py:
@@ -4152,6 +4158,8 @@ final class OrchestratorStore: ObservableObject {
         proj.archived = fm.fileExists(
             atPath: dir.appendingPathComponent(".orch_archived").path)
         proj.phaseResolutions = resolutions
+        proj.hasFinalComplianceReport = EnrollmentEvidence
+            .hasFinalComplianceReport(projectDir: dir)
         // Latest verification outcome (defensive parse; [] on any problem).
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))

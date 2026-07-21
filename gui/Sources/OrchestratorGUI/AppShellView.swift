@@ -62,6 +62,7 @@ struct AppShellView: View {
     private var needsAttentionApps: [Project] {
         filtered(activeProjects.filter { p in
             !isRunning(p) && (p.status == .aborted || p.awaitingApproval != nil
+                              || p.status == .enrolledAwaitingApproval
                               || p.blockedConflict != nil
                               || store.crashedRuns.contains { $0.name == p.name })
         }.sorted { $0.name < $1.name })
@@ -405,6 +406,7 @@ struct AppShellView: View {
             return "crashed — resume available"
         }
         if p.awaitingApproval != nil { return "awaiting approval" }
+        if p.status == .enrolledAwaitingApproval { return "enrollment ready for approval" }
         if p.blockedConflict != nil { return "merge conflict" }
         if let phase = p.currentPhase { return "failed at \(p.titleFor(phase))" }
         return "failed"
@@ -1514,6 +1516,10 @@ private struct ProjectShellContent: View {
             .padding(.horizontal, DS.space.s)
             .padding(.vertical, DS.space.xs)
             Divider()
+            if proj.status == .enrolledAwaitingApproval {
+                EnrollmentGateBanner(project: proj)
+                    .environmentObject(store)
+            }
             switch scopeTab {
             case .run: ProjectRunHealth(project: proj)
             case .plan: ProjectPlanTab(project: proj)
@@ -1525,6 +1531,32 @@ private struct ProjectShellContent: View {
             guard cmd == .openPlanTab else { return }
             scopeTab = .plan
             store.uiCommand = nil
+        }
+    }
+}
+
+private struct EnrollmentGateBanner: View {
+    @EnvironmentObject var store: OrchestratorStore
+    let project: Project
+
+    var body: some View {
+        InlineBanner(
+            kind: .warning,
+            symbol: "person.badge.clock.fill",
+            title: "Enrollment report ready",
+            message: project.phaseOutputs["enroll_report"]
+                ?? "Review the report before allowing work on a writable clone.",
+            messageLineLimit: 8
+        ) {
+            VStack(alignment: .trailing, spacing: DS.space.xxs) {
+                Button("Approve & promote") { store.promoteEnrollment(project) }
+                    .disabled(!project.hasFinalComplianceReport)
+                if !project.hasFinalComplianceReport {
+                    Text("Final compliance report required")
+                        .font(DS.font.caption)
+                        .foregroundStyle(DS.status.warning.color)
+                }
+            }
         }
     }
 }

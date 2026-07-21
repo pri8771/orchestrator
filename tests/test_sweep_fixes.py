@@ -321,6 +321,9 @@ class TestDerivedRunStatus(unittest.TestCase):
         self.assertEqual(orch.derive_run_status(
             {"awaiting_approval": "tech_specs"}), "awaiting_approval")
         self.assertEqual(orch.derive_run_status(
+            {"enrollment_gate": {"phase": "enroll_report"}}),
+            "enrolled_awaiting_approval")
+        self.assertEqual(orch.derive_run_status(
             {"error": "x", "blocked_conflict": {"lane": "a"}}), "blocked_conflict")
 
     def test_save_state_writes_status_field(self):

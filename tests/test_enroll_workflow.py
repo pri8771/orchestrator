@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import artifacts
 import enroll
 import orchestrator as orch
 import workflows
@@ -167,6 +168,67 @@ class TestEnrollWorkflowDefinition(EnrollWorkflowFixture):
         self.assertTrue(all(target == os.path.realpath(self.origin)
                             for _key, target, _kind in seen))
         self.assertTrue(all(kind == "enroll" for _key, _target, kind in seen))
+        state = orch.load_state(self.app_dir)
+        self.assertFalse(state["done"])
+        self.assertEqual(state["status"], "enrolled_awaiting_approval")
+        self.assertEqual(state["enrollment_gate"]["phase"], "enroll_report")
+
+        # A watch scan must stay at the human gate, never re-enter phases.
+        with mock.patch.object(
+                orch, "process_phase",
+                side_effect=AssertionError("enrollment gate must be terminal")):
+            orch.process_app(cfg, self.root, "adopted")
+
+    def test_promotion_requires_report_and_positive_compliance_evidence(self):
+        state = self.state()
+        state["workflow"] = "enroll"
+        orch.save_state(self.app_dir, state)
+        clone_calls = []
+
+        def clone(app_dir, source, slug):
+            clone_calls.append((app_dir, source, slug))
+            _write(os.path.join(app_dir, "app_build", "CLONED"), source)
+
+        with open(os.path.join(self.app_dir, "workflow.txt"),
+                  encoding="utf-8") as fh:
+            before_workflow = fh.read()
+        rc, target = orch.promote_enrollment(
+            self.root, "adopted", clone_func=clone)
+        self.assertEqual((rc, target), (2, None))
+        self.assertEqual(clone_calls, [])
+        with open(os.path.join(self.app_dir, "workflow.txt"),
+                  encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before_workflow)
+
+        state.update({
+            "completed_phases": ["enroll_report"],
+            "phase_outputs": {"enroll_report": "Observed adoption report."},
+            "enrollment_gate": {"phase": "enroll_report", "at": "now"},
+        })
+        orch.save_state(self.app_dir, state)
+        registry = artifacts.load_registry(HERE)
+        aid = artifacts.publish(
+            self.app_dir, "# Compliance\n", {
+                "type": "compliance_report", "title": "Enrollment compliance",
+                "findings": [{"rule": "knowledge/ios/example.md",
+                              "verdict": "cannot-determine",
+                              "evidence_paths": ["Package.swift"],
+                              "why": "The manifest does not establish runtime behavior."}],
+            }, registry, consensus=True)
+        self.assertIsNotNone(aid)
+
+        rc, target = orch.promote_enrollment(
+            self.root, "adopted", clone_func=clone)
+        self.assertEqual((rc, target), (0, "adopted"))
+        self.assertEqual(len(clone_calls), 1)
+        promoted = orch.load_state(self.app_dir)
+        self.assertEqual(promoted["workflow"], "iterate")
+        self.assertFalse(promoted["done"])
+        self.assertIsNone(promoted["enrollment_gate"])
+        self.assertEqual(promoted["carryover_outputs"]["enroll_report"],
+                         "Observed adoption report.")
+        self.assertTrue(os.path.isfile(os.path.join(self.app_dir,
+                                                    "app_build", "CLONED")))
 
     def test_sabotage_runner_write_never_receives_origin_as_writable_cwd(self):
         """Board sabotage test: the fake runner writes in the cwd it receives.

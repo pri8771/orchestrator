@@ -148,7 +148,19 @@ extension WorkflowDef {
 // MARK: - Project
 
 enum ProjectStatus: String {
-    case new, inProgress, done, aborted
+    case new, inProgress, done, aborted, enrolledAwaitingApproval
+
+    static func decode(engineValue: String?, error: String?, done: Bool,
+                       hasState: Bool = true) -> ProjectStatus {
+        if let error, !error.isEmpty { return .aborted }
+        if engineValue == "enrolled_awaiting_approval" {
+            return .enrolledAwaitingApproval
+        }
+        if done { return .done }
+        // Unknown future engine values degrade to the legacy flags rather
+        // than crashing an exhaustive decoder or claiming completion.
+        return hasState ? .inProgress : .new
+    }
 
     var label: String {
         switch self {
@@ -156,6 +168,7 @@ enum ProjectStatus: String {
         case .inProgress: return "In progress"
         case .done: return "Done"
         case .aborted: return "Aborted"
+        case .enrolledAwaitingApproval: return "Enrollment ready"
         }
     }
     var symbol: String {
@@ -164,6 +177,7 @@ enum ProjectStatus: String {
         case .inProgress: return "circle.fill"
         case .done: return "checkmark.circle.fill"
         case .aborted: return "exclamationmark.triangle.fill"
+        case .enrolledAwaitingApproval: return "person.badge.clock.fill"
         }
     }
     // DS grammar (§6): accent = running · green = success · red = error.
@@ -173,6 +187,7 @@ enum ProjectStatus: String {
         case .inProgress: return DS.accent.color
         case .done: return DS.status.success.color
         case .aborted: return DS.status.error.color
+        case .enrolledAwaitingApproval: return DS.status.warning.color
         }
     }
 }
@@ -225,6 +240,9 @@ struct Project: Identifiable, Equatable {
     // V3 8.5: effective engine-enforced privacy state, derived from persisted
     // run config/state by the background scanner (never optimistic UI state).
     var sensitivity: String = "normal"
+    // Positive evidence from artifacts/*/meta.json, never inferred from the
+    // absence of an error in agent_state.json.
+    var hasFinalComplianceReport: Bool = false
 
     var isPrivate: Bool { sensitivity == "private" }
 
@@ -240,6 +258,8 @@ struct Project: Identifiable, Equatable {
         case .inProgress:
             if let p = currentPhase { return "\(titleFor(p)) · round \(currentRound)" }
             return "\(completedPhases.count)/\(phaseCount) phases"
+        case .enrolledAwaitingApproval:
+            return "report ready · approval required"
         }
     }
 
@@ -272,6 +292,25 @@ struct Project: Identifiable, Equatable {
         default:
             return "Closed without a clean resolution (\(reason))."
         }
+    }
+}
+
+enum EnrollmentEvidence {
+    static func hasFinalComplianceReport(projectDir: URL,
+                                         fileManager: FileManager = .default) -> Bool {
+        let root = projectDir.appendingPathComponent("artifacts", isDirectory: true)
+        guard let dirs = try? fileManager.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]) else { return false }
+        for dir in dirs {
+            let metaURL = dir.appendingPathComponent("meta.json")
+            guard let data = try? Data(contentsOf: metaURL),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            if obj["type"] as? String == "compliance_report",
+               obj["status"] as? String == "final" { return true }
+        }
+        return false
     }
 }
 
