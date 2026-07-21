@@ -79,6 +79,7 @@ import verify as verifylib
 import visualqa as vqalib
 import uicrawl as uicrawllib
 import designlint as dlintlib
+import docslint as docslintlib
 import fleetlearn as fllib
 import evalharness as evallib
 import enroll as enrolllib
@@ -8353,6 +8354,25 @@ def _hook_library_mining(cfg, app, app_dir, phasedef, state, *,
     return transcript, final_output
 
 
+def _hook_document_provenance(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
+    """Lint enrollment's rebuilt prose without mutating or deleting it."""
+    if cfg.get("_workflow_target") == "enroll" and key == "doc_rebuild":
+        report = docslintlib.lint_text(
+            final_output or "", cfg.get("_target_path"),
+            source="doc_rebuild/doc_rebuild.md")
+        try:
+            docslintlib.write_report(app_dir, report)
+            emit("DOCSLINT: %d provenance violation(s) -> %s."
+                 % (report["violation_count"],
+                    docslintlib.REPORT_RELATIVE_PATH))
+        except OSError as exc:
+            emit("WARN DOCSLINT report could not be written: %s" % exc)
+    return transcript, final_output
+
+
 def _hook_audit_report(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
         is_build, is_verify_repair, allow_writes, _needs_vlabel,
@@ -8730,6 +8750,7 @@ _PHASE_CLOSE_HOOKS = (
     _hook_secret_scan,
     _hook_record_contracts,
     _hook_flows_requirements_research,
+    _hook_document_provenance,
     _hook_library_mining,
     _hook_audit_report,
     _hook_verification_label,

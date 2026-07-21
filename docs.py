@@ -16,6 +16,8 @@ import json
 import os
 import re
 
+import docslint as docslintlib
+
 import schemas
 
 
@@ -1201,7 +1203,7 @@ def _emit_gaps(project_dir, reader, orch_dir, coverage, contentions, on_warn):
                          meta, key, open_keys, warn)
 
 
-def render_gap_report(app, coverage):
+def render_gap_report(app, coverage, provenance_report=None):
     """GAP_REPORT.md (V3 5.4): a deterministic, non-AI render of the CURRENT slot
     scan — per-category coverage counts, then one line per empty/thin/conflicted
     slot (title, owning section, reason, evidence). It reports OBSERVED absence;
@@ -1224,9 +1226,14 @@ def render_gap_report(app, coverage):
              "- Lineage conflicts: %d" % counts["conflict"], "",
              "## Open gaps", ""]
     rows = [r for r in cov if r.get("status") != "filled"]
+    provenance_open = docslintlib.violation_count(provenance_report)
     if not rows:
-        lines.append("- None — every blueprint slot is filled to its minimum. "
-                     "Handoff is complete.")
+        if provenance_open:
+            lines.append("- No blueprint-slot gaps — provenance violations "
+                         "remain below, so handoff is not yet clean.")
+        else:
+            lines.append("- None — every blueprint slot is filled to its minimum. "
+                         "Handoff is complete.")
     else:
         for r in rows:
             reason = r.get("reason") or "conflict (unowned)"
@@ -1236,7 +1243,11 @@ def render_gap_report(app, coverage):
                             r.get("owner_section"), reason,
                             r.get("observed_chars", 0), r.get("min_chars", 0),
                             ev))
-    return "\n".join(lines) + "\n"
+    rendered = "\n".join(lines) + "\n"
+    provenance = docslintlib.render_gap_section(provenance_report)
+    if provenance:
+        rendered += "\n" + provenance
+    return rendered
 
 
 def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
@@ -1314,7 +1325,10 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                     # 5.4: the gap report is scan-derived (never from the bus),
                     # so it can't surface stale gaps — written even when clean.
                     put("docs/GAP_REPORT.md",
-                        render_gap_report(app, coverage) + override_notice)
+                        render_gap_report(
+                            app, coverage,
+                            provenance_report=docslintlib.load_report(app_dir))
+                        + override_notice)
                 # Publish empty/thin + conflict gaps AFTER the docs are on disk,
                 # so the report survives even if gap emission fails (5.3/5.4).
                 if coverage or contentions:
@@ -1351,7 +1365,9 @@ def recompute_gap_report(app_dir, app, ordered_phases, phase_outputs,
         os.makedirs(docs_dir, exist_ok=True)
         _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), blueprint)
         _write(os.path.join(docs_dir, "GAP_REPORT.md"),
-               render_gap_report(app, coverage))
+               render_gap_report(
+                   app, coverage,
+                   provenance_report=docslintlib.load_report(app_dir)))
         if coverage or contentions:
             _emit_gaps(app_dir, artifact_reader, orch_dir or _ORCH_DIR,
                        coverage, contentions, on_warn)

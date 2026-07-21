@@ -908,11 +908,12 @@
       "rules": [
         "Generate house-format documentation only under the orchestrator project.",
         "Use repository evidence, cited source documentation, prior verified findings, or explicitly named research; never invent missing facts.",
-        "Leave unsupported claims visibly unverified."
+        "Leave unsupported claims visibly unverified.",
+        "Tag every factual paragraph with at least one of exactly: [VERIFIED: <repo-relative-path>], [FROM-THEIR-DOCS: <file>], [UNVERIFIED], [RESEARCH: <source-url-or-name>]."
       ],
       "required_output": [
         "Rebuilt house-format documentation content.",
-        "Visible provenance for factual content.",
+        "Visible provenance for every factual paragraph using one of the four exact enrollment tags.",
         "Named gaps where evidence is insufficient."
       ],
       "acceptance_checks": [

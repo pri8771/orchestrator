@@ -66,7 +66,7 @@
       "folder": "doc_rebuild",
       "file": "doc_rebuild.md",
       "title": "Rebuild House Documentation",
-      "purpose": "Rebuild project documentation in the orchestrator project's house format using only repository evidence, their cited documents, prior verified findings, and explicitly named research. Put uncertainty in the document instead of guessing. Write generated output only under this orchestrator project; never edit, move, or delete anything in the enrolled origin.",
+      "purpose": "Rebuild project documentation in the orchestrator project's house format using only repository evidence, their cited documents, prior verified findings, and explicitly named research. Every factual paragraph must carry at least one of exactly four provenance tags: [VERIFIED: <repo-relative-path>], [FROM-THEIR-DOCS: <file>], [UNVERIFIED], or [RESEARCH: <source-url-or-name>]. Put uncertainty in the document instead of guessing. Write generated output only under this orchestrator project; never edit, move, or delete anything in the enrolled origin.",
       "rounds": 3,
       "roles": ["editor", "archivist", "qa"],
       "writes": false,
