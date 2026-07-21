@@ -33,7 +33,7 @@ py-modules = [
     "artifacts", "backfill", "buildpolicy", "commands", "completeness", "conductor", "conductor_permissions", "conductor_plan", "conductor_routing", "conductor_termination", "costs", "designlint", "docsync", "evalharness", "events", "snippets",
     "fleetlearn", "gate", "global_resource", "knowledge",
     "localmodels", "memory", "messages", "miniyaml", "mistakes", "modelrouting", "portfolio",
-    "postmortem", "procutil",
+    "postmortem", "procutil", "migrate_v3",
     "pipeline_presets", "resilience", "roles", "search", "sections", "sessions", "uicrawl", "urlfetch", "visualqa", "seed_demo",
     "simulate_stream", "situations", "swiftscaffold", "traces", "turncontext",
 ]
