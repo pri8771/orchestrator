@@ -1,1 +1,8 @@
-{"decisions": ["stalled"], "terminal": {"eval/ideas/oscillation": "stalled"}}
+{
+  "decisions": ["stalled", "route_proposed", "route_approved"],
+  "routes": [
+    {"decision": "route_proposed", "artifact_id": "stalled-failure-at-recorded", "target": "notification"},
+    {"decision": "route_approved", "artifact_id": "stalled-failure-at-recorded", "target": "notification"}
+  ],
+  "terminal": {"eval/ideas/oscillation": "stalled"}
+}

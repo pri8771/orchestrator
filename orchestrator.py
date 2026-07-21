@@ -9815,6 +9815,121 @@ def migrate_layout(root, apply=False, out=print):
     return counts
 
 
+def _events_cursor(app_dir):
+    """Byte cursor after the latest terminal event, stable across reporting."""
+    try:
+        cursor = 0
+        offset = 0
+        with open(os.path.join(app_dir, "events.jsonl"), "rb") as fh:
+            for line in fh:
+                offset += len(line)
+                try:
+                    rec = json.loads(line)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                kind = rec.get("kind") if isinstance(rec, dict) else None
+                if kind == "run_finished" or kind == "budget_exhausted" \
+                        or (kind == "stalled" and not rec.get("artifact_id")):
+                    cursor = offset
+        return cursor
+    except (OSError, TypeError):
+        return 0
+
+
+def emit_failure_artifact(app_dir, error_class, message, state, cfg, *,
+                          notify=True):
+    """Publish one terminal failure as final, routable evidence; never raise."""
+    try:
+        root = cfg.get("root") or os.path.dirname(app_dir)
+        rel = os.path.relpath(app_dir, root)
+        parts = rel.split(os.sep)
+        nested = len(parts) == 3 and not rel.startswith("..")
+        project = parts[0] if nested else os.path.basename(app_dir)
+        section = parts[1] if nested else "execution"
+        source_session = rel if nested else os.path.basename(app_dir)
+        project_dir = os.path.join(root, project) if nested else app_dir
+        cursor = _events_cursor(app_dir)
+        try:
+            checkpoint_round = max(0, int(state.get("current_round") or 0))
+        except (TypeError, ValueError):
+            checkpoint_round = 0
+        completed = state.get("completed_phases")
+        completed_count = len(completed) if isinstance(completed, list) else 0
+        checkpoint = {
+            "phase": str(state.get("current_phase") or "unknown"),
+            "round": checkpoint_round,
+            "completed_phases_count": completed_count,
+        }
+        totals = costslib.rollup(app_dir)
+        cost_spent = {key: int(totals.get(key) or 0) for key in
+                      ("cost_micro_usd", "metered_turns", "unmetered_turns",
+                       "unpriced_turns")}
+        safe = schemalib.redact_secrets(str(message or "Terminal failure"))
+        for path in (root, app_dir):
+            if path:
+                safe = safe.replace(path, "[workspace]")
+
+        # Idempotence is disk-derived: a crash after publish but before the
+        # caller returns must not mint a second failure for the same terminal
+        # event cursor.
+        for prior in artifactslib.list_artifacts(
+                project_dir, type="failure", on_error=lambda _m: None):
+            fields = prior.get("fields") if isinstance(
+                prior.get("fields"), dict) else {}
+            if fields.get("error_class") == error_class \
+                    and fields.get("source_session") == source_session \
+                    and fields.get("events_cursor") == cursor:
+                return prior.get("id")
+
+        warnings = []
+        registry = artifactslib.load_registry(HERE, on_error=warnings.append)
+        supersedes = None
+        delegation = seslib.read_delegation(
+            app_dir, on_error=lambda _m: None)
+        request = delegation.get("request") if isinstance(
+            delegation, dict) else None
+        parent_id = request.get("artifact_id") if isinstance(request, dict) \
+            else None
+        if isinstance(parent_id, str):
+            parent = artifactslib.load_meta(
+                project_dir, parent_id, on_error=lambda _m: None)
+            if isinstance(parent, dict) and parent.get("type") == "failure":
+                supersedes = parent_id
+        title = "%s failure at %s" % (
+            str(error_class).replace("_", " ").title(), checkpoint["phase"])
+        aid = artifactslib.publish(
+            project_dir, "# %s\n\n%s\n" % (title, safe),
+            {"type": "failure", "title": title,
+             "source": {"section": section, "session": source_session,
+                        "phase": checkpoint["phase"], "turn": ""},
+             "error_class": error_class, "message": safe,
+             "last_checkpoint": checkpoint, "cost_spent": cost_spent,
+             "events_cursor": cursor, "source_session": source_session},
+            registry, on_error=warnings.append, supersedes=supersedes)
+        if not aid:
+            raise OSError("; ".join(warnings[-2:]) or "artifact publish refused")
+        meta = artifactslib.load_meta(project_dir, aid,
+                                      on_error=lambda _m: None) or {}
+        evlib.emit_event(app_dir, "artifact_published", artifact_id=aid,
+                         type="failure", version=meta.get("version", 1),
+                         path="artifacts/%s" % aid,
+                         phase=checkpoint["phase"], project=project)
+        # Existing 7.8 notification vocabulary: a terminal failure is a
+        # stalled run requiring attention, not a new event kind.
+        if notify:
+            evlib.emit_event(app_dir, "stalled", project=project,
+                             section=section, session=source_session,
+                             reason=safe, artifact_id=aid)
+        return aid
+    except Exception as exc:  # noqa: BLE001 - reporting never masks failure
+        try:
+            emit("ARTIFACT: WARN terminal failure could not be published (%s)"
+                 % type(exc).__name__)
+        except Exception:
+            pass
+        return None
+
+
 def process_app(cfg, root, app):
     app_dir = os.path.join(root, app)
     prompt = read_initial_prompt(app_dir)
@@ -9863,7 +9978,22 @@ def process_app(cfg, root, app):
         # A leftover preview proves the prior engine died mid-turn. It is never
         # transcript input; discard it visibly before any resume parser runs.
         _sweep_stream_orphans(app_dir)
-        _run_app_pipeline(cfg, app, app_dir, prompt)
+        try:
+            _run_app_pipeline(cfg, app, app_dir, prompt)
+        except Exception as exc:  # noqa: BLE001 - preserve worker propagation
+            state = load_state(app_dir)
+            safe = ("Unexpected engine failure (%s) in phase %s; inspect the "
+                    "session log for the traceback."
+                    % (type(exc).__name__,
+                       state.get("current_phase") or "unknown"))
+            state["error"] = safe
+            state["done"] = False
+            save_state(app_dir, state)
+            evlib.emit_event(app_dir, "run_finished", project=app,
+                             status="crashed", detail=safe,
+                             verification=state.get("verification"))
+            emit_failure_artifact(app_dir, "crash", safe, state, cfg)
+            raise
     finally:
         heartbeat_stop.set()
         seslib.remove_pidfile(app_dir)
@@ -10303,6 +10433,7 @@ def _queue_release_gate_repair(app, app_dir, state, reason, phases=None,
              "(%d attempts); left as needs_repair for a human."
              % (app, reason, max_repairs))
     save_state(app_dir, state)
+    return n >= max_repairs
 
 
 def _repair_portfolio_manifest(cfg, app, app_dir, state):
@@ -10844,11 +10975,18 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             i += 1
         gate_reason = _release_gate_failure(app_dir, phases, state, prompt, cfg=cfg)
         if gate_reason:
-            _queue_release_gate_repair(app, app_dir, state, gate_reason,
-                                       phases=phases, build_phase_key=workflow.build_phase)
+            exhausted = _queue_release_gate_repair(
+                app, app_dir, state, gate_reason, phases=phases,
+                build_phase_key=workflow.build_phase)
             evlib.emit_event(app_dir, "run_finished", project=app,
                              status="release_gate_repair", detail=gate_reason,
                              verification=state.get("verification"))
+            if exhausted:
+                emit_failure_artifact(
+                    app_dir, "release_gate_budget_exhausted",
+                    "Release gate repair budget exhausted in phase %s; "
+                    "inspect gate reports under docs/."
+                    % (state.get("current_phase") or "unknown"), state, cfg)
             return
         if workflow.target == "app":
             # Free and deterministic first: token/dependency lint.
@@ -10857,7 +10995,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 lambda: dlintlib.run_design_lint(cfg, cget, emit, app,
                                                  app_dir, HERE))
             if lint_reason:
-                _queue_release_gate_repair(
+                exhausted = _queue_release_gate_repair(
                     app, app_dir, state, "design lint: " + lint_reason,
                     phases=phases, build_phase_key=workflow.build_phase,
                     gate="design_lint",
@@ -10866,6 +11004,12 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 evlib.emit_event(app_dir, "run_finished", project=app,
                                  status="design_lint_repair",
                                  detail=lint_reason)
+                if exhausted:
+                    emit_failure_artifact(
+                        app_dir, "release_gate_budget_exhausted",
+                        "Design-lint repair budget exhausted in phase %s; "
+                        "inspect docs/design_lint.json."
+                        % (state.get("current_phase") or "unknown"), state, cfg)
                 return
             # Compiles ≠ looks finished: boot the simulator, screenshot the
             # app in light+dark, grade with the LOCAL vision panel (free).
@@ -10874,7 +11018,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 lambda: vqalib.run_visual_qa(cfg, cget, emit, app, app_dir,
                                              state, prompt))
             if vqa_reason:
-                _queue_release_gate_repair(
+                exhausted = _queue_release_gate_repair(
                     app, app_dir, state, vqa_reason,
                     phases=phases, build_phase_key=workflow.build_phase,
                     gate="visual_qa",
@@ -10884,6 +11028,12 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                                "verdict: docs/visual_qa.json.")
                 evlib.emit_event(app_dir, "run_finished", project=app,
                                  status="visual_qa_repair", detail=vqa_reason)
+                if exhausted:
+                    emit_failure_artifact(
+                        app_dir, "release_gate_budget_exhausted",
+                        "Visual-QA repair budget exhausted in phase %s; "
+                        "inspect docs/visual_qa.json."
+                        % (state.get("current_phase") or "unknown"), state, cfg)
                 return
             # Compiles + looks right ≠ behaves right: crawl every screen, tap
             # everything, replay declared user journeys. Crashes learn back
@@ -10895,7 +11045,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             if crawl_reason:
                 _gate = "ui_crawl_crash" if "crash" in crawl_reason \
                     else "ui_crawl_flow"
-                _queue_release_gate_repair(
+                exhausted = _queue_release_gate_repair(
                     app, app_dir, state, "UI crawl: " + crawl_reason,
                     phases=phases, build_phase_key=workflow.build_phase,
                     gate=_gate,
@@ -10905,6 +11055,12 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                                "screen's screenshot before fixing.")
                 evlib.emit_event(app_dir, "run_finished", project=app,
                                  status="ui_crawl_repair", detail=crawl_reason)
+                if exhausted:
+                    emit_failure_artifact(
+                        app_dir, "release_gate_budget_exhausted",
+                        "UI-crawl repair budget exhausted in phase %s; "
+                        "inspect docs/ui_crawl.json."
+                        % (state.get("current_phase") or "unknown"), state, cfg)
                 return
         # Compiles ≠ does what was asked: grade the build against the original
         # prompt's requirements; unmet core requirements route into the same
@@ -10914,15 +11070,19 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             lambda: _adherence_gate(cfg, app, app_dir, phases, state, prompt,
                                     workflow))
         if adh_reason:
-            _queue_release_gate_repair(app, app_dir, state,
-                                       "prompt adherence: " + adh_reason,
-                                       phases=phases,
-                                       build_phase_key=workflow.build_phase,
-                                       gate="adherence",
-                                       extra_note="Per-requirement grades are "
-                                                  "in docs/adherence.json.")
+            exhausted = _queue_release_gate_repair(
+                app, app_dir, state, "prompt adherence: " + adh_reason,
+                phases=phases, build_phase_key=workflow.build_phase,
+                gate="adherence", extra_note="Per-requirement grades are "
+                                              "in docs/adherence.json.")
             evlib.emit_event(app_dir, "run_finished", project=app,
                              status="adherence_repair", detail=adh_reason)
+            if exhausted:
+                emit_failure_artifact(
+                    app_dir, "release_gate_budget_exhausted",
+                    "Prompt-adherence repair budget exhausted in phase %s; "
+                    "inspect docs/adherence.json."
+                    % (state.get("current_phase") or "unknown"), state, cfg)
             return
         state["done"] = True
         state["error"] = None
@@ -11000,6 +11160,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         evlib.emit_event(app_dir, "run_finished", project=app,
                          status="aborted", detail=str(exc),
                          verification=state.get("verification"))
+        emit_failure_artifact(
+            app_dir, "agent_exhausted",
+            "Agent execution exhausted in phase %s; inspect the session log."
+            % (state.get("current_phase") or "unknown"), state, cfg)
     except AppError as exc:
         state["error"] = str(exc)
         save_state(app_dir, state)
@@ -11007,6 +11171,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         evlib.emit_event(app_dir, "run_finished", project=app,
                          status="skipped", detail=str(exc),
                          verification=state.get("verification"))
+        emit_failure_artifact(
+            app_dir, "config_error",
+            "Configuration prevented execution in phase %s; inspect the "
+            "session log and run configuration."
+            % (state.get("current_phase") or "unknown"), state, cfg)
 
 
 # ---------------------------------------------------------------------------

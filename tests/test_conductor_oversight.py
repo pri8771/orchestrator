@@ -37,13 +37,16 @@ class RouteHarness:
 
         def list_artifacts(app_dir, **kwargs):
             if app_dir == os.path.join(root, "proj"):
-                assert kwargs.get("type") == "plan"
+                assert kwargs.get("type") == "plan" \
+                    or kwargs.get("status") == "final"
                 return []
             assert app_dir == os.path.join(root, sid)
             assert kwargs.get("status") == "final"
             return [meta]
 
         def lineage_index(app_dir, **_kwargs):
+            if app_dir == os.path.join(root, "proj"):
+                return {"by_id": {}}
             assert app_dir == os.path.join(root, sid)
             return {"by_id": by_id}
 

@@ -9,8 +9,8 @@ no dir-minting code — grep-checkable). Keeping load/merge/guard pure is what
 makes the oscillation, hop-budget, and merge-precedence cases unit-testable
 without a filesystem full of live sessions.
 
-Config lives in the section layer (sections/<name>/routing.json, the shared
-default outbound routes) merged under the project layer
+Config lives in a fleet seed (sections/_template/routing.json), the section
+layer (sections/<name>/routing.json), and the project layer
 (<root>/<project>/routing.json), same non-empty-wins per-field precedence as
 modelrouting.load_routing_for_app. Two keys coexist in that file:
   "artifact_routes": {<type>: <target-section>}  — the flat map the GUI's
@@ -146,19 +146,20 @@ def _merge_layer(base, overlay):
 
 
 def load_route_config(sections_dir, section, project_dir, on_warn=None):
-    """Merge the section-default and project-override routing.json layers
-    into one validated RouteConfig. Either layer corrupt -> ok=False +
+    """Merge fleet, section-default, and project-override routing layers
+    into one validated RouteConfig. Any layer corrupt -> ok=False +
     banner (routing disabled). Rule-level validation errors warn per rule
     and drop only that rule, keeping the rest (a single bad rule shouldn't
     silence the whole file — distinct from a corrupt FILE, which must)."""
     warn = on_warn or (lambda _m: None)
+    fleet_path = os.path.join(sections_dir, "_template", ROUTING_FILENAME)
     section_path = os.path.join(sections_dir, section, ROUTING_FILENAME) \
         if section else None
     project_path = os.path.join(project_dir, ROUTING_FILENAME) \
         if project_dir else None
     banners = []
     layers = []
-    for path in (section_path, project_path):
+    for path in (fleet_path, section_path, project_path):
         if path is None:
             layers.append({})
             continue
@@ -171,15 +172,17 @@ def load_route_config(sections_dir, section, project_dir, on_warn=None):
         warn(banner)
         return RouteConfig(ok=False, banner=banner)
 
-    routes = _merge_layer(normalize_routes(layers[0].get("artifact_routes")),
-                          normalize_routes(layers[1].get("artifact_routes")))
+    routes = {}
+    for layer in layers:
+        routes = _merge_layer(routes,
+                              normalize_routes(layer.get("artifact_routes")))
     # Rules override by (artifact_type, source_section): a project rule for
     # the same match REPLACES the section default, matching the routes map's
     # non-empty-wins precedence (blind concatenation would let a project only
     # ADD, never override, a section rule — a silent surprise).
     by_key = {}
     order = []
-    for layer in layers:   # section first, then project (project wins)
+    for layer in layers:   # fleet, section, project (later layers win)
         for raw in layer.get("rules") or []:
             rule, err = validate_rule(raw)
             if err:

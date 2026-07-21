@@ -1,0 +1,8 @@
+{
+  "decisions": ["route_proposed", "route_approved"],
+  "routes": [
+    {"decision": "route_proposed", "artifact_id": "failure-001", "target": "notification"},
+    {"decision": "route_approved", "artifact_id": "failure-001", "target": "notification"}
+  ],
+  "terminal": {}
+}

@@ -11,7 +11,8 @@ from .harness import RecordedEval, canonical_result
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 CORE = ("empty_stream", "happy_pipeline", "oscillation_stall", "hop_budget",
-        "goal_met", "quiescence", "budget_halt", "capability_pending")
+        "goal_met", "quiescence", "budget_halt", "capability_pending",
+        "failure_route")
 
 
 class EvalCase(unittest.TestCase):
@@ -49,9 +50,12 @@ class TestRecordedStreams(EvalCase):
                                            "budget_exhausted"}]
                 self.assertEqual(1, len(terminal_lines))
 
-    def test_oscillation_routes_nothing_and_hop_budget_ledgers_reason(self):
+    def test_oscillation_routes_only_failure_notice_and_hop_budget_is_visible(self):
         oscillation = self.eval("oscillation_stall").replay("full_auto")
-        self.assertNotIn("route_proposed", oscillation["decisions"])
+        self.assertEqual(oscillation["decisions"],
+                         ["stalled", "route_proposed", "route_approved"])
+        self.assertTrue(all(route["target"] == "notification"
+                            for route in oscillation["routes"]))
         self.assertEqual([], oscillation["delegations"])
         hop = self.eval("hop_budget").replay("full_auto")
         self.assertEqual(["route_proposed", "budget_exhausted"],

@@ -876,6 +876,21 @@ def _record_termination(root, state, sid, reason, evidence, emit=print):
                 session=sid, reason=str(measurement), evidence=detail)
         except Exception:
             pass
+    if reason == "stalled":
+        try:
+            import orchestrator as orchlib
+            session_state = read_session_state(os.path.join(root, sid),
+                                               warn=lambda _m: None) or {}
+            measurement = (evidence.get("reason")
+                           if isinstance(evidence, dict) else None) or "stalled"
+            orchlib.emit_failure_artifact(
+                os.path.join(root, sid), "stalled",
+                "Conductor stopped this session after %s; inspect the "
+                "termination report and routing ledger." % measurement,
+                session_state, {"root": root}, notify=False)
+        except Exception as exc:
+            emit("conductor: WARNING stalled failure artifact could not be "
+                 "published (%s)" % type(exc).__name__)
     # Event precedes the cache save: a crash after it is replay-safe because
     # the terminal ledger line already exists; save-before-event could lose
     # the only notification forever when restart skips the terminal session.
@@ -971,7 +986,8 @@ def _recent_section_providers(root, sessions):
     return {s: v[1] for s, v in latest.items()}
 
 
-def _record_workspace_termination(root, state, reason, evidence, emit=print):
+def _record_workspace_termination(root, state, reason, evidence, emit=print,
+                                  source_session=None):
     """A WORKSPACE-level halt (7.5b budget exhaustion): one report + one ledger
     line, and state['halted'] so route_engine stops ALL routing this and every
     later poll. Not per-session — the whole autonomous run is capped."""
@@ -1007,6 +1023,21 @@ def _record_workspace_termination(root, state, reason, evidence, emit=print):
             spend=spend, evidence=evidence)
     except Exception:
         pass
+    if source_session:
+        try:
+            import orchestrator as orchlib
+            app_dir = os.path.join(root, source_session)
+            session_state = read_session_state(
+                app_dir, warn=lambda _m: None) or {}
+            orchlib.emit_failure_artifact(
+                app_dir, "budget_exhausted",
+                "Conductor halted the workspace because %s; inspect the "
+                "budget evidence and routing ledger."
+                % reason.replace("_", " "),
+                session_state, {"root": root}, notify=False)
+        except Exception as exc:
+            emit("conductor: WARNING budget failure artifact could not be "
+                 "published (%s)" % type(exc).__name__)
     save_conductor_state(root, state)
     emit("conductor: WORKSPACE HALTED — %s (%s)" % (reason, report))
 
@@ -1062,8 +1093,15 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
             budget_evidence = dict(bc["evidence"])
             if bc.get("provider"):
                 budget_evidence["provider"] = bc["provider"]
-            _record_workspace_termination(root, state, bc["reason"],
-                                          budget_evidence, emit)
+            ordered_sessions = sorted(sessions)
+            source_session = next((sid for sid in ordered_sessions
+                                   if os.path.isfile(os.path.join(
+                                       root, sid, "agent_state.json"))),
+                                  ordered_sessions[0]
+                                  if ordered_sessions else None)
+            _record_workspace_termination(
+                root, state, bc["reason"], budget_evidence, emit,
+                source_session=source_session)
     if state.get("halted"):
         save_conductor_state(root, state)
         return state   # capped: no routing, quiescence is moot
@@ -1478,6 +1516,7 @@ def route_engine(root, state, sessions, emit=print):
         and isinstance(rec.get("route_id"), str)
     }
     effected_cache = {}   # (project, section) -> set, scanned once per poll
+    project_artifact_cache = {}  # project -> (lineage index, final metas)
     wave_snapshot_taken = False
 
     def _ensure_wave_snapshot():
@@ -1502,6 +1541,9 @@ def route_engine(root, state, sessions, emit=print):
         save_conductor_state(root_, state)
 
     def _caps_for(target_section):
+        if target_section == "notification":
+            return {"writes": "workspace", "exec": False,
+                    "external": False}
         return seclib.load_section(target_section, sections_dir_parent,
                                    app_dir=None).capabilities
 
@@ -1576,11 +1618,15 @@ def route_engine(root, state, sessions, emit=print):
                 continue
             elif decision == "approved":
                 _ensure_wave_snapshot()
-                sdir = seslib_local.mint_delegation_session(
-                    root, action["requested_by"].split("/")[0],
-                    action["target"], _mint_request(action),
-                    create_session=create_session,
-                    on_error=lambda m: emit("conductor mint: %s" % m))
+                if action["target"] == "notification":
+                    sdir = os.path.join(root, action["requested_by"])
+                else:
+                    sdir = seslib_local.mint_delegation_session(
+                        root, action["requested_by"].split("/")[0],
+                        action["target"], _mint_request(action),
+                        reply_to=os.path.join(root, action["requested_by"]),
+                        create_session=create_session,
+                        on_error=lambda m: emit("conductor mint: %s" % m))
                 if sdir:
                     # CRASH-SAFETY: routed must land in the SAME save as the
                     # ledger cursor advance for this decision. The prior code
@@ -1749,7 +1795,8 @@ def route_engine(root, state, sessions, emit=print):
                  "the change becomes a new version" % plan_meta.get("id"))
             return False
         unknown = [step["target_section"] for step in steps
-                   if not os.path.isdir(os.path.join(
+                   if step["target_section"] != "notification"
+                   and not os.path.isdir(os.path.join(
                        sections_dir, step["target_section"]))]
         if unknown:
             emit("conductor: plan %s refused — unknown target section(s): %s"
@@ -1796,10 +1843,14 @@ def route_engine(root, state, sessions, emit=print):
             def _mint_plan(target_section, request,
                            _project=payload.get("project")):
                 _eval_crash("mid_inbox_injection")
-                session_dir = seslib_local.mint_delegation_session(
-                    root, _project, target_section, request,
-                    create_session=create_session,
-                    on_error=lambda m: emit("conductor mint: %s" % m))
+                if target_section == "notification":
+                    session_dir = source_dir
+                else:
+                    session_dir = seslib_local.mint_delegation_session(
+                        root, _project, target_section, request,
+                        reply_to=source_dir,
+                        create_session=create_session,
+                        on_error=lambda m: emit("conductor mint: %s" % m))
                 _eval_crash("post_act_pre_record")
                 return session_dir
 
@@ -1981,10 +2032,7 @@ def route_engine(root, state, sessions, emit=print):
 
     terminated = state.get("terminated", {})
     for sid in sessions:
-        if sid in terminated:
-            continue   # 7.5: the goal is met or the session converged — no
-            # new routes are planned into it (a human-approved pending route
-            # still drains above; termination gates only NEW planning).
+        terminal_only = sid in terminated
         parts = sid.split("/")
         if len(parts) < 2:
             continue   # flat/legacy dir: no section to source-route from
@@ -2000,16 +2048,61 @@ def route_engine(root, state, sessions, emit=print):
                                          on_warn=emit)
         if not config.ok or (not config.routes and not config.rules):
             continue
-        index = artlib.lineage_index(app_dir, on_error=lambda _m: None)
-        # lineage_index already loaded every meta once — reuse its by_id map
-        # for the whole session instead of re-scanning the store per artifact
-        # (the O(finals * artifacts) trap the adversarial review caught).
-        lineage_metas = index.get("by_id", {}) if isinstance(index, dict) else {}
-        for meta in artlib.list_artifacts(app_dir, status="final",
-                                          on_error=lambda _m: None):
-            if not artlib.is_admissible(app_dir, meta, index=index,
+        # 4.2's production publisher writes to the PROJECT bus. Keep the
+        # session-local scan as a legacy bridge, but source-filter project
+        # artifacts so sibling sessions cannot each act on the same output.
+        stores = []
+        if project not in project_artifact_cache:
+            project_artifact_cache[project] = (
+                artlib.lineage_index(project_dir, on_error=lambda _m: None),
+                artlib.list_artifacts(project_dir, status="final",
+                                      on_error=lambda _m: None))
+        project_index, all_project_finals = project_artifact_cache[project]
+        project_finals = []
+        for item in all_project_finals:
+            source = item.get("source") if isinstance(
+                item.get("source"), dict) else {}
+            source_session = source.get("session")
+            if source.get("section") == section and source_session in \
+                    (sid, os.path.basename(app_dir)):
+                project_finals.append(item)
+        stores.append((project_dir, project_index, project_finals))
+        if app_dir != project_dir:
+            local_index = artlib.lineage_index(
+                app_dir, on_error=lambda _m: None)
+            stores.append((
+                app_dir, local_index,
+                artlib.list_artifacts(app_dir, status="final",
+                                      on_error=lambda _m: None)))
+        seen_artifacts = set()
+        candidates = []
+        for store_dir, index, finals in stores:
+            for item in finals:
+                key = (item.get("id"), item.get("content_hash"))
+                if key in seen_artifacts:
+                    continue
+                seen_artifacts.add(key)
+                candidates.append((store_dir, index, item))
+        for artifact_store, index, meta in candidates:
+            if not artlib.is_admissible(artifact_store, meta, index=index,
                                         on_error=lambda _m: None):
                 continue
+            configured_types = set(config.routes) | {
+                rule["artifact_type"] for rule in config.rules}
+            artifact_type = meta.get("artifact_type") or meta.get("type")
+            if terminal_only and artifact_type != "failure":
+                # A terminal session may route only the failure evidence that
+                # explains its stop; goal/convergence outputs stay frozen.
+                continue
+            if configured_types == {"failure"} and artifact_type != "failure":
+                # The fleet notification safety net must not turn an otherwise
+                # routing-free section into an "unroutable" classifier pass
+                # for every ordinary artifact.
+                continue
+            # lineage_index already loaded every meta once — reuse its by_id
+            # map for this artifact's store (project bus or legacy session).
+            lineage_metas = index.get("by_id", {}) \
+                if isinstance(index, dict) else {}
             _eval_crash("pre_guard")
             intents = crlib.plan_routes(meta, section, config, lineage_metas,
                                         classify=classify)
@@ -2148,10 +2241,14 @@ def route_engine(root, state, sessions, emit=print):
                 # session directly, so this boundary is immediately before
                 # that durable effect.
                 _eval_crash("mid_inbox_injection")
-                session_dir = seslib_local.mint_delegation_session(
-                    root, _proj, target_section, request,
-                    create_session=create_session,
-                    on_error=lambda m: emit("conductor mint: %s" % m))
+                if target_section == "notification":
+                    session_dir = app_dir
+                else:
+                    session_dir = seslib_local.mint_delegation_session(
+                        root, _proj, target_section, request,
+                        reply_to=app_dir,
+                        create_session=create_session,
+                        on_error=lambda m: emit("conductor mint: %s" % m))
                 _eval_crash("post_act_pre_record")
                 return session_dir
 

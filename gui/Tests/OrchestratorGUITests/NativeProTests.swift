@@ -307,6 +307,14 @@ final class NativeProTests: XCTestCase {
                        "the rescued turn carries the rescue model's name")
     }
 
+    func testCrashedRunFinishedIsImmediatelyAnError() throws {
+        let event = try XCTUnwrap(EngineEvent.parse(text:
+            #"{"ts":"2026-07-10T08:01:00","kind":"run_finished","status":"crashed","detail":"Unexpected engine failure"}"#
+        ).first)
+        XCTAssertTrue(event.isError)
+        XCTAssertEqual(event.status, "crashed")
+    }
+
     func testFleetSummaryRollsUpWorstState() {
         let degraded = EngineEvent.parse(text: [
             #"{"ts":"2026-07-10T09:00:00","kind":"run_started","project":"appa"}"#,

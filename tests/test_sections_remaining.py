@@ -30,6 +30,13 @@ PUBLISH_BLOCKS = {
     "library": {"type": "knowledge_hint", "title": "Shared retry seam",
                 "evidence": ["app-a/net.py", "app-b/net.py"]},
 }
+PRIMARY_PERSONAS = {
+    "design": "design_systems_lead",
+    "gtm": "evidence_marketer",
+    "legal": "legal_gatekeeper",
+    "execution": "release_operator",
+    "library": "library_architect",
+}
 
 
 class TestRemainingSectionSeeds(unittest.TestCase):
@@ -85,8 +92,10 @@ class TestRemainingSectionSeeds(unittest.TestCase):
             section_path = os.path.join(section_dir, "agent_library.json")
             section_personas = [p for p in library["personas"]
                                 if p.get("source_path") == section_path]
-            self.assertEqual(len(section_personas), 1, name)
-            self.assertIn("preset_params", section_personas[0], name)
+            by_id = {p.get("id"): p for p in section_personas}
+            self.assertIn(PRIMARY_PERSONAS[name], by_id, name)
+            self.assertTrue(all("preset_params" in p
+                                for p in section_personas), name)
             self.assertEqual(warnings, [], name)
 
     def test_each_section_mints_chat_and_publishes_from_real_close_hook(self):

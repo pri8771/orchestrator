@@ -84,10 +84,10 @@ STATUS = ("draft", "pending_review", "final", "superseded", "converged",
 _PUBLISHER_STATUS = ("draft",)
 
 # 4.8 per-type finalization policy (in the type registry). auto_final_on_
-# consensus finalizes an artifact published from a CONSENSUS: YES phase;
-# the other two publish 'pending_review' until an explicit finalize().
-FINALIZATION_POLICIES = ("auto_final_on_consensus", "requires_review_gate",
-                         "requires_human")
+# publish finalizes terminal engine evidence immediately; consensus finalizes
+# only from a CONSENSUS: YES phase; review/human remain pending explicitly.
+FINALIZATION_POLICIES = ("auto_final_on_publish", "auto_final_on_consensus",
+                         "requires_review_gate", "requires_human")
 # The SAFEST policy — nothing auto-flows. Missing/unknown finalization falls
 # here (never silently to auto): un-reviewed artifacts must not propagate.
 _SAFE_FINALIZATION = "requires_human"
@@ -116,6 +116,10 @@ SEED_TYPES = {
                      "finalization": "auto_final_on_consensus"},
     "extraction_plan": {"required": ["title", "body"],
                         "finalization": "requires_human"},
+    "failure": {"required": ["title", "body", "error_class", "message",
+                             "last_checkpoint", "cost_spent", "events_cursor",
+                             "source_session"],
+                "finalization": "auto_final_on_publish"},
     "idea": {"required": ["title", "body"],
              "finalization": "auto_final_on_consensus"},
     "research_brief": {"required": ["title", "body", "sources"],
@@ -264,8 +268,10 @@ def _finalization_policy(entry, on_error):
 
 def _initial_status(policy, consensus):
     """The status a fresh publish gets: auto_final_on_consensus is 'final'
-    ONLY on a consensus phase; every other policy publishes 'pending_review'
-    until an explicit finalize()."""
+    ONLY on a consensus phase; auto_final_on_publish is always final; every
+    review policy publishes 'pending_review' until an explicit finalize()."""
+    if policy == "auto_final_on_publish":
+        return "final"
     if policy == "auto_final_on_consensus":
         return "final" if consensus else "pending_review"
     return "pending_review"
@@ -435,7 +441,11 @@ def _derivation_plan(project_dir, pid, body_bytes, type_name, title,
     phops = _int_field(parent.get("hop_count"), 0)
     psection = ((parent.get("source") or {}).get("section")
                 if isinstance(parent.get("source"), dict) else "") or ""
-    hop = 0 if (source_section and source_section == psection) else 1
+    # A Fixer can fail inside the same Execution section that spawned it.
+    # Failure-of-failure is still another autonomous repair hop, so it must
+    # consume budget even when the section label is unchanged.
+    hop = 1 if type_name == "failure" else (
+        0 if (source_section and source_section == psection) else 1)
     plan = {
         "supersedes": pid,
         "lineage": list(plineage) + [pid],
@@ -560,6 +570,43 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
                          "title, target_section, and expected_artifact_type"
                          % index)
                 return None
+    if type_name == "failure":
+        classes = {"agent_exhausted", "config_error",
+                   "release_gate_budget_exhausted", "crash",
+                   "budget_exhausted", "stalled"}
+        checkpoint = view.get("last_checkpoint")
+        cost = view.get("cost_spent")
+        cursor = view.get("events_cursor")
+        if view.get("error_class") not in classes:
+            on_error("publish rejected: failure.error_class is not recognized")
+            return None
+        if not isinstance(view.get("message"), str) \
+                or not view["message"].strip():
+            on_error("publish rejected: failure.message must be non-empty")
+            return None
+        if not isinstance(checkpoint, dict) \
+                or not isinstance(checkpoint.get("phase"), str) \
+                or not isinstance(checkpoint.get("round"), int) \
+                or isinstance(checkpoint.get("round"), bool) \
+                or checkpoint.get("round") < 0 \
+                or not isinstance(checkpoint.get("completed_phases_count"), int) \
+                or isinstance(checkpoint.get("completed_phases_count"), bool) \
+                or checkpoint.get("completed_phases_count") < 0:
+            on_error("publish rejected: failure.last_checkpoint is malformed")
+            return None
+        if not isinstance(cost, dict) \
+                or not isinstance(cost.get("cost_micro_usd"), int) \
+                or isinstance(cost.get("cost_micro_usd"), bool) \
+                or cost.get("cost_micro_usd") < 0:
+            on_error("publish rejected: failure.cost_spent is malformed")
+            return None
+        if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
+            on_error("publish rejected: failure.events_cursor is malformed")
+            return None
+        if not isinstance(view.get("source_session"), str) \
+                or not view["source_session"].strip():
+            on_error("publish rejected: failure.source_session must be non-empty")
+            return None
 
     title = meta.get("title")
     if not isinstance(title, str):

@@ -1,0 +1,7 @@
+{
+  "_comment": "Opt-in project routing example: copy this rule into <project>/routing.json to send final failure artifacts to an Execution session. Conductor delegation records carry reply_to back to the source session; bind the execution phase to persona id failure_fixer when this route is enabled.",
+  "artifact_routes": {"failure": "execution"},
+  "rules": [
+    {"rule_id": "failure-to-fixer", "match": {"artifact_type": "failure"}, "strategy": "one", "targets": ["execution"], "hop_budget": 2}
+  ]
+}

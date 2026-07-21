@@ -1,4 +1,7 @@
 {
-  "_comment": "Optional model routing overlay (fleet -> project -> section). enabled/cloud_to_local are fleet-owned and ignored here.",
-  "phases": {}
+  "_comment": "Fleet artifact-routing defaults. Sections and projects may shadow a match by artifact type + source section.",
+  "artifact_routes": {"failure": "notification"},
+  "rules": [
+    {"rule_id": "failure-to-notification", "match": {"artifact_type": "failure"}, "strategy": "one", "targets": ["notification"], "hop_budget": 4}
+  ]
 }
