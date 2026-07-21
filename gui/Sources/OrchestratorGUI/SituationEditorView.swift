@@ -160,6 +160,10 @@ enum SituationLibraryNaming {
 }
 
 enum SituationEditCodec {
+    static let knownRootFields = Set([
+        "schema_version", "name", "description", "doc_slots", "pipeline_ref", "overrides"
+    ])
+    static let knownOverrideFields = Set(["sections", "phases", "casts"])
     static let knownPhaseFields = Set([
         "rounds", "claude", "claude_reasoning", "codex", "codex_reasoning",
         "gemini", "gemini_reasoning", "ollama", "ollama_reasoning", "agents", "composition"
@@ -211,12 +215,20 @@ enum SituationEditCodec {
         canvas.rawRoot["overrides"] = .object(overrides); canvas.isDirty = true
     }
 
-    static func unknownPhaseFields(_ canvas: SituationCanvas) -> [String] {
-        let phases = overrides(canvas)["phases"]?.object ?? [:]
-        return phases.flatMap { phase, value in
-            (value.object ?? [:]).keys.filter { !knownPhaseFields.contains($0) }
-                .map { "\(phase).\($0)" }
-        }.sorted()
+    static func unknownFields(_ canvas: SituationCanvas) -> [String] {
+        var paths = canvas.rawRoot.keys.filter { !knownRootFields.contains($0) }
+        let overrideRoot = overrides(canvas)
+        paths += overrideRoot.keys.filter { !knownOverrideFields.contains($0) }
+            .map { "overrides.\($0)" }
+        for (section, value) in overrideRoot["sections"]?.object ?? [:] {
+            paths += (value.object ?? [:]).keys.filter { $0 != "enabled" }
+                .map { "overrides.sections.\(section).\($0)" }
+        }
+        for (phase, value) in overrideRoot["phases"]?.object ?? [:] {
+            paths += (value.object ?? [:]).keys.filter { !knownPhaseFields.contains($0) }
+                .map { "overrides.phases.\(phase).\($0)" }
+        }
+        return paths.sorted()
     }
 }
 
@@ -352,7 +364,7 @@ struct SituationEditorSheet: View {
     private func overridesTab(_ value: SituationCanvas) -> some View {
         let sections = store.knownPipelineSections().sorted()
         let phases = store.allSituationWorkflowPhases()
-        let unknown = SituationEditCodec.unknownPhaseFields(value)
+        let unknown = SituationEditCodec.unknownFields(value)
         return ScrollView {
             VStack(alignment: .leading, spacing: DS.space.m) {
                 Text("Section activation").font(DS.font.headline)

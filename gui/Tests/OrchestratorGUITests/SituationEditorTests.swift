@@ -11,7 +11,15 @@ final class SituationApplyDiffTests: XCTestCase {
     }
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
 
-    func testRuntimeQueryUsesEngineLayeringAndReturnsNamedDiff() throws {
+    private struct EngineFixture {
+        let repo: URL
+        let orch: URL
+        let project: URL
+        let config: URL
+        let situations: [URL]
+    }
+
+    private func makeEngineFixture(current: String?) throws -> EngineFixture {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let orch = root.appendingPathComponent("orch")
@@ -37,26 +45,89 @@ final class SituationApplyDiffTests: XCTestCase {
                 phase("portfolio_audit", ["a"]), phase("other", ["other"]),
                 phase("build_coordination", ["d"]), phase("final_review", [])]]
         try JSONSerialization.data(withJSONObject: workflow).write(to: orch.appendingPathComponent("workflows/w.json"))
+        var situationURLs: [URL] = []
         for (name, slots) in [("old", ["a", "b"]), ("new", ["b", "d"])] {
             let dir = orch.appendingPathComponent("situations/\(name)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let situation: [String: Any] = ["schema_version": 1, "name": name,
                 "description": "", "doc_slots": slots, "pipeline_ref": "",
                 "overrides": ["sections": [:], "phases": [:], "casts": [:]]]
-            try JSONSerialization.data(withJSONObject: situation).write(to: dir.appendingPathComponent("situation.json"))
+            let url = dir.appendingPathComponent("situation.json")
+            try JSONSerialization.data(withJSONObject: situation).write(to: url)
+            situationURLs.append(url)
         }
-        try Data(#"{"situation":"old","completeness":"prototype","future":"kept"}"#.utf8)
-            .write(to: project.appendingPathComponent("run_config.json"))
-        switch SituationEngineQuery.diff(python: "/usr/bin/python3", moduleRoot: repo,
-                                         orchDir: orch, projectDir: project,
-                                         workflow: "w", candidate: "new") {
-        case .failure(let error): XCTFail(error)
-        case .success(let diff):
-            XCTAssertEqual(diff.phasesAdded, ["build_coordination"])
-            XCTAssertEqual(diff.phasesRemoved, ["prompt_contract"])
-            XCTAssertEqual(diff.sectionsActivated, ["execution"])
-            XCTAssertEqual(diff.sectionsDeactivated, ["research"])
-            XCTAssertEqual(diff.slotDelta, 0)
+        var runConfig: [String: Any] = ["completeness": "prototype", "future": "kept"]
+        if let current { runConfig["situation"] = current }
+        let config = project.appendingPathComponent("run_config.json")
+        try JSONSerialization.data(withJSONObject: runConfig).write(to: config)
+        return EngineFixture(repo: repo, orch: orch, project: project,
+                             config: config, situations: situationURLs)
+    }
+
+    private func query(_ fixture: EngineFixture, candidate: String) throws -> SituationApplyDiff {
+        switch SituationEngineQuery.diff(python: "/usr/bin/python3", moduleRoot: fixture.repo,
+                                         orchDir: fixture.orch, projectDir: fixture.project,
+                                         workflow: "w", candidate: candidate) {
+        case .success(let diff): return diff
+        case .failure(let error):
+            XCTFail(error)
+            throw NSError(domain: "SituationApplyDiffTests", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: error])
+        }
+    }
+
+    func testRuntimeQueryUsesEngineLayeringForSituationToSituation() throws {
+        let fixture = try makeEngineFixture(current: "old")
+        let diff = try query(fixture, candidate: "new")
+        XCTAssertEqual(diff.phasesAdded, ["build_coordination"])
+        XCTAssertEqual(diff.phasesRemoved, ["prompt_contract"])
+        XCTAssertEqual(diff.sectionsActivated, ["execution"])
+        XCTAssertEqual(diff.sectionsDeactivated, ["research"])
+        XCTAssertEqual(diff.slotDelta, 0)
+    }
+
+    func testRuntimeQueryUsesEngineLayeringForNoneToSituation() throws {
+        let fixture = try makeEngineFixture(current: nil)
+        let diff = try query(fixture, candidate: "new")
+        XCTAssertEqual(diff.phasesAdded, [])
+        XCTAssertEqual(diff.phasesRemoved, ["prompt_contract"])
+        XCTAssertEqual(diff.sectionsActivated, ["build", "execution"])
+        XCTAssertEqual(diff.sectionsDeactivated, [])
+        XCTAssertEqual(diff.slotDelta, 2)
+        XCTAssertTrue(diff.hasChanges)
+    }
+
+    func testRuntimeQueryReportsSameSituationAsNoChanges() throws {
+        let fixture = try makeEngineFixture(current: "new")
+        let diff = try query(fixture, candidate: "new")
+        XCTAssertEqual(diff.phasesAdded, [])
+        XCTAssertEqual(diff.phasesRemoved, [])
+        XCTAssertEqual(diff.sectionsActivated, [])
+        XCTAssertEqual(diff.sectionsDeactivated, [])
+        XCTAssertEqual(diff.slotDelta, 0)
+        XCTAssertFalse(diff.hasChanges)
+    }
+
+    func testRuntimeQueryLayersProjectStopTargetBeforeBothSides() throws {
+        let fixture = try makeEngineFixture(current: "old")
+        var config = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: fixture.config)) as? [String: Any])
+        config["stop_after_phase"] = "build_coordination"
+        try JSONSerialization.data(withJSONObject: config).write(to: fixture.config)
+        let diff = try query(fixture, candidate: "new")
+        XCTAssertEqual(diff.phasesAdded, [])
+        XCTAssertEqual(diff.phasesRemoved, [])
+        XCTAssertEqual(diff.sectionsActivated, ["execution"])
+        XCTAssertEqual(diff.sectionsDeactivated, ["research"])
+    }
+
+    func testImpactPreviewCancelLeavesConfigAndSituationFilesByteIdentical() throws {
+        let fixture = try makeEngineFixture(current: "old")
+        let urls = [fixture.config] + fixture.situations
+        let before = try Dictionary(uniqueKeysWithValues: urls.map { ($0, try Data(contentsOf: $0)) })
+        _ = try query(fixture, candidate: "new")
+        for url in urls {
+            XCTAssertEqual(try Data(contentsOf: url), before[url], url.path)
         }
     }
 
@@ -115,7 +186,11 @@ final class SituationEditorCodecTests: XCTestCase {
         case .success(let value): canvas = value
         case .failure(let error): return XCTFail(error)
         }
-        XCTAssertEqual(SituationEditCodec.unknownPhaseFields(canvas), ["p.future_phase"])
+        XCTAssertEqual(SituationEditCodec.unknownFields(canvas), [
+            "future_top", "overrides.future_override",
+            "overrides.phases.p.future_phase",
+            "overrides.sections.research.future_section",
+        ])
         SituationEditCodec.setPipelineRef("new", in: &canvas)
         SituationEditCodec.setSection("research", enabled: false, in: &canvas)
         SituationEditCodec.setPhaseField("p", field: "rounds", value: .number(5), in: &canvas)
