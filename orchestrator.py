@@ -81,6 +81,7 @@ import uicrawl as uicrawllib
 import designlint as dlintlib
 import fleetlearn as fllib
 import evalharness as evallib
+import enroll as enrolllib
 import traces as traceslib
 import turncontext as tcxlib
 import procutil
@@ -12111,6 +12112,11 @@ def main():
                     help="process only this project (V2 spec §27 alias for --app)")
     ap.add_argument("--root", metavar="PATH",
                     help="workspace root, overriding config.yaml's root (V2 spec §27)")
+    ap.add_argument("--enroll", metavar="DIR",
+                    help="adopt an existing codebase through a structurally read-only "
+                         "enroll workflow")
+    ap.add_argument("--name", dest="enroll_name", metavar="SLUG",
+                    help="project slug for --enroll (default: source directory name)")
     ap.add_argument("--resume", metavar="SLUG",
                     help="resume an existing project from its saved state, clearing "
                          "any recorded abort error first (V2 spec §27)")
@@ -12265,6 +12271,21 @@ def main():
     # V2 spec §27: --root overrides config.yaml's workspace root (relative config
     # roots resolve against this repo); --project is an alias for --app.
     cfg["root"] = resolve_root(cfg, args.root)
+    if args.enroll_name and not args.enroll:
+        ap.error("--name requires --enroll")
+    if args.enroll:
+        try:
+            enrolled = enrolllib.scaffold(cfg["root"], args.enroll,
+                                           name=args.enroll_name)
+        except enrolllib.EnrollError as exc:
+            emit("--enroll: %s" % exc)
+            return 2
+        for warning in enrolled["warnings"]:
+            # Intake warnings are part of the CLI contract, not diagnostic
+            # chatter: runtime.stream_terminal_output must not hide them.
+            print("WARN --enroll: %s" % warning)
+        print("ENROLLED: %s" % enrolled["slug"])
+        return 0
     if cfg["root"] and not (args.gc or args.archive_project
                              or args.unarchive_project):
         _ensure_workspace_gitignore(cfg["root"])
