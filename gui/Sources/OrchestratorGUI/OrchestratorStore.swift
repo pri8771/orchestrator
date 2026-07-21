@@ -1873,6 +1873,10 @@ final class OrchestratorStore: ObservableObject {
     // MARK: - Workflows + sub-agents (roles / personalities)
 
     var workflowsDirURL: URL { orchDirURL.appendingPathComponent("workflows", isDirectory: true) }
+    var situationsDirURL: URL { orchDirURL.appendingPathComponent("situations", isDirectory: true) }
+    var documentMapURL: URL {
+        orchDirURL.appendingPathComponent("sections/documentation/doc_map.json")
+    }
     var rolesURL: URL { orchDirURL.appendingPathComponent("roles.json") }
     private var modelPresetsURL: URL { orchDirURL.appendingPathComponent("model_presets.json") }
 
@@ -1894,6 +1898,57 @@ final class OrchestratorStore: ObservableObject {
 
     func workflow(named name: String) -> WorkflowDef? {
         workflows.first { $0.name == name }
+    }
+
+    func readDocumentMap() -> PipelineResult<DocumentMap> {
+        guard let data = try? Data(contentsOf: documentMapURL) else {
+            return .failure("Could not read \(documentMapURL.path)")
+        }
+        return DocumentMapCodec.decode(data)
+    }
+
+    func readSituationFiles() -> [SituationFileRecord] {
+        SituationFileIO.load(root: situationsDirURL)
+    }
+
+    // situations.py owns the six defaults and its disk-wins seeding contract.
+    // Invoke that existing contract instead of copying seed content into Swift.
+    func ensureSituationSeeds() -> String? {
+        if !SituationFileIO.load(root: situationsDirURL).isEmpty { return nil }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: resolvePython())
+        proc.currentDirectoryURL = orchDirURL
+        proc.arguments = ["-c", "import situations,sys; situations.ensure_seeded(sys.argv[1])",
+                          orchDirURL.path]
+        let stderr = Pipe(); proc.standardError = stderr
+        do {
+            try proc.run(); proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else {
+                let data = stderr.fileHandleForReading.readDataToEndOfFile()
+                return String(data: data, encoding: .utf8) ?? "Situation seed command failed"
+            }
+            return nil
+        } catch { return error.localizedDescription }
+    }
+
+    func writeSituation(_ canvas: SituationCanvas, to url: URL) throws -> Data {
+        guard url.standardizedFileURL.path.hasPrefix(situationsDirURL.standardizedFileURL.path + "/") else {
+            throw NSError(domain: "DocumentBuilder", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Refusing to write outside situations/"])
+        }
+        return try SituationFileIO.save(canvas, to: url)
+    }
+
+    func situationWorkflowPhases(named name: String) -> [SituationWorkflowPhase] {
+        guard let pair = readRawWorkflows().first(where: {
+            (($0.obj["name"] as? String) ?? $0.fileURL.deletingPathExtension().lastPathComponent) == name
+        }) else { return [] }
+        return ((pair.obj["phases"] as? [[String: Any]]) ?? []).enumerated().map { index, raw in
+            SituationWorkflowPhase(
+                key: (raw["key"] as? String) ?? "phase\(index + 1)",
+                title: (raw["title"] as? String) ?? (raw["key"] as? String) ?? "Phase \(index + 1)",
+                docSections: (raw["doc_sections"] as? [String]) ?? [])
+        }
     }
 
     // The phases a given project runs (from its workflow; falls back to app_build).

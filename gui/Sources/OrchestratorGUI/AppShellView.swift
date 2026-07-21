@@ -1243,6 +1243,7 @@ private struct WorkflowsLibraryView: View {
     @EnvironmentObject var store: OrchestratorStore
     @State private var showBuilder = false
     @State private var showPipelineBuilder = false
+    @State private var showDocumentBuilder = false
 
     var body: some View {
         ScrollView {
@@ -1250,6 +1251,8 @@ private struct WorkflowsLibraryView: View {
                 HStack {
                     Text("Workflows").font(DS.font.title)
                     Spacer()
+                    Button("Document Flow…") { showDocumentBuilder = true }
+                        .accessibilityIdentifier("open-document-builder")
                     Button("Pipeline Canvas…") { showPipelineBuilder = true }
                     Button("Open Builder…") { showBuilder = true }
                 }
@@ -1284,6 +1287,9 @@ private struct WorkflowsLibraryView: View {
         }
         .sheet(isPresented: $showPipelineBuilder) {
             PipelineBuilderSheet().environmentObject(store)
+        }
+        .sheet(isPresented: $showDocumentBuilder) {
+            DocumentBuilderSheet().environmentObject(store)
         }
     }
 }
