@@ -94,7 +94,8 @@ class MigratorTest(unittest.TestCase):
         self.assertEqual(_tree_hash(self.workspace), before)
         self.assertEqual(plan["targets"], {})
         self.assertEqual(plan["unmapped"], [])
-        self.assertEqual(len(plan["seed_identical"]), 19)
+        self.assertEqual(len(plan["seed_identical"]),
+                         len(migrate_v3.SEED_HASHES))
         self.assertIn("no tuning, section seed wins", report)
         self.assertIn("DRY-RUN — no files changed", report)
 

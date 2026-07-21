@@ -20,7 +20,7 @@ PHASE_FIELDS = {"key", "folder", "file", "title", "purpose", "rounds", "roles",
                 "structurally_required", "requires_verification",
                 "doc_sections", "test_deliverable", "conversational"}
 KNOWN_TARGETS = {"app", "app_spec", "answer", "research", "productionize",
-                 "audit", "library_mining"}
+                 "audit", "enroll", "library_mining"}
 
 
 def _load(f):

@@ -3039,7 +3039,7 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
         url_ctx = cfg.get("_url_context", "")
         if url_ctx:
             parts.append(url_ctx)
-    # Read-only digest of the target codebase (audit phases only; set at phase start).
+    # Read-only digest of an external target (audit/enroll; set at phase start).
     dig = cfg.get("_target_digest", "")
     if dig:
         parts.append(dig)
@@ -6114,7 +6114,7 @@ _AUDIT_SRC_EXT = (".swift", ".py", ".js", ".ts", ".jsx", ".tsx", ".m", ".mm",
 
 
 def build_target_digest(root, tree_max=400, per_file_cap=8000, total_cap=120000):
-    """A read-only digest of a pre-existing TARGET codebase for audit phases: a
+    """A read-only digest of a pre-existing TARGET for audit/enroll phases: a
     file tree plus char-budgeted bodies of source/manifest files (manifests,
     Info.plist, entry points prioritized first). Pure open().read() — never writes.
     Returns "" if the target is missing."""
@@ -8893,6 +8893,13 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # persistent build folder; otherwise no writes are allowed.
     allow_writes = (is_build or is_verify_repair) and \
         bool(cget(cfg, "runtime.build_code_changes_enabled", False))
+    # External-target workflows are structurally read-only even if a user-edited
+    # workflow marks a phase writes=true.  The JSON is policy input, not the
+    # security boundary: only a later promoted build workflow may gain writes.
+    if allow_writes and cfg.get("_workflow_target") in ("audit", "enroll"):
+        allow_writes = False
+        emit("TARGET: %s workflow is read-only — ignoring writes=true for "
+             "phase '%s'." % (cfg.get("_workflow_target"), key))
     # V3 7.4c: a section may write only if its capability permits it. Flat/
     # legacy sessions (caps None) are unrestricted. A phase that WOULD have
     # been granted writes but is capability-denied runs read-only with a
@@ -8933,10 +8940,10 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         else:
             emit("BUILD phase: agents may write files in %s" % cfg["_build_dir"])
 
-    # Audit read channel. When a phase reads the target, inject the read-only digest
-    # into every turn; and (only if runtime.audit_live_read_cwd) additionally point
-    # codex/claude's cwd at the target read-only. Set-or-CLEAR on every phase so an
-    # audit read channel can never leak into a later phase or another app.
+    # External-target read channel.  Every reading phase receives the immutable
+    # digest. Audit may additionally opt into its legacy live read-only cwd;
+    # enroll never does — its origin is a forever-read-only trust boundary, so no
+    # agent process is ever started inside that tree. Set-or-CLEAR every phase.
     reads = bool(phasedef.get("reads_target", False)) if hasattr(phasedef, "get") else False
     _portfolio = cfg.get("_target_paths") or []
     if reads and len(_portfolio) > 0:
@@ -8947,11 +8954,12 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
              % (key, len(_portfolio), len(cfg["_target_digest"])))
     elif reads and cfg.get("_target_path"):
         tctx.target_digest = tctx.target_digest or build_target_digest(cfg["_target_path"])
-        live = (not allow_writes
+        live = (cfg.get("_workflow_target") == "audit" and not allow_writes
                 and bool(cget(cfg, "runtime.audit_live_read_cwd", False)))
         tctx.read_dir = cfg["_target_path"] if live else None
-        emit("AUDIT phase '%s': read-only target %s (%d-char digest%s)."
-             % (key, cfg["_target_path"], len(cfg["_target_digest"]),
+        emit("%s phase '%s': read-only target %s (%d-char digest%s)."
+             % (str(cfg.get("_workflow_target") or "target").upper(), key,
+                cfg["_target_path"], len(cfg["_target_digest"]),
                 "; live cwd" if live else ""))
     else:
         tctx.target_digest = ""
@@ -11023,7 +11031,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # assign_personas' role_by_id parameter.
     tctx.role_by_id = {r.get("id"): r for r in cfg["_roles"]}
 
-    # Audit target: the read-only pre-existing codebase this app analyzes.
+    # External target: the read-only pre-existing codebase audit/enroll analyzes.
     tctx.target_path = wflib.read_target_path(app_dir, HERE)
     tctx.target_digest = ""
     tctx.read_dir = None
@@ -11032,9 +11040,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                             if workflow.target == "library_mining" else [])
     if workflow.target == "library_mining" and not cfg["_target_path"]:
         tctx.target_path = cfg["_target_paths"][0] if cfg["_target_paths"] else None
-    if workflow.target == "audit" and not cfg["_target_path"]:
-        msg = ("audit workflow needs <app>/target_path.txt (or a 'target:' line in "
+    if workflow.target in ("audit", "enroll") and not cfg["_target_path"]:
+        msg = ("%s workflow needs <app>/target_path.txt (or a 'target:' line in "
                "initial_prompt.md) pointing at an existing codebase dir outside app_build.")
+        msg = msg % workflow.target
         emit("App '%s': %s" % (app, msg))
         state["error"] = msg
         save_state(app_dir, state)
@@ -11047,7 +11056,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         save_state(app_dir, state)
         return
 
-    # Change detection: prompt + (for audit) the target path and a cheap mtime
+    # Change detection: prompt + (for external targets) the target path and a cheap mtime
     # signature, so editing the prompt OR the target's files re-triggers a run.
     _tgt = cfg.get("_target_path") or ""
     _tsig = ""
@@ -11153,7 +11162,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         evlib.emit_event(app_dir, "agent_disabled", project=app, agent="gemini",
                          reason=cfg["_gemini_disabled_reason"])
     if cfg["_target_path"]:
-        emit("App '%s': audit target = %s" % (app, cfg["_target_path"]))
+        emit("App '%s': %s target = %s"
+             % (app, workflow.target, cfg["_target_path"]))
 
     # Docs backfill: when the user drops reference docs in <app>/docs/ and
     # touches <app>/.backfill_requested, distill those docs into the pending

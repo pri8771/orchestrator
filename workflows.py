@@ -776,12 +776,14 @@ def resolve_workflow_for_app(app_dir, default_name=None, orch_dir=None):
 
 
 def read_target_path(app_dir, orch_dir=None):
-    """Resolve the pre-existing codebase an `audit` app points at. Precedence:
+    """Resolve the pre-existing codebase an `audit` or `enroll` app points at.
+
+    Precedence:
       1. <app>/target_path.txt — first non-empty line.
       2. a 'target: <path>' line in the first ~15 lines of initial_prompt.md.
     The path is realpath'd and must be an existing directory. It is REJECTED if it
-    resolves inside the app's own app_build (which is writable) — an audit target
-    must be a separate, read-only tree. Returns an absolute dir path or None.
+    resolves inside the app's own app_build (which is writable) — an external
+    target must be a separate, read-only tree. Returns an absolute dir path or None.
     """
     def _guard(p):
         rp = os.path.realpath(os.path.expanduser((p or "").strip()))

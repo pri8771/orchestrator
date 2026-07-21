@@ -105,12 +105,13 @@ class TurnContext(object):
         "None outside builds.")
     target_digest = _prop(
         "_target_digest",
-        "Read-only digest of the audit target (or portfolio); '' when the "
+        "Read-only digest of the audit/enroll target (or portfolio); '' when the "
         "phase does not read a target. Memoized via `ctx.target_digest or "
         "build_…` — getter must return None/'' falsy on absence.")
     read_dir = _prop(
         "_read_dir",
-        "Live read-only cwd for audit phases when enabled, else None.")
+        "Live read-only cwd for audit phases when enabled; always None for "
+        "enroll phases.")
 
     # ---- band C: per-thread-copy state. Written only onto dict(cfg)
     # copies; a write that lands on the shared original is a bug the
@@ -257,7 +258,7 @@ class TurnContext(object):
         "unknown or corrupt (the safe default: no slot-based filtering, "
         "every phase eligible — completeness.filter_phases_by_slots reads "
         "this).")
-    target_path = _prop("_target_path", "Audit target codebase dir.")
+    target_path = _prop("_target_path", "Audit/enroll target codebase dir.")
     target_paths = _prop(
         "_target_paths", "library_mining portfolio repo list.")
     tech_stack_block = _prop(

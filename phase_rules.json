@@ -852,6 +852,91 @@
         "No new documentation content is invented in this pass.",
         "A section flagged thin is tied to the missing artifact or decision that would resolve it."
       ]
+    },
+    "recon_understand": {
+      "rules": [
+        "Read the enrolled origin only through the engine's read-only target context.",
+        "Base architectural claims on concrete repo-relative paths and label anything the available evidence cannot establish.",
+        "Map before judging: project type, entry points, modules, dependencies, data flow, persistence, external integrations, tests, and build structure."
+      ],
+      "required_output": [
+        "Observed architecture map with repo-relative evidence paths.",
+        "Dependency, entry-point, test, and build inventory.",
+        "Explicit unknowns that require later evidence."
+      ],
+      "acceptance_checks": [
+        "Every factual architectural claim names repository evidence.",
+        "No write or edit to the enrolled origin is proposed or performed.",
+        "Unknowns remain visible rather than being guessed."
+      ]
+    },
+    "docs_inventory": {
+      "rules": [
+        "Treat their documentation as evidence input, never as a file to rewrite in place.",
+        "Quote or paraphrase only with the source document's repo-relative path.",
+        "Record contradictions, staleness, and missing coverage without inventing a preferred answer."
+      ],
+      "required_output": [
+        "Documentation inventory keyed by repo-relative path.",
+        "Explicit claims supported by each document.",
+        "Contradictions, stale areas, and uncovered house-documentation slots."
+      ],
+      "acceptance_checks": [
+        "Every imported documentation claim cites its source file.",
+        "Their documents remain untouched.",
+        "Missing coverage is named as a gap."
+      ]
+    },
+    "compliance_check": {
+      "rules": [
+        "Evaluate every applicable curated rule area and retain cannot-determine as a first-class verdict.",
+        "Every finding names its rule area, verdict, repo-relative evidence paths, and why the evidence supports the verdict.",
+        "Use not-applicable for rule areas outside the detected project type; never coerce uncertainty into compliance."
+      ],
+      "required_output": [
+        "A finding per curated rule area.",
+        "Verdict, evidence paths, and why for every finding.",
+        "Explicit cannot-determine and not-applicable findings where appropriate."
+      ],
+      "acceptance_checks": [
+        "No finding lacks evidence paths and reasoning.",
+        "Cannot-determine is never counted as compliant or non-compliant.",
+        "The enrolled origin remains untouched."
+      ]
+    },
+    "doc_rebuild": {
+      "rules": [
+        "Generate house-format documentation only under the orchestrator project.",
+        "Use repository evidence, cited source documentation, prior verified findings, or explicitly named research; never invent missing facts.",
+        "Leave unsupported claims visibly unverified."
+      ],
+      "required_output": [
+        "Rebuilt house-format documentation content.",
+        "Visible provenance for factual content.",
+        "Named gaps where evidence is insufficient."
+      ],
+      "acceptance_checks": [
+        "Generated output is outside the enrolled origin.",
+        "Every factual paragraph has visible provenance or uncertainty.",
+        "Their original documentation remains byte-untouched."
+      ]
+    },
+    "enroll_report": {
+      "rules": [
+        "Summarize the enrollment evidence for a human decision without starting build work.",
+        "Keep compliance failures, cannot-determine findings, provenance-lint gaps, and unresolved risks visible.",
+        "End with an explicit promote-or-hold recommendation and stop at the human gate."
+      ],
+      "required_output": [
+        "Observed architecture and documentation summary.",
+        "Compliance and provenance-gap summary.",
+        "Unresolved risks and explicit promote-or-hold recommendation."
+      ],
+      "acceptance_checks": [
+        "The report distinguishes verified evidence from uncertainty.",
+        "No build, edit, or migration action is performed.",
+        "A human approval is still required after the report."
+      ]
     }
   }
 }
