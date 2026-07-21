@@ -240,6 +240,18 @@ class TurnContext(object):
     round_multiplier = _prop(
         "_round_multiplier", "Completeness round-budget multiplier or None.")
     completeness = _prop("_completeness", "Completeness profile name.")
+    situation_name = _prop(
+        "_situation_name",
+        "V3 board 9.1: the run_config.json 'situation' ref, or None. "
+        "Inspectability only (R2) — the effective phase set it produced is "
+        "what actually runs; this is the human-readable label for it.")
+    required_slots = _prop(
+        "_required_slots",
+        "V3 board 9.1: the Situation's resolved doc_map slot ids (an "
+        "ordered list), or None when no situation ref is set / it was "
+        "unknown or corrupt (the safe default: no slot-based filtering, "
+        "every phase eligible — completeness.filter_phases_by_slots reads "
+        "this).")
     target_path = _prop("_target_path", "Audit target codebase dir.")
     target_paths = _prop(
         "_target_paths", "library_mining portfolio repo list.")

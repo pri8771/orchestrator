@@ -152,6 +152,38 @@ def list_situations(orch_dir, on_error=None):
 
 
 # --------------------------------------------------------------------------- #
+# V3 board 9.1: apply-situation resolution — pure, unit-testable without the
+# engine. Deliberately DEFENSIVE, not validating: an unknown slot id here is
+# silently dropped (never raises, never propagates into phase selection) —
+# lint_situation is where an author gets TOLD about it; resolution's job is
+# to never crash or gut a run on a situation that has drifted from doc_map.
+# --------------------------------------------------------------------------- #
+def resolve_required_slots(situation, doc_map):
+    """(ordered_slots, owning_sections) for an already-loaded situation dict.
+    ordered_slots preserves situation['doc_slots']' order, deduplicated, and
+    dropping any id that doesn't exist in doc_map (a stale/renamed slot must
+    not propagate into filtering — it just contributes nothing).
+    owning_sections is the SET of doc_map owner_section values those slots
+    map to (5.3's ownership), used to decide which sections' phases stay
+    eligible. situation=None or a non-dict yields ([], set()) — the same
+    'nothing required' shape callers already treat as no-op."""
+    if not isinstance(situation, dict):
+        return [], set()
+    by_id = {s.get("slot_id"): s.get("owner_section")
+            for s in (doc_map or {}).get("slots", [])
+            if isinstance(s, dict) and isinstance(s.get("slot_id"), str)}
+    ordered, owners, seen = [], set(), set()
+    for slot in situation.get("doc_slots") or []:
+        if slot in by_id and slot not in seen:
+            ordered.append(slot)
+            seen.add(slot)
+            owner = by_id[slot]
+            if owner:
+                owners.add(owner)
+    return ordered, owners
+
+
+# --------------------------------------------------------------------------- #
 # Lint — every problem names the offending field + value (§5.2)
 # --------------------------------------------------------------------------- #
 def lint_situation(situation, doc_map, presets=None, on_error=None):

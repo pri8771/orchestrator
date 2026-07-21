@@ -78,6 +78,18 @@ def phase_key(phase):
         return None
 
 
+def phase_doc_sections(phase):
+    """V3 board 9.1: the same three-shape normalization as phase_key, for
+    Phase.doc_sections — the doc_map.json slot ids a phase's structured
+    output contributes to (empty list on every shipped workflow today; see
+    completeness.filter_phases_by_slots' docstring for what that means)."""
+    if hasattr(phase, "doc_sections"):
+        return list(phase.doc_sections or [])
+    if hasattr(phase, "get"):
+        return list(phase.get("doc_sections") or [])
+    return []
+
+
 class Phase:
     """One phase of a workflow.
 

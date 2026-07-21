@@ -118,6 +118,47 @@ def filter_phases(phases, completeness_name, on_warn=None):
     return kept
 
 
+def filter_phases_by_slots(phases, required_slots, on_warn=None):
+    """V3 board 9.1: filter_phases' sibling for a Situation's required doc
+    slots instead of a completeness profile. Preserves order. A phase is
+    kept iff its Phase.doc_sections (workflows.phase_doc_sections) intersect
+    required_slots. required_slots falsy (None or empty) => all phases — the
+    safe default for 'no situation applied' AND for 'the situation ref was
+    unknown or corrupt' (both resolve to an empty/None required_slots
+    upstream, so this function needs no separate unknown-ref branch).
+
+    Defensive guarantees, IDENTICAL to filter_phases (never a broken filter
+    guts a run):
+    - the workflow's FINAL phase is always kept;
+    - fewer than _MIN_KEPT_PHASES survivors => ALL phases, with on_warn.
+
+    KNOWN LIMIT (documented, not a defect in this function): no SHIPPED
+    workflow (workflows/*.json) currently populates any phase's
+    doc_sections — it is a real Phase field, but nothing authors it yet.
+    Until a workflow does, this filter has no practical effect on it beyond
+    the two guarantees above (which is the CORRECT, safe behavior: an
+    all-empty allow-list is exactly the 'broken allow-list' case the
+    guarantees protect against). The function itself is exercised directly
+    by tests/test_situations.py's fixtures, which DO populate doc_sections,
+    proving the intersection/fallback logic is correct independent of
+    today's shipped-workflow gap."""
+    on_warn = on_warn or (lambda _msg: None)
+    phases = list(phases)
+    if not required_slots:
+        return phases
+    required = set(required_slots)
+    kept = [ph for ph in phases
+           if required.intersection(set(_phase_doc_sections(ph)))]
+    if phases and phases[-1] not in kept:
+        kept.append(phases[-1])
+    if len(kept) < min(_MIN_KEPT_PHASES, len(phases)):
+        on_warn("situation slots matched only %d of %d workflow phases — "
+                "running ALL phases instead."
+                % (len(kept), len(phases)))
+        return phases
+    return kept
+
+
 def apply_stop_target(phases, stop_after_phase, on_warn=None):
     """Truncate the phase list after the given phase key (inclusive). If the key
     is a friendly label, it is resolved first. Unknown/blank => unchanged.
@@ -159,6 +200,11 @@ def load_run_config(app_dir):
 def _phase_key(ph):
     import workflows
     return workflows.phase_key(ph)  # one shared accessor across modules
+
+
+def _phase_doc_sections(ph):
+    import workflows
+    return workflows.phase_doc_sections(ph)  # one shared accessor
 
 
 # ---------------------------------------------------------------------------

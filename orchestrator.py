@@ -63,6 +63,7 @@ import resilience as reslib
 import docs as docslib
 import docsync as docsynclib
 import completeness as complib
+import situations as sitlib
 import buildpolicy as buildpolicylib
 import global_resource as grlib
 import knowledge as knowlib
@@ -899,6 +900,51 @@ def _api_error_detail(provider, value):
     if key:
         text = text.replace(key, "[REDACTED]")
     return schemalib.redact_secrets(text)[:300]
+
+
+def _apply_situation_ref(tctx, run_cfg, phases):
+    """V3 board 9.1a: a situation ref (run_config.json {"situation": "..."})
+    layers an ADDITIONAL, sequential filter on top of whatever
+    completeness/stop_after_phase already narrowed `phases` to (the SAME
+    composition pattern those two use with each other) — only phases whose
+    doc_sections intersect the situation's required doc slots survive.
+    filter_phases_by_slots' own defensive guarantees apply (final phase
+    always kept; a gutting filter falls back to ALL of the phases THIS
+    function was given — i.e. the completeness-narrowed set, not
+    necessarily the full workflow, if a completeness profile ran first).
+
+    Unknown/corrupt ref -> visible banner + the safe default (no slot
+    filtering, tctx.required_slots stays None) — never a crash, never a
+    silent partial application. No ref at all -> `phases` returned
+    unchanged and tctx.situation_name/required_slots both reset to None
+    (explicit per-run reset, matching round_multiplier/autonomy's reset at
+    the top of _run_app_pipeline — a long-lived --watch cfg must forget a
+    removed ref). Extracted as its own function (mirroring _apply_api_optin
+    right below) specifically so it is unit-testable without invoking the
+    entire pipeline."""
+    tctx.situation_name = None
+    tctx.required_slots = None
+    ref = run_cfg.get("situation")
+    if not ref:
+        return phases
+    situation = sitlib.load_situation(ref, HERE,
+                                      on_error=lambda m: emit("WARN " + m))
+    if situation is None:
+        emit("WARN situation '%s' is unknown or corrupt — running with no "
+             "slot filtering (all phases eligible)." % ref)
+        return phases
+    doc_map = docslib.load_doc_map(HERE, on_warn=lambda m: emit("WARN " + m))
+    slots, owners = sitlib.resolve_required_slots(situation, doc_map)
+    tctx.situation_name = ref
+    tctx.required_slots = slots
+    before = len(phases)
+    phases = complib.filter_phases_by_slots(
+        phases, slots, on_warn=lambda m: emit("WARN " + m))
+    emit("Situation '%s': %d of %d phases included (%d required slot(s), "
+         "owning section(s): %s)."
+         % (ref, len(phases), before, len(slots), ", ".join(sorted(owners))
+            or "none"))
+    return phases
 
 
 def _apply_api_optin(tctx, run_cfg):
@@ -10657,6 +10703,7 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             emit("Stop target: run will stop after '%s'." % _rc["stop_after_phase"])
     if _rc.get("autonomy"):
         tctx.autonomy = _rc["autonomy"]
+    phases = _apply_situation_ref(tctx, _rc, phases)   # V3 board 9.1a
     _apply_api_optin(tctx, _rc)   # V3 6.2: reset-then-enable, cost warning
     tctx.workflow_name = workflow.name
     tctx.workflow_target = workflow.target
