@@ -1,6 +1,63 @@
 import Foundation
 import SwiftUI
 
+// V3 8.5: the GUI edits the same run_config.json sensitivity field the engine
+// re-derives at every run start. Writes preserve every unknown/current key;
+// corrupt existing JSON is refused rather than overwritten (R2 / fail closed).
+enum ProjectSensitivityFile {
+    static func conflict(localEnabled: Bool, installedLocalCount: Int) -> String? {
+        guard localEnabled, installedLocalCount > 0 else {
+            return "No enabled, installed local model. The engine will refuse "
+                + "this project before its first turn; enable Ollama and pull a model."
+        }
+        return nil
+    }
+
+    static func read(_ dir: URL) -> String? {
+        let url = dir.appendingPathComponent("run_config.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dict = object as? [String: Any],
+              let value = dict["sensitivity"] as? String,
+              value == "normal" || value == "private" else { return nil }
+        return value
+    }
+
+    static func effective(projectDir: URL, sessionDir: URL) -> String? {
+        let project = read(projectDir)
+        let session = projectDir.standardizedFileURL == sessionDir.standardizedFileURL
+            ? project : read(sessionDir)
+        if project == "private" || session == "private" { return "private" }
+        if project == "normal" || session == "normal" { return "normal" }
+        return nil
+    }
+
+    @discardableResult
+    static func write(_ value: String, to dir: URL) -> Bool {
+        guard value == "normal" || value == "private" else { return false }
+        let url = dir.appendingPathComponent("run_config.json")
+        var dict: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard let data = try? Data(contentsOf: url),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let existing = object as? [String: Any] else { return false }
+            dict = existing
+        }
+        dict["sensitivity"] = value
+        guard JSONSerialization.isValidJSONObject(dict),
+              let data = try? JSONSerialization.data(
+                withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) else {
+            return false
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
 // One provider's enable toggle + model picker. Custom entries stay hidden behind
 // a plus button so the normal settings render path is picker-only.
 struct AgentModelRow: View {

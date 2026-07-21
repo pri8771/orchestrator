@@ -20,6 +20,7 @@ Run:  python3 orchestrator.py [--once] [--watch N] [--app NAME] [--doctor]
 
 import argparse
 import concurrent.futures
+import contextvars
 import datetime as _dt
 import hashlib
 import http.client
@@ -193,6 +194,10 @@ class AgentError(Exception):
 
 class AppError(Exception):
     """Raised to abort processing a single app (other apps continue)."""
+
+
+class PrivacyViolation(AppError):
+    """A private run was about to cross the local-machine boundary."""
 
 
 # ---------------------------------------------------------------------------
@@ -1872,10 +1877,126 @@ def resolve_capabilities(agent):
     return dict(_NO_CAPABILITIES)
 
 
-def resolve_runner(agent):
+def _normalize_sensitivity(value):
+    return value if value in ("normal", "private") else None
+
+
+def _read_sensitivity(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return _normalize_sensitivity(
+            data.get("sensitivity") if isinstance(data, dict) else None)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _effective_sensitivity(app_dir, root, state=None):
+    """Disk-derived sensitivity with project-private as an immutable floor.
+
+    An explicit session value may tighten a normal project, never loosen a
+    private one. With neither file present, persisted state closes the
+    crash/resume gap; brand-new and legacy sessions remain normal.
+    """
+    rel = os.path.relpath(app_dir, root) if root else os.path.basename(app_dir)
+    parts = rel.split(os.sep)
+    project_dir = os.path.join(root, parts[0]) \
+        if root and len(parts) >= 3 and not rel.startswith("..") else app_dir
+    project_value = _read_sensitivity(
+        os.path.join(project_dir, "run_config.json"))
+    session_value = _read_sensitivity(os.path.join(app_dir, "run_config.json"))
+    if project_value == "private" or session_value == "private":
+        return "private"
+    delegation = seslib.read_delegation(app_dir, on_error=lambda _m: None)
+    request = delegation.get("request") if isinstance(delegation, dict) else None
+    if isinstance(request, dict) and request.get("sensitivity") == "private":
+        # Crash safety for Conductor mint -> run_config stamping: the durable
+        # delegation request itself is a second authoritative privacy source.
+        return "private"
+    if project_value == "normal" or session_value == "normal":
+        return "normal"
+    persisted = (state or {}).get("sensitivity") if isinstance(state, dict) \
+        else None
+    return _normalize_sensitivity(persisted) or "normal"
+
+
+def _is_private(cfg):
+    state = cfg.get("_state") if isinstance(cfg, dict) else None
+    return (cfg.get("_sensitivity") == "private"
+            or (isinstance(state, dict)
+                and state.get("sensitivity") == "private"))
+
+
+def _privacy_event(cfg, kind, **fields):
+    app_dir = _event_app_dir(cfg) if isinstance(cfg, dict) else None
+    evlib.emit_event(app_dir, kind, **fields)
+
+
+def _configured_private_locals(cfg):
+    """Installed, configured local identities that can execute privately."""
+    if not bool(cget(cfg, "agents.ollama_enabled", False)):
+        return []
+    roster = _split_local_roster(
+        (cfg.get("_resolved") or {}).get(
+            "ollama_roster", cget(cfg, "models.ollama_roster", [])))
+    single = str(cget(cfg, "models.ollama", "") or "").strip()
+    if not roster and single:
+        roster = [single]
+    installed = _installed_local_models(cfg)
+    return ["local:%s" % model for model in roster if model in installed]
+
+
+def privacy_target_has_local_runner(root, project, target_section=None):
+    """Conductor-safe predicate for whether a private delegation can run.
+
+    It intentionally does not resolve cloud models or run availability probes;
+    routing needs only positive proof of an installed, configured local model.
+    """
+    del root, project, target_section  # reserved for section/project overlays
+    try:
+        cfg = load_config()
+        tcxlib.TurnContext(cfg).resolved = {
+            "ollama_roster": _split_local_roster(
+                cget(cfg, "models.ollama_roster", []))}
+        return bool(_configured_private_locals(cfg))
+    except (OSError, ValueError, SystemExit, TypeError):
+        return False
+
+
+def persist_private_session(app_dir):
+    """Atomically stamp a routed child private without discarding config."""
+    path = os.path.join(app_dir, "run_config.json")
+    try:
+        data = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            if not isinstance(raw, dict):
+                return False
+            data = dict(raw)
+        data["sensitivity"] = "private"
+        _write_json_atomic(path, data)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+_RESOLVE_PRIVACY_CFG = contextvars.ContextVar(
+    "orchestrator_resolve_privacy_cfg", default=None)
+
+
+def resolve_runner(agent, cfg=None):
     """Return a callable (cfg, prompt, timeout)->(out,err,code,cmd) for any agent
     id, including dynamic 'local:<model>' (V2 spec §4.1/§12) and
     'api:<provider>:<model>' (V3 6.2) identities."""
+    privacy_cfg = cfg if cfg is not None else _RESOLVE_PRIVACY_CFG.get()
+    if privacy_cfg is not None and _is_private(privacy_cfg) \
+            and not mrlib._is_local(agent):
+        reason = ("Private mode blocked non-local agent %s. Configure and "
+                  "install an Ollama model, then retry." % agent)
+        _privacy_event(privacy_cfg, "privacy_blocked", agent=str(agent),
+                       reason=reason)
+        raise PrivacyViolation(reason)
     if isinstance(agent, str) and agent.startswith("local:"):
         model = agent.split(":", 1)[1]
         return lambda cfg, prompt, timeout: run_local(cfg, prompt, timeout, model=model)
@@ -2010,6 +2131,17 @@ def _fallback_steps(cfg, agent):
     net = _local_fallback_model(cfg, agent)
     if net:
         steps.append("local:%s" % net)
+    if _is_private(cfg):
+        local_steps = mrlib.local_only(steps)
+        if local_steps != steps and tcxlib.TurnContext(cfg).note_once(
+                "privacy_fallback", agent):
+            removed = [step for step in steps if step not in local_steps]
+            reason = "Private mode removed non-local fallback step(s): %s" \
+                % ", ".join(removed)
+            emit(reason)
+            _privacy_event(cfg, "privacy_enforced", agent=str(agent),
+                           reason=reason)
+        steps = local_steps
     seen, out = set(), []
     for s in steps:
         if s and s not in seen:
@@ -2350,12 +2482,22 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
         threading.Thread(target=_heartbeat, daemon=True).start()
         _tokens = None
         try:
+            # Resolve (and therefore enforce private/local policy) BEFORE any
+            # API stream file is created or provider-specific setup runs.
+            # Preserve resolve_runner's established one-argument call seam
+            # (tests and integrations replace it) while carrying privacy
+            # policy in a concurrency-safe per-call context.
+            _privacy_token = _RESOLVE_PRIVACY_CFG.set(cfg)
+            try:
+                runner = resolve_runner(agent)
+            finally:
+                _RESOLVE_PRIVACY_CFG.reset(_privacy_token)
             if str(agent).startswith("api:") \
                     and tcxlib.TurnContext(cfg).api_agents_enabled:
                 # Opt-out projects never get even an empty .stream dir: the
                 # refusal memo needs no preview channel.
                 _prepare_api_stream(_ev_dir, phase, rnd, _hkey)
-            out, err, code, command = resolve_runner(agent)(cfg, prompt, timeout)
+            out, err, code, command = runner(cfg, prompt, timeout)
             # Harvest usage IMMEDIATELY after the runner returns: the provider
             # billed these tokens even if strict cleanup / empty-output /
             # banner fails the turn below — a later arm finalizing with
@@ -2366,6 +2508,16 @@ def _call_agent_once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
                 # try: an unlink failure becomes a finalized failed turn, never
                 # a preceding turn_completed(ok=true) followed by an exception.
                 _finish_api_stream(strict=True)
+        except PrivacyViolation as exc:
+            traceslib.finalize(_trace, stderr=str(exc), exit=1,
+                               duration_s=time.time() - t0, status="error")
+            evlib.emit_event(_ev_dir, "turn_completed", project=app,
+                             phase=phase, round=rnd, agent=str(agent),
+                             ok=False, exit=1,
+                             model_requested=_model_req,
+                             reason="privacy_blocked",
+                             dur=round(time.time() - t0, 1))
+            raise
         except FileNotFoundError as exc:
             # Enabled agent whose CLI binary is missing/uninstalled: skip it like
             # any other unavailable agent instead of crashing the whole run.
@@ -2786,6 +2938,20 @@ def _select_prior_context(cfg, app_dir, phases, completed_keys, phasedef):
         return prior_discussion_context(app_dir, phases, completed_keys)
     return hybrid_prior_context(app_dir, phases, completed_keys,
                                 recency_window=recency_window)
+
+
+def _artifact_sensitivity_filter(cfg, on_block=None):
+    """The one predicate threaded into every project-artifact retrieval."""
+    private_session = _is_private(cfg)
+
+    def _admit(meta):
+        blocked = (not private_session
+                   and isinstance(meta, dict)
+                   and meta.get("sensitivity") == "private")
+        if blocked and on_block is not None:
+            on_block(meta)
+        return not blocked
+    return _admit
 
 
 def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript):
@@ -5520,6 +5686,28 @@ def enabled_agents(cfg):
                 out.append("local:%s" % model)
         elif local_model:
             out.append("ollama")
+
+    if _is_private(cfg):
+        private_roster = _configured_private_locals(cfg)
+        if not private_roster:
+            reason = ("Private mode requires at least one configured, installed "
+                      "Ollama model. Enable Ollama, pull a roster model, and retry.")
+            if tcxlib.TurnContext(cfg).note_once("privacy_empty_roster", "run"):
+                emit("PRIVACY BLOCKED: " + reason)
+                _privacy_event(cfg, "privacy_blocked", reason=reason,
+                               agent="roster")
+            raise PrivacyViolation(reason)
+        if out != private_roster and tcxlib.TurnContext(cfg).note_once(
+                "privacy_roster", "run"):
+            removed = [agent for agent in out
+                       if not mrlib._is_local(agent)]
+            reason = ("Private mode replaced the cloud roster with local-only: "
+                      + ", ".join(private_roster))
+            emit(reason)
+            _privacy_event(cfg, "privacy_enforced",
+                           removed=removed, roster=private_roster,
+                           reason=reason)
+        out = private_roster
 
     # Per-phase participant filter (model_routing.json "agents"). Only active
     # inside a routed phase (_phase_key is set by _apply_phase_routing);
@@ -8366,7 +8554,8 @@ def _gate_and_publish(cfg, app, app_dir, key, coord, active, md_path,
             gate_meta = {"source_hash": src_hash, "attempts": attempts}
         aid = artifactslib.publish_one_block(
             project_dir, cur, src, registry, on_error=_warn,
-            consensus=consensus, gate=gate_meta)
+            consensus=consensus, gate=gate_meta,
+            sensitivity=("private" if _is_private(cfg) else "normal"))
         if aid is None:
             continue
         meta = artifactslib.load_meta(project_dir, aid, on_error=_warn) or {}
@@ -8476,7 +8665,9 @@ def _hook_artifact_publish(cfg, app, app_dir, phasedef, state, *,
                 for aid in artifactslib.publish_from_output(
                         project_dir, final_output, src, registry,
                         on_error=_warn, dedupe_against=seen,
-                        consensus=consensus):
+                        consensus=consensus,
+                        sensitivity=("private" if _is_private(cfg)
+                                     else "normal")):
                     meta = artifactslib.load_meta(project_dir, aid,
                                                   on_error=_warn) or {}
                     evlib.emit_event(app_dir, "artifact_published",
@@ -8658,19 +8849,28 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     tctx.artifact_context = ""
     _a_project, _a_section = _session_coords(cfg)
     if _a_section:
+        _privacy_filtered = []
         tctx.artifact_context = artifactslib.retrieve(
             os.path.join(cfg.get("root") or "", _a_project),
             "%s %s" % (_purpose, original_prompt),
             max_chars=int(cget(cfg, "runtime.max_artifact_context_chars",
                                6000)),
             top_k=int(cget(cfg, "runtime.artifact_context_top_k", 3)),
-            sensitivity_filter=None,   # 8.5 swaps this one predicate
+            sensitivity_filter=_artifact_sensitivity_filter(
+                cfg, on_block=lambda meta: _privacy_filtered.append(
+                    meta.get("id", "artifact"))),
             on_error=lambda m: emit("ARTIFACT: WARN %s" % m),
             exclude_session=os.path.basename(app_dir),
             exclude_section=_a_section)
         if cfg["_artifact_context"]:
             emit("Injected %d chars of project artifacts into phase '%s'."
                  % (len(cfg["_artifact_context"]), key))
+        if _privacy_filtered:
+            reason = ("Excluded %d private artifact(s) from non-private "
+                      "prompt context." % len(set(_privacy_filtered)))
+            _privacy_event(cfg, "privacy_enforced", phase=key,
+                           reason=reason, artifacts=sorted(
+                               set(_privacy_filtered))[:20])
 
     # V3 4.13 FACTORY MEMORY: founder-pinned facts, at the same seam. Staged
     # UNCONDITIONALLY (global facts apply to flat/legacy runs too); a repo
@@ -9951,7 +10151,8 @@ def emit_failure_artifact(app_dir, error_class, message, state, cfg, *,
              "error_class": error_class, "message": safe,
              "last_checkpoint": checkpoint, "cost_spent": cost_spent,
              "events_cursor": cursor, "source_session": source_session},
-            registry, on_error=warnings.append, supersedes=supersedes)
+            registry, on_error=warnings.append, supersedes=supersedes,
+            sensitivity=("private" if _is_private(cfg) else "normal"))
         if not aid:
             raise OSError("; ".join(warnings[-2:]) or "artifact publish refused")
         meta = artifactslib.load_meta(project_dir, aid,
@@ -10687,6 +10888,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
     # phase subset; stop_after_phase truncates at a target). Optional file; no file
     # => full workflow, unchanged behavior.
     _rc = complib.load_run_config(app_dir)
+    effective_sensitivity = _effective_sensitivity(app_dir, root, state)
+    tctx.sensitivity = effective_sensitivity
+    if state.get("sensitivity") != effective_sensitivity:
+        state["sensitivity"] = effective_sensitivity
+        save_state(app_dir, state)
     if _rc.get("completeness"):
         _before = len(phases)
         phases = complib.filter_phases(phases, _rc["completeness"],

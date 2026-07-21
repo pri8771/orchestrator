@@ -320,6 +320,16 @@ def _is_local(agent):
     return agent == "ollama" or str(agent).startswith("local:")
 
 
+def local_only(agents):
+    """Return only identities whose execution stays on this machine.
+
+    Privacy enforcement calls this shared classifier at roster and fallback
+    assembly; keeping the predicate here prevents the two exfiltration gates
+    from drifting on a newly-added provider identity.
+    """
+    return [agent for agent in agents if _is_local(agent)]
+
+
 def filter_agents(routing, phase_key, active):
     """Apply a phase's "agents" participant filter to the active roster.
 

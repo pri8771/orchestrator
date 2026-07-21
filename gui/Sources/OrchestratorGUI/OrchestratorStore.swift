@@ -149,13 +149,19 @@ enum BackgroundProjectLoader {
     private static func scanFingerprints(name: String, rootURL: URL)
         -> [String: FileFingerprint] {
         let dir = rootURL.appendingPathComponent(name, isDirectory: true)
-        let urls = [
+        var urls = [
             dir.appendingPathComponent("agent_state.json"),
             dir.appendingPathComponent("workflow.txt"),
             dir.appendingPathComponent("initial_prompt/initial_prompt.md"),
             dir.appendingPathComponent("verify_results.json"),
+            dir.appendingPathComponent("run_config.json"),
             dir.appendingPathComponent(".orch_archived")
         ]
+        let parts = name.split(separator: "/")
+        if parts.count >= 3 {
+            urls.append(rootURL.appendingPathComponent(String(parts[0]))
+                .appendingPathComponent("run_config.json"))
+        }
         return Dictionary(uniqueKeysWithValues: urls.map {
             ($0.path, FileFingerprint.read($0))
         })
@@ -183,6 +189,7 @@ enum BackgroundProjectLoader {
         var awaitingHuman: String? = nil
         var blocked: BlockedConflict? = nil
         var resolutions: [String: String] = [:]
+        var sensitivity = "normal"
 
         if let data = try? Data(contentsOf: stateURL),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -198,6 +205,8 @@ enum BackgroundProjectLoader {
             awaitingHuman = obj["awaiting_human"] as? String
             blocked = BlockedConflict.parse(fromStateObject: obj)
             resolutions = (obj["phase_resolutions"] as? [String: String]) ?? [:]
+            sensitivity = (obj["sensitivity"] as? String) == "private"
+                ? "private" : "normal"
             let done = (obj["done"] as? Bool) ?? false
             if let e = error, !e.isEmpty {
                 status = .aborted
@@ -246,6 +255,12 @@ enum BackgroundProjectLoader {
         proj.archived = fm.fileExists(
             atPath: dir.appendingPathComponent(".orch_archived").path)
         proj.phaseResolutions = resolutions
+        let projectDir = name.split(separator: "/").count >= 3
+            ? rootURL.appendingPathComponent(
+                String(name.split(separator: "/")[0]), isDirectory: true)
+            : dir
+        proj.sensitivity = ProjectSensitivityFile.effective(
+            projectDir: projectDir, sessionDir: dir) ?? sensitivity
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
         proj.latestVerify = VerifyResultsParser.latest(verifyRecords)
@@ -3676,6 +3691,38 @@ final class OrchestratorStore: ObservableObject {
     }
 
     // MARK: - Per-project run config (autonomy / completeness / stop target)
+
+    private func sensitivityDirectory(for project: Project) -> URL {
+        let parts = project.name.split(separator: "/")
+        if parts.count >= 3 {
+            return rootURL.appendingPathComponent(String(parts[0]),
+                                                   isDirectory: true)
+        }
+        return project.dirURL
+    }
+
+    @discardableResult
+    func setProjectPrivate(_ project: Project, enabled: Bool) -> Bool {
+        let value = enabled ? "private" : "normal"
+        guard ProjectSensitivityFile.write(
+            value, to: sensitivityDirectory(for: project)) else {
+            surfaceError("Could not update privacy for \(project.name). "
+                         + "Its run_config.json may be corrupt or unwritable.")
+            return false
+        }
+        runLog += enabled
+            ? "\(project.name) is private — local models only.\n"
+            : "\(project.name) privacy disabled; existing private artifacts stay private.\n"
+        refresh()
+        return true
+    }
+
+    func privateRosterConflict() -> String? {
+        let localEnabled = enabledAgents["ollama"] ?? false
+        let installed = (localModels?.registry ?? []).filter(\.installed)
+        return ProjectSensitivityFile.conflict(
+            localEnabled: localEnabled, installedLocalCount: installed.count)
+    }
 
     // Writes <project>/run_config.json, which the engine reads (completeness picks
     // the phase subset; stop_after_phase truncates; autonomy sets the mode). Only

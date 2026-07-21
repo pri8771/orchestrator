@@ -457,6 +457,8 @@ def _derivation_plan(project_dir, pid, body_bytes, type_name, title,
         "depth": pdepth + 1,
         "hop_count": phops + hop,
         "forced_status": None,
+        "sensitivity": ("private" if parent.get("sensitivity") == "private"
+                        else "normal"),
     }
     if bhash == parent.get("content_hash"):
         on_error("publish note: content is byte-identical to %r — "
@@ -475,7 +477,7 @@ def is_routable(meta):
 
 def publish(project_dir, body_text, meta, registry, on_error=None,
             supersedes=None, consensus=False, gate=None,
-            reconcile_request=False):
+            reconcile_request=False, sensitivity=None):
     """Atomically publish one artifact; return its minted id, or None with
     the reason reported through on_error.
 
@@ -514,6 +516,13 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
         return None
     entry = types[type_name]
     body_text = "" if body_text is None else str(body_text)
+    requested_sensitivity = meta.get("sensitivity", "normal")
+    if requested_sensitivity not in ("normal", "private"):
+        on_error("publish rejected: sensitivity must be 'normal' or 'private'")
+        return None
+    if sensitivity is not None and sensitivity not in ("normal", "private"):
+        on_error("publish rejected: engine sensitivity must be 'normal' or 'private'")
+        return None
 
     # Required-field view: per-type payload keys may live at meta top level
     # or under meta["fields"]; "body" is satisfied by a non-blank body.md.
@@ -689,7 +698,7 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
     doc_slots = _take_string_list("doc_slots")
 
     consumed = {"type", "title", "source", "status", "keywords",
-                "doc_slots", "fields", "plan_ref"}
+                "doc_slots", "fields", "plan_ref", "sensitivity"}
     for key, value in meta.items():
         if key not in consumed:
             extras[key] = value
@@ -804,6 +813,10 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
         # single status assigner.
         if gate and gate.get("failures"):
             status = "quarantined"
+        final_sensitivity = "private" if (
+            sensitivity == "private"
+            or requested_sensitivity == "private"
+            or (plan and plan.get("sensitivity") == "private")) else "normal"
         try:
             guard_fd = os.open(os.path.join(root, ".publish.lock"),
                                os.O_CREAT | os.O_RDWR, 0o644)
@@ -843,6 +856,7 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
                     "keywords": keywords,
                     "doc_slots": doc_slots,
                     "status": status,
+                    "sensitivity": final_sensitivity,
                     # 4.8: WHO set each status, WHEN — provenance for the gate.
                     "status_history": [{"status": status, "at": ts,
                                         "by": source.get("session")
@@ -914,7 +928,7 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
 
 
 def publish_one_block(project_dir, block, source, registry, on_error=None,
-                      consensus=False, gate=None):
+                      consensus=False, gate=None, sensitivity=None):
     """Publish ONE already-parsed ```artifact-json``` block — the per-block step
     of publish_from_output, factored out so the 4.12 gated publish path and the
     ungated path share ONE meta construction and can never drift. ``block`` is
@@ -932,11 +946,13 @@ def publish_one_block(project_dir, block, source, registry, on_error=None,
         return None
     meta["source"] = dict(source) if isinstance(source, dict) else {}
     return publish(project_dir, body, meta, registry, on_error=on_error,
-                   consensus=consensus, gate=gate)
+                   consensus=consensus, gate=gate,
+                   sensitivity=sensitivity)
 
 
 def publish_from_output(project_dir, final_output, source, registry,
-                        on_error=None, dedupe_against=None, consensus=False):
+                        on_error=None, dedupe_against=None, consensus=False,
+                        sensitivity=None):
     """Extract every ```artifact-json``` block from a phase's Final
     Output and publish each — the V3 4.2 publication seam. Returns the
     list of published ids (possibly empty; no blocks publishes nothing).
@@ -985,7 +1001,8 @@ def publish_from_output(project_dir, final_output, source, registry,
                          "close — skipped (crash-resume dedupe)" % (title,))
                 continue
         aid = publish_one_block(project_dir, block, src, registry,
-                                on_error=on_error, consensus=consensus)
+                                on_error=on_error, consensus=consensus,
+                                sensitivity=sensitivity)
         if aid is not None:
             published.append(aid)
     return published
@@ -1250,7 +1267,10 @@ def _reconcile_plan(project_dir, parents, source_section, on_error):
     return {"supersedes": None, "lineage": lcp,
             "version": max(versions) + 1, "branch": "",
             "depth": max(depths) + 1, "hop_count": max(hops) + inc,
-            "forced_status": None, "parents_sorted": sorted(parents)}
+            "forced_status": None, "parents_sorted": sorted(parents),
+            "sensitivity": ("private" if any(
+                m.get("sensitivity") == "private" for m in metas)
+                else "normal")}
 
 
 def is_stale(project_dir, meta, on_error=None, *, index=None):

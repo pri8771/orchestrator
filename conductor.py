@@ -76,6 +76,7 @@ _ROUTED_DECISIONS = (
     "route_approved", "route_recovered", "route_denied", "denied",
     "route_suppressed", "do_not_route_added", "kill_session",
     "converged", "budget_exhausted", "unroutable",
+    "privacy_blocked",
 )
 _SNAPSHOT_TAG_RE = re.compile(r"^conductor/(\d{8}T\d{6}Z)-(\d+)$")
 _SNAPSHOT_SUBJECT_RE = re.compile(
@@ -1485,6 +1486,7 @@ def route_engine(root, state, sessions, emit=print):
     import conductor_permissions as cplib
     import conductor_plan as cplan
     import sections as seclib
+    import orchestrator as orchlib
     from orchestrator import create_session
     import artifacts as artlib
     import sessions as seslib_local
@@ -1711,6 +1713,9 @@ def route_engine(root, state, sessions, emit=print):
                  "driving_content_hash": meta.get("content_hash"),
                  "driving_artifact_type": (meta.get("artifact_type") or
                                              meta.get("type") or "artifact"),
+                 "sensitivity": ("private" if
+                                 meta.get("sensitivity") == "private"
+                                 else "normal"),
                  "source_section": section,
                  "origin_route_ids": [intent.route_id for intent in intents]},
                 registry, on_error=lambda m: emit("conductor plan: %s" % m),
@@ -1765,6 +1770,9 @@ def route_engine(root, state, sessions, emit=print):
                                   driving_meta.get("type") or
                                   fields.get("driving_artifact_type") or
                                   "artifact"),
+                "sensitivity": ("private" if
+                                driving_meta.get("sensitivity") == "private"
+                                else "normal"),
                 "origin_route_ids": [intent.route_id for intent in intents],
                 "feedback": bool(feedback),
                 "capability_exceeds": bool(capability_exceeds),
@@ -1851,6 +1859,11 @@ def route_engine(root, state, sessions, emit=print):
                         reply_to=source_dir,
                         create_session=create_session,
                         on_error=lambda m: emit("conductor mint: %s" % m))
+                    if session_dir and request.get("sensitivity") == "private" \
+                            and not orchlib.persist_private_session(session_dir):
+                        emit("conductor: privacy stamp failed for %s — "
+                             "refusing the route" % session_dir)
+                        session_dir = None
                 _eval_crash("post_act_pre_record")
                 return session_dir
 
@@ -1878,7 +1891,8 @@ def route_engine(root, state, sessions, emit=print):
                 [intent], sid, root, _mint_plan, _plan_route_ledger,
                 probe=_probe_plan,
                 request_extra=lambda _intent, _ref=ref: {
-                    "plan_ref": dict(_ref)})
+                    "plan_ref": dict(_ref),
+                    "sensitivity": payload.get("sensitivity", "normal")})
             outcome = outcomes[0] if outcomes else {"outcome": "mint_failed"}
             if outcome.get("outcome") == "mint_failed":
                 cplan.append_activity_pair(
@@ -2116,6 +2130,40 @@ def route_engine(root, state, sessions, emit=print):
                 continue
             _eval_crash("post_route_id")
 
+            # V3 8.5: sensitivity is enforced at the routing EFFECT seam.
+            # A private artifact may create only a notification (no model) or
+            # a child that has positive proof of an installed local runner.
+            if meta.get("sensitivity") == "private":
+                private_fresh = []
+                for intent in fresh:
+                    if (intent.verdict != crlib.ALLOW or not intent.target
+                            or intent.target == "notification"
+                            or orchlib.privacy_target_has_local_runner(
+                                root, project, intent.target)):
+                        private_fresh.append(intent)
+                        continue
+                    reason = ("Private artifact route to %s blocked: no "
+                              "configured, installed local model is available."
+                              % intent.target)
+                    _ledger_route(root, {
+                        "session": sid, "route_id": intent.route_id,
+                        "route_key": intent.route_key,
+                        "decision": "privacy_blocked",
+                        "detail": {**intent.as_ledger_detail(),
+                                   "reason": reason}})
+                    import events as eventslib
+                    eventslib.emit_event(
+                        app_dir, "privacy_blocked", project=project,
+                        section=section, session=sid,
+                        route_id=intent.route_id,
+                        artifact_id=intent.artifact_id,
+                        target=intent.target, reason=reason)
+                    state["routed"][intent.route_id] = True
+                fresh = private_fresh
+                if not fresh:
+                    save_conductor_state(root, state)
+                    continue
+
             # V3 7.12: two or more executable route effects are ONE
             # autonomous multi-step intent. Materialize and classify the
             # whole plan before any of those effects starts. Single routes
@@ -2249,6 +2297,11 @@ def route_engine(root, state, sessions, emit=print):
                         reply_to=app_dir,
                         create_session=create_session,
                         on_error=lambda m: emit("conductor mint: %s" % m))
+                    if session_dir and request.get("sensitivity") == "private" \
+                            and not orchlib.persist_private_session(session_dir):
+                        emit("conductor: privacy stamp failed for %s — "
+                             "refusing the route" % session_dir)
+                        session_dir = None
                 _eval_crash("post_act_pre_record")
                 return session_dir
 
@@ -2382,7 +2435,11 @@ def route_engine(root, state, sessions, emit=print):
             outcomes = crlib.execute_intents(
                 allowed_now, sid, root, _mint,
                 _route_ledger,
-                probe=lambda rid, tgt: _probe(rid, tgt, _intent_by_rid=by_rid))
+                probe=lambda rid, tgt: _probe(rid, tgt, _intent_by_rid=by_rid),
+                request_extra=lambda _intent, _meta=meta: {
+                    "sensitivity": ("private" if
+                                    _meta.get("sensitivity") == "private"
+                                    else "normal")})
             # Record only routes that actually fired or were terminally
             # decided (converged/budget/unroutable/denied) — a mint_failed
             # stays un-recorded so the next poll retries it.

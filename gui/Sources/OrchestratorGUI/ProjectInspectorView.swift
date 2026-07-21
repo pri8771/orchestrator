@@ -372,9 +372,30 @@ private struct InfoTab: View {
     let project: Project
     @State private var prompt = ""
     @State private var docs: [URL] = []
+    @State private var isPrivate = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.space.s) {
+            Toggle("Private (local models only)", isOn: Binding(
+                get: { isPrivate },
+                set: { value in
+                    if store.setProjectPrivate(project, enabled: value) {
+                        isPrivate = value
+                    }
+                }
+            ))
+            .help("Private projects refuse every cloud runner and cloud fallback.")
+            if isPrivate, let conflict = store.privateRosterConflict() {
+                InlineBanner(kind: .warning,
+                             title: "Private run cannot start",
+                             message: conflict)
+            } else if isPrivate {
+                Label("Enforced by the engine at runner, fallback, context, and route boundaries",
+                      systemImage: "lock.shield")
+                    .font(DS.font.caption)
+                    .foregroundStyle(DS.status.success.color)
+            }
+            Divider()
             Text("Idea prompt").font(DS.font.callout).foregroundStyle(.secondary)
             Text(prompt.isEmpty ? "—" : prompt)
                 .font(DS.font.body)
@@ -433,6 +454,7 @@ private struct InfoTab: View {
         }
         .padding(DS.space.s)
         .task(id: project.name) {
+            isPrivate = project.isPrivate
             prompt = store.initialPrompt(for: project)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             docs = Self.attachedDocs(in: project.dirURL)

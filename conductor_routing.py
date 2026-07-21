@@ -422,6 +422,10 @@ def execute_intents(intents, session_id, root, mint, ledger, permit=None,
             plan_ref = extra.get("plan_ref") if isinstance(extra, dict) else None
             if isinstance(plan_ref, dict):
                 request["plan_ref"] = dict(plan_ref)
+            sensitivity = extra.get("sensitivity") \
+                if isinstance(extra, dict) else None
+            if sensitivity in ("normal", "private"):
+                request["sensitivity"] = sensitivity
         session_dir = mint(intent.target, request)
         outcome = "routed" if session_dir else "mint_failed"
         outcomes.append({"outcome": outcome, "target": intent.target,

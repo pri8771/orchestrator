@@ -222,6 +222,11 @@ struct Project: Identifiable, Equatable {
     // completed phase isn't necessarily a CLEAN one; this is how the GUI
     // tells the difference instead of reading every phase as equally done.
     var phaseResolutions: [String: String] = [:]
+    // V3 8.5: effective engine-enforced privacy state, derived from persisted
+    // run config/state by the background scanner (never optimistic UI state).
+    var sensitivity: String = "normal"
+
+    var isPrivate: Bool { sensitivity == "private" }
 
     var id: String { name }
 

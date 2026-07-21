@@ -48,6 +48,10 @@ Event kinds emitted by orchestrator.py:
     approval_needed / stalled / converged / budget_exhausted
                         (Conductor decisions consumed by macOS notifications;
                          fields name the session/route/budget measurement)
+    privacy_enforced / privacy_blocked
+                        (private-mode roster/fallback rewrites, or an agent /
+                         route refusal; identifiers and reasons only, never
+                         sensitive prompt or artifact content)
 
 Contract:
   * Best-effort by design — emitting an event must NEVER take a run down.
@@ -137,6 +141,9 @@ KINDS = (
     "snapshot_failed",
     # V3 board 7.8: emitted only from the Conductor's durable decision sites.
     "approval_needed", "stalled", "converged", "budget_exhausted",
+    # V3 8.5 privacy boundary. Payloads contain agent/route identifiers and a
+    # bounded reason only; sensitive prompt/artifact bodies never enter events.
+    "privacy_enforced", "privacy_blocked",
 )
 
 _MAX_FIELD_CHARS = 500

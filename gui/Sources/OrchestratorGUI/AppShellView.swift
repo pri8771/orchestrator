@@ -1495,6 +1495,13 @@ private struct ProjectShellContent: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(width: 340)
+                if proj.isPrivate {
+                    Label("Private", systemImage: "lock.fill")
+                        .font(DS.font.caption)
+                        .foregroundStyle(DS.accent.color)
+                        .help("Engine-enforced local models only")
+                        .accessibilityLabel("Private, local models only")
+                }
                 Spacer()
             }
             .padding(.horizontal, DS.space.s)

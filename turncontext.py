@@ -222,6 +222,11 @@ class TurnContext(object):
     role_by_id = _prop(
         "_role_by_id", "Precomputed id->role map (once per run).")
     autonomy = _prop("_autonomy", "Run-config autonomy level or None.")
+    sensitivity = _prop(
+        "_sensitivity",
+        "V3 8.5 effective project/session sensitivity: 'normal' or "
+        "'private'. Re-derived from disk at every run start and persisted "
+        "in agent_state.json for crash-resume safety.")
     api_agents_enabled = _prop(
         "_api_agents_enabled",
         "V3 6.2: per-project opt-in for direct-API agents (run_config.json "
