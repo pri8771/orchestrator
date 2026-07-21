@@ -84,6 +84,11 @@ struct TranscriptView: View {
                                 if isActivePhase {
                                     if let workers = store.parallelBuildWorkers(for: project) {
                                         ParallelBuildBanner(workers: workers)
+                                        if let phase = project.currentPhase {
+                                            BuildActivityLog(events: store.recentBuildActivity(
+                                                for: project, phase: phase,
+                                                round: project.currentRound))
+                                        }
                                     } else {
                                         switch turnState {
                                         case .waiting(let agent, let live):
@@ -752,6 +757,41 @@ struct ParallelBuildBanner: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
+    }
+}
+
+// A small live log under the parallel-build banner — real turn_started/
+// turn_completed/agent_fallback events for the current round, newest first,
+// so a multi-minute local-model round shows continuous visible activity
+// instead of a static "building…" chip. Reuses EngineEvent.headline (the
+// same one-line rendering the fallback bell / feed already use) — no new
+// formatting logic, just a focused filtered slice shown inline.
+struct BuildActivityLog: View {
+    let events: [EngineEvent]
+    var body: some View {
+        if !events.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(events) { e in
+                    HStack(spacing: 6) {
+                        Text(e.ts, style: .time)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                        Text(e.headline)
+                            .font(.caption2)
+                            .foregroundStyle(e.isFallback ? DS.status.warning.color
+                                             : .secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.04)))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Recent build activity")
+        }
     }
 }
 

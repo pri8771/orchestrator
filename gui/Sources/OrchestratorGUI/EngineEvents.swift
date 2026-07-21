@@ -323,6 +323,18 @@ private extension EngineEvent {
     }
 }
 
+// MARK: - Parallel-build activity log (the small live log under
+// ParallelBuildBanner) — pure filter, free function so it's testable
+// without an OrchestratorStore/Project fixture.
+func filterBuildActivity(_ events: [EngineEvent], phase: String, round: Int,
+                         limit: Int) -> [EngineEvent] {
+    let kinds: Set<String> = ["turn_started", "turn_completed", "agent_fallback"]
+    let matches = events.filter {
+        $0.phase == phase && $0.round == round && kinds.contains($0.kind)
+    }
+    return Array(matches.suffix(limit).reversed())
+}
+
 // MARK: - Aggregation ("× 133" rows, graft: Conductor)
 
 struct AggregatedEvent: Identifiable, Equatable {

@@ -4421,6 +4421,19 @@ final class OrchestratorStore: ObservableObject {
         sessionModels[project.name]?.buildWorkers
     }
 
+    // The live activity log under the parallel-build banner: the last few
+    // turn_started/turn_completed/agent_fallback events for THIS phase+round,
+    // newest first — reuses eventsByProject (already tailed+parsed by the
+    // scanner on its existing polling cadence), so this is a filter, not a
+    // new reader. Scoped to the round so switching phases/rounds doesn't
+    // show stale activity from an earlier one. The actual filter is a free
+    // function (below) so it's testable without a store/project fixture.
+    func recentBuildActivity(for project: Project, phase: String, round: Int,
+                             limit: Int = 6) -> [EngineEvent] {
+        filterBuildActivity(eventsByProject[project.name] ?? [],
+                            phase: phase, round: round, limit: limit)
+    }
+
     // The actual computation — called ONLY from refresh(), never from a view.
     // During a parallel build fan-out, next_agent is a "+"-joined slug list (e.g.
     // "codex-a+codex-b+codex-c") — orchestrator.py:1049. `done` is derived from
