@@ -87,7 +87,8 @@ _BUILTINS = {
         "workflow": "audit",
         "default_mode": "manual",
         "artifact_types_emitted": [
-                "finding_report"
+                "finding_report",
+                "compliance_report"
         ],
         "artifact_types_accepted": [
                 "any"

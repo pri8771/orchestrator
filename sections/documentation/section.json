@@ -11,7 +11,8 @@
     "idea",
     "research_brief",
     "spec_bundle",
-    "finding_report"
+    "finding_report",
+    "compliance_report"
   ],
   "dod_tier": "standard",
   "local_pins": []

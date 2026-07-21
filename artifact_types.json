@@ -35,6 +35,14 @@
         "body"
       ]
     },
+    "compliance_report": {
+      "finalization": "auto_final_on_consensus",
+      "required": [
+        "title",
+        "body",
+        "findings"
+      ]
+    },
     "gap": {
       "finalization": "auto_final_on_consensus",
       "required": [

@@ -64,6 +64,7 @@ import resilience as reslib
 import docs as docslib
 import docsync as docsynclib
 import completeness as complib
+import compliance as compliancelib
 import situations as sitlib
 import buildpolicy as buildpolicylib
 import global_resource as grlib
@@ -3427,7 +3428,7 @@ def _phase_quality_target(cfg):
 def _phase_quality_gate_enabled(cfg, is_build):
     if is_build:
         return False
-    if _phase_quality_target(cfg) not in ("app", "app_spec"):
+    if _phase_quality_target(cfg) not in ("app", "app_spec", "enroll"):
         return False
     return bool(cget(cfg, "runtime.phase_quality_gates_enabled", False))
 
@@ -3465,7 +3466,18 @@ def run_phase_quality_gate(cfg, app, app_dir, phasedef, rnd, coord, ctx,
     key = phasedef.key if hasattr(phasedef, "key") else phasedef[0]
     grader = evaluator or coord
     qprompt = prompt_quality_check(cfg, grader, ctx, phasedef, rnd, coordinator_output)
-    qresp = call_agent(cfg, app, key, "quality-%s" % rnd, grader, qprompt)
+    deterministic_errors = []
+    if cfg.get("_workflow_target") == "enroll" and key == "compliance_check":
+        _report, deterministic_errors = compliancelib.parse_output(
+            coordinator_output, cfg.get("_target_path"), HERE)
+    if deterministic_errors:
+        # This is part of the phase quality gate, not a post-hoc warning.  A
+        # model cannot wave through missing evidence with `QUALITY: PASS`, and
+        # an unavailable evaluator cannot turn malformed findings into a pass.
+        qresp = ("QUALITY: FAIL\n## Feedback\nCompliance contract rejected:\n- "
+                 + "\n- ".join(deterministic_errors))
+    else:
+        qresp = call_agent(cfg, app, key, "quality-%s" % rnd, grader, qprompt)
     passed = _quality_passed(qresp)
     qblock = "**Quality Gate (%s) — after round %d**\n\n%s\n" % (
         DISPLAY[grader], rnd, qresp)
@@ -3615,6 +3627,8 @@ def phase_extra(cfg, key):
     if key in ("portfolio_selection", "app_features", "project_plan") and \
             portfoliolib.is_portfolio_parent_prompt(cfg.get("_original_prompt", "")):
         portfolio_note = portfoliolib.PORTFOLIO_JSON_INSTRUCTION
+    if cfg.get("_workflow_target") == "enroll" and key == "compliance_check":
+        return compliancelib.prompt_contract(HERE)
     if cfg.get("_workflow_target") == "audit":
         schema = (
             "When you record findings in the wrap-up, emit EACH finding as one fenced "
@@ -8373,6 +8387,60 @@ def _hook_document_provenance(cfg, app, app_dir, phasedef, state, *,
     return transcript, final_output
 
 
+def _hook_compliance_report(cfg, app, app_dir, phasedef, state, *,
+        key, md_path, transcript, final_output, coord, active,
+        is_build, is_verify_repair, allow_writes, _needs_vlabel,
+        consensus=False):
+    """Publish enrollment compliance evidence to the project artifact bus."""
+    if cfg.get("_workflow_target") != "enroll" or key != "compliance_check":
+        return transcript, final_output
+    report, errors = compliancelib.parse_output(
+        final_output or "", cfg.get("_target_path"), HERE)
+    if errors:
+        state.setdefault("phase_resolutions", {}).setdefault(
+            key, "compliance_contract_invalid")
+        for error in errors:
+            emit("COMPLIANCE: contract rejected — %s" % error)
+        return transcript, final_output
+
+    findings = report["findings"]
+    body = compliancelib.render_report(findings)
+    body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    session = os.path.basename(app_dir)
+    for meta in artifactslib.list_artifacts(
+            app_dir, type="compliance_report",
+            on_error=lambda message: emit("COMPLIANCE: WARN %s" % message)):
+        source = meta.get("source") if isinstance(meta, dict) else None
+        if isinstance(source, dict) and source.get("session") == session \
+                and source.get("phase") == key \
+                and meta.get("content_hash") == body_hash:
+            emit("COMPLIANCE: report already published as %s — resume no-op."
+                 % meta.get("id"))
+            return transcript, final_output
+    registry = artifactslib.load_registry(
+        HERE, on_error=lambda message: emit("COMPLIANCE: WARN %s" % message))
+    aid = artifactslib.publish(
+        app_dir, body,
+        {"type": "compliance_report",
+         "title": "Enrollment compliance report",
+         "findings": findings,
+         "doc_slots": ["app_store_compliance"],
+         "source": {"section": "qa", "session": session,
+                    "phase": key, "turn": ""}},
+        registry, consensus=consensus,
+        sensitivity=("private" if _is_private(cfg) else "normal"),
+        on_error=lambda message: emit("COMPLIANCE: WARN %s" % message))
+    if aid:
+        meta = artifactslib.load_meta(app_dir, aid) or {}
+        evlib.emit_event(app_dir, "artifact_published", artifact_id=aid,
+                         type="compliance_report",
+                         version=meta.get("version", 1),
+                         path="artifacts/%s" % aid,
+                         phase=key, project=app)
+        emit("COMPLIANCE: published %s to the project bus." % aid)
+    return transcript, final_output
+
+
 def _hook_audit_report(cfg, app, app_dir, phasedef, state, *,
         key, md_path, transcript, final_output, coord, active,
         is_build, is_verify_repair, allow_writes, _needs_vlabel,
@@ -8750,6 +8818,7 @@ _PHASE_CLOSE_HOOKS = (
     _hook_secret_scan,
     _hook_record_contracts,
     _hook_flows_requirements_research,
+    _hook_compliance_report,
     _hook_document_provenance,
     _hook_library_mining,
     _hook_audit_report,

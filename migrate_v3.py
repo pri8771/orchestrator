@@ -37,7 +37,7 @@ SEED_HASHES = {
     "workflows/chat_ideas.json": "98bf6f9d170780d8124eaa27cbbc6d87c6d812f6b2d1d7e79ceb21dd272a6b5b",
     "workflows/chat_research.json": "009a88421840edcfff9187d073106ebcb20772e7fb86cd5264c5824148f1f73b",
     "workflows/documentation.json": "b2eaab75d2d4542a5ce2bd1c48cfad3db1171fc6b11e53f51b24715a2eeacd9a",
-    "workflows/enroll.json": "20eb16aff88a491966bf8c0c1717a49a0474ab9d427819b8de7a95ea82ee3c2e",
+    "workflows/enroll.json": "56acd2fac8098c05000936149082e8a20ee7c553c91e70a69bd584add935692a",
     "workflows/full_max.json": "3d641d184994a29ec7620f47fd5afeb3cfc98626bf4496e8d6137955b8da005a",
     "workflows/iterate.json": "90f8bf68795ced68686444e31229776c9592c09232aca41e01ca7fcb33587acd",
     "workflows/library_mining.json": "c527898ee7f69fe0f4e3276d6f13d38b39d6a3d4028923ce96ee4132f674f15a",
@@ -46,7 +46,7 @@ SEED_HASHES = {
     "workflows/research.json": "1a5f695e33f705e9cc1be3642ac283dd0ffad896b09dbb6bc0984536417c09ea",
     "workflows/sprint.json": "15867bf2794c52524abc20210983e2c53a1fae0a8d071b61664935758496a2a4",
     "workflows/vslice.json": "67a95b3165e2bef1dc9f11612a0678e65f9fc23cddd49d8fa18d2462b7b2ea6f",
-    "phase_rules.json": "0bb0d1751c668dcc78bd55e6c90e3bc6572a3bcf6b02ce4cd20170bcb148b558",
+    "phase_rules.json": "72af442c33a451ac4daf958c825a2c6a7308830e4579be057b75c1cba34a6e14",
     "model_routing.json": "a84bbacd5673d00f83aef8fa0451854d37ccb826334d8c20d4e82e618eda2b10",
 }
 

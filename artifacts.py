@@ -72,6 +72,7 @@ import threading
 import unicodedata
 
 import schemas
+import compliance as compliancelib
 
 # The closed status vocabulary. "superseded" and "converged" are written
 # only by 4.3's lineage machinery. "published" is RETIRED (V3 4.8): it split
@@ -149,6 +150,8 @@ SEED_TYPES = {
                   "finalization": "auto_final_on_consensus"},
     "finding_report": {"required": ["title", "body"],
                        "finalization": "requires_review_gate"},
+    "compliance_report": {"required": ["title", "body", "findings"],
+                          "finalization": "auto_final_on_consensus"},
     "knowledge_hint": {"required": ["title", "body", "evidence"],
                        "finalization": "auto_final_on_consensus"},
     "launch_plan": {"required": ["title", "body"],
@@ -632,6 +635,13 @@ def publish(project_dir, body_text, meta, registry, on_error=None,
         if not isinstance(view.get("source_session"), str) \
                 or not view["source_session"].strip():
             on_error("publish rejected: failure.source_session must be non-empty")
+            return None
+    if type_name == "compliance_report":
+        compliance_errors = compliancelib.validate_findings(
+            view.get("findings"))
+        if compliance_errors:
+            for error in compliance_errors:
+                on_error("publish rejected: compliance_report %s" % error)
             return None
 
     title = meta.get("title")

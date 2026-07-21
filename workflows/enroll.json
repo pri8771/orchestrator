@@ -48,7 +48,7 @@
       "folder": "compliance_check",
       "file": "compliance_check.md",
       "title": "Compliance Check",
-      "purpose": "Check the enrolled origin against the applicable curated knowledge rules. Every finding must name the rule area, a verdict, repo-relative evidence paths, and why the evidence supports that verdict. Use cannot-determine when evidence is insufficient and not-applicable for rule areas outside this project type; never coerce uncertainty into pass or fail.",
+      "purpose": "Audit the enrolled origin against every knowledge/ios/*.md rule area. Every finding must name the exact knowledge-file rule id, one verdict (compliant, non-compliant, not-applicable, or cannot-determine), one or more real repo-relative evidence file paths, and why the evidence supports that verdict. Use cannot-determine when evidence is insufficient and not-applicable for rule areas outside this project type; never coerce uncertainty into pass or fail. Emit the required compliance-json contract so the engine can validate and publish the typed compliance_report artifact.",
       "rounds": 3,
       "roles": ["qa", "security", "backend"],
       "writes": false,

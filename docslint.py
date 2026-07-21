@@ -75,7 +75,7 @@ def _paragraphs(text):
     return out
 
 
-def _existing_target_file(target_root, claimed_path):
+def existing_target_file(target_root, claimed_path):
     """True only for an existing file contained by ``target_root``."""
     if not target_root or not os.path.isdir(target_root):
         return False
@@ -109,7 +109,7 @@ def lint_text(text, target_root, source="doc_rebuild/doc_rebuild.md"):
         # [UNVERIFIED] and pass the lint.
         for match in _PATH_TAG_RE.finditer(paragraph):
             claimed = match.group(2).strip()
-            if not _existing_target_file(target_root, claimed):
+            if not existing_target_file(target_root, claimed):
                 violations.append({
                     "kind": "fabricated_citation",
                     "source": source,

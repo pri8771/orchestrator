@@ -889,14 +889,16 @@
     },
     "compliance_check": {
       "rules": [
-        "Evaluate every applicable curated rule area and retain cannot-determine as a first-class verdict.",
+        "Evaluate every knowledge/ios/*.md rule area and retain cannot-determine as a first-class verdict.",
         "Every finding names its rule area, verdict, repo-relative evidence paths, and why the evidence supports the verdict.",
-        "Use not-applicable for rule areas outside the detected project type; never coerce uncertainty into compliance."
+        "Use not-applicable for rule areas outside the detected project type; never coerce uncertainty into compliance.",
+        "Emit exactly one compliance-json block whose findings use the exact knowledge-file rule ids and the verdict vocabulary compliant, non-compliant, not-applicable, cannot-determine."
       ],
       "required_output": [
-        "A finding per curated rule area.",
+        "A finding per knowledge/ios/*.md rule area.",
         "Verdict, evidence paths, and why for every finding.",
-        "Explicit cannot-determine and not-applicable findings where appropriate."
+        "Explicit cannot-determine and not-applicable findings where appropriate.",
+        "A machine-valid compliance-json contract for the compliance_report artifact."
       ],
       "acceptance_checks": [
         "No finding lacks evidence paths and reasoning.",

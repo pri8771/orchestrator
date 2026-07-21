@@ -63,7 +63,8 @@ class TestHookOrderPin(unittest.TestCase):
             ["_hook_sprint_verify_reserve", "_hook_verify_repair",
              "_hook_ios_signing", "_hook_secret_scan",
              "_hook_record_contracts", "_hook_flows_requirements_research",
-             "_hook_document_provenance", "_hook_library_mining",
+             "_hook_compliance_report", "_hook_document_provenance",
+             "_hook_library_mining",
              "_hook_audit_report",
              "_hook_verification_label", "_hook_artifact_publish"])
 
