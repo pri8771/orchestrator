@@ -14,20 +14,6 @@ struct SituationApplyDiff: Equatable, Sendable {
 }
 
 enum SituationApplyService {
-    static func diff(beforeSlots: [String], afterSlots: [String], map: DocumentMap,
-                     phases: [SituationWorkflowPhase]) -> SituationApplyDiff {
-        let before = SituationImpactCompiler.preview(slotIDs: beforeSlots, map: map, phases: phases)
-        let after = SituationImpactCompiler.preview(slotIDs: afterSlots, map: map, phases: phases)
-        let requiredBefore = before.phaseKeys
-        let requiredAfter = after.phaseKeys
-        return SituationApplyDiff(
-            phasesAdded: requiredAfter.filter { !requiredBefore.contains($0) },
-            phasesRemoved: requiredBefore.filter { !requiredAfter.contains($0) },
-            sectionsActivated: after.sections.filter { !before.sections.contains($0) },
-            sectionsDeactivated: before.sections.filter { !after.sections.contains($0) },
-            slotDelta: Set(afterSlots).count - Set(beforeSlots).count)
-    }
-
     @discardableResult
     static func confirm(situation name: String, runConfigURL: URL) throws -> Bool {
         let fm = FileManager.default
@@ -59,6 +45,56 @@ enum SituationApplyService {
 }
 
 enum SituationEngineQuery {
+    static func preview(python: String, moduleRoot: URL, orchDir: URL,
+                        projectDir: URL?, workflow: String,
+                        slotIDs: [String]) -> PipelineResult<SituationImpact> {
+        guard let slotsData = try? JSONSerialization.data(withJSONObject: slotIDs),
+              let slotsJSON = String(data: slotsData, encoding: .utf8) else {
+            return .failure("Situation slots could not be encoded")
+        }
+        let script = """
+import json,sys
+sys.path.insert(0,sys.argv[1])
+import completeness,situations,workflows,docs
+orch,project,workflow_name,slots_json=sys.argv[2:]
+ph=list(workflows.load_workflow(workflow_name,orch).phases)
+if project:
+ rc=completeness.load_run_config(project)
+ if rc.get('completeness'):
+  ph=completeness.filter_phases(ph,rc['completeness'],on_warn=lambda _m:None)
+ if rc.get('stop_after_phase'):
+  ph=completeness.apply_stop_target(ph,rc['stop_after_phase'],on_warn=lambda _m:None)
+dm=docs.load_doc_map(orch,on_warn=lambda _m:None)
+slots,owners=situations.resolve_required_slots({'doc_slots':json.loads(slots_json)},dm)
+chosen=completeness.filter_phases_by_slots(ph,slots,on_warn=lambda _m:None)
+print(json.dumps({'sections':sorted(owners),'phase_keys':[p.key for p in chosen],
+'phase_count':len(chosen),'required_slots':slots}))
+"""
+        let process = Process(); process.executableURL = URL(fileURLWithPath: python)
+        process.currentDirectoryURL = moduleRoot
+        process.arguments = ["-c", script, moduleRoot.path, orchDir.path,
+                             projectDir?.path ?? "", workflow, slotsJSON]
+        let output = Pipe(), errors = Pipe()
+        process.standardOutput = output; process.standardError = errors
+        do { try process.run(); process.waitUntilExit() }
+        catch { return .failure(error.localizedDescription) }
+        guard process.terminationStatus == 0 else {
+            let data = errors.fileHandleForReading.readDataToEndOfFile()
+            return .failure(String(data: data, encoding: .utf8)
+                            ?? "Situation impact query failed")
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sections = root["sections"] as? [String],
+              let phaseKeys = root["phase_keys"] as? [String],
+              let phaseCount = root["phase_count"] as? Int else {
+            return .failure("Situation impact query returned invalid JSON")
+        }
+        return .success(SituationImpact(sections: sections,
+                                        phaseCount: phaseCount,
+                                        phaseKeys: phaseKeys))
+    }
+
     static func diff(python: String, moduleRoot: URL, orchDir: URL,
                      projectDir: URL, workflow: String,
                      candidate: String) -> PipelineResult<SituationApplyDiff> {
@@ -70,6 +106,7 @@ orch,project,workflow_name,candidate=sys.argv[2:]
 rc=completeness.load_run_config(project)
 ph=list(workflows.load_workflow(workflow_name,orch).phases)
 ph=completeness.filter_phases(ph,rc.get('completeness'),on_warn=lambda _m:None)
+ph=completeness.apply_stop_target(ph,rc.get('stop_after_phase'),on_warn=lambda _m:None)
 dm=docs.load_doc_map(orch,on_warn=lambda _m:None)
 def calc(ref):
  if not ref: return {'phases':[p.key for p in ph],'sections':[],'slots':[]}

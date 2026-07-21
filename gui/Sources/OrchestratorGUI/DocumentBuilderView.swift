@@ -137,29 +137,6 @@ struct SituationImpact: Equatable, Sendable {
     let phaseKeys: [String]
 }
 
-enum SituationImpactCompiler {
-    // Pure port of situations.resolve_required_slots +
-    // completeness.filter_phases_by_slots. Its parity test executes those
-    // Python functions against the same fixture.
-    static func preview(slotIDs: [String], map: DocumentMap,
-                        phases: [SituationWorkflowPhase]) -> SituationImpact {
-        let byID = map.slotsByID
-        var seen = Set<String>()
-        let known = slotIDs.filter { byID[$0] != nil && seen.insert($0).inserted }
-        let sections = Array(Set(known.compactMap { byID[$0]?.ownerSection })).sorted()
-        guard !known.isEmpty else {
-            return SituationImpact(sections: sections, phaseCount: phases.count,
-                                   phaseKeys: phases.map(\.key))
-        }
-        let required = Set(known)
-        var kept = phases.filter { !required.isDisjoint(with: $0.docSections) }
-        if let last = phases.last, !kept.contains(last) { kept.append(last) }
-        if kept.count < min(3, phases.count) { kept = phases }
-        return SituationImpact(sections: sections, phaseCount: kept.count,
-                               phaseKeys: kept.map(\.key))
-    }
-}
-
 struct SituationFileRecord: Identifiable, Equatable {
     let name: String
     let url: URL
@@ -214,6 +191,9 @@ struct DocumentBuilderSheet: View {
     @State private var loadError: String?
     @State private var selectedProjectName = ""
     @State private var gap = GapReportSnapshot(statuses: [:], error: nil)
+    @State private var engineImpact: SituationImpact?
+    @State private var impactError: String?
+    @State private var impactLoading = false
     @State private var baselineData: Data?
     @State private var changedOnDisk = false
     var initialSituationURL: URL? = nil
@@ -222,6 +202,10 @@ struct DocumentBuilderSheet: View {
 
     private var selectedRecord: SituationFileRecord? { records.first { $0.url == selectedURL } }
     private var selectedProject: Project? { store.projects.first { $0.name == selectedProjectName } }
+    private var impactQueryID: String {
+        let slots = canvas?.slotIDs.joined(separator: "\u{1f}") ?? ""
+        return "\(selectedProjectName)|\(selectedProject?.workflow ?? "app_build")|\(slots)"
+    }
 
     var body: some View {
         Group {
@@ -247,6 +231,7 @@ struct DocumentBuilderSheet: View {
         .frame(minWidth: 760, idealWidth: 1040, minHeight: 540, idealHeight: 700)
         .background(DS.windowBg)
         .task { reloadLibrary() }
+        .task(id: impactQueryID) { await loadImpact() }
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in checkExternalEdit() }
     }
 
@@ -414,21 +399,48 @@ struct DocumentBuilderSheet: View {
     }
 
     private func impact(_ value: SituationCanvas, map: DocumentMap) -> some View {
-        let phases = store.situationWorkflowPhases(named: selectedProject?.workflow ?? "app_build")
-        let preview = SituationImpactCompiler.preview(slotIDs: value.slotIDs, map: map, phases: phases)
-        return VStack(alignment: .leading, spacing: DS.space.xxs) {
+        VStack(alignment: .leading, spacing: DS.space.xxs) {
             Text("Impact preview").font(DS.font.headline)
-            Text(preview.sections.isEmpty ? "No owning sections · ~\(preview.phaseCount) phases"
-                 : "Will run \(preview.sections.joined(separator: ", ")) · ~\(preview.phaseCount) phases")
-                .font(DS.font.body)
+            if impactLoading {
+                ProgressView("Asking the engine…")
+                    .accessibilityIdentifier("document-impact-loading")
+            } else if let preview = engineImpact {
+                Text(preview.sections.isEmpty ? "No owning sections · ~\(preview.phaseCount) phases"
+                     : "Will run \(preview.sections.joined(separator: ", ")) · ~\(preview.phaseCount) phases")
+                    .font(DS.font.body)
+                    .accessibilityIdentifier("document-impact-result")
+            } else {
+                Label("Impact unavailable — \(impactError ?? "engine query has not completed")",
+                      systemImage: "exclamationmark.triangle")
+                    .font(DS.font.caption).foregroundStyle(DS.status.warning.color)
+                    .accessibilityIdentifier("document-impact-error")
+            }
             if selectedProject == nil {
-                Text("No project selected — fill status is neutral; phase count uses app_build.")
+                Text("No project selected — fill status is neutral; the engine evaluates app_build.")
                     .font(DS.font.caption).foregroundStyle(.secondary)
             } else if let error = gap.error {
                 Text(error).font(DS.font.caption).foregroundStyle(DS.status.warning.color)
             }
         }.padding(DS.space.s).frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: DS.radius.card).fill(DS.accent.fill))
+    }
+
+    @MainActor private func loadImpact() async {
+        guard let value = canvas else {
+            engineImpact = nil; impactError = nil; impactLoading = false
+            return
+        }
+        impactLoading = true; engineImpact = nil; impactError = nil
+        let result = await store.engineSituationPreview(
+            slotIDs: value.slotIDs,
+            workflow: selectedProject?.workflow ?? "app_build",
+            projectDir: selectedProject?.dirURL)
+        guard !Task.isCancelled else { return }
+        impactLoading = false
+        switch result {
+        case .success(let preview): engineImpact = preview
+        case .failure(let error): impactError = error
+        }
     }
 
     private func reloadLibrary() {

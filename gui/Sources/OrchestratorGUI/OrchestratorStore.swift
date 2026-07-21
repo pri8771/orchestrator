@@ -1991,6 +1991,23 @@ final class OrchestratorStore: ObservableObject {
                                   workflow: project.workflow, candidate: candidate)
     }
 
+    func engineSituationPreview(slotIDs: [String], workflow: String,
+                                projectDir: URL?) async -> PipelineResult<SituationImpact> {
+        let python = resolvePython(), moduleRoot = orchDirURL, orchDir = orchDirURL
+        let result: (SituationImpact?, String?) = await Task.detached(priority: .utility) {
+            () -> (SituationImpact?, String?) in
+            switch SituationEngineQuery.preview(
+                    python: python, moduleRoot: moduleRoot, orchDir: orchDir,
+                    projectDir: projectDir, workflow: workflow,
+                    slotIDs: slotIDs) {
+            case .success(let impact): return (impact, nil)
+            case .failure(let error): return (nil, error)
+            }
+        }.value
+        if let impact = result.0 { return .success(impact) }
+        return .failure(result.1 ?? "Situation impact query failed")
+    }
+
     // The phases a given project runs (from its workflow; falls back to app_build).
     func phases(for project: Project) -> [PhaseDef] {
         (workflow(named: project.workflow) ?? workflow(named: "app_build"))?.phases ?? ALL_PHASES

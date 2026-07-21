@@ -105,55 +105,65 @@ final class DocumentBuilderImpactTests: XCTestCase {
                 DocumentSlot(id: "b", title: "Beta", category: "one", ownerSection: "build"),
                 DocumentSlot(id: "unowned", title: "Unowned", category: "one", ownerSection: nil)])
 
-    func testImpactMatchesEngineFunctionsOnSameFixture() throws {
-        let phases = [
-            SituationWorkflowPhase(key: "research", title: "Research", docSections: ["a"]),
-            SituationWorkflowPhase(key: "build", title: "Build", docSections: ["b"]),
-            SituationWorkflowPhase(key: "design", title: "Design", docSections: ["design"]),
-            SituationWorkflowPhase(key: "final", title: "Final", docSections: []),
-        ]
-        let swift = SituationImpactCompiler.preview(slotIDs: ["b", "a", "a", "stale"],
-                                                    map: map, phases: phases)
+    func testImpactQueryExecutesEngineFunctionsOnDiscriminatingFixture() throws {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let script = """
-import json,sys
-sys.path.insert(0, sys.argv[1])
-import situations, completeness, workflows
-dm={'slots':[{'slot_id':'a','owner_section':'research'},{'slot_id':'b','owner_section':'build'},{'slot_id':'unowned','owner_section':None}]}
-s={'doc_slots':['b','a','a','stale']}
-slots,owners=situations.resolve_required_slots(s,dm)
-ph=[workflows.Phase('research','r','r.md','',doc_sections=['a']),workflows.Phase('build','b','b.md','',doc_sections=['b']),workflows.Phase('design','d','d.md','',doc_sections=['design']),workflows.Phase('final','f','f.md','',doc_sections=[])]
-kept=completeness.filter_phases_by_slots(ph,slots)
-print(json.dumps({'sections':sorted(owners),'phase_count':len(kept)}))
-"""
-        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-c", script, repo.path]
-        let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
-        try process.run(); process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0)
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let engine = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(swift.sections, engine["sections"] as? [String])
-        XCTAssertEqual(swift.phaseCount, engine["phase_count"] as? Int)
+        let orch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("impact-query-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: orch) }
+        try FileManager.default.createDirectory(
+            at: orch.appendingPathComponent("sections/documentation"),
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: orch.appendingPathComponent("workflows"),
+            withIntermediateDirectories: true)
+        let dm: [String: Any] = ["schema_version": 1, "docs": [],
+            "categories": [["category_id": "one", "title": "One"]],
+            "slots": [["slot_id": "a", "title": "A", "category": "one", "owner_section": "research"],
+                      ["slot_id": "b", "title": "B", "category": "one", "owner_section": "build"]]]
+        try JSONSerialization.data(withJSONObject: dm).write(
+            to: orch.appendingPathComponent("sections/documentation/doc_map.json"))
+        let phase: (String, [String]) -> [String: Any] = { key, slots in
+            ["key": key, "folder": key, "file": "\(key).md", "purpose": "",
+             "doc_sections": slots]
+        }
+        let wf: [String: Any] = ["name": "w", "title": "W", "description": "",
+            "target": "app", "phases": [phase("research", ["a"]),
+                phase("build", ["b"]), phase("design", ["design"]),
+                phase("final", [])]]
+        try JSONSerialization.data(withJSONObject: wf).write(
+            to: orch.appendingPathComponent("workflows/w.json"))
+        switch SituationEngineQuery.preview(
+                python: "/usr/bin/python3", moduleRoot: repo, orchDir: orch,
+                projectDir: nil, workflow: "w", slotIDs: ["b", "a", "a", "stale"]) {
+        case .failure(let error): XCTFail(error)
+        case .success(let impact):
+            XCTAssertEqual(impact.sections, ["build", "research"])
+            XCTAssertEqual(impact.phaseKeys, ["research", "build", "final"])
+            XCTAssertEqual(impact.phaseCount, 3)
+        }
+        let project = orch.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project,
+                                                withIntermediateDirectories: true)
+        try Data(#"{"stop_after_phase":"design"}"#.utf8).write(
+            to: project.appendingPathComponent("run_config.json"))
+        switch SituationEngineQuery.preview(
+                python: "/usr/bin/python3", moduleRoot: repo, orchDir: orch,
+                projectDir: project, workflow: "w", slotIDs: ["a"]) {
+        case .failure(let error): XCTFail(error)
+        case .success(let impact):
+            XCTAssertEqual(impact.phaseKeys, ["research", "build", "design"],
+                           "project stop target must layer before Situation filtering")
+            XCTAssertEqual(impact.phaseCount, 3)
+        }
     }
 
     func testPreviewParityForEveryEngineSeededSituation() throws {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let mapData = try Data(contentsOf: repo.appendingPathComponent("sections/documentation/doc_map.json"))
-        let realMap: DocumentMap
-        switch DocumentMapCodec.decode(mapData) {
-        case .success(let value): realMap = value
-        case .failure(let error): return XCTFail(error)
-        }
         let workflowData = try Data(contentsOf: repo.appendingPathComponent("workflows/app_build.json"))
         let workflow = try XCTUnwrap(JSONSerialization.jsonObject(with: workflowData) as? [String: Any])
-        let swiftPhases = ((workflow["phases"] as? [[String: Any]]) ?? []).enumerated().map { index, raw in
-            SituationWorkflowPhase(key: (raw["key"] as? String) ?? "p\(index)",
-                                   title: (raw["title"] as? String) ?? "p\(index)",
-                                   docSections: (raw["doc_sections"] as? [String]) ?? [])
-        }
+        let shippedPhaseCount = ((workflow["phases"] as? [[String: Any]]) ?? []).count
         let script = """
 import json,sys
 sys.path.insert(0,sys.argv[1])
@@ -177,20 +187,28 @@ print(json.dumps(out))
         XCTAssertEqual(rows.count, 6)
         for row in rows {
             let slots = try XCTUnwrap(row["slots"] as? [String])
-            let preview = SituationImpactCompiler.preview(slotIDs: slots, map: realMap,
-                                                          phases: swiftPhases)
-            XCTAssertEqual(preview.sections, row["sections"] as? [String], row["name"] as? String ?? "")
-            XCTAssertEqual(preview.phaseCount, row["phase_count"] as? Int, row["name"] as? String ?? "")
+            switch SituationEngineQuery.preview(
+                    python: "/usr/bin/python3", moduleRoot: repo, orchDir: repo,
+                    projectDir: nil, workflow: "app_build", slotIDs: slots) {
+            case .failure(let error): XCTFail(error)
+            case .success(let preview):
+                XCTAssertEqual(preview.sections, row["sections"] as? [String], row["name"] as? String ?? "")
+                XCTAssertEqual(preview.phaseCount, row["phase_count"] as? Int, row["name"] as? String ?? "")
+                XCTAssertEqual(preview.phaseCount, shippedPhaseCount,
+                               "shipped workflows have no doc_sections; fallback must honestly keep all phases")
+            }
         }
     }
 
-    func testBrokenNarrowFilterFallsBackToAllAndEmptySlotsAreNoOp() {
-        let phases = [SituationWorkflowPhase(key: "a", title: "A", docSections: []),
-                      SituationWorkflowPhase(key: "final", title: "Final", docSections: [])]
-        XCTAssertEqual(SituationImpactCompiler.preview(slotIDs: ["a"], map: map,
-                                                       phases: phases).phaseCount, 2)
-        XCTAssertEqual(SituationImpactCompiler.preview(slotIDs: [], map: map,
-                                                       phases: phases).phaseCount, 2)
+    func testProductionPreviewHasNoSwiftFilterReimplementation() throws {
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: repo.appendingPathComponent(
+            "gui/Sources/OrchestratorGUI/DocumentBuilderView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("engineSituationPreview"))
+        XCTAssertFalse(source.contains("SituationImpactCompiler"))
+        XCTAssertFalse(source.contains("required.isDisjoint"),
+                       "phase filtering must remain engine-owned")
     }
 
     func testOwnedUnownedAndGapStatesAreExplicit() {
