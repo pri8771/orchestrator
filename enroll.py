@@ -6,10 +6,12 @@ orchestrator workspace supplied by the caller.  Keeping that boundary in a
 small stdlib-only leaf makes it possible to test independently of the engine.
 """
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import time
 
 
 class EnrollError(ValueError):
@@ -288,3 +290,119 @@ def scaffold(workspace, source, name=None):
     if not facts["is_git_root"]:
         warnings.append("target is not a Git repository root; promotion will snapshot-copy it")
     return {"slug": slug, "app_dir": app_dir, "facts": facts, "warnings": warnings}
+
+
+def _run_checked(argv, cwd=None, timeout=120):
+    try:
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise EnrollError("%s failed: %s" % (argv[0], exc))
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "exit %d" % proc.returncode).strip()
+        raise EnrollError("%s failed: %s" % (" ".join(argv[:3]), detail))
+    return proc.stdout.strip()
+
+
+def _assert_no_origin_links(clone_root, origin):
+    """Refuse clone symlinks that would turn clone writes into origin writes."""
+    for dirpath, dirnames, filenames in os.walk(clone_root, followlinks=False):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.islink(path):
+                continue
+            target = os.path.realpath(path)
+            try:
+                inside_origin = os.path.commonpath([target, origin]) == origin
+            except ValueError:
+                inside_origin = False
+            if inside_origin:
+                raise EnrollError(
+                    "clone contains a symlink back into the read-only origin: %s"
+                    % os.path.relpath(path, clone_root))
+
+
+def prepare_writable_clone(app_dir, source, slug):
+    """Materialize ``app_build`` without ever writing into ``source``.
+
+    The clone/copy is built under a private sibling and renamed into place
+    only after Git initialization and branch creation succeed.  A failed
+    promotion therefore leaves no runnable partial build tree.
+    """
+    project = os.path.realpath(os.path.expanduser(str(app_dir or "")))
+    origin = os.path.realpath(os.path.expanduser(str(source or "")))
+    if not os.path.isdir(project):
+        raise EnrollError("enrollment project directory does not exist")
+    if not os.path.isdir(origin):
+        raise EnrollError("enrolled origin directory does not exist")
+    if _overlaps_workspace(origin, project):
+        raise EnrollError("enrolled origin and project must remain disjoint")
+    if not valid_slug(slug):
+        raise EnrollError("invalid enrollment slug %r" % slug)
+    destination = os.path.join(project, "app_build")
+    staging = os.path.join(project, ".app_build.enroll.tmp")
+    if os.path.lexists(destination):
+        marker = os.path.join(destination, ".git", "orchestrator-enroll.json")
+        try:
+            with open(marker, encoding="utf-8") as fh:
+                existing = json.load(fh)
+        except (OSError, ValueError, TypeError):
+            existing = None
+        expected_branch = "enroll/%s" % slug
+        try:
+            current_branch = (_run_checked(
+                ["git", "branch", "--show-current"], cwd=destination)
+                if not os.path.islink(destination) else None)
+        except EnrollError:
+            current_branch = None
+        if isinstance(existing, dict) and existing.get("source") == origin \
+                and existing.get("slug") == slug \
+                and current_branch == expected_branch:
+            _assert_no_origin_links(destination, origin)
+            return {"path": destination, "branch": "enroll/%s" % slug,
+                    "source": origin, "created_at": existing.get("created_at")}
+        raise EnrollError("app_build already exists; refusing to overwrite it")
+    if os.path.lexists(staging):
+        raise EnrollError("a prior clone staging directory exists; inspect %s" % staging)
+
+    try:
+        if _git_root(origin) == origin:
+            _run_checked(["git", "clone", "--no-hardlinks", "--", origin, staging])
+        else:
+            os.mkdir(staging)
+            _run_checked(["rsync", "-a", "--", origin.rstrip(os.sep) + os.sep,
+                          staging.rstrip(os.sep) + os.sep])
+            _run_checked(["git", "init", "-q"], cwd=staging)
+            _run_checked(["git", "config", "user.email", "orchestrator@local"],
+                         cwd=staging)
+            _run_checked(["git", "config", "user.name", "Orchestrator"],
+                         cwd=staging)
+            _run_checked(["git", "add", "-A"], cwd=staging)
+            stamp = int(os.path.getmtime(origin))
+            message = "enrolled snapshot of %s at mtime-%d" % (origin, stamp)
+            _run_checked(["git", "commit", "-q", "--allow-empty", "-m", message],
+                         cwd=staging)
+        _assert_no_origin_links(staging, origin)
+        branch = "enroll/%s" % slug
+        _run_checked(["git", "checkout", "-q", "-B", branch],
+                     cwd=staging)
+        created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        marker = os.path.join(staging, ".git", "orchestrator-enroll.json")
+        with open(marker, "w", encoding="utf-8") as fh:
+            json.dump({"source": origin, "slug": slug,
+                       "created_at": created_at}, fh, sort_keys=True)
+            fh.write("\n")
+        # A concurrent writer does not get displaced, even if it created only
+        # an empty directory after our initial preflight.
+        if os.path.lexists(destination):
+            raise EnrollError("app_build appeared during clone; refusing to overwrite it")
+        os.replace(staging, destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return {
+        "path": destination,
+        "branch": branch,
+        "source": origin,
+        "created_at": created_at,
+    }
