@@ -35,7 +35,7 @@ py-modules = [
     "localmodels", "memory", "messages", "miniyaml", "mistakes", "modelrouting", "portfolio",
     "postmortem", "procutil", "migrate_v3",
     "pipeline_presets", "resilience", "roles", "search", "sections", "sessions", "uicrawl", "urlfetch", "visualqa", "seed_demo",
-    "simulate_stream", "situations", "swiftscaffold", "traces", "turncontext",
+    "simulate_stream", "situations", "statuscontext", "swiftscaffold", "traces", "turncontext",
 ]
 
 # ---------------------------------------------------------------------------

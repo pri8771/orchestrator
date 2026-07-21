@@ -66,6 +66,7 @@ import docsync as docsynclib
 import completeness as complib
 import compliance as compliancelib
 import situations as sitlib
+import statuscontext as statusctxlib
 import buildpolicy as buildpolicylib
 import global_resource as grlib
 import knowledge as knowlib
@@ -2977,6 +2978,13 @@ def build_context(cfg, app, phasedef, original_prompt, prior_outputs, transcript
     parts.append("CURRENT PHASE: %s" % key)
     parts.append("PHASE PURPOSE: %s" % purpose)
     parts.append("\n===== ORIGINAL PROMPT (initial_prompt.md) =====\n%s" % original_prompt.strip())
+    conversational = bool(phasedef.get("conversational", False)) \
+        if hasattr(phasedef, "get") else False
+    workflow_name = str(cfg.get("_workflow_name") or "")
+    if cfg.get("_app_dir") and (conversational
+                                or cfg.get("_workflow_target") == "answer"
+                                or workflow_name.startswith("chat_")):
+        parts.append("\n" + statusctxlib.render(cfg["_app_dir"]))
     if prior_outputs:
         parts.append("\n===== DECISIONS FROM EARLIER PHASES =====")
         for pk, pout in prior_outputs:
