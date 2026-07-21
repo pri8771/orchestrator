@@ -860,7 +860,7 @@ def _resolve_slot_artifact(project_dir, reader, idx, slot, on_warn):
 
 def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
                              project_dir, reader, on_warn=None, contentions=None,
-                             coverage=None):
+                             coverage=None, required_slots=None):
     """HANDOFF_BLUEPRINT.md (V3 5.2/5.3/5.4): the 40 blueprint slots grouped under
     the 11 categories, each filled by per-slot precedence artifact > phase-output
     (slot.sources) > empty — NEVER merged. An artifact fill names its source (id +
@@ -882,6 +882,9 @@ def render_handoff_blueprint(app, doc_map, ordered_phases, phase_outputs,
     if on_warn is None:
         on_warn = lambda _m: None
     slots = doc_map.get("slots") or []
+    if required_slots is not None:
+        required = set(required_slots)
+        slots = [slot for slot in slots if slot.get("slot_id") in required]
     if not slots:
         return None
     valid_owners = {c.get("category_id") for c in (doc_map.get("categories") or [])
@@ -1241,7 +1244,7 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                        verify_summary="", findings=None, blocked_conflict=None,
                        conversation_end=None, orch_dir=None, on_warn=None,
                        artifact_reader=None, human_overrides=None,
-                       override_notice=""):
+                       override_notice="", required_slots=None):
     """Render + persist the full doc set (§24) into <app_dir>/docs/:
     PROJECT_DOCUMENTATION.md, LAUNCH_READINESS.md, phase_outputs.json, plus
     PRD.md / TECHNICAL_ARCHITECTURE.md / QA_REPORT.md when their source phases
@@ -1305,7 +1308,7 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
                 bp = render_handoff_blueprint(
                     app, doc_map, ordered_phases, phase_outputs, app_dir,
                     artifact_reader, on_warn=on_warn, contentions=contentions,
-                    coverage=coverage)
+                    coverage=coverage, required_slots=required_slots)
                 if bp is not None:
                     put("docs/HANDOFF_BLUEPRINT.md", bp)
                     # 5.4: the gap report is scan-derived (never from the bus),
@@ -1323,3 +1326,37 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
     except OSError:
         pass
     return written
+
+
+def recompute_gap_report(app_dir, app, ordered_phases, phase_outputs,
+                         orch_dir, artifact_reader, required_slots,
+                         on_warn=None):
+    """Re-scan one live session after a Situation switch.
+
+    Only the generated handoff/gap pair is replaced; phase docs and human
+    inputs are untouched. Existing artifacts and phase outputs remain the
+    evidence source, so narrowing a Situation never discards prior work.
+    Returns the scoped coverage records, or None when rendering failed.
+    """
+    try:
+        doc_map = load_doc_map(orch_dir or _ORCH_DIR, on_warn)
+        contentions, coverage = [], []
+        blueprint = render_handoff_blueprint(
+            app, doc_map, ordered_phases, phase_outputs, app_dir,
+            artifact_reader, on_warn=on_warn, contentions=contentions,
+            coverage=coverage, required_slots=required_slots)
+        if blueprint is None:
+            return None
+        docs_dir = os.path.join(app_dir, "docs")
+        os.makedirs(docs_dir, exist_ok=True)
+        _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), blueprint)
+        _write(os.path.join(docs_dir, "GAP_REPORT.md"),
+               render_gap_report(app, coverage))
+        if coverage or contentions:
+            _emit_gaps(app_dir, artifact_reader, orch_dir or _ORCH_DIR,
+                       coverage, contentions, on_warn)
+        return coverage
+    except Exception as exc:
+        if on_warn:
+            on_warn("Situation gap recompute failed: %s" % exc)
+        return None

@@ -162,7 +162,7 @@ def _normalize_goal(goal, on_warn=None):
 # --------------------------------------------------------------------------- #
 # Goal predicate — three independent sub-checks, each recorded individually
 # --------------------------------------------------------------------------- #
-def goal_predicate(app_dir, manifest, on_warn=None):
+def goal_predicate(app_dir, manifest, on_warn=None, required_slots=None):
     """Evaluate the goal against the authoritative store/score/grade. Returns
     {met, checks, evidence}. met is True ONLY when the goal names >=1
     recognized check AND every named check passes; a goal with no recognized
@@ -173,7 +173,7 @@ def goal_predicate(app_dir, manifest, on_warn=None):
         return {"met": False, "checks": checks, "evidence": evidence}
     if "doc_gap_empty" in goal:
         checks["doc_gap_empty"], evidence["doc_gap_empty"] = \
-            _check_gap_empty(app_dir, on_warn)
+            _check_gap_empty(app_dir, on_warn, required_slots=required_slots)
     if "dod_tier" in goal:
         checks["dod_tier"], evidence["dod_tier"] = \
             _check_dod(app_dir, goal["dod_tier"], on_warn)
@@ -184,7 +184,7 @@ def goal_predicate(app_dir, manifest, on_warn=None):
     return {"met": met, "checks": checks, "evidence": evidence}
 
 
-def _open_gaps(app_dir, on_warn=None):
+def _open_gaps(app_dir, on_warn=None, required_slots=None):
     """Ids of the session's OPEN documentation gaps: status='final' gap
     artifacts (superseded/converged are a different status, excluded). NOTE:
     a gap is not auto-retired when its slot is later filled, so this is the
@@ -193,10 +193,15 @@ def _open_gaps(app_dir, on_warn=None):
     import artifacts as artlib
     gaps = artlib.list_artifacts(app_dir, type="gap", status="final",
                                  on_error=lambda m: _warn(on_warn, m))
-    return [g.get("id") for g in gaps if g.get("id")]
+    required = set(required_slots) if required_slots is not None else None
+    return [g.get("id") for g in gaps if g.get("id") and
+            (required is None or
+             (g.get("slot_id") or
+              ((g.get("fields") if isinstance(g.get("fields"), dict) else {})
+               .get("slot_id"))) in required)]
 
 
-def _check_gap_empty(app_dir, on_warn):
+def _check_gap_empty(app_dir, on_warn, required_slots=None):
     """POSITIVE evidence required (§23): 'no open gap artifacts' is proof of
     completeness ONLY if a gap scan actually ran. An artifact store that was
     never created also lists zero gaps — indistinguishable at the query API —
@@ -205,7 +210,7 @@ def _check_gap_empty(app_dir, on_warn):
     happened); absent it, the check FAILS rather than falsely passing."""
     if not os.path.exists(os.path.join(app_dir, "docs", "GAP_REPORT.md")):
         return False, {"error": "no_gap_report", "note": "no scan has run"}
-    ids = _open_gaps(app_dir, on_warn)
+    ids = _open_gaps(app_dir, on_warn, required_slots=required_slots)
     return (not ids), {"open_gap_count": len(ids), "open_gap_ids": ids[:20]}
 
 

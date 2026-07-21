@@ -76,7 +76,7 @@ _ROUTED_DECISIONS = (
     "route_approved", "route_recovered", "route_denied", "denied",
     "route_suppressed", "do_not_route_added", "kill_session",
     "converged", "budget_exhausted", "unroutable",
-    "privacy_blocked",
+    "privacy_blocked", "route_cancelled",
 )
 _SNAPSHOT_TAG_RE = re.compile(r"^conductor/(\d{8}T\d{6}Z)-(\d+)$")
 _SNAPSHOT_SUBJECT_RE = re.compile(
@@ -324,7 +324,10 @@ def default_state():
             # a running Conductor's rules (the "run holds its own copy" gate).
             "pipeline": None,
             # 7.12: deterministic plan-key -> published/executed lifecycle.
-            "plans": {}}
+            "plans": {},
+            # 9.1b: project -> live Situation resolution. This is a cache;
+            # situation_changed in the ledger is authoritative across crashes.
+            "situations": {}}
 
 
 def load_conductor_state(root):
@@ -355,6 +358,7 @@ def load_conductor_state(root):
     data.setdefault("over_quota", [])
     data.setdefault("pipeline", None)   # 7.11: symmetry + defense-in-depth
     data.setdefault("plans", {})        # 7.12: plan-key lifecycle cache
+    data.setdefault("situations", {})   # 9.1b: live project Situation cache
     oversight = data.get("oversight")
     if not isinstance(oversight, dict) or oversight.get("dial") not in \
             OVERSIGHT_DIALS:
@@ -371,6 +375,7 @@ def load_conductor_state(root):
             or not isinstance(data["terminated"], dict) \
             or not isinstance(data["quiescence"], dict) \
             or not isinstance(data["plans"], dict) \
+            or not isinstance(data["situations"], dict) \
             or not isinstance(data["ledger_cursor"], int) \
             or data["ledger_cursor"] < 0:
         fallback = default_state()
@@ -759,6 +764,30 @@ def reconcile_on_start(root, state, emit=print):
             _remember_do_not_route(state, detail.get("artifact_id"),
                                    detail.get("rule_id"))
             applied += 1
+        if rec.get("decision") == "situation_changed":
+            detail = rec.get("detail") if isinstance(rec.get("detail"), dict) \
+                else {}
+            project = detail.get("project")
+            if isinstance(project, str) and project:
+                state.setdefault("situations", {})[project] = {
+                    "ref": detail.get("new_ref"),
+                    "digest": detail.get("digest"),
+                    "valid": False, "required_slots": None,
+                    "owners": None, "needs_recompute": True}
+                applied += 1
+        if rec.get("decision") == "route_cancelled":
+            detail = rec.get("detail") if isinstance(rec.get("detail"), dict) \
+                else {}
+            for origin_id in detail.get("origin_route_ids") or []:
+                if isinstance(origin_id, str) and origin_id:
+                    state.setdefault("routed", {})[origin_id] = True
+            plan_key = detail.get("plan_key")
+            if isinstance(plan_key, str) and plan_key:
+                state.setdefault("plans", {})[plan_key] = {
+                    "plan_id": detail.get("plan_id"),
+                    "plan_version": detail.get("plan_version"),
+                    "status": "rejected"}
+                applied += 1
         rid = rec.get("route_id")
         if isinstance(rid, str) and rid and \
                 rec.get("decision") in _ROUTED_DECISIONS:
@@ -1070,7 +1099,12 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
         sstate = read_session_state(app_dir, warn=emit)
         if sstate is None:
             continue   # not started — nothing to terminate
-        verdict = ctlib.goal_predicate(app_dir, manifest, on_warn=emit)
+        project = sid.split("/", 1)[0]
+        situation = state.get("situations", {}).get(project)
+        required_slots = situation.get("required_slots") \
+            if isinstance(situation, dict) and situation.get("valid") else None
+        verdict = ctlib.goal_predicate(
+            app_dir, manifest, on_warn=emit, required_slots=required_slots)
         if verdict["met"]:
             _record_termination(root, state, sid, "goal_met", verdict, emit)
             continue
@@ -1129,6 +1163,232 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
     return state
 
 
+_SITUATION_OWNER_SECTIONS = {
+    "planning_spec": "planning", "qa_redteam": "qa",
+    "legal_compliance": "legal", "execution_ops": "execution",
+    "library_knowledge": "library",
+}
+
+
+def _situation_route_sections(owners):
+    """Translate doc-map ownership categories to actual section ids."""
+    return {_SITUATION_OWNER_SECTIONS.get(owner, owner)
+            for owner in (owners or ()) if isinstance(owner, str) and owner}
+
+
+def situation_allows_route(state, project, target):
+    """Whether the current valid, non-empty Situation admits this effect.
+
+    Invalid/empty resolutions deliberately fail open, matching the phase
+    filter's anti-gutting fallback. Notifications never invoke a model and
+    remain eligible.
+    """
+    record = state.get("situations", {}).get(project) \
+        if isinstance(state, dict) else None
+    if target == "notification" or not isinstance(record, dict) \
+            or not record.get("valid"):
+        return True
+    owners = set(record.get("owners") or ())
+    return not owners or target in owners
+
+
+def _read_project_situation(root, project, emit):
+    """Resolve one project's current ref; errors visibly fail open."""
+    import docs as docslib
+    import situations as sitlib
+    path = os.path.join(root, project, "run_config.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            config = json.load(fh)
+        if not isinstance(config, dict):
+            raise ValueError("root must be an object")
+    except FileNotFoundError:
+        return {"ref": None, "digest": None, "valid": True,
+                "required_slots": None, "owners": None}
+    except (OSError, ValueError) as exc:
+        emit("conductor: WARNING %s unreadable (%s) — Situation filtering "
+             "disabled for %s" % (path, exc, project))
+        return {"ref": None, "digest": "invalid-run-config", "valid": False,
+                "required_slots": None, "owners": None}
+    ref = config.get("situation")
+    if not isinstance(ref, str) or not ref.strip():
+        return {"ref": None, "digest": None, "valid": True,
+                "required_slots": None, "owners": None}
+    ref = ref.strip()
+    warnings = []
+    situation = sitlib.load_situation(
+        ref, os.path.dirname(os.path.abspath(__file__)),
+        on_error=warnings.append)
+    if situation is None:
+        message = ("Situation %r is unknown or corrupt — all slots and routes "
+                   "remain eligible" % ref)
+        emit("conductor: WARNING " + message)
+        try:
+            import events as eventslib
+            os.makedirs(conductor_dir(root), exist_ok=True)
+            eventslib.emit_event(conductor_dir(root), "situation_fallback",
+                                 project=project, situation=ref,
+                                 reason=message)
+        except Exception:
+            pass
+        return {"ref": ref, "digest": "invalid:" + ref, "valid": False,
+                "required_slots": None, "owners": None}
+    doc_map = docslib.load_doc_map(
+        os.path.dirname(os.path.abspath(__file__)), on_warn=warnings.append)
+    slots, owners = sitlib.resolve_required_slots(situation, doc_map)
+    for warning in warnings:
+        emit("conductor: WARNING " + warning)
+    if not slots:
+        message = ("Situation %r resolves to no known document slots — all "
+                   "slots and routes remain eligible" % ref)
+        emit("conductor: WARNING " + message)
+        return {"ref": ref, "digest": "empty:" + ref, "valid": False,
+                "required_slots": None, "owners": None}
+    payload = json.dumps({"ref": ref, "slots": slots,
+                          "owners": sorted(owners)}, sort_keys=True)
+    return {"ref": ref,
+            "digest": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            "valid": True, "required_slots": slots,
+            "owners": sorted(_situation_route_sections(owners))}
+
+
+def _cancel_stale_situation_routes(root, state, project, record, emit):
+    """Cancel queued effects excluded by a newly active Situation."""
+    import conductor_permissions as cplib
+    allowed = set(record.get("owners") or ())
+    if not record.get("valid") or not allowed:
+        return True                    # fail open / gutting-filter parity
+    for action in cplib.read_pending(root):
+        requested_by = action.get("requested_by")
+        payload = action.get("payload") if isinstance(
+            action.get("payload"), dict) else {}
+        action_project = payload.get("project") if action.get("kind") == "plan" \
+            else (requested_by.split("/", 1)[0]
+                  if isinstance(requested_by, str) else None)
+        if action_project != project:
+            continue
+        targets = []
+        if action.get("kind") == "plan":
+            for step in payload.get("step_summary") or []:
+                if isinstance(step, dict):
+                    targets.append(step.get("target_section") or
+                                   step.get("target"))
+        else:
+            targets.append(action.get("target"))
+        stale = sorted({target for target in targets
+                        if isinstance(target, str)
+                        and target != "notification" and target not in allowed})
+        if not stale:
+            continue
+        action_id = action.get("action_id")
+        if isinstance(action_id, str) and action_id in state.get("routed", {}):
+            # Crash recovery: route_cancelled was durable and replay rebuilt
+            # routed, but the process died before deleting the queue mirror.
+            cplib.remove_pending(root, action_id)
+            cplib.consume_decision(root, action_id)
+            continue
+        reason = ("Situation %s no longer requires target section(s): %s"
+                  % (record.get("ref"), ", ".join(stale)))
+        detail = {"project": project, "target": action.get("target"),
+                  "targets": stale, "reason": reason,
+                  "situation": record.get("ref"),
+                  "origin_route_ids": payload.get("origin_route_ids") or [],
+                  "plan_key": payload.get("plan_key"),
+                  "plan_id": payload.get("plan_id"),
+                  "plan_version": payload.get("plan_version")}
+        rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+               "decision": "route_cancelled", "session": requested_by,
+               "route_id": action_id, "detail": detail}
+        new_len = ledger_append(root, rec)       # durable reason BEFORE removal
+        if isinstance(action_id, str) and action_id:
+            state.setdefault("routed", {})[action_id] = True
+        for rid in payload.get("origin_route_ids") or []:
+            if isinstance(rid, str):
+                state["routed"][rid] = True
+        plan_key = payload.get("plan_key")
+        if isinstance(plan_key, str) and plan_key:
+            state.setdefault("plans", {})[plan_key] = {
+                "plan_id": payload.get("plan_id"),
+                "plan_version": payload.get("plan_version"),
+                "status": "rejected"}
+        state["ledger_cursor"] = new_len
+        save_conductor_state(root, state)
+        cplib.remove_pending(root, action_id)
+        cplib.consume_decision(root, action_id)
+        emit("conductor: cancelled queued route %s — %s" %
+             (action_id, reason))
+    return True
+
+
+def sync_situations(root, state, sessions, emit=print):
+    """Re-read refs each cycle and durably adjust gaps/routes on change."""
+    import artifacts as artlib
+    import docs as docslib
+    import workflows as wflib
+    projects = sorted({sid.split("/", 1)[0] for sid in sessions if sid})
+    cache = state.setdefault("situations", {})
+    for project in projects:
+        resolved = _read_project_situation(root, project, emit)
+        prior = cache.get(project) if isinstance(cache.get(project), dict) else {}
+        changed = prior.get("digest") != resolved.get("digest") \
+            or prior.get("ref") != resolved.get("ref")
+        if changed:
+            rec = {"v": SCHEMA_VERSION, "ts": time.time(),
+                   "stage": "evaluating", "decision": "situation_changed",
+                   "detail": {"project": project,
+                              "old_ref": prior.get("ref"),
+                              "new_ref": resolved.get("ref"),
+                              "digest": resolved.get("digest"),
+                              "slot_count": len(
+                                  resolved.get("required_slots") or [])}}
+            new_len = ledger_append(root, rec)   # authoritative BEFORE cache
+            resolved["needs_recompute"] = True
+            cache[project] = resolved
+            state["ledger_cursor"] = new_len
+            save_conductor_state(root, state)
+        elif prior.get("needs_recompute"):
+            resolved["needs_recompute"] = True
+            cache[project] = resolved
+        else:
+            cache[project] = resolved
+        record = cache[project]
+        if not record.get("needs_recompute"):
+            continue
+        ok = True
+        for sid in sessions:
+            if sid.split("/", 1)[0] != project:
+                continue
+            app_dir = os.path.join(root, sid)
+            sstate = read_session_state(app_dir, warn=emit)
+            if sstate is None:
+                continue
+            workflow = wflib.load_workflow(
+                sstate.get("workflow") or "app_build",
+                os.path.dirname(os.path.abspath(__file__)))
+            coverage = docslib.recompute_gap_report(
+                app_dir, project, workflow.phases,
+                sstate.get("phase_outputs") or {},
+                os.path.dirname(os.path.abspath(__file__)), artlib,
+                record.get("required_slots") if record.get("valid") else None,
+                on_warn=emit)
+            if coverage is None:
+                ok = False
+        if ok:
+            ok = _cancel_stale_situation_routes(
+                root, state, project, record, emit)
+        if ok:
+            rec = {"v": SCHEMA_VERSION, "ts": time.time(),
+                   "stage": "evaluating", "decision": "situation_recomputed",
+                   "detail": {"project": project, "ref": record.get("ref"),
+                              "slot_count": len(
+                                  record.get("required_slots") or [])}}
+            new_len = ledger_append(root, rec)
+            record["needs_recompute"] = False
+            state["ledger_cursor"] = new_len
+            save_conductor_state(root, state)
+    return state
+
+
 def full_poll(root, state, emit=print, route_engine=None):
     """One authoritative pass: scan -> evaluate (ledger observations for
     every changed session, APPEND-THEN-CURSOR each) -> idle. The skeleton
@@ -1144,6 +1404,7 @@ def full_poll(root, state, emit=print, route_engine=None):
     for sid in ghosts:
         del state["sessions"][sid]
     set_stage(root, state, "evaluating")
+    state = sync_situations(root, state, sessions, emit)
     for sid in sessions:
         app_dir = os.path.join(root, sid)
         sstate = read_session_state(app_dir, warn=emit)
@@ -2129,6 +2390,35 @@ def route_engine(root, state, sessions, emit=print):
             if not fresh:
                 continue
             _eval_crash("post_route_id")
+
+            # 9.1b: a stale artifact can become newly routeable after a live
+            # switch. Re-check against the current goal at the final effect
+            # seam, not only when old pending approvals are drained.
+            situation = state.get("situations", {}).get(project)
+            active_owners = set(situation.get("owners") or ()) \
+                if isinstance(situation, dict) and situation.get("valid") \
+                else set()
+            if active_owners:
+                eligible = []
+                for intent in fresh:
+                    if (intent.verdict != crlib.ALLOW or not intent.target
+                            or situation_allows_route(
+                                state, project, intent.target)):
+                        eligible.append(intent)
+                        continue
+                    reason = ("Situation %s no longer requires target section %s"
+                              % (situation.get("ref"), intent.target))
+                    state["routed"][intent.route_id] = True
+                    _ledger_route(root, {
+                        "session": sid, "route_id": intent.route_id,
+                        "route_key": intent.route_key,
+                        "decision": "route_cancelled",
+                        "detail": {**intent.as_ledger_detail(),
+                                   "reason": reason,
+                                   "situation": situation.get("ref")}})
+                fresh = eligible
+                if not fresh:
+                    continue
 
             # V3 8.5: sensitivity is enforced at the routing EFFECT seam.
             # A private artifact may create only a notification (no model) or

@@ -940,6 +940,10 @@ def _apply_situation_ref(tctx, run_cfg, phases):
         return phases
     doc_map = docslib.load_doc_map(HERE, on_warn=lambda m: emit("WARN " + m))
     slots, owners = sitlib.resolve_required_slots(situation, doc_map)
+    if not slots:
+        emit("WARN situation '%s' resolves to no known document slots — "
+             "running with no slot filtering (all phases eligible)." % ref)
+        return phases
     tctx.situation_name = ref
     tctx.required_slots = slots
     before = len(phases)
@@ -11463,7 +11467,8 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                 artifact_reader=artifactslib,    # 5.2 SUBSCRIBE: app_dir is
                                                  # the artifact project_dir
                 human_overrides=overrides,
-                override_notice=override_notice)
+                override_notice=override_notice,
+                required_slots=tcxlib.TurnContext(cfg).required_slots)
             written += docslib.write_project_archive(
                 app_dir, app, phases, prompt, state,
                 workflow_name=workflow.name, verify_summary=_vsum,

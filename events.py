@@ -54,6 +54,8 @@ Event kinds emitted by orchestrator.py:
                         (private-mode roster/fallback rewrites, or an agent /
                          route refusal; identifiers and reasons only, never
                          sensitive prompt or artifact content)
+    situation_fallback (project, situation, reason — an invalid live ref
+                         widened safely to all slots/routes, visibly)
 
 Contract:
   * Best-effort by design — emitting an event must NEVER take a run down.
@@ -147,6 +149,9 @@ KINDS = (
     # V3 8.5 privacy boundary. Payloads contain agent/route identifiers and a
     # bounded reason only; sensitive prompt/artifact bodies never enter events.
     "privacy_enforced", "privacy_blocked",
+    # V3 9.1: unknown/corrupt project Situation references fail open, but the
+    # fallback must be visible rather than silently widening the active goal.
+    "situation_fallback",
 )
 
 _MAX_FIELD_CHARS = 500
