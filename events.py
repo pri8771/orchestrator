@@ -33,6 +33,8 @@ Event kinds emitted by orchestrator.py:
                          the failure detail lives in meta.gate on disk)
     artifact_routed     (route_id, artifact_id, target)
     artifact_consumed   (artifact_id, consumer, phase)
+    artifact_lifecycle  (artifact_id, action, bytes — GC tombstoned one body;
+                         identifiers/counts only, never artifact content)
     delegation_spawned  (target, session, tier — a chat @-mention minted a
                          Deep-dive sub-session; the GUI keys its pending card
                          off this + delegation.json status)
@@ -116,6 +118,7 @@ KINDS = (
     # route_proposed/_approved = the M7 Conductor.
     "message_appended",
     "artifact_published", "artifact_routed", "artifact_consumed",
+    "artifact_lifecycle",
     "route_proposed", "route_approved", "delegation_spawned",
     # V3 board 4.12: the pre-push gate quarantined an artifact after its
     # hooks/llm_rules blocked it and the bounded retry was exhausted. Payload

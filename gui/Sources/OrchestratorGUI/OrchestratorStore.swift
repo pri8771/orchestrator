@@ -520,6 +520,19 @@ struct AppLockInfo: Equatable {
     var since: Date
 }
 
+enum ProjectArchivePresentation {
+    static func projectSlug(for sessionID: String) -> String {
+        sessionID.split(separator: "/").first.map(String.init) ?? sessionID
+    }
+
+    static func confirmation(project: String, stopping: Bool) -> String {
+        let prefix = stopping ? "The active run will be stopped first. " : ""
+        return prefix + "The whole \(project) folder moves to workspace/.archive/"
+            + "\(project), disappears from engine/search/GUI discovery, and can be "
+            + "restored with --unarchive-project. Nothing is deleted."
+    }
+}
+
 // Workspace-level scans for the factory dashboard: per-app engine locks,
 // autorun-disabled markers, and the persisted queue-order file. Pure file
 // reads — run on the background refresh queue like the loaders above.
@@ -3317,13 +3330,56 @@ final class OrchestratorStore: ObservableObject {
                 removeRecoverably(project.dirURL)
                 runLog += "Moved \(name) to the Trash.\n"
             }
+        } else if wasRunning {
+            runLog += "Stopping \(name), then moving its project to .archive…\n"
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                self?.archiveProject(project)
+            }
         } else {
-            let marker = project.dirURL.appendingPathComponent(".orch_archived")
-            fm.createFile(atPath: marker.path, contents: Data())
-            runLog += "Archived \(name) — hidden from the queue and engine scans; "
-                + "the folder is untouched.\n"
+            archiveProject(project)
         }
         refresh()
+    }
+
+    // Engine-owned archive semantics: it validates every flat/nested live lock
+    // and performs the intact directory move. The GUI never invents a marker
+    // that the engine helper did not authorize.
+    func archiveProject(_ project: Project) {
+        let slug = ProjectArchivePresentation.projectSlug(for: project.name)
+        let py = resolvePython()
+        let engine = orchDirURL.appendingPathComponent("orchestrator.py").path
+        let root = rootURL.path
+        Task.detached { [weak self] in
+            let proc = Process()
+            let output = Pipe()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.arguments = [engine, "--root", root, "--archive-project", slug]
+            proc.standardOutput = output
+            proc.standardError = output
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.runLog += "Archive failed for \(slug): \(error.localizedDescription)\n"
+                }
+                return
+            }
+            let detail = String(data: output.fileHandleForReading.readDataToEndOfFile(),
+                                encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if proc.terminationStatus == 0 {
+                    self.runLog += "Archived \(slug) to workspace/.archive/\(slug). "
+                        + "Nothing was deleted.\n"
+                } else {
+                    self.runLog += "Archive refused for \(slug): \(detail)\n"
+                }
+                self.refresh()
+            }
+        }
     }
 
     // Restore an archived project: delete the marker; it reappears in its

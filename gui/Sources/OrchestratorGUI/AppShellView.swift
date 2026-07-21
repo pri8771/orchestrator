@@ -907,7 +907,7 @@ private struct ShellProjectRow: View {
             .confirmationDialog(isLive ? "Stop and remove \(project.name)?"
                                        : "Remove \(project.name)?",
                                 isPresented: $confirmRemove) {
-                Button("Remove from list — keep folder") {
+                Button("Archive whole project — move to .archive") {
                     store.removeProject(project, deleteFolder: false)
                 }
                 Button("Remove and move folder to Trash", role: .destructive) {
@@ -915,9 +915,10 @@ private struct ShellProjectRow: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(isLive
-                     ? "The run is stopped first. Keeping the folder archives the project (restorable from the Archived section); the Trash option removes it entirely."
-                     : "Keeping the folder archives the project (restorable from the Archived section); the Trash option removes it entirely.")
+                Text(ProjectArchivePresentation.confirmation(
+                    project: ProjectArchivePresentation.projectSlug(
+                        for: project.name), stopping: isLive)
+                    + " The Trash option removes it entirely.")
             }
     }
 

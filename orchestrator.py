@@ -9799,6 +9799,97 @@ def find_apps(root):
     return apps
 
 
+def decode_lock_name(stem):
+    """Inverse of encode_lock_name for archive's project-wide lock scan."""
+    if not isinstance(stem, str):
+        return None
+    match = re.match(r"^(.*)\.([0-9a-f]{8})$", stem)
+    if not match or "%2F" not in match.group(1).upper():
+        return stem
+    try:
+        sid = urllib.parse.unquote(match.group(1))
+    except (TypeError, ValueError):
+        return stem
+    return sid if encode_lock_name(sid) == stem else stem
+
+
+def _project_live_locks(root, project):
+    """Live session ids in .orch-locks belonging to one whole project."""
+    lock_dir = os.path.join(root, ".orch-locks")
+    try:
+        names = sorted(os.listdir(lock_dir))
+    except OSError:
+        return []
+    live = []
+    for name in names:
+        if not name.endswith(".lock"):
+            continue
+        sid = decode_lock_name(name[:-5])
+        if sid != project and not str(sid).startswith(project + "/"):
+            continue
+        path = os.path.join(lock_dir, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                pid = _extract_lock_pid(fh.read())
+        except OSError:
+            continue
+        if _pid_alive(pid):
+            live.append(sid)
+    return live
+
+
+def archive_project(root, project, *, restore=False):
+    """Move a whole project into/out of ``workspace/.archive``.
+
+    No delete path exists here. A live flat or nested session lock refuses the
+    move, and os.rename keeps the directory intact on the same filesystem.
+    """
+    if not valid_app_slug(project):
+        raise AppError("invalid project name %r" % project)
+    archive_root = os.path.join(root, ".archive")
+    active = os.path.join(root, project)
+    archived = os.path.join(archive_root, project)
+    src, dest = (archived, active) if restore else (active, archived)
+    if not os.path.isdir(src):
+        raise AppError("project %r is not %s" %
+                       (project, "archived" if restore else "active"))
+    if os.path.exists(dest):
+        raise AppError("refusing to overwrite existing path %s" % dest)
+    if not restore:
+        locks = _project_live_locks(root, project)
+        if locks:
+            raise AppError("cannot archive %r while live session lock(s) "
+                           "exist: %s" % (project, ", ".join(locks)))
+        os.makedirs(archive_root, exist_ok=True)
+    os.rename(src, dest)
+    for parent in {os.path.dirname(src), os.path.dirname(dest)}:
+        try:
+            fd = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+    return dest
+
+
+def render_gc_plan(plan, applying=False):
+    """Readable diff-style report shared by dry-run and apply CLI paths."""
+    mode = "APPLY" if applying else "DRY-RUN (no files changed)"
+    lines = ["Artifact GC %s — keep %s version(s)" %
+             (mode, plan.get("keep_versions", 5))]
+    for item in plan.get("candidates", []):
+        lines.append("- %s/%s | %s | %d bytes" %
+                     (item["project"], item["artifact_id"], item["reason"],
+                      item["bytes"]))
+    lines.append("summary: %d artifact(s), %d bytes reclaimable" %
+                 (plan.get("count", 0), plan.get("bytes", 0)))
+    if not applying:
+        lines.append("Apply explicitly with: --gc --apply")
+    return "\n".join(lines)
+
+
 def read_initial_prompt(app_dir):
     p = os.path.join(app_dir, "initial_prompt", "initial_prompt.md")
     if not os.path.exists(p):
@@ -12036,6 +12127,14 @@ def main():
                          "--apply is also given")
     ap.add_argument("--migrate-apply", action="store_true",
                     help="execute the --migrate-layout plan (default: dry-run)")
+    ap.add_argument("--gc", action="store_true",
+                    help="plan artifact tombstones (dry-run by default)")
+    ap.add_argument("--apply", action="store_true",
+                    help="with --gc: execute the printed tombstone plan")
+    ap.add_argument("--archive-project", metavar="SLUG",
+                    help="move a whole inactive project to workspace/.archive")
+    ap.add_argument("--unarchive-project", metavar="SLUG",
+                    help="restore a project from workspace/.archive")
     ap.add_argument("--fork", metavar="SLUG",
                     help="fork a session: copy the dir minus agent threads, "
                          "locks, approvals and inbox; prints FORKED: <name>")
@@ -12161,7 +12260,8 @@ def main():
     # V2 spec §27: --root overrides config.yaml's workspace root (relative config
     # roots resolve against this repo); --project is an alias for --app.
     cfg["root"] = resolve_root(cfg, args.root)
-    if cfg["root"]:
+    if cfg["root"] and not (args.gc or args.archive_project
+                             or args.unarchive_project):
         _ensure_workspace_gitignore(cfg["root"])
     # Per-app locks live IN THE WORKSPACE, not next to the engine: the repo
     # checkout and the GUI's Application Support copy of the engine both target
@@ -12175,12 +12275,43 @@ def main():
     # that would traverse out of it when joined (orchestrator.py never treats
     # these as paths, only as folder names).
     for _slug in (args.app, args.project, args.resume,
-                  args.fork, args.promote, args.route_from, args.route_to):
+                  args.fork, args.promote, args.route_from, args.route_to,
+                  args.archive_project, args.unarchive_project):
         if _slug and parse_session_id(_slug) is None:
             ap.error("invalid project name %r — use a single folder name under "
                      "the workspace root, or a nested session id "
                      "project/section/chat (no '..', hidden or empty segments)"
                      % _slug)
+
+    if args.apply and not args.gc:
+        ap.error("--apply requires --gc")
+    if args.gc:
+        keep = cget(cfg, "runtime.gc_keep_versions", 5)
+        plan = artifactslib.gc_plan(cfg["root"], keep_versions=keep,
+                                   on_error=emit)
+        print(render_gc_plan(plan, applying=args.apply))
+        if args.apply:
+            def _lifecycle(item):
+                evlib.emit_event(
+                    os.path.join(cfg["root"], item["project"]),
+                    "artifact_lifecycle", artifact_id=item["artifact_id"],
+                    action="tombstoned", bytes=item["bytes"])
+            done = artifactslib.apply_gc_plan(
+                plan, on_error=emit, on_tombstone=_lifecycle)
+            print("applied: %d artifact(s) tombstoned" % len(done))
+        return 0
+
+    if args.archive_project or args.unarchive_project:
+        slug = args.archive_project or args.unarchive_project
+        restoring = bool(args.unarchive_project)
+        try:
+            dest = archive_project(cfg["root"], slug, restore=restoring)
+        except AppError as exc:
+            emit(("--unarchive-project" if restoring else
+                  "--archive-project") + ": " + str(exc))
+            return 2
+        print(("RESTORED: " if restoring else "ARCHIVED: ") + dest)
+        return 0
 
     if args.deliver and not args.export_notion:
         ap.error("--deliver requires --export-notion")

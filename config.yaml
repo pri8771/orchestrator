@@ -157,6 +157,11 @@ rounds:
 
 runtime:
   timeout_seconds_per_agent: 1800
+  # Artifact lifecycle retention. `orchestrator.py --gc` keeps this many
+  # newest versions in each resolved lineage and only PRINTS its tombstone
+  # plan. Nothing changes until the operator adds the explicit `--apply`.
+  # Tombstones preserve meta.json/lineage and replace only old body content.
+  gc_keep_versions: 5
   # Hang guard: kill an agent CLI that emits ZERO bytes (stdout+stderr) for this
   # many seconds, well before the full per-agent timeout above. Catches a wedged
   # agent in ~10min instead of 30. Any output resets the timer, so slow-but-

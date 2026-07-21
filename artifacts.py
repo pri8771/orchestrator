@@ -77,7 +77,7 @@ import schemas
 # only by 4.3's lineage machinery. "published" is RETIRED (V3 4.8): it split
 # into the honest pair {pending_review, final} the bus admission gate reads.
 STATUS = ("draft", "pending_review", "final", "superseded", "converged",
-          "quarantined")
+          "quarantined", "killed", "tombstoned")
 # The ONLY status a publisher (an agent's artifact-json block) may request is
 # an explicit "draft" hold; every other status is assigned by the type's
 # finalization policy (4.8), never by the publisher.
@@ -104,6 +104,23 @@ BLOCK_REQUIRED = ("type", "title")
 DEFAULT_MAX_DEPTH = 4
 
 REGISTRY_BASENAME = "artifact_types.json"
+TOMBSTONE_BODY = ("# Tombstoned artifact\n\n"
+                  "This body was reclaimed by lifecycle GC. Provenance and "
+                  "lineage remain in meta.json.\n")
+
+
+class ArtifactReadError(Exception):
+    """Typed artifact-resolution failure carrying any surviving metadata."""
+
+    code = "artifact_unreadable"
+
+    def __init__(self, message, meta=None):
+        super().__init__(message)
+        self.meta = dict(meta) if isinstance(meta, dict) else None
+
+
+class TombstonedArtifactError(ArtifactReadError):
+    code = "tombstoned"
 
 # Seed registry: "required" lists the keys a publish (or a 4.2 artifact-json
 # block) must carry — "body" is satisfied by a non-blank body.md. The five
@@ -1041,6 +1058,14 @@ def read_body(project_dir, artifact_id, on_error=None):
     if not _valid_artifact_id(artifact_id):
         on_error("artifact %s has an invalid id" % (_short(artifact_id),))
         return None
+    # This is only a tombstone guard, not a second legacy read failure: an
+    # absent/corrupt meta must not add a duplicate error before body.md's own
+    # established diagnostic below.
+    meta = load_meta(project_dir, artifact_id, on_error=lambda _m: None)
+    if meta is not None and meta.get("status") == "tombstoned":
+        on_error("artifact %r is tombstoned; provenance survives in meta.json"
+                 % (artifact_id,))
+        return None
     path = os.path.join(artifact_dir(project_dir, artifact_id), "body.md")
     try:
         with open(path, encoding="utf-8", newline="") as fh:
@@ -1048,6 +1073,30 @@ def read_body(project_dir, artifact_id, on_error=None):
     except OSError as exc:
         on_error("artifact %r body unreadable: %s" % (artifact_id, exc))
         return None
+
+
+def resolve_artifact(project_dir, artifact_id, on_error=None):
+    """Resolve one artifact as ``(meta, body)`` or raise a typed read error.
+
+    This strict seam is for user-facing resolvers. Legacy ``read_body`` keeps
+    its reported-never-raised contract, while a tombstone here is distinct
+    from corruption/missing data and carries the complete surviving meta.
+    """
+    errors = []
+    report = errors.append if on_error is None else on_error
+    meta = load_meta(project_dir, artifact_id, on_error=report)
+    if meta is None:
+        raise ArtifactReadError(
+            errors[-1] if errors else "artifact is missing or unreadable")
+    if meta.get("status") == "tombstoned":
+        raise TombstonedArtifactError(
+            "artifact %r is tombstoned; provenance survives in meta.json"
+            % artifact_id, meta=meta)
+    body = read_body(project_dir, artifact_id, on_error=report)
+    if body is None:
+        raise ArtifactReadError(
+            errors[-1] if errors else "artifact body is unreadable", meta=meta)
+    return meta, body
 
 
 def list_artifacts(project_dir, type=None, status=None, on_error=None):
@@ -1223,6 +1272,31 @@ def latest_final(project_dir, root, on_error=None, *, index=None):
     on_error("lineage %r is branched: heads %s — publish a 'reconcile' "
              "artifact listing all heads" % (root, named))
     return None
+
+
+def lineage_is_killed(project_dir, root, on_error=None, *, index=None):
+    """Whether any current head marks the entire lineage ``killed``.
+
+    Branch ambiguity is handled conservatively: a kill decision on one live
+    head hides the lineage rather than allowing a sibling branch to resurrect
+    it through retrieval/search.
+    """
+    idx = index if index is not None else lineage_index(
+        project_dir, on_error=on_error)
+    heads = lineage_heads(project_dir, root, on_error=on_error, index=idx)
+    return bool(heads and any(h.get("status") == "killed" for h in heads))
+
+
+def is_lifecycle_excluded(project_dir, meta, on_error=None, *, index=None):
+    """Shared retrieval/search exclusion for dead or reclaimed content."""
+    if not isinstance(meta, dict):
+        return True
+    if meta.get("status") in ("killed", "tombstoned"):
+        return True
+    idx = index if index is not None else lineage_index(
+        project_dir, on_error=on_error)
+    return lineage_is_killed(project_dir, _meta_root(meta),
+                             on_error=on_error, index=idx)
 
 
 def _reconcile_plan(project_dir, parents, source_section, on_error):
@@ -1402,6 +1476,188 @@ def _rewrite_meta_atomic(project_dir, artifact_id, meta):
         os.fsync(dfd)
     finally:
         os.close(dfd)
+
+
+def _rewrite_body_atomic(project_dir, artifact_id, body):
+    adir = artifact_dir(project_dir, artifact_id)
+    path = os.path.join(adir, "body.md")
+    tmp = "%s.%d.%x.tmp" % (path, os.getpid(), threading.get_ident())
+    try:
+        _fsync_write(tmp, body.encode("utf-8"))
+        os.replace(tmp, path)
+        dfd = os.open(adir, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def tombstone(project_dir, artifact_id, *, at=None, by="gc", on_error=None):
+    """Atomically make one artifact logically tombstoned, then compact body.
+
+    The meta transition is the commit point and lands before body compaction.
+    Thus a kill at any instruction leaves the artifact either untouched or
+    already non-readable as a tombstone. Re-running repairs an interrupted
+    compaction without appending duplicate status history.
+    """
+    if on_error is None:
+        on_error = lambda _m: None
+    root = artifacts_root(project_dir)
+    try:
+        guard_fd = os.open(os.path.join(root, ".publish.lock"),
+                           os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        if "guard_fd" in locals():
+            os.close(guard_fd)
+        on_error("tombstone failed: cannot lock artifact store (%s)" % exc)
+        return None
+    try:
+        meta = load_meta(project_dir, artifact_id, on_error=on_error)
+        if meta is None:
+            return None
+        transitioned = meta.get("status") != "tombstoned"
+        if transitioned:
+            hist = meta.get("status_history")
+            hist = list(hist) if isinstance(hist, list) else []
+            hist.append({"status": "tombstoned", "at": at or _now_iso(),
+                         "by": by})
+            meta = dict(meta)
+            meta["status"] = "tombstoned"
+            meta["status_history"] = hist
+            try:
+                _rewrite_meta_atomic(project_dir, artifact_id, meta)
+            except OSError as exc:
+                on_error("tombstone failed writing %r meta (%s) — artifact "
+                         "unchanged" % (artifact_id, exc))
+                return None
+        try:
+            _rewrite_body_atomic(project_dir, artifact_id, TOMBSTONE_BODY)
+        except OSError as exc:
+            on_error("artifact %r is tombstoned but body compaction was "
+                     "interrupted (%s); rerun GC to finish" %
+                     (artifact_id, exc))
+            return {"meta": meta, "transitioned": transitioned,
+                    "compacted": False}
+        return {"meta": meta, "transitioned": transitioned,
+                "compacted": True}
+    finally:
+        try:
+            fcntl.flock(guard_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(guard_fd)
+
+
+def _workspace_artifact_projects(workspace):
+    """Project dirs containing an artifact store, excluding dot archives."""
+    found = []
+    for cur, dirs, _files in os.walk(workspace):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        if "artifacts" in dirs:
+            found.append(cur)
+            dirs.remove("artifacts")
+    return sorted(found)
+
+
+def gc_plan(workspace, keep_versions=5, on_error=None):
+    """Return a deterministic, mutation-free tombstone plan for a workspace."""
+    if on_error is None:
+        on_error = lambda _m: None
+    try:
+        keep = int(keep_versions)
+    except (TypeError, ValueError):
+        keep = 5
+    keep = max(1, keep)
+    candidates = []
+    stub_size = len(TOMBSTONE_BODY.encode("utf-8"))
+    for project_dir in _workspace_artifact_projects(workspace):
+        idx = lineage_index(project_dir, on_error=on_error)
+        roots = sorted({_meta_root(m) for m in idx["by_id"].values()})
+        for root_id in roots:
+            heads = lineage_heads(project_dir, root_id, on_error=on_error,
+                                  index=idx)
+            # An unreconciled branch protects all bodies: an old shared node
+            # is still evidence for deciding which branch wins.
+            if not heads or len(heads) != 1:
+                continue
+            head = heads[0]
+            head_version = _int_field(head.get("version"), 1)
+            for aid in sorted(_members_from(idx, root_id)):
+                meta = idx["by_id"].get(aid)
+                if meta is None or aid == head.get("id"):
+                    continue
+                status = meta.get("status")
+                body_path = os.path.join(artifact_dir(project_dir, aid),
+                                         "body.md")
+                try:
+                    body_size = os.path.getsize(body_path)
+                except OSError:
+                    body_size = 0
+                repair = status == "tombstoned" and body_size != stub_size
+                distance = head_version - _int_field(meta.get("version"), 1)
+                if not repair and (status == "tombstoned"
+                                   or distance < keep
+                                   or not is_stale(project_dir, meta,
+                                                  on_error=on_error,
+                                                  index=idx)):
+                    continue
+                rel_project = os.path.relpath(project_dir, workspace)
+                candidates.append({
+                    "project": rel_project,
+                    "artifact_id": aid,
+                    "bytes": max(0, body_size - stub_size),
+                    "reason": ("finish interrupted tombstone compaction"
+                               if repair else
+                               "superseded by %d newer version(s); keep=%d"
+                               % (distance, keep)),
+                    "repair": repair,
+                })
+    candidates.sort(key=lambda c: (c["project"], c["artifact_id"]))
+    return {"workspace": os.path.abspath(workspace),
+            "keep_versions": keep,
+            "candidates": candidates,
+            "count": len(candidates),
+            "bytes": sum(c["bytes"] for c in candidates)}
+
+
+def apply_gc_plan(plan, on_error=None, on_tombstone=None):
+    """Apply a generated plan per artifact; safe and idempotent after kill."""
+    if on_error is None:
+        on_error = lambda _m: None
+    if on_tombstone is None:
+        on_tombstone = lambda _item: None
+    workspace = os.path.abspath(plan.get("workspace") or "") \
+        if isinstance(plan, dict) else ""
+    results = []
+    for item in plan.get("candidates", []) if isinstance(plan, dict) else []:
+        rel = item.get("project") if isinstance(item, dict) else None
+        aid = item.get("artifact_id") if isinstance(item, dict) else None
+        if not isinstance(rel, str) or not _valid_artifact_id(aid):
+            on_error("GC plan contains an invalid candidate — skipped")
+            continue
+        project_dir = os.path.abspath(os.path.join(workspace, rel))
+        try:
+            inside = os.path.commonpath([workspace, project_dir]) == workspace
+        except ValueError:
+            inside = False
+        if not inside:
+            on_error("GC plan candidate escapes the workspace — skipped")
+            continue
+        result = tombstone(project_dir, aid, on_error=on_error)
+        if not result or not result.get("compacted"):
+            continue
+        done = dict(item)
+        done["transitioned"] = bool(result.get("transitioned"))
+        results.append(done)
+        if result.get("transitioned"):
+            on_tombstone(done)
+    return results
 
 
 def finalize(project_dir, artifact_id, by, registry, *, human=False,
@@ -1759,6 +2015,9 @@ def retrieve(project_dir, query_text, max_chars=6000, top_k=3,
         if root in seen_roots:
             continue
         seen_roots.add(root)
+        if lineage_is_killed(project_dir, root, on_error=on_error,
+                             index=idx):
+            continue
         tip = latest_final(project_dir, root, on_error=on_error, index=idx)
         if tip is None:                 # branched/cycle: reported once, no guess
             continue
@@ -1768,6 +2027,8 @@ def retrieve(project_dir, query_text, max_chars=6000, top_k=3,
         if tip["id"] in seen_tips:
             continue
         seen_tips.add(tip["id"])
+        if tip.get("status") in ("killed", "tombstoned"):
+            continue
         if not is_admissible(project_dir, tip, on_error=None, index=idx):
             continue                    # non-final tip: passive omission
         src = tip.get("source") if isinstance(tip.get("source"), dict) else {}

@@ -42,8 +42,10 @@ import re
 import sqlite3
 import sys
 
+import artifacts as artifactslib
+
 DB_FILENAME = ".orch-search.db"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 STATUS_OK = "ok"
 STATUS_DEGRADED = "degraded:fts5-unavailable"
 
@@ -83,7 +85,13 @@ def open_db(root):
     conn.execute("""CREATE TABLE IF NOT EXISTS artifacts (
         project TEXT NOT NULL, artifact_id TEXT NOT NULL,
         type TEXT, version INTEGER, path TEXT, ts TEXT,
+        status TEXT, content TEXT DEFAULT '',
         PRIMARY KEY (project, artifact_id, version))""")
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(artifacts)")}
+    if "status" not in columns:
+        conn.execute("ALTER TABLE artifacts ADD COLUMN status TEXT")
+    if "content" not in columns:
+        conn.execute("ALTER TABLE artifacts ADD COLUMN content TEXT DEFAULT ''")
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
         (SCHEMA_VERSION,))
@@ -91,6 +99,8 @@ def open_db(root):
     if _fts5_available(conn):
         conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
             USING fts5(content, project UNINDEXED, turn_id UNINDEXED)""")
+        conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts
+            USING fts5(content, project UNINDEXED, artifact_id UNINDEXED)""")
     else:
         status = STATUS_DEGRADED
     conn.commit()
@@ -100,6 +110,12 @@ def open_db(root):
 def _has_fts(conn):
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE name='messages_fts'").fetchone()
+    return row is not None
+
+
+def _has_artifact_fts(conn):
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE name='artifacts_fts'").fetchone()
     return row is not None
 
 
@@ -359,32 +375,62 @@ def _upsert_messages(conn, project, app_dir, rows):
 
 
 def _index_artifacts(conn, project, app_dir):
-    """artifact_published events -> artifacts rows (own cursor key)."""
-    path = os.path.join(app_dir, "events.jsonl")
-    key = "ev|%s" % project
-    if not os.path.exists(path):
-        return 0
-    offset, valid = _cursor_valid(conn, key, path)
-    if not valid:
-        conn.execute("DELETE FROM artifacts WHERE project=?", (project,))
-    lines, new_offset, last_raw = _read_new_lines(path, offset)
+    """Rebuild one project's live artifact corpus from authoritative meta.
+
+    Events prove publication happened, but cannot prove a later kill or GC.
+    A bounded meta scan on each index tick is what makes exclusion immediate;
+    --reindex therefore also purges rows indexed before a kill decision.
+    """
+    conn.execute("DELETE FROM artifacts WHERE project=?", (project,))
+    if _has_artifact_fts(conn):
+        conn.execute("DELETE FROM artifacts_fts WHERE project=?", (project,))
+    idx = artifactslib.lineage_index(app_dir)
     n = 0
-    for raw in lines:
+    # Preserve the 2.6 metadata-only contract for historical publication
+    # events whose artifact directory predates the structured store. They have
+    # no searchable body; any id with authoritative meta is handled below.
+    event_path = os.path.join(app_dir, "events.jsonl")
+    try:
+        with open(event_path, encoding="utf-8") as fh:
+            old_events = list(fh)
+    except OSError:
+        old_events = []
+    for raw in old_events:
         try:
             evt = json.loads(raw)
         except ValueError:
             continue
-        if not isinstance(evt, dict) or evt.get("kind") != "artifact_published":
+        aid = str(evt.get("artifact_id") or "") if isinstance(evt, dict) else ""
+        if (not isinstance(evt, dict)
+                or evt.get("kind") != "artifact_published"
+                or not aid or aid in idx["by_id"]):
             continue
         conn.execute(
             "INSERT OR REPLACE INTO artifacts (project, artifact_id, type, "
-            "version, path, ts) VALUES (?, ?, ?, ?, ?, ?)",
-            (project, str(evt.get("artifact_id") or ""),
-             evt.get("type"), int(evt.get("version") or 0),
-             evt.get("path"), evt.get("ts")))
+            "version, path, ts, status, content) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (project, aid, evt.get("type"), int(evt.get("version") or 0),
+             evt.get("path"), evt.get("ts"), None, ""))
         n += 1
-    if last_raw:
-        _store_cursor(conn, key, new_offset, last_raw)
+    for aid, meta in sorted(idx["by_id"].items()):
+        if artifactslib.is_lifecycle_excluded(
+                app_dir, meta, index=idx):
+            continue
+        body = artifactslib.read_body(app_dir, aid)
+        if body is None:
+            continue
+        content_path = os.path.join("artifacts", aid, "body.md")
+        conn.execute(
+            "INSERT OR REPLACE INTO artifacts (project, artifact_id, type, "
+            "version, path, ts, status, content) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (project, aid, meta.get("type"), int(meta.get("version") or 0),
+             content_path, meta.get("ts"), meta.get("status"), body))
+        if _has_artifact_fts(conn):
+            conn.execute(
+                "INSERT INTO artifacts_fts (content, project, artifact_id) "
+                "VALUES (?, ?, ?)", (body, project, aid))
+        n += 1
     return n
 
 
@@ -446,6 +492,8 @@ def reindex(root):
         conn.execute("DELETE FROM cursors")
         if _has_fts(conn):
             conn.execute("DELETE FROM messages_fts")
+        if _has_artifact_fts(conn):
+            conn.execute("DELETE FROM artifacts_fts")
         conn.commit()
     finally:
         conn.close()
@@ -479,6 +527,7 @@ def query(root, text, limit=20):
     hits = []
     try:
         use_fts = status == STATUS_OK and _has_fts(conn)
+        artifact_rows = []
         if use_fts:
             fts = _fts_query_string(text)
             if not fts:
@@ -491,6 +540,16 @@ def query(root, text, limit=20):
                    "WHERE messages_fts MATCH ? ORDER BY bm25(messages_fts) "
                    "LIMIT ?")
             rows = conn.execute(sql, (fts, limit)).fetchall()
+            if _has_artifact_fts(conn):
+                artifact_rows = conn.execute(
+                    "SELECT a.project, NULL, 0, NULL, 'artifact', "
+                    "a.artifact_id, a.path, "
+                    "snippet(artifacts_fts, 0, '', '', '…', 12) "
+                    "FROM artifacts_fts f JOIN artifacts a "
+                    "ON a.project=f.project AND "
+                    "a.artifact_id=f.artifact_id "
+                    "WHERE artifacts_fts MATCH ? LIMIT ?",
+                    (fts, limit)).fetchall()
         else:
             esc = (text.replace("\\", "\\\\").replace("%", r"\%")
                    .replace("_", r"\_"))
@@ -500,7 +559,14 @@ def query(root, text, limit=20):
             rows = [(p, ph, r, a, k, t, cp, _snippet(c, text))
                     for p, ph, r, a, k, t, cp, c in conn.execute(
                         sql, ("%" + esc + "%", limit)).fetchall()]
-        for p, ph, r, a, k, t, cp, sn in rows:
+            artifact_rows = [
+                (p, None, 0, None, "artifact", aid, path,
+                 _snippet(content, text))
+                for p, aid, path, content in conn.execute(
+                    "SELECT project, artifact_id, path, content FROM artifacts "
+                    "WHERE content LIKE ? ESCAPE '\\' LIMIT ?",
+                    ("%" + esc + "%", limit)).fetchall()]
+        for p, ph, r, a, k, t, cp, sn in (rows + artifact_rows)[:limit]:
             hits.append({"project": p, "phase": ph, "round": r, "agent": a,
                          "kind": k, "turn_id": t, "content_path": cp,
                          "snippet": sn})
