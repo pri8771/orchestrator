@@ -287,11 +287,31 @@ struct AppShellView: View {
             .buttonStyle(.borderedProminent)
             .help("Queue a new idea (⌘N)")
 
+            Button { chooseEnrollmentOrigin() } label: {
+                Label(store.enrollmentInFlight ? "Enrolling…" : "Enroll existing codebase…",
+                      systemImage: "folder.badge.plus")
+            }
+            .disabled(!store.engineAvailable || store.enrollmentInFlight)
+            .help("Adopt an existing codebase without changing its original files")
+
             Button { showInspector.toggle() } label: {
                 Label("Inspector", systemImage: "sidebar.trailing")
             }
             .help("Show or hide the inspector (⌥⌘I)")
         }
+    }
+
+    private func chooseEnrollmentOrigin() {
+        let panel = NSOpenPanel()
+        panel.title = "Enroll an existing codebase"
+        panel.message = "The original folder remains read-only. Orchestrator stores reports in its workspace."
+        panel.prompt = "Enroll"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        store.enrollExisting(source) { slug in selection = .project(slug) }
     }
 
     // MARK: Sidebar
@@ -1022,6 +1042,14 @@ private struct ShellProjectRow: View {
                         .font(DS.font.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if project.enrolled {
+                        Text("Enrolled")
+                            .font(DS.font.caption2)
+                            .foregroundStyle(DS.accent.color)
+                            .padding(.horizontal, DS.space.xxs)
+                            .background(Capsule().fill(DS.accent.fill))
+                            .overlay(Capsule().stroke(DS.accent.stroke, lineWidth: 1))
+                    }
                 }
             }
             Spacer()
@@ -1033,7 +1061,7 @@ private struct ShellProjectRow: View {
         .padding(.vertical, 1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(project.name)
-        .accessibilityValue(detail)
+        .accessibilityValue(project.enrolled ? "\(detail), Enrolled" : detail)
     }
 
     private var monogram: some View {
@@ -1484,6 +1512,7 @@ private struct ProjectShellContent: View {
     // Transcript-first: clicking a project lands on its phases + discussions
     // (the Run health zones stay one segment away).
     @State private var scopeTab: ProjectScopeTab = .transcript
+    @State private var showEnrollmentReport = false
 
     private var liveProject: Project {
         store.projects.first { $0.name == project.name } ?? project
@@ -1511,6 +1540,13 @@ private struct ProjectShellContent: View {
                         .help("Engine-enforced local models only")
                         .accessibilityLabel("Private, local models only")
                 }
+                if proj.enrolled {
+                    Button { showEnrollmentReport = true } label: {
+                        Label("Enrollment report", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Review compliance findings and documentation provenance")
+                }
                 Spacer()
             }
             .padding(.horizontal, DS.space.s)
@@ -1531,6 +1567,9 @@ private struct ProjectShellContent: View {
             guard cmd == .openPlanTab else { return }
             scopeTab = .plan
             store.uiCommand = nil
+        }
+        .sheet(isPresented: $showEnrollmentReport) {
+            EnrollmentReportView(project: proj)
         }
     }
 }

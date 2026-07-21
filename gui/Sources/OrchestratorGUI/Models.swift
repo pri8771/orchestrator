@@ -243,6 +243,9 @@ struct Project: Identifiable, Equatable {
     // Positive evidence from artifacts/*/meta.json, never inferred from the
     // absence of an error in agent_state.json.
     var hasFinalComplianceReport: Bool = false
+    // True for the enroll workflow and preserved after promotion via
+    // agent_state.promoted_from_enroll, so the report remains reachable.
+    var enrolled: Bool = false
 
     var isPrivate: Bool { sensitivity == "private" }
 

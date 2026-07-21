@@ -190,6 +190,7 @@ enum BackgroundProjectLoader {
         var blocked: BlockedConflict? = nil
         var resolutions: [String: String] = [:]
         var sensitivity = "normal"
+        var promotedFromEnroll = false
 
         if let data = try? Data(contentsOf: stateURL),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -205,6 +206,7 @@ enum BackgroundProjectLoader {
             awaitingHuman = obj["awaiting_human"] as? String
             blocked = BlockedConflict.parse(fromStateObject: obj)
             resolutions = (obj["phase_resolutions"] as? [String: String]) ?? [:]
+            promotedFromEnroll = obj["promoted_from_enroll"] is [String: Any]
             sensitivity = (obj["sensitivity"] as? String) == "private"
                 ? "private" : "normal"
             let done = (obj["done"] as? Bool) ?? false
@@ -258,6 +260,7 @@ enum BackgroundProjectLoader {
             projectDir: projectDir, sessionDir: dir) ?? sensitivity
         proj.hasFinalComplianceReport = EnrollmentEvidence
             .hasFinalComplianceReport(projectDir: dir)
+        proj.enrolled = resolvedName == "enroll" || promotedFromEnroll
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
         proj.latestVerify = VerifyResultsParser.latest(verifyRecords)
@@ -898,6 +901,7 @@ final class OrchestratorStore: ObservableObject {
     @Published var lastError: String?
     @Published var snippetWarnings: [String] = []
     @Published var commandWarnings: [String] = []
+    @Published private(set) var enrollmentInFlight = false
 
     /// Report a user-facing error both in the run log and as a banner.
     func surfaceError(_ msg: String) {
@@ -1814,6 +1818,61 @@ final class OrchestratorStore: ObservableObject {
         }
         launch(args: ["orchestrator.py", "--root", rootURL.path,
                       "--promote", project.name], project: project.name)
+    }
+
+    func enrollExisting(_ source: URL, onCreated: @escaping (String) -> Void) {
+        guard engineAvailable else {
+            surfaceError("Enrollment intake is unavailable — \(engineMissingMessage)")
+            return
+        }
+        guard !enrollmentInFlight else { return }
+        enrollmentInFlight = true
+        let py = resolvePython()
+        let engine = orchDirURL.appendingPathComponent("orchestrator.py")
+        let root = rootURL
+        let scoped = source.startAccessingSecurityScopedResource()
+        Task.detached { [weak self] in
+            defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: py)
+            proc.currentDirectoryURL = root
+            proc.arguments = EnrollmentCLI.arguments(
+                engine: engine, root: root, source: source)
+            var environment = ProcessInfo.processInfo.environment
+            for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+                        "GOOGLE_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
+                environment.removeValue(forKey: key)
+            }
+            proc.environment = environment
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = pipe
+            do {
+                try proc.run()
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.enrollmentInFlight = false
+                    self?.surfaceError("Enrollment intake could not start: \(error.localizedDescription)")
+                }
+                return
+            }
+            let output = String(
+                data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8) ?? ""
+            proc.waitUntilExit()
+            let slug = EnrollmentCLI.createdSlug(output: output)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.enrollmentInFlight = false
+                self.runLog = RunLogBuffer.trim(self.runLog + output)
+                guard proc.terminationStatus == 0, let slug else {
+                    self.surfaceError("Enrollment intake was refused — see the run log.")
+                    return
+                }
+                self.refresh()
+                onCreated(slug)
+            }
+        }
     }
 
     private func performPromotion(_ id: String) {
@@ -4097,6 +4156,7 @@ final class OrchestratorStore: ObservableObject {
         var awaiting: String? = nil
         var blocked: BlockedConflict? = nil
         var resolutions: [String: String] = [:]
+        var promotedFromEnroll = false
 
         if let data = try? Data(contentsOf: stateURL),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -4111,6 +4171,7 @@ final class OrchestratorStore: ObservableObject {
             awaiting = obj["awaiting_approval"] as? String
             blocked = BlockedConflict.parse(fromStateObject: obj)
             resolutions = (obj["phase_resolutions"] as? [String: String]) ?? [:]
+            promotedFromEnroll = obj["promoted_from_enroll"] is [String: Any]
             let done = (obj["done"] as? Bool) ?? false
             status = ProjectStatus.decode(engineValue: obj["status"] as? String,
                                           error: error, done: done)
@@ -4160,6 +4221,7 @@ final class OrchestratorStore: ObservableObject {
         proj.phaseResolutions = resolutions
         proj.hasFinalComplianceReport = EnrollmentEvidence
             .hasFinalComplianceReport(projectDir: dir)
+        proj.enrolled = resolvedName == "enroll" || promotedFromEnroll
         // Latest verification outcome (defensive parse; [] on any problem).
         let verifyRecords = VerifyResultsParser.parse(
             fileAt: dir.appendingPathComponent("verify_results.json"))
