@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{
+  color-scheme:light;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+  --mono:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --bg:#E4E4E7;--surface-0:#ECECEF;--surface-1:#F2F2F4;--surface-2:#F8F8FA;--surface-3:#FDFDFE;
+  --border:rgba(0,0,0,.12);--border-soft:rgba(0,0,0,.07);
+  --text:#1D1D1F;--text-2:#63636B;--text-3:#8A8A90;
+  --accent:#4A56C7;--claude:#C4643B;--codex:#0E7E74;--gemini:#3467D6;--local:#5B6472;
+  --success:#1E7F3C;--warning:#B25E09;--fallback:#8250DF;--error:#C4302B;
+  --tint-fill:8%;--tint-stroke:25%;
+  --r-badge:6px;--r-chip:8px;--r-card:12px;
+  --spring:cubic-bezier(.3,.9,.25,1);
+}
+[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#161618;--surface-0:#1E1E20;--surface-1:#242427;--surface-2:#2B2B2E;--surface-3:#343438;
+  --border:rgba(255,255,255,.13);--border-soft:rgba(255,255,255,.07);
+  --text:#F4F4F6;--text-2:#9E9EA6;--text-3:#71717A;
+  --accent:#8A93F2;--claude:#E08D63;--codex:#4DB8AC;--gemini:#7CA2F0;--local:#9AA3B2;
+  --success:#46C065;--warning:#E8A13D;--fallback:#B394F5;--error:#EF6E63;
+  --tint-fill:12%;--tint-stroke:25%;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:#CBCBD1;font-family:var(--sans);-webkit-font-smoothing:antialiased;color:#1D1D1F}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+@keyframes breathe{0%,100%{opacity:.35;transform:scale(.78)}50%{opacity:1;transform:scale(1)}}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@keyframes fbpulse{0%{transform:scale(.85);opacity:.55}9%{transform:scale(1.45);opacity:1}24%{transform:scale(1);opacity:1}100%{transform:scale(1);opacity:1}}
+@keyframes caret{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes fadePulse{0%,100%{opacity:.4}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){[data-motion]{animation-name:fadePulse!important;animation-timing-function:ease-in-out!important;animation-duration:1.8s!important}}
+[data-reduce="true"] [data-motion]{animation-name:fadePulse!important;animation-timing-function:ease-in-out!important;animation-duration:1.8s!important}
+</style>
+</helmet>
+<div data-reduce="{{ reduceOn }}" style="min-height:100vh;padding-bottom:72px">
+
+<header style="max-width:1320px;margin:0 auto;padding:44px 24px 8px">
+  <div style="font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#818189">Sections · Design System</div>
+  <h1 style="font-size:26px;font-weight:600;color:#1D1D1F;margin:10px 0 8px;letter-spacing:-.015em">Foundations &amp; core components</h1>
+  <p style="font-size:13px;line-height:1.6;color:#5C5C64;max-width:660px;margin:0">Every component shown in light and dark. Calm, layered macOS surfaces; 1px hairlines; no shadows at rest. Color means exactly one of two things — <b style="font-weight:600;color:#3f3f45">who is speaking</b> (agent identity) or <b style="font-weight:600;color:#3f3f45">what is happening</b> (state) — never decoration. Every status is a symbol and a word.</p>
+</header>
+
+<!-- ============ FOUNDATION: COLOR ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:28px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">F1</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Color &amp; identity</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">Two families of hue, never mixed.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+    <sc-for list="{{ colors }}" as="c" hint-placeholder-count="9">
+      <div style="background:#F5F5F7;border:1px solid rgba(0,0,0,.09);border-radius:12px;padding:12px 12px 13px">
+        <div style="font-size:13px;font-weight:600;color:#1D1D1F">{{ c.name }}</div>
+        <div style="font-size:11px;color:#7A7A82;margin:1px 0 10px">{{ c.role }}</div>
+        <div style="display:flex;gap:8px">
+          <div style="flex:1">
+            <div style="height:32px;border-radius:7px;border:1px solid rgba(0,0,0,.09);background:{{ c.l }}"></div>
+            <div style="font-family:var(--mono);font-size:10px;color:#83838B;margin-top:5px">L · {{ c.l }}</div>
+          </div>
+          <div style="flex:1">
+            <div style="height:32px;border-radius:7px;border:1px solid rgba(0,0,0,.09);background:{{ c.d }}"></div>
+            <div style="font-family:var(--mono);font-size:10px;color:#83838B;margin-top:5px">D · {{ c.d }}</div>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+
+  <!-- tint formula -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }} · tint formula</span>
+        </div>
+        <div style="padding:16px 16px 18px;--hue:var(--success)">
+          <div style="font-size:12px;color:var(--text-2);margin-bottom:12px">Every pill, chip and avatar is one hue at three levels — fill <b style="font-weight:600;color:var(--text)">8/12%</b>, stroke <b style="font-weight:600;color:var(--text)">25%</b>, content <b style="font-weight:600;color:var(--text)">100%</b>.</div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1;text-align:center">
+              <div style="height:44px;border-radius:8px;background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent)"></div>
+              <div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">fill · var(--tint-fill)</div>
+            </div>
+            <div style="flex:1;text-align:center">
+              <div style="height:44px;border-radius:8px;border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent)"></div>
+              <div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">stroke · 25%</div>
+            </div>
+            <div style="flex:1;text-align:center">
+              <div style="height:44px;border-radius:8px;background:var(--hue)"></div>
+              <div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">content · 100%</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:14px">
+            <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:8px;font-size:12px;font-weight:500;background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg>Converged</span>
+            <span style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">OK</span>
+            <span style="font-size:11px;color:var(--text-3)">= one expression, adapts per theme</span>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ FOUNDATION: TYPE ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:20px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">F2</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Type</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">SF Pro. Semibold is the ceiling — hierarchy is size + color. SF Mono for machine output only.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:18px 18px 20px;display:flex;flex-direction:column;gap:13px">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px"><span style="font-size:26px;font-weight:600;color:var(--text);letter-spacing:-.02em">Nothing here yet</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">26 / 600 · empty states</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px"><span style="font-size:20px;font-weight:600;color:var(--text);letter-spacing:-.01em">Section title</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">20 / 600</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px"><span style="font-size:15px;font-weight:600;color:var(--text)">Card title</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">15 / 600</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px"><span style="font-size:13px;color:var(--text)">Body — the workhorse for everything agents say.</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">13 / 400</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px"><span style="font-size:12px;font-weight:500;color:var(--text-2)">Chip label</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">12 / 500</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px"><span style="font-size:11px;color:var(--text-3)">metadata · 2:14 PM · round 3</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">11 / 400</span></div>
+          <div style="border-top:1px solid var(--border-soft);padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:16px"><span style="font-family:var(--mono);font-size:13px;color:var(--text)">claude · sonnet-4.5&nbsp;&nbsp;idea-7 → brief-12&nbsp;&nbsp;0:14</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">SF Mono</span></div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ FOUNDATION: SPACE / RADII / MOTION ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:20px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">F3</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Space, radius &amp; motion</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">4pt grid · radii 6/8/12 · one spring, one breath, one pulse.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:18px;display:flex;flex-direction:column;gap:18px">
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px">Spacing · 4 8 12 16 24 32</div>
+            <div style="display:flex;align-items:flex-end;gap:14px">
+              <div style="text-align:center"><div style="width:4px;height:4px;background:var(--accent);border-radius:2px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">4</div></div>
+              <div style="text-align:center"><div style="width:8px;height:8px;background:var(--accent);border-radius:2px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">8</div></div>
+              <div style="text-align:center"><div style="width:12px;height:12px;background:var(--accent);border-radius:2px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">12</div></div>
+              <div style="text-align:center"><div style="width:16px;height:16px;background:var(--accent);border-radius:2px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">16</div></div>
+              <div style="text-align:center"><div style="width:24px;height:24px;background:var(--accent);border-radius:3px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">24</div></div>
+              <div style="text-align:center"><div style="width:32px;height:32px;background:var(--accent);border-radius:3px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">32</div></div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px">Radius</div>
+            <div style="display:flex;gap:16px">
+              <div style="text-align:center"><div style="width:52px;height:40px;background:var(--surface-3);border:1px solid var(--border);border-radius:6px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">6 · badge</div></div>
+              <div style="text-align:center"><div style="width:52px;height:40px;background:var(--surface-3);border:1px solid var(--border);border-radius:8px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">8 · chip</div></div>
+              <div style="text-align:center"><div style="width:52px;height:40px;background:var(--surface-3);border:1px solid var(--border);border-radius:12px"></div><div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:6px">12 · card</div></div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px">Motion</div>
+            <div style="display:flex;align-items:center;gap:20px">
+              <div style="display:flex;align-items:center;gap:8px"><span data-motion style="width:11px;height:11px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span><span style="font-size:12px;color:var(--text-2)">breathing · running</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span data-motion style="width:11px;height:11px;border-radius:50%;background:var(--fallback);animation:fbpulse 4s var(--spring) infinite"></span><span style="font-size:12px;color:var(--text-2)">single pulse · fallback</span></div>
+            </div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:12px">spring · response .35 · damping .8 &nbsp;·&nbsp; reduce-motion → opacity only</div>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<div style="max-width:1320px;margin:20px auto 0;padding:0 24px"><div style="height:1px;background:rgba(0,0,0,.09)"></div></div>
+
+<!-- ============ 01 CHAT BUBBLES ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">01</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Chat bubbles</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">Who is talking, at a glance. Agents carry a hue + a persona.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:18px 18px 22px;display:flex;flex-direction:column;gap:18px">
+
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+            <div style="max-width:80%;background:var(--surface-3);border:1px solid var(--border);border-radius:12px;border-top-right-radius:4px;padding:10px 13px">
+              <div style="font-size:13px;line-height:1.55;color:var(--text)">Cap the debate at 6 rounds — I want a clear recommendation, not exhaustive coverage.</div>
+            </div>
+            <div style="font-family:var(--mono);font-size:11px;color:var(--text-3);padding-right:2px">You · 2:14 PM</div>
+          </div>
+
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
+                <span style="font-size:13px;font-weight:600;color:var(--text)">Claude</span>
+                <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">sonnet-4.5</span>
+                <span style="display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Skeptic</span>
+              </div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:10px 13px;font-size:13px;line-height:1.55;color:var(--text)">Six rounds risks anchoring on the first strong idea. I'd rather run five and hold one round in reserve for the dissent that always shows up late.</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
+                <span style="font-size:13px;font-weight:600;color:var(--text)">Codex</span>
+                <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">gpt-5-codex</span>
+                <span style="display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Investigator</span>
+              </div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:11px 13px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">
+                  <span data-motion style="width:7px;height:7px;border-radius:50%;background:var(--codex);animation:breathe 1.6s ease-in-out infinite"></span>
+                  <span style="font-size:12px;color:var(--text-2)">thinking…</span>
+                  <span style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-left:auto">0:14</span>
+                </div>
+                <div data-motion style="height:9px;border-radius:5px;margin-bottom:7px;background:linear-gradient(90deg,var(--surface-3) 0%,color-mix(in srgb,var(--text) 9%,var(--surface-3)) 50%,var(--surface-3) 100%);background-size:220% 100%;animation:shimmer 1.5s linear infinite"></div>
+                <div data-motion style="height:9px;width:72%;border-radius:5px;background:linear-gradient(90deg,var(--surface-3) 0%,color-mix(in srgb,var(--text) 9%,var(--surface-3)) 50%,var(--surface-3) 100%);background-size:220% 100%;animation:shimmer 1.5s linear infinite"></div>
+              </div>
+              <div style="font-size:11px;color:var(--text-3);margin-top:5px;padding-left:2px">CLI agent — emits nothing until it finishes</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">GM</div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
+                <span style="font-size:13px;font-weight:600;color:var(--text)">Gemini</span>
+                <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">2.5-pro</span>
+                <span style="display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Synthesizer</span>
+              </div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:10px 13px;font-size:13px;line-height:1.55;color:var(--text)">{{ stream }}<sc-if value="{{ streaming }}" hint-placeholder-val="{{ true }}"><span data-motion style="display:inline-block;width:2px;height:14px;background:var(--accent);margin-left:1px;vertical-align:-2px;animation:caret 1s steps(1) infinite"></span></sc-if></div>
+              <div style="font-size:11px;color:var(--text-3);margin-top:5px;padding-left:2px">API agent — streams tokens live</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 02 ROUND DIVIDER + PASS ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">02</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Round divider &amp; PASS slip</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">Structure the debate without shouting.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:22px 18px;display:flex;flex-direction:column;gap:20px">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="height:1px;flex:1;background:var(--border)"></div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);white-space:nowrap">Round 3 of 9</div>
+            <div style="height:1px;flex:1;background:var(--border)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;padding:5px 8px">
+            <span style="flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</span>
+            <span style="font-size:12px;color:var(--text-3)"><b style="font-weight:600;color:var(--text-2)">Skeptic</b> passed — no objection this round</span>
+            <span style="margin-left:auto;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.05em;color:var(--text-3);border:1px solid var(--border);border-radius:6px;padding:1px 6px">PASS</span>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 03 CONSENSUS CARD ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">03</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Consensus card</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">The debate's settled result — a calm landing that shows where it goes next.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:20px 18px 22px">
+          <div style="background:var(--surface-3);border:1px solid var(--border);border-radius:12px;padding:16px 16px 15px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;--hue:var(--success);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span>
+              <span style="font-size:15px;font-weight:600;color:var(--text)">Final Output</span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-left:auto">settled · round 7 of 9</span>
+            </div>
+            <div style="font-size:13px;line-height:1.6;color:var(--text)">Lead with a <b style="font-weight:600">solo-founder “agent studio”</b> wedge: one operator running many debating agents. Ship the Ideas→Research loop first; defer marketplace. Cost scales with turns, not agents.</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:14px;padding-top:13px;border-top:1px solid var(--border-soft)">
+              <div style="display:flex">
+                <span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span>
+                <span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;margin-left:-6px;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span>
+                <span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;margin-left:-6px;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</span>
+              </div>
+              <span style="font-size:11px;color:var(--text-3)">6 agents · 2 dissents noted</span>
+              <span style="display:inline-flex;align-items:center;gap:5px;margin-left:auto;height:24px;padding:0 10px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">→ Research</span>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--text-3);margin-top:10px;text-align:center">The route chip previews where this result flows next</div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 04 ARTIFACT CARD ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">04</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Artifact card</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">A typed, versioned, traceable object in the stream. Draggable.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:16px 16px 20px;display:flex;flex-direction:column;gap:10px">
+
+          <div style="display:flex;align-items:center;gap:11px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px 11px 8px">
+            <span style="flex:none;cursor:grab;color:var(--text-3);display:flex"><svg viewBox="0 0 10 16" width="9" height="15" fill="currentColor"><circle cx="2" cy="3" r="1"/><circle cx="8" cy="3" r="1"/><circle cx="2" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="2" cy="13" r="1"/><circle cx="8" cy="13" r="1"/></svg></span>
+            <span style="flex:none;width:34px;height:34px;border-radius:8px;display:grid;place-items:center;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg></span>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:7px"><span style="font-size:15px;font-weight:600;color:var(--text)">Positioning brief</span><span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-2);border:1px solid var(--border);border-radius:6px;padding:0 5px">v2</span></div>
+              <div style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:3px">idea-7 → brief-12</div>
+            </div>
+            <span style="flex:none;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;font-size:11px;font-weight:500;--hue:var(--success);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg>Final</span>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:11px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px 11px 8px">
+            <span style="flex:none;cursor:grab;color:var(--text-3);display:flex"><svg viewBox="0 0 10 16" width="9" height="15" fill="currentColor"><circle cx="2" cy="3" r="1"/><circle cx="8" cy="3" r="1"/><circle cx="2" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="2" cy="13" r="1"/><circle cx="8" cy="13" r="1"/></svg></span>
+            <span style="flex:none;width:34px;height:34px;border-radius:8px;display:grid;place-items:center;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg></span>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:7px"><span style="font-size:15px;font-weight:600;color:var(--text)">Concept: studio wedge</span><span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-2);border:1px solid var(--border);border-radius:6px;padding:0 5px">v1</span></div>
+              <div style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:3px">idea-7</div>
+            </div>
+            <span style="flex:none;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;font-size:11px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Draft</span>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:11px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px 11px 8px">
+            <span style="flex:none;cursor:grab;color:var(--text-3);display:flex"><svg viewBox="0 0 10 16" width="9" height="15" fill="currentColor"><circle cx="2" cy="3" r="1"/><circle cx="8" cy="3" r="1"/><circle cx="2" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="2" cy="13" r="1"/><circle cx="8" cy="13" r="1"/></svg></span>
+            <span style="flex:none;width:34px;height:34px;border-radius:8px;display:grid;place-items:center;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg></span>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:7px"><span style="font-size:15px;font-weight:600;color:var(--text)">Market sizing</span><span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-2);border:1px solid var(--border);border-radius:6px;padding:0 5px">v2</span></div>
+              <div style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:3px">brief-12 → sizing-4</div>
+            </div>
+            <span style="flex:none;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;font-size:11px;font-weight:500;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3.4v5"/><path d="M8 11.4h.01"/></svg>Stale input</span>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:11px;background:var(--surface-1);border:1px solid var(--border-soft);border-radius:12px;padding:11px 13px 11px 8px;opacity:.72">
+            <span style="flex:none;cursor:grab;color:var(--text-3);display:flex"><svg viewBox="0 0 10 16" width="9" height="15" fill="currentColor"><circle cx="2" cy="3" r="1"/><circle cx="8" cy="3" r="1"/><circle cx="2" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="2" cy="13" r="1"/><circle cx="8" cy="13" r="1"/></svg></span>
+            <span style="flex:none;width:34px;height:34px;border-radius:8px;display:grid;place-items:center;color:var(--text-3);background:var(--surface-3);border:1px solid var(--border)"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg></span>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:7px"><span style="font-size:15px;font-weight:600;color:var(--text-2);text-decoration:line-through;text-decoration-color:var(--text-3)">Positioning brief</span><span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-3);border:1px solid var(--border);border-radius:6px;padding:0 5px">v1</span></div>
+              <div style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:3px">superseded by v2</div>
+            </div>
+            <span style="flex:none;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;font-size:11px;font-weight:500;color:var(--text-3);background:var(--surface-3);border:1px solid var(--border)"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 8h10"/></svg>Superseded</span>
+          </div>
+
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 05 COMPOSER ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">05</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Composer</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">Set the room, ask the question. @-mention a studio for a two-tier ask.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:18px">
+          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px">
+              <span style="font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3)">In the room</span>
+              <div style="display:flex;gap:6px;align-items:center">
+                <span style="width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span>
+                <span style="width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span>
+                <span style="width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</span>
+                <button style="width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:transparent;border:1px dashed var(--border);color:var(--text-3);cursor:pointer;font-size:15px;line-height:1;padding:0" style-hover="border-color:var(--accent);color:var(--accent)">+</button>
+              </div>
+            </div>
+            <div style="background:var(--surface-3);border:1px solid var(--border);border-radius:10px;padding:11px 12px;min-height:66px;font-size:13px;line-height:1.55;color:var(--text)">Draft the market-size section — <span style="display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:6px;font-size:12px;font-weight:500;vertical-align:middle;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">@Research</span> what's our defensible wedge?</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:11px">
+              <div style="display:inline-flex;padding:2px;background:var(--surface-0);border:1px solid var(--border);border-radius:9px;gap:2px">
+                <span style="height:26px;padding:0 11px;border-radius:6px;display:inline-flex;align-items:center;font-size:12px;font-weight:500;background:var(--accent);color:#FBFBFD">Quick take</span>
+                <span style="height:26px;padding:0 11px;border-radius:6px;display:inline-flex;align-items:center;font-size:12px;font-weight:500;color:var(--text-2);cursor:pointer" style-hover="color:var(--text)">Deep dive</span>
+              </div>
+              <span style="font-size:11px;color:var(--text-3)">@Research responds as a studio</span>
+              <button style="margin-left:auto;height:30px;padding:0 15px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit" style-hover="background:color-mix(in srgb,var(--accent) 88%,#000)">Ask</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 06 STEP-IN BAR ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">06</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">"Step in" bar</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">Join a live debate. Typing pauses it at the next round — you never cut anyone off.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:18px;display:flex;flex-direction:column;gap:16px">
+
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Idle</div>
+            <div style="display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:11px;padding:8px 10px">
+              <span style="display:inline-flex;align-items:center;gap:6px;flex:none;height:24px;padding:0 9px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:7px;height:7px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Live · round 3</span>
+              <span style="flex:1;font-size:13px;color:var(--text-3)">Step in — your message pauses the debate at the next round</span>
+              <button style="flex:none;width:30px;height:30px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text-3);cursor:default;display:grid;place-items:center;padding:0"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V4M4 7.5L8 3.5l4 4"/></svg></button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Typing · joining</div>
+            <div style="background:var(--surface-2);border:1px solid color-mix(in srgb,var(--accent) var(--tint-stroke),transparent);border-radius:11px;padding:8px 10px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="display:inline-flex;align-items:center;gap:6px;flex:none;height:24px;padding:0 9px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:7px;height:7px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Live · round 3</span>
+                <span style="flex:1;font-size:13px;color:var(--text)">Actually, weigh distribution cost before we commit<span data-motion style="display:inline-block;width:2px;height:14px;background:var(--accent);margin-left:1px;vertical-align:-2px;animation:caret 1s steps(1) infinite"></span></span>
+                <button style="flex:none;height:30px;padding:0 13px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Send</button>
+              </div>
+              <div style="display:flex;align-items:center;gap:9px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border-soft)">
+                <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.4"/></svg>
+                <span style="font-size:12px;color:var(--text-2)">Debate pauses after round 3 · <b style="font-weight:600;color:var(--text)">you join at round 4</b></span>
+                <div style="flex:1;max-width:120px;margin-left:auto;height:4px;border-radius:2px;background:color-mix(in srgb,var(--text) 8%,transparent);overflow:hidden"><div data-motion style="height:100%;width:64%;border-radius:2px;background:var(--accent);animation:fadePulse 1.6s ease-in-out infinite"></div></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 07 STATUS PILLS ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">07</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Status pills</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">Symbol + word, always. Never color alone. Indigo = running; purple = a fallback happened.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:20px 18px;display:flex;flex-wrap:wrap;gap:10px">
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:8px;height:8px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Running</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h6"/><path d="M6.5 5l3 3-3 3"/><path d="M13 4v8"/></svg>Waiting on you</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--success);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg>Converged</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:500;color:var(--text-2);background:var(--surface-3);border:1px solid var(--border)"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 8h10"/></svg>Stalled</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--fallback);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg data-motion viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="animation:fbpulse 4s var(--spring) infinite;transform-origin:center"><path d="M6 4L3 7l3 3"/><path d="M3 7h6a4 4 0 0 1 0 8H7"/></svg>Fallback</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--error);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3.4v5"/><path d="M8 11.4h.01"/></svg>Error</span>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 08 APPROVAL CARD ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">08</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Approval card</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">A proposed autonomous action — attributable to a rule, always reversible.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:18px">
+          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:15px 16px">
+            <div style="display:flex;align-items:center;gap:7px;margin-bottom:11px">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="var(--text-3)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v2"/><rect x="3" y="4" width="10" height="9" rx="2"/><path d="M6 8h.01M10 8h.01M6.5 11h3"/></svg>
+              <span style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)">Proposed action · suggest-only</span>
+            </div>
+            <div style="font-size:15px;font-weight:600;color:var(--text);line-height:1.4">Route <span style="font-family:var(--mono);font-size:13px;font-weight:600">brief-12</span> → Ideas</div>
+            <div style="font-size:12px;color:var(--text-2);margin-top:6px;line-height:1.5">Matches routing rule <span style="font-family:var(--mono);color:var(--text)">#3</span> · confidence high · no dissents. <span style="font-family:var(--mono)">v2</span> supersedes <span style="font-family:var(--mono)">v1</span>.</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:15px">
+              <button style="height:31px;padding:0 15px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit" style-hover="background:color-mix(in srgb,var(--accent) 88%,#000)">Approve</button>
+              <button style="height:31px;padding:0 14px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text);font-size:13px;font-weight:500;cursor:pointer;font-family:inherit" style-hover="background:var(--surface-2)">Redirect…</button>
+              <button style="height:31px;padding:0 12px;border-radius:8px;background:transparent;border:1px solid transparent;color:var(--text-3);font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;margin-left:auto" style-hover="color:var(--text-2)">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 09 BUDGET METER ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">09</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Budget meter</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">Turns, spend, provider quota. Amber warns; a cooldown shows the wait.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:18px">
+          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:15px 16px;display:flex;flex-direction:column;gap:15px">
+            <div>
+              <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:7px"><span style="font-size:12px;font-weight:500;color:var(--text)">Turns</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-2)">24 / 40</span></div>
+              <div style="height:6px;border-radius:3px;background:color-mix(in srgb,var(--text) 8%,transparent);overflow:hidden"><div style="height:100%;width:60%;border-radius:3px;background:var(--accent)"></div></div>
+            </div>
+            <div>
+              <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:7px"><span style="font-size:12px;font-weight:500;color:var(--text)">Spend</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-2)">$1.24 / $5.00</span></div>
+              <div style="height:6px;border-radius:3px;background:color-mix(in srgb,var(--text) 8%,transparent);overflow:hidden"><div style="height:100%;width:25%;border-radius:3px;background:color-mix(in srgb,var(--text) 52%,transparent)"></div></div>
+            </div>
+            <div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+                <span style="font-size:12px;font-weight:500;color:var(--text)">Anthropic quota</span>
+                <span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:6px;font-size:11px;font-weight:500;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.4"/></svg><span style="font-family:var(--mono)">cooling · 2:30</span></span>
+              </div>
+              <div style="height:6px;border-radius:3px;background:color-mix(in srgb,var(--text) 8%,transparent);overflow:hidden"><div style="height:100%;width:92%;border-radius:3px;background:var(--warning)"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<!-- ============ 10 SECTION RAIL ROW ============ -->
+<section style="max-width:1320px;margin:0 auto;padding:26px 24px 8px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:#7E7E86;background:rgba(0,0,0,.045);border:1px solid rgba(0,0,0,.08);border-radius:6px;padding:2px 7px">10</span>
+    <h2 style="font-size:20px;font-weight:600;color:#1D1D1F;margin:0;letter-spacing:-.01em">Section rail row</h2>
+    <p style="font-size:13px;color:#6A6A72;margin:0">A studio at a glance: live status, a quiet activity glyph, and what needs you.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <sc-for list="{{ themes }}" as="theme" hint-placeholder-count="2">
+      <div data-theme="{{ theme }}" style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border-soft)">
+          <span style="width:8px;height:8px;border-radius:50%;background:var(--border)"></span>
+          <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">{{ theme }}</span>
+        </div>
+        <div style="padding:14px">
+          <div style="background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:6px">
+
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--accent) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--accent) var(--tint-stroke),transparent)">
+              <span data-motion style="flex:none;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>
+              <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Ideas</div><div style="font-size:11px;color:var(--text-3)">debating · round 3 of 9</div></div>
+              <span style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <span style="flex:none;width:8px;height:8px;border-radius:50%;background:var(--warning)"></span>
+              <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Research</div><div style="font-size:11px;color:var(--text-3)">2 running · 1 waiting on you</div></div>
+              <span style="flex:none;min-width:16px;height:16px;padding:0 4px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">1</span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <span style="flex:none;color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span>
+              <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Planning</div><div style="font-size:11px;color:var(--text-3)">converged · brief ready</div></div>
+              <span style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <span style="flex:none;color:var(--text-3);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 8h10"/></svg></span>
+              <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Build</div><div style="font-size:11px;color:var(--text-3)">stalled · round 8</div></div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <span data-motion style="flex:none;color:var(--fallback);display:flex;animation:fbpulse 4s var(--spring) infinite;transform-origin:center"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4L3 7l3 3"/><path d="M3 7h6a4 4 0 0 1 0 8H7"/></svg></span>
+              <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Go-to-Market</div><div style="font-size:11px;color:var(--text-3)">fallback used · Gemini → local</div></div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <span style="flex:none;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--text-3);box-sizing:border-box"></span>
+              <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text-2)">Design</div><div style="font-size:11px;color:var(--text-3)">idle</div></div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<footer style="max-width:1320px;margin:36px auto 0;padding:20px 24px 0;border-top:1px solid rgba(0,0,0,.09)">
+  <div style="font-size:12px;color:#7A7A82;line-height:1.6">Sections design system · foundations &amp; core components. Reduce-motion, stream speed and spec labels are adjustable in Tweaks.</div>
+</footer>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1360,&quot;height&quot;:900},&quot;reduceMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Motion&quot;},&quot;streamSpeed&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:42,&quot;min&quot;:10,&quot;max&quot;:120,&quot;step&quot;:2,&quot;unit&quot;:&quot;ms&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Motion&quot;},&quot;showSpecs&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;}}">
+class Component extends DCLogic {
+  state = { stream: "", done: false };
+  full = "Cost scales with sequential turns, not the number of agents — parallel debate keeps wall-clock flat. I'd cap this at 6 rounds and ship the recommendation with its two dissents attached.";
+  componentDidMount(){ this.run(); }
+  componentWillUnmount(){ clearInterval(this._t); clearTimeout(this._r); }
+  componentDidUpdate(prev){ if(prev.streamSpeed !== this.props.streamSpeed) this.run(); }
+  run(){
+    clearInterval(this._t); clearTimeout(this._r);
+    const speed = this.props.streamSpeed ?? 42;
+    this.setState({ stream: "", done: false });
+    let i = 0;
+    this._t = setInterval(() => {
+      i += 2;
+      if (i >= this.full.length){
+        clearInterval(this._t);
+        this.setState({ stream: this.full, done: true });
+        this._r = setTimeout(() => this.run(), 2800);
+      } else {
+        this.setState({ stream: this.full.slice(0, i), done: false });
+      }
+    }, speed);
+  }
+  renderVals(){
+    return {
+      themes: ["light","dark"],
+      stream: this.state.stream,
+      streaming: !this.state.done,
+      reduceOn: this.props.reduceMotion ? "true" : "false",
+      showSpecs: this.props.showSpecs ?? true,
+      colors: [
+        { name:"Conductor Indigo", role:"Accent · running, selection, primary", l:"#4A56C7", d:"#8A93F2" },
+        { name:"Claude", role:"Agent identity · terracotta", l:"#C4643B", d:"#E08D63" },
+        { name:"Codex", role:"Agent identity · teal", l:"#0E7E74", d:"#4DB8AC" },
+        { name:"Gemini", role:"Agent identity · cobalt", l:"#3467D6", d:"#7CA2F0" },
+        { name:"Local model", role:"Agent identity · slate", l:"#5B6472", d:"#9AA3B2" },
+        { name:"Success", role:"State · converged, final", l:"#1E7F3C", d:"#46C065" },
+        { name:"Warning", role:"State · waiting, stalled, quota", l:"#B25E09", d:"#E8A13D" },
+        { name:"Fallback", role:"State · a fallback happened — only", l:"#8250DF", d:"#B394F5" },
+        { name:"Error", role:"State · failed", l:"#C4302B", d:"#EF6E63" }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

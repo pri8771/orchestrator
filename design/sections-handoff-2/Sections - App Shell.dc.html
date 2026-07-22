@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{
+  color-scheme:light;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+  --mono:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --page:#C9C9CF;
+  --bg:#E4E4E7;--surface-0:#ECECEF;--surface-1:#F2F2F4;--surface-2:#F8F8FA;--surface-3:#FDFDFE;
+  --border:rgba(0,0,0,.12);--border-soft:rgba(0,0,0,.07);
+  --text:#1D1D1F;--text-2:#63636B;--text-3:#8A8A90;
+  --accent:#4A56C7;--claude:#C4643B;--codex:#0E7E74;--gemini:#3467D6;--local:#5B6472;
+  --success:#1E7F3C;--warning:#B25E09;--fallback:#8250DF;--error:#C4302B;
+  --tint-fill:8%;--tint-stroke:25%;--r-badge:6px;--r-chip:8px;--r-card:12px;
+  --spring:cubic-bezier(.3,.9,.25,1);
+}
+[data-theme="dark"]{
+  color-scheme:dark;
+  --page:#0D0D0F;
+  --bg:#161618;--surface-0:#1E1E20;--surface-1:#242427;--surface-2:#2B2B2E;--surface-3:#343438;
+  --border:rgba(255,255,255,.13);--border-soft:rgba(255,255,255,.07);
+  --text:#F4F4F6;--text-2:#9E9EA6;--text-3:#71717A;
+  --accent:#8A93F2;--claude:#E08D63;--codex:#4DB8AC;--gemini:#7CA2F0;--local:#9AA3B2;
+  --success:#46C065;--warning:#E8A13D;--fallback:#B394F5;--error:#EF6E63;
+  --tint-fill:12%;--tint-stroke:25%;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--page);font-family:var(--sans);-webkit-font-smoothing:antialiased;color:var(--text)}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+@keyframes breathe{0%,100%{opacity:.35;transform:scale(.78)}50%{opacity:1;transform:scale(1)}}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@keyframes fbpulse{0%{transform:scale(.85);opacity:.55}9%{transform:scale(1.45);opacity:1}24%{transform:scale(1);opacity:1}100%{transform:scale(1);opacity:1}}
+@keyframes caret{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes fadePulse{0%,100%{opacity:.4}50%{opacity:1}}
+@keyframes settle{0%{opacity:0;transform:translateY(8px) scale(.985)}100%{opacity:1;transform:none}}
+@keyframes glow{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--success) 30%,transparent)}70%{box-shadow:0 0 0 10px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@media (prefers-reduced-motion:reduce){[data-motion]{animation-name:fadePulse!important;animation-duration:1.8s!important}}
+[data-reduce="true"] [data-motion]{animation-name:fadePulse!important;animation-duration:1.8s!important}
+</style>
+</helmet>
+<div data-theme="{{ theme }}" data-reduce="{{ reduceOn }}" style="min-height:100vh;background:var(--page);padding-bottom:70px">
+
+<div style="max-width:1500px;margin:0 auto;padding:30px 30px 8px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px">
+  <div>
+    <div style="font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-3)">Sections · macOS</div>
+    <h1 style="font-size:26px;font-weight:600;margin:8px 0 6px;letter-spacing:-.015em;color:var(--text)">App shell &amp; four screens</h1>
+    <p style="font-size:13px;line-height:1.6;color:var(--text-2);max-width:640px;margin:0">One window, three regions — rail, pane canvas, inspector. Toggle the theme; every screen is designed for both.</p>
+  </div>
+  <div style="display:inline-flex;padding:3px;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;gap:2px;flex:none">
+    <button onClick="{{ setLight }}" style="height:28px;padding:0 13px;border-radius:6px;border:1px solid transparent;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;background:{{ lightBg }};color:{{ lightFg }}">Light</button>
+    <button onClick="{{ setDark }}" style="height:28px;padding:0 13px;border-radius:6px;border:1px solid transparent;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;background:{{ darkBg }};color:{{ darkFg }}">Dark</button>
+  </div>
+</div>
+
+<!-- ==================== SCREEN 1 · MANUAL CHAT ==================== -->
+<section style="max-width:1500px;margin:0 auto;padding:18px 30px 8px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-3);background:color-mix(in srgb,var(--text) 5%,transparent);border:1px solid var(--border-soft);border-radius:6px;padding:2px 7px">Screen 1</span>
+    <h2 style="font-size:17px;font-weight:600;margin:0;color:var(--text)">Manual chat · Ideas studio</h2>
+    <p style="font-size:12px;color:var(--text-3);margin:0">You, mid-conversation with two agents — one message already promoted to an artifact.</p>
+  </div>
+
+  <div data-frame style="overflow:hidden;height:calc(900px * var(--fit,1));border-radius:12px">
+  <div style="width:1440px;height:900px;background:var(--bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transform:scale(var(--fit,1));transform-origin:top left">
+    <!-- TOOLBAR -->
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--border-soft);background:var(--surface-1)">
+      <div style="display:flex;gap:8px;flex:none"><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span></div>
+      <div style="width:1px;height:20px;background:var(--border-soft)"></div>
+      <div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border)">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)">Fleet</span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text)"><span data-motion style="width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>2 running</span>
+        <span style="width:1px;height:12px;background:var(--border)"></span>
+        <span style="font-size:12px;color:var(--text-2)">providers ok</span>
+      </div>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text-3);font-size:12px"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4"/><path d="M10 10l3 3"/></svg>Search<span style="font-family:var(--mono);font-size:11px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:5px;padding:0 4px">⌘K</span></div>
+      <button style="position:relative;width:30px;height:30px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);display:grid;place-items:center;cursor:pointer;color:var(--text-2)" style-hover="color:var(--text)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6.4a3 3 0 0 1 6 0c0 3 1.1 3.8 1.1 3.8H3.9S5 9.4 5 6.4z"/><path d="M6.7 12.6a1.5 1.5 0 0 0 2.6 0"/></svg><span style="position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 3px;border-radius:8px;background:var(--fallback);color:#fff;font-family:var(--mono);font-size:10px;font-weight:600;display:grid;place-items:center;border:1.5px solid var(--surface-1)">2</span></button>
+      <button style="height:30px;padding:0 13px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit" style-hover="background:color-mix(in srgb,var(--accent) 88%,#000)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>New Chat</button>
+    </div>
+    <!-- BODY -->
+    <div style="flex:1;display:flex;min-height:0">
+      <!-- RAIL -->
+      <aside style="width:230px;flex:none;background:var(--surface-1);border-right:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;padding:10px">
+          <button style="width:100%;display:flex;align-items:center;gap:9px;height:44px;padding:0 10px;border-radius:9px;background:var(--surface-3);border:1px solid var(--border);cursor:pointer;font-family:inherit" style-hover="background:var(--surface-2)">
+            <span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;font-weight:600;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">N</span>
+            <div style="flex:1;text-align:left;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Nimbus</div><div style="font-size:11px;color:var(--text-3)">Project</div></div>
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="var(--text-3)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 6.5l2.5-2.5 2.5 2.5M5.5 9.5l2.5 3 2.5-3"/></svg>
+          </button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:0 8px 8px">
+          <div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);padding:6px 8px 6px">Studios</div>
+          <sc-for list="{{ studios1 }}" as="s" hint-placeholder-count="11">
+            <div style="position:relative;display:flex;align-items:center;padding:7px 9px;border-radius:8px;margin-bottom:1px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <sc-if value="{{ s.sel }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;inset:0;border-radius:8px;background:color-mix(in srgb,var(--accent) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--accent) var(--tint-stroke),transparent)"></div></sc-if>
+              <div style="position:relative;display:flex;align-items:center;gap:9px;width:100%">
+                <span style="width:14px;display:flex;justify-content:center;flex:none">
+                  <sc-if value="{{ s._run }}" hint-placeholder-val="{{ false }}"><span data-motion style="width:8px;height:8px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span></sc-if>
+                  <sc-if value="{{ s._att }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:50%;background:var(--warning)"></span></sc-if>
+                  <sc-if value="{{ s._conv }}" hint-placeholder-val="{{ false }}"><span style="color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span></sc-if>
+                  <sc-if value="{{ s._que }}" hint-placeholder-val="{{ false }}"><span style="color:var(--accent);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.4"/></svg></span></sc-if>
+                  <sc-if value="{{ s._idle }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:50%;border:1.5px solid var(--text-3);box-sizing:border-box"></span></sc-if>
+                  <sc-if value="{{ s._fb }}" hint-placeholder-val="{{ false }}"><span data-motion style="color:var(--fallback);display:flex;animation:fbpulse 4s var(--spring) infinite;transform-origin:center"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4L3 7l3 3"/><path d="M3 7h6a4 4 0 0 1 0 8H7"/></svg></span></sc-if>
+                  <sc-if value="{{ s._stall }}" hint-placeholder-val="{{ false }}"><span style="color:var(--text-3);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 8h10"/></svg></span></sc-if>
+                  <sc-if value="{{ s._lib }}" hint-placeholder-val="{{ false }}"><span style="color:var(--text-3);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="3" rx="1"/><path d="M3.6 6.5v6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1v-6"/><path d="M6.5 9h3"/></svg></span></sc-if>
+                </span>
+                <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.name }}</div><div style="font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.sub }}</div></div>
+                <sc-if value="{{ s.alert }}" hint-placeholder-val="{{ false }}"><span style="flex:none;min-width:16px;height:16px;padding:0 4px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">{{ s.alert }}</span></sc-if>
+                <sc-if value="{{ s.unread }}" hint-placeholder-val="{{ false }}"><span style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)"></span></sc-if>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="flex:none;border-top:1px solid var(--border-soft);padding:8px">
+          <div style="position:relative;display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+            <span style="width:14px;display:flex;justify-content:center;flex:none;color:var(--text-2)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.1"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6"/></svg></span>
+            <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Mission Control</div><div style="font-size:11px;color:var(--text-3)">4 sessions live</div></div>
+            <span data-motion style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>
+          </div>
+        </div>
+      </aside>
+      <!-- CANVAS -->
+      <main style="flex:1;min-width:0;background:var(--bg);display:flex;flex-direction:column">
+        <div style="height:38px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--border-soft)">
+          <span style="display:flex;align-items:center;gap:7px;height:26px;padding:0 11px;border-radius:7px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>Ideas</span>
+          <button style="width:26px;height:26px;border-radius:7px;background:transparent;border:1px dashed var(--border);color:var(--text-3);display:grid;place-items:center;cursor:pointer;padding:0" style-hover="color:var(--accent);border-color:var(--accent)"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+          <div style="flex:1"></div>
+          <span style="font-size:11px;color:var(--text-3);display:flex;align-items:center;gap:5px"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M8 3v10"/></svg>Drag a session here to split</span>
+        </div>
+        <div style="flex:none;padding:16px 24px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;gap:14px">
+          <div style="flex:1;min-width:0"><div style="font-size:20px;font-weight:600;color:var(--text);letter-spacing:-.01em">Ideas</div><div style="font-size:12px;color:var(--text-3);margin-top:2px">Manual chat · started 2:02 PM</div></div>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:8px;font-size:12px;font-weight:500;color:var(--text-2);background:var(--surface-3);border:1px solid var(--border)"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4.5v-1M8 12.5v-1M4.5 8h-1M12.5 8h-1"/><circle cx="8" cy="8" r="2.4"/></svg>Manual</span>
+          <div style="display:flex">
+            <span style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span>
+            <span style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;margin-left:-6px;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span>
+          </div>
+        </div>
+        <div style="flex:1;overflow:auto;padding:22px 24px;display:flex;flex-direction:column;gap:18px">
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+            <div style="max-width:72%;background:var(--surface-3);border:1px solid var(--border);border-radius:12px;border-top-right-radius:4px;padding:10px 13px"><div style="font-size:13px;line-height:1.55;color:var(--text)">What's the sharpest wedge for a solo founder running many agents? I want something defensible, not a thin wrapper.</div></div>
+            <div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">You · 2:03 PM</div>
+          </div>
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap"><span style="font-size:13px;font-weight:600;color:var(--text)">Claude</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">sonnet-4.5</span><span style="display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Skeptic</span></div>
+              <div style="max-width:82%;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:10px 13px;font-size:13px;line-height:1.55;color:var(--text)">The wedge is orchestration, not the model. A solo operator running <b style="font-weight:600">many debating agents as one studio</b> is defensible because the moat is the workflow graph and the accumulated artifacts — not any single provider.</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px"></div>
+            <div style="flex:1;min-width:0;max-width:82%">
+              <div style="display:flex;align-items:center;gap:11px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px 11px 8px">
+                <span style="flex:none;cursor:grab;color:var(--text-3);display:flex"><svg viewBox="0 0 10 16" width="9" height="15" fill="currentColor"><circle cx="2" cy="3" r="1"/><circle cx="8" cy="3" r="1"/><circle cx="2" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="2" cy="13" r="1"/><circle cx="8" cy="13" r="1"/></svg></span>
+                <span style="flex:none;width:34px;height:34px;border-radius:8px;display:grid;place-items:center;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg></span>
+                <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:7px"><span style="font-size:15px;font-weight:600;color:var(--text)">Concept: studio wedge</span><span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-2);border:1px solid var(--border);border-radius:6px;padding:0 5px">v1</span></div><div style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:3px">idea-7 · promoted from message</div></div>
+                <span style="flex:none;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;font-size:11px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Draft</span>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap"><span style="font-size:13px;font-weight:600;color:var(--text)">Codex</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">gpt-5-codex</span><span style="display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Investigator</span></div>
+              <div style="max-width:82%;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:10px 13px;font-size:13px;line-height:1.55;color:var(--text)">Agreed on the graph as moat. To make <span style="font-family:var(--mono);font-size:12px">idea-7</span> defensible I'd hand it to Research next — validate that operators actually want to run debates, not just single prompts.</div>
+            </div>
+          </div>
+        </div>
+        <div style="flex:none;padding:12px 16px 16px;border-top:1px solid var(--border-soft)">
+          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 12px">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+              <span style="font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3)">In the room</span>
+              <span style="width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span>
+              <span style="width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span>
+              <button style="width:24px;height:24px;border-radius:50%;background:transparent;border:1px dashed var(--border);color:var(--text-3);cursor:pointer;font-size:14px;line-height:1;padding:0" style-hover="border-color:var(--accent);color:var(--accent)">+</button>
+            </div>
+            <div style="background:var(--surface-3);border:1px solid var(--border);border-radius:10px;padding:10px 12px;min-height:44px;font-size:13px;color:var(--text-3)">Message Ideas…</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+              <button style="height:30px;padding:0 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text);font-size:13px;font-weight:500;display:flex;align-items:center;gap:7px;cursor:pointer;font-family:inherit" style-hover="background:var(--surface-2)"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 7a4.5 4.5 0 1 0-.3 2.4"/><path d="M12.5 3.5V7H9"/></svg>Let them discuss</button>
+              <span style="font-size:11px;color:var(--text-3)">hands off to an autonomous debate</span>
+              <button style="margin-left:auto;height:30px;padding:0 15px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit" style-hover="background:color-mix(in srgb,var(--accent) 88%,#000)">Send</button>
+            </div>
+          </div>
+        </div>
+      </main>
+      <!-- INSPECTOR -->
+      <aside style="width:340px;flex:none;background:var(--surface-1);border-left:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border-soft)"><span style="font-size:13px;font-weight:600;color:var(--text)">Ideas · Manual</span><span style="font-size:11px;color:var(--text-3);font-family:var(--mono)">session-31</span></div>
+        <div style="flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Phase plan</div><div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none"></span><div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--text)">Freeform</div><div style="font-size:11px;color:var(--text-3)">no phase gates · you drive the pace</div></div></div></div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Cast · 2</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px 11px;display:flex;align-items:center;gap:10px"><span style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Claude · Skeptic</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">sonnet-4.5 · effort med</div></div></div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px 11px;display:flex;align-items:center;gap:10px"><span style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Codex · Investigator</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">gpt-5-codex · effort high</div></div></div>
+            </div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Artifacts</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:11px 12px">
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Produced</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="flex:none;color:var(--claude);display:flex"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg></span><span style="font-size:13px;color:var(--text);flex:1">Concept: studio wedge</span><span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-2);border:1px solid var(--border);border-radius:6px;padding:0 5px">v1</span></div>
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:6px;padding-top:8px;border-top:1px solid var(--border-soft)">Consumed</div>
+              <div style="font-size:12px;color:var(--text-3)">Nothing yet</div>
+            </div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Session</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:4px 12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-soft)"><span style="font-size:12px;color:var(--text-2)">Turns</span><span style="font-family:var(--mono);font-size:12px;color:var(--text)">8 / ∞</span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-soft)"><span style="font-size:12px;color:var(--text-2)">Spend</span><span style="font-family:var(--mono);font-size:12px;color:var(--text)">$0.42</span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0"><span style="font-size:12px;color:var(--text-2)">Auto-route</span><span style="font-size:12px;color:var(--text-3)">Off</span></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  </div>
+</section>
+
+<!-- ==================== SCREEN 2 · DEBATE THEATER ==================== -->
+<section style="max-width:1500px;margin:0 auto;padding:24px 30px 8px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-3);background:color-mix(in srgb,var(--text) 5%,transparent);border:1px solid var(--border-soft);border-radius:6px;padding:2px 7px">Screen 2</span>
+    <h2 style="font-size:17px;font-weight:600;margin:0;color:var(--text)">The debate theater · auto mode</h2>
+    <p style="font-size:12px;color:var(--text-3);margin:0">Three agents debate live. You're the audience — watching stays calm and legible.</p>
+  </div>
+  <div data-frame style="overflow:hidden;height:calc(900px * var(--fit,1));border-radius:12px">
+  <div style="width:1440px;height:900px;background:var(--bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transform:scale(var(--fit,1));transform-origin:top left">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--border-soft);background:var(--surface-1)">
+      <div style="display:flex;gap:8px;flex:none"><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span></div>
+      <div style="width:1px;height:20px;background:var(--border-soft)"></div>
+      <div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border)">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)">Fleet</span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text)"><span data-motion style="width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>1 debating</span>
+        <span style="width:1px;height:12px;background:var(--border)"></span>
+        <span style="font-size:12px;color:var(--text-2)">providers ok</span>
+      </div>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text-3);font-size:12px"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4"/><path d="M10 10l3 3"/></svg>Search<span style="font-family:var(--mono);font-size:11px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:5px;padding:0 4px">⌘K</span></div>
+      <button style="position:relative;width:30px;height:30px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);display:grid;place-items:center;cursor:pointer;color:var(--text-2)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6.4a3 3 0 0 1 6 0c0 3 1.1 3.8 1.1 3.8H3.9S5 9.4 5 6.4z"/><path d="M6.7 12.6a1.5 1.5 0 0 0 2.6 0"/></svg><span style="position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 3px;border-radius:8px;background:var(--fallback);color:#fff;font-family:var(--mono);font-size:10px;font-weight:600;display:grid;place-items:center;border:1.5px solid var(--surface-1)">2</span></button>
+      <button style="height:30px;padding:0 13px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>New Chat</button>
+    </div>
+    <div style="flex:1;display:flex;min-height:0">
+      <aside style="width:230px;flex:none;background:var(--surface-1);border-right:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;padding:10px">
+          <button style="width:100%;display:flex;align-items:center;gap:9px;height:44px;padding:0 10px;border-radius:9px;background:var(--surface-3);border:1px solid var(--border);cursor:pointer;font-family:inherit">
+            <span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;font-weight:600;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">N</span>
+            <div style="flex:1;text-align:left;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Nimbus</div><div style="font-size:11px;color:var(--text-3)">Project</div></div>
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="var(--text-3)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 6.5l2.5-2.5 2.5 2.5M5.5 9.5l2.5 3 2.5-3"/></svg>
+          </button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:0 8px 8px">
+          <div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);padding:6px 8px">Studios</div>
+          <sc-for list="{{ studios2 }}" as="s" hint-placeholder-count="11">
+            <div style="position:relative;display:flex;align-items:center;padding:7px 9px;border-radius:8px;margin-bottom:1px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <sc-if value="{{ s.sel }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;inset:0;border-radius:8px;background:color-mix(in srgb,var(--accent) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--accent) var(--tint-stroke),transparent)"></div></sc-if>
+              <div style="position:relative;display:flex;align-items:center;gap:9px;width:100%">
+                <span style="width:14px;display:flex;justify-content:center;flex:none">
+                  <sc-if value="{{ s._run }}" hint-placeholder-val="{{ false }}"><span data-motion style="width:8px;height:8px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span></sc-if>
+                  <sc-if value="{{ s._att }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:50%;background:var(--warning)"></span></sc-if>
+                  <sc-if value="{{ s._conv }}" hint-placeholder-val="{{ false }}"><span style="color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span></sc-if>
+                  <sc-if value="{{ s._que }}" hint-placeholder-val="{{ false }}"><span style="color:var(--accent);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.4"/></svg></span></sc-if>
+                  <sc-if value="{{ s._idle }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:50%;border:1.5px solid var(--text-3);box-sizing:border-box"></span></sc-if>
+                  <sc-if value="{{ s._lib }}" hint-placeholder-val="{{ false }}"><span style="color:var(--text-3);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="3" rx="1"/><path d="M3.6 6.5v6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1v-6"/><path d="M6.5 9h3"/></svg></span></sc-if>
+                </span>
+                <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.name }}</div><div style="font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.sub }}</div></div>
+                <sc-if value="{{ s.unread }}" hint-placeholder-val="{{ false }}"><span style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)"></span></sc-if>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="flex:none;border-top:1px solid var(--border-soft);padding:8px">
+          <div style="display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+            <span style="width:14px;display:flex;justify-content:center;flex:none;color:var(--text-2)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.1"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6"/></svg></span>
+            <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Mission Control</div><div style="font-size:11px;color:var(--text-3)">1 session live</div></div>
+            <span data-motion style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>
+          </div>
+        </div>
+      </aside>
+      <main style="flex:1;min-width:0;background:var(--bg);display:flex;flex-direction:column">
+        <div style="height:38px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--border-soft)">
+          <span style="display:flex;align-items:center;gap:7px;height:26px;padding:0 11px;border-radius:7px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>Ideas</span>
+          <button style="width:26px;height:26px;border-radius:7px;background:transparent;border:1px dashed var(--border);color:var(--text-3);display:grid;place-items:center;cursor:pointer;padding:0"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+          <div style="flex:1"></div>
+          <span style="font-size:11px;color:var(--text-3);font-family:var(--mono)">elapsed 4:12</span>
+        </div>
+        <div style="flex:none;padding:16px 24px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;gap:12px">
+          <div style="flex:1;min-width:0"><div style="font-size:20px;font-weight:600;color:var(--text);letter-spacing:-.01em">Ideas</div><div style="font-size:12px;color:var(--text-3);margin-top:2px">Autonomous debate · Debate phase</div></div>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:8px;font-size:12px;font-weight:600;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:7px;height:7px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Auto</span>
+          <span style="font-size:12px;font-weight:600;color:var(--text-2);font-family:var(--mono)">Round 3 / 9</span>
+          <div style="display:flex">
+            <span style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span>
+            <span style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;margin-left:-6px;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span>
+            <span style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;margin-left:-6px;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</span>
+          </div>
+          <button style="height:30px;padding:0 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text);font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 4v8M10 4v8"/></svg>Pause</button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px">
+          <div style="opacity:.55;display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</div>
+            <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:13px;font-weight:600;color:var(--text)">Closer</span><span style="font-size:11px;color:var(--text-3)">round 2</span></div><div style="max-width:78%;font-size:13px;line-height:1.5;color:var(--text-2)">…so we're aligned that the moat is the graph. Let's stress the distribution risk next.</div></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;margin:2px 0"><div style="height:1px;flex:1;background:var(--border)"></div><div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);white-space:nowrap">Round 3 of 9</div><div style="height:1px;flex:1;background:var(--border)"></div></div>
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap"><span style="font-size:13px;font-weight:600;color:var(--text)">Claude</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">sonnet-4.5</span><span style="display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Visionary</span></div>
+              <div style="max-width:80%;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:10px 13px;font-size:13px;line-height:1.55;color:var(--text)">Distribution solves itself if the artifacts compound. Every debate leaves a reusable brief — after ten runs the operator has a private corpus no wrapper can match. That's the flywheel, not the models.</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap"><span style="font-size:13px;font-weight:600;color:var(--text)">Codex</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">gpt-5-codex</span><span style="display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Skeptic</span></div>
+              <div style="max-width:80%;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:11px 13px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span data-motion style="width:7px;height:7px;border-radius:50%;background:var(--codex);animation:breathe 1.6s ease-in-out infinite"></span><span style="font-size:12px;color:var(--text-2)">thinking…</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-left:auto">0:07</span></div>
+                <div data-motion style="height:9px;border-radius:5px;margin-bottom:7px;background:linear-gradient(90deg,var(--surface-3),color-mix(in srgb,var(--text) 9%,var(--surface-3)),var(--surface-3));background-size:220% 100%;animation:shimmer 1.5s linear infinite"></div>
+                <div data-motion style="height:9px;width:64%;border-radius:5px;background:linear-gradient(90deg,var(--surface-3),color-mix(in srgb,var(--text) 9%,var(--surface-3)),var(--surface-3));background-size:220% 100%;animation:shimmer 1.5s linear infinite"></div>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;padding:3px 8px"><span style="flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</span><span style="font-size:12px;color:var(--text-3)"><b style="font-weight:600;color:var(--text-2)">Closer</b> passed — holding for the converge phase</span><span style="margin-left:auto;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.05em;color:var(--text-3);border:1px solid var(--border);border-radius:6px;padding:1px 6px">PASS</span></div>
+        </div>
+        <div style="flex:none;padding:12px 16px 16px;border-top:1px solid var(--border-soft)">
+          <div style="display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:9px 11px">
+            <span style="display:inline-flex;align-items:center;gap:6px;flex:none;height:24px;padding:0 9px;border-radius:8px;font-size:12px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:7px;height:7px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Live · round 3</span>
+            <span style="flex:1;font-size:13px;color:var(--text-3)">Step in — your message pauses the debate at the next round</span>
+            <button style="flex:none;width:30px;height:30px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text-3);display:grid;place-items:center;padding:0"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V4M4 7.5L8 3.5l4 4"/></svg></button>
+          </div>
+        </div>
+      </main>
+      <aside style="width:340px;flex:none;background:var(--surface-1);border-left:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border-soft)"><span style="font-size:13px;font-weight:600;color:var(--text)">Ideas · Auto</span><span style="font-size:11px;color:var(--text-3);font-family:var(--mono)">session-31</span></div>
+        <div style="flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Phase plan</div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px"><span style="flex:none;color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span><div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--text-2)">Diverge</div></div><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">2 rounds</span></div>
+              <div style="display:flex;align-items:center;gap:10px;background:color-mix(in srgb,var(--accent) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--accent) var(--tint-stroke),transparent);border-radius:10px;padding:9px 11px"><span data-motion style="flex:none;width:9px;height:9px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span><div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--text)">Debate</div></div><span style="font-family:var(--mono);font-size:11px;color:var(--accent)">round 3 of 4</span></div>
+              <div style="display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px"><span style="flex:none;width:9px;height:9px;border-radius:50%;border:1.5px solid var(--text-3);box-sizing:border-box"></span><div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--text-2)">Converge</div></div><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">3 rounds</span></div>
+            </div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Cast · 3</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;display:flex;align-items:center;gap:10px"><span style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Visionary</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">claude · sonnet-4.5</div></div></div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;display:flex;align-items:center;gap:10px"><span style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Skeptic</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">codex · gpt-5-codex</div></div></div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;display:flex;align-items:center;gap:10px"><span style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Closer</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">local · llama-3.3</div></div></div>
+            </div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Budget</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:12px">
+              <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:7px"><span style="font-size:12px;font-weight:500;color:var(--text)">Turns</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-2)">18 / 40</span></div>
+              <div style="height:6px;border-radius:3px;background:color-mix(in srgb,var(--text) 8%,transparent);overflow:hidden;margin-bottom:12px"><div style="height:100%;width:45%;border-radius:3px;background:var(--accent)"></div></div>
+              <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:7px"><span style="font-size:12px;font-weight:500;color:var(--text)">Spend</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-2)">$1.90 / $5.00</span></div>
+              <div style="height:6px;border-radius:3px;background:color-mix(in srgb,var(--text) 8%,transparent);overflow:hidden"><div style="height:100%;width:38%;border-radius:3px;background:color-mix(in srgb,var(--text) 52%,transparent)"></div></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  </div>
+</section>
+
+<!-- ==================== SCREEN 3 · CONSENSUS ==================== -->
+<section style="max-width:1500px;margin:0 auto;padding:24px 30px 8px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-3);background:color-mix(in srgb,var(--text) 5%,transparent);border:1px solid var(--border-soft);border-radius:6px;padding:2px 7px">Screen 3</span>
+    <h2 style="font-size:17px;font-weight:600;margin:0;color:var(--text)">Consensus</h2>
+    <p style="font-size:12px;color:var(--text-3);margin:0">The debate settles. The Final Output lands and previews where it flows next.</p>
+  </div>
+  <div data-frame style="overflow:hidden;height:calc(900px * var(--fit,1));border-radius:12px">
+  <div style="width:1440px;height:900px;background:var(--bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transform:scale(var(--fit,1));transform-origin:top left">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--border-soft);background:var(--surface-1)">
+      <div style="display:flex;gap:8px;flex:none"><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span></div>
+      <div style="width:1px;height:20px;background:var(--border-soft)"></div>
+      <div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border)">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)">Fleet</span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text)"><span style="color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span>1 converged</span>
+        <span style="width:1px;height:12px;background:var(--border)"></span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2)"><span style="color:var(--accent);display:flex"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.4"/></svg></span>1 queued</span>
+      </div>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text-3);font-size:12px"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4"/><path d="M10 10l3 3"/></svg>Search<span style="font-family:var(--mono);font-size:11px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:5px;padding:0 4px">⌘K</span></div>
+      <button style="position:relative;width:30px;height:30px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);display:grid;place-items:center;cursor:pointer;color:var(--text-2)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6.4a3 3 0 0 1 6 0c0 3 1.1 3.8 1.1 3.8H3.9S5 9.4 5 6.4z"/><path d="M6.7 12.6a1.5 1.5 0 0 0 2.6 0"/></svg><span style="position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 3px;border-radius:8px;background:var(--fallback);color:#fff;font-family:var(--mono);font-size:10px;font-weight:600;display:grid;place-items:center;border:1.5px solid var(--surface-1)">2</span></button>
+      <button style="height:30px;padding:0 13px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>New Chat</button>
+    </div>
+    <div style="flex:1;display:flex;min-height:0">
+      <aside style="width:230px;flex:none;background:var(--surface-1);border-right:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;padding:10px">
+          <button style="width:100%;display:flex;align-items:center;gap:9px;height:44px;padding:0 10px;border-radius:9px;background:var(--surface-3);border:1px solid var(--border);cursor:pointer;font-family:inherit">
+            <span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;font-weight:600;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">N</span>
+            <div style="flex:1;text-align:left;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Nimbus</div><div style="font-size:11px;color:var(--text-3)">Project</div></div>
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="var(--text-3)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 6.5l2.5-2.5 2.5 2.5M5.5 9.5l2.5 3 2.5-3"/></svg>
+          </button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:0 8px 8px">
+          <div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);padding:6px 8px">Studios</div>
+          <sc-for list="{{ studios3 }}" as="s" hint-placeholder-count="11">
+            <div style="position:relative;display:flex;align-items:center;padding:7px 9px;border-radius:8px;margin-bottom:1px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <sc-if value="{{ s.sel }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;inset:0;border-radius:8px;background:color-mix(in srgb,var(--accent) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--accent) var(--tint-stroke),transparent)"></div></sc-if>
+              <sc-if value="{{ s._que }}" hint-placeholder-val="{{ false }}"><div data-motion style="position:absolute;inset:0;border-radius:8px;background:color-mix(in srgb,var(--accent) var(--tint-fill),transparent);animation:fadePulse 2.2s ease-in-out infinite"></div></sc-if>
+              <div style="position:relative;display:flex;align-items:center;gap:9px;width:100%">
+                <span style="width:14px;display:flex;justify-content:center;flex:none">
+                  <sc-if value="{{ s._conv }}" hint-placeholder-val="{{ false }}"><span style="color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span></sc-if>
+                  <sc-if value="{{ s._que }}" hint-placeholder-val="{{ false }}"><span style="color:var(--accent);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.4"/></svg></span></sc-if>
+                  <sc-if value="{{ s._idle }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:50%;border:1.5px solid var(--text-3);box-sizing:border-box"></span></sc-if>
+                  <sc-if value="{{ s._lib }}" hint-placeholder-val="{{ false }}"><span style="color:var(--text-3);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="3" rx="1"/><path d="M3.6 6.5v6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1v-6"/><path d="M6.5 9h3"/></svg></span></sc-if>
+                </span>
+                <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.name }}</div><div style="font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.sub }}</div></div>
+                <sc-if value="{{ s.unread }}" hint-placeholder-val="{{ false }}"><span style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)"></span></sc-if>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="flex:none;border-top:1px solid var(--border-soft);padding:8px">
+          <div style="display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+            <span style="width:14px;display:flex;justify-content:center;flex:none;color:var(--text-2)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.1"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6"/></svg></span>
+            <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Mission Control</div><div style="font-size:11px;color:var(--text-3)">1 queued</div></div>
+            <span data-motion style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>
+          </div>
+        </div>
+      </aside>
+      <main style="flex:1;min-width:0;background:var(--bg);display:flex;flex-direction:column">
+        <div style="height:38px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--border-soft)">
+          <span style="display:flex;align-items:center;gap:7px;height:26px;padding:0 11px;border-radius:7px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text)"><span style="color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span>Ideas</span>
+          <div style="flex:1"></div>
+          <span style="font-size:11px;color:var(--text-3);font-family:var(--mono)">7 rounds · 5:41</span>
+        </div>
+        <div style="flex:none;padding:16px 24px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;gap:12px">
+          <div style="flex:1;min-width:0"><div style="font-size:20px;font-weight:600;color:var(--text);letter-spacing:-.01em">Ideas</div><div style="font-size:12px;color:var(--text-3);margin-top:2px">Debate complete · converged at round 7</div></div>
+          <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:8px;font-size:12px;font-weight:600;--hue:var(--success);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg>Converged</span>
+        </div>
+        <div style="flex:1;overflow:auto;padding:20px 24px 24px;display:flex;flex-direction:column;gap:16px">
+          <div style="opacity:.55;display:flex;gap:11px;align-items:flex-start">
+            <div style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</div>
+            <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:13px;font-weight:600;color:var(--text)">Closer</span><span style="font-size:11px;color:var(--text-3)">round 7</span></div><div style="max-width:76%;font-size:13px;line-height:1.5;color:var(--text-2)">No remaining objections. Locking the recommendation with the two noted dissents attached.</div></div>
+          </div>
+          <div data-settle style="animation:settle .55s var(--spring) both;max-width:600px;margin:6px auto 0;width:100%">
+            <div style="background:var(--surface-3);border:1px solid color-mix(in srgb,var(--success) var(--tint-stroke),transparent);border-radius:14px;padding:18px 18px 16px">
+              <div style="display:flex;align-items:center;gap:9px;margin-bottom:13px">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;--hue:var(--success);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span>
+                <span style="font-size:17px;font-weight:600;color:var(--text)">Final Output</span>
+                <span style="font-family:var(--mono);font-size:11px;color:var(--text-3);margin-left:auto">settled · round 7 of 9</span>
+              </div>
+              <div style="font-size:14px;line-height:1.6;color:var(--text)">Lead with a <b style="font-weight:600">solo-founder “agent studio”</b> wedge — one operator running many debating agents. The moat is the compounding artifact graph, not any provider. Ship the <b style="font-weight:600">Ideas → Research</b> loop first; defer the marketplace.</div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border-soft)">
+                <div style="display:flex">
+                  <span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</span>
+                  <span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;margin-left:-6px;--hue:var(--codex);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CX</span>
+                  <span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;margin-left:-6px;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</span>
+                </div>
+                <span style="font-size:12px;color:var(--text-3)">3 agents · 2 dissents noted</span>
+                <span style="display:inline-flex;align-items:center;gap:6px;margin-left:auto;height:26px;padding:0 11px;border-radius:8px;font-size:12px;font-weight:600;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">→ Research</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="flex:none;padding:14px 24px;border-top:1px solid var(--border-soft);display:flex;align-items:center;gap:12px">
+          <span style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--text)"><span style="color:var(--accent);display:flex"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h8"/><path d="M8 5l3 3-3 3"/></svg></span>Routed to <b style="font-weight:600">Research</b></span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">rule #3 · brief-12 v1</span>
+          <button style="height:30px;padding:0 12px;border-radius:8px;background:transparent;border:1px solid var(--border);color:var(--text-2);font-size:13px;font-weight:500;cursor:pointer;font-family:inherit" style-hover="color:var(--text)">Undo</button>
+          <button style="margin-left:auto;height:30px;padding:0 14px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit">Open Research<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h7M8 5l3 3-3 3"/></svg></button>
+        </div>
+      </main>
+      <aside style="width:340px;flex:none;background:var(--surface-1);border-left:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border-soft)"><span style="font-size:13px;font-weight:600;color:var(--text)">Ideas · Outcome</span><span style="font-size:11px;color:var(--text-3);font-family:var(--mono)">session-31</span></div>
+        <div style="flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Outcome</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:4px 12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-soft)"><span style="font-size:12px;color:var(--text-2)">Converged</span><span style="font-family:var(--mono);font-size:12px;color:var(--text)">round 7 / 9</span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-soft)"><span style="font-size:12px;color:var(--text-2)">Dissents</span><span style="font-family:var(--mono);font-size:12px;color:var(--text)">2 attached</span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0"><span style="font-size:12px;color:var(--text-2)">Spend</span><span style="font-family:var(--mono);font-size:12px;color:var(--text)">$3.10</span></div>
+            </div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Route</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;display:flex;align-items:center;gap:9px">
+              <span style="flex:none;color:var(--accent);display:flex"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h8"/><path d="M8 5l3 3-3 3"/></svg></span>
+              <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--text)">→ Research</div><div style="font-size:11px;color:var(--text-3)">routing rule #3 · confidence high</div></div>
+              <span style="flex:none;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;font-size:11px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.4"/></svg>queued</span>
+            </div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Artifacts</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:11px 12px">
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Produced</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="flex:none;color:var(--gemini);display:flex"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg></span><span style="font-size:13px;color:var(--text);flex:1">Positioning brief</span><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:6px;font-size:11px;font-weight:500;--hue:var(--success);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Final</span></div>
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:6px;padding-top:8px;border-top:1px solid var(--border-soft)">Consumed</div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="flex:none;color:var(--claude);display:flex"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg></span><span style="font-size:13px;color:var(--text-2);flex:1">Concept: studio wedge</span><span style="font-family:var(--mono);font-size:10px;color:var(--text-3);border:1px solid var(--border);border-radius:6px;padding:0 5px">idea-7</span></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  </div>
+</section>
+
+<!-- ==================== SCREEN 4 · CONCURRENCY ==================== -->
+<section style="max-width:1500px;margin:0 auto;padding:24px 30px 8px">
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+    <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-3);background:color-mix(in srgb,var(--text) 5%,transparent);border:1px solid var(--border-soft);border-radius:6px;padding:2px 7px">Screen 4</span>
+    <h2 style="font-size:17px;font-weight:600;margin:0;color:var(--text)">Concurrency · split canvas</h2>
+    <p style="font-size:12px;color:var(--text-3);margin:0">You chat in one pane while another runs unattended. What's happening everywhere — and does anything need you?</p>
+  </div>
+  <div data-frame style="overflow:hidden;height:calc(900px * var(--fit,1));border-radius:12px">
+  <div style="width:1440px;height:900px;background:var(--bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transform:scale(var(--fit,1));transform-origin:top left">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--border-soft);background:var(--surface-1)">
+      <div style="display:flex;gap:8px;flex:none"><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span><span style="width:12px;height:12px;border-radius:50%;background:color-mix(in srgb,var(--text) 16%,transparent)"></span></div>
+      <div style="width:1px;height:20px;background:var(--border-soft)"></div>
+      <div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border)">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)">Fleet</span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text)"><span data-motion style="width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>3 running</span>
+        <span style="width:1px;height:12px;background:var(--border)"></span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--warning)"><span style="width:7px;height:7px;border-radius:50%;background:var(--warning)"></span>1 waiting</span>
+      </div>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text-3);font-size:12px"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4"/><path d="M10 10l3 3"/></svg>Search<span style="font-family:var(--mono);font-size:11px;background:color-mix(in srgb,var(--text) 6%,transparent);border:1px solid var(--border);border-radius:5px;padding:0 4px">⌘K</span></div>
+      <button style="position:relative;width:30px;height:30px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);display:grid;place-items:center;cursor:pointer;color:var(--text-2)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6.4a3 3 0 0 1 6 0c0 3 1.1 3.8 1.1 3.8H3.9S5 9.4 5 6.4z"/><path d="M6.7 12.6a1.5 1.5 0 0 0 2.6 0"/></svg><span style="position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 3px;border-radius:8px;background:var(--fallback);color:#fff;font-family:var(--mono);font-size:10px;font-weight:600;display:grid;place-items:center;border:1.5px solid var(--surface-1)">2</span></button>
+      <button style="height:30px;padding:0 13px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>New Chat</button>
+    </div>
+    <div style="flex:1;display:flex;min-height:0">
+      <aside style="width:230px;flex:none;background:var(--surface-1);border-right:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;padding:10px">
+          <button style="width:100%;display:flex;align-items:center;gap:9px;height:44px;padding:0 10px;border-radius:9px;background:var(--surface-3);border:1px solid var(--border);cursor:pointer;font-family:inherit">
+            <span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;font-weight:600;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">N</span>
+            <div style="flex:1;text-align:left;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Nimbus</div><div style="font-size:11px;color:var(--text-3)">Project</div></div>
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="var(--text-3)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 6.5l2.5-2.5 2.5 2.5M5.5 9.5l2.5 3 2.5-3"/></svg>
+          </button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:0 8px 8px">
+          <div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);padding:6px 8px">Studios</div>
+          <sc-for list="{{ studios4 }}" as="s" hint-placeholder-count="11">
+            <div style="position:relative;display:flex;align-items:center;padding:7px 9px;border-radius:8px;margin-bottom:1px;cursor:pointer" style-hover="background:var(--surface-2)">
+              <sc-if value="{{ s.sel }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;inset:0;border-radius:8px;background:color-mix(in srgb,var(--accent) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--accent) var(--tint-stroke),transparent)"></div></sc-if>
+              <div style="position:relative;display:flex;align-items:center;gap:9px;width:100%">
+                <span style="width:14px;display:flex;justify-content:center;flex:none">
+                  <sc-if value="{{ s._run }}" hint-placeholder-val="{{ false }}"><span data-motion style="width:8px;height:8px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span></sc-if>
+                  <sc-if value="{{ s._att }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:50%;background:var(--warning)"></span></sc-if>
+                  <sc-if value="{{ s._conv }}" hint-placeholder-val="{{ false }}"><span style="color:var(--success);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg></span></sc-if>
+                  <sc-if value="{{ s._idle }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:50%;border:1.5px solid var(--text-3);box-sizing:border-box"></span></sc-if>
+                  <sc-if value="{{ s._lib }}" hint-placeholder-val="{{ false }}"><span style="color:var(--text-3);display:flex"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="3" rx="1"/><path d="M3.6 6.5v6a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1v-6"/><path d="M6.5 9h3"/></svg></span></sc-if>
+                </span>
+                <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.name }}</div><div style="font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.sub }}</div></div>
+                <sc-if value="{{ s.alert }}" hint-placeholder-val="{{ false }}"><span style="flex:none;min-width:16px;height:16px;padding:0 4px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">{{ s.alert }}</span></sc-if>
+                <sc-if value="{{ s.unread }}" hint-placeholder-val="{{ false }}"><span style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)"></span></sc-if>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="flex:none;border-top:1px solid var(--border-soft);padding:8px">
+          <div style="display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;cursor:pointer" style-hover="background:var(--surface-2)">
+            <span style="width:14px;display:flex;justify-content:center;flex:none;color:var(--text-2)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.1"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6"/></svg></span>
+            <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Mission Control</div><div style="font-size:11px;color:var(--text-3)">3 live · 1 waiting</div></div>
+            <span data-motion style="flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>
+          </div>
+        </div>
+      </aside>
+      <main style="flex:1;min-width:0;background:var(--bg);display:flex;flex-direction:column">
+        <div style="height:38px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--border-soft)">
+          <span style="display:flex;align-items:center;gap:7px;height:26px;padding:0 11px;border-radius:7px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>Research</span>
+          <span style="display:flex;align-items:center;gap:7px;height:26px;padding:0 11px;border-radius:7px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>Ideas</span>
+          <span style="display:flex;align-items:center;gap:7px;height:26px;padding:0 11px;border-radius:7px;font-size:12px;font-weight:500;color:var(--text-3);cursor:pointer" style-hover="background:var(--surface-2)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span>QA</span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text-3);border:1px solid var(--border-soft);border-radius:6px;padding:1px 6px">+1</span>
+          <div style="flex:1"></div>
+          <span style="font-size:11px;color:var(--text-3);display:flex;align-items:center;gap:5px"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M8 3v10"/></svg>2 of 3 panes</span>
+        </div>
+        <div style="flex:1;display:flex;min-height:0">
+          <!-- LEFT PANE: manual Research -->
+          <div style="flex:1;min-width:0;border-right:1px solid var(--border-soft);display:flex;flex-direction:column">
+            <div style="flex:none;padding:13px 16px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;gap:10px">
+              <div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:600;color:var(--text)">Research</div><div style="font-size:11px;color:var(--text-3)">Manual chat · you</div></div>
+              <span style="display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:8px;font-size:12px;font-weight:500;color:var(--text-2);background:var(--surface-3);border:1px solid var(--border)"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.4"/><path d="M8 4.2v-1M8 12.8v-1M4.2 8h-1M12.8 8h-1"/></svg>Manual</span>
+              <span style="width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">GM</span>
+            </div>
+            <div style="flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+                <div style="max-width:88%;background:var(--surface-3);border:1px solid var(--border);border-radius:12px;border-top-right-radius:4px;padding:9px 12px"><div style="font-size:13px;line-height:1.5;color:var(--text)">Do operators actually run debates unattended, or bail to single prompts once it costs money?</div></div>
+                <div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">You · now</div>
+              </div>
+              <div style="display:flex;gap:10px;align-items:flex-start">
+                <div style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">GM</div>
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px;flex-wrap:wrap"><span style="font-size:13px;font-weight:600;color:var(--text)">Gemini</span><span style="display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Analyst</span></div>
+                  <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:9px 12px;font-size:13px;line-height:1.5;color:var(--text)">Early data says both — unattended for exploration, hands-on when budget is tight. The <span style="font-family:var(--mono);font-size:12px">Suggest-only</span> default is what earns the unattended runs.</div>
+                </div>
+              </div>
+            </div>
+            <div style="flex:none;padding:10px 14px 14px;border-top:1px solid var(--border-soft)">
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:11px;padding:9px 10px">
+                <div style="background:var(--surface-3);border:1px solid var(--border);border-radius:9px;padding:9px 11px;font-size:13px;color:var(--text)">Pull the retention numbers for<span data-motion style="display:inline-block;width:2px;height:14px;background:var(--accent);margin-left:1px;vertical-align:-2px;animation:caret 1s steps(1) infinite"></span></div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:9px"><span style="width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">GM</span><button style="width:22px;height:22px;border-radius:50%;background:transparent;border:1px dashed var(--border);color:var(--text-3);cursor:pointer;font-size:13px;line-height:1;padding:0">+</button><button style="margin-left:auto;height:28px;padding:0 13px;border-radius:8px;background:var(--accent);border:1px solid transparent;color:#FBFBFD;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Send</button></div>
+              </div>
+            </div>
+          </div>
+          <!-- RIGHT PANE: autonomous brainstorm -->
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:color-mix(in srgb,var(--accent) 3%,var(--bg))">
+            <div style="flex:none;padding:13px 16px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;gap:10px">
+              <div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:600;color:var(--text)">Ideas</div><div style="font-size:11px;color:var(--text-3)">Running unattended</div></div>
+              <span style="display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:8px;font-size:12px;font-weight:600;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Auto</span>
+              <span style="font-family:var(--mono);font-size:11px;font-weight:600;color:var(--text-2)">R5/9</span>
+            </div>
+            <div style="flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+              <div style="display:flex;align-items:center;gap:10px"><div style="height:1px;flex:1;background:var(--border)"></div><div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);white-space:nowrap">Round 5 of 9</div><div style="height:1px;flex:1;background:var(--border)"></div></div>
+              <div style="display:flex;gap:10px;align-items:flex-start">
+                <div style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">LM</div>
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px"><span style="font-size:13px;font-weight:600;color:var(--text)">Closer</span><span style="display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--local);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Closer</span></div>
+                  <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:9px 12px;font-size:13px;line-height:1.5;color:var(--text)">We're converging on the compounding-artifacts thesis. One open thread: pricing.</div>
+                </div>
+              </div>
+              <div style="display:flex;gap:10px;align-items:flex-start">
+                <div style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">CL</div>
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px"><span style="font-size:13px;font-weight:600;color:var(--text)">Visionary</span><span style="display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--claude);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">Visionary</span></div>
+                  <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;border-top-left-radius:4px;padding:9px 12px;font-size:13px;line-height:1.5;color:var(--text)">{{ stream }}<span data-motion style="display:inline-block;width:2px;height:14px;background:var(--accent);margin-left:1px;vertical-align:-2px;animation:caret 1s steps(1) infinite"></span></div>
+                </div>
+              </div>
+            </div>
+            <div style="flex:none;padding:10px 14px 14px;border-top:1px solid var(--border-soft)">
+              <div style="display:flex;align-items:center;gap:9px;background:var(--surface-2);border:1px solid var(--border);border-radius:11px;padding:8px 10px">
+                <span style="display:inline-flex;align-items:center;gap:5px;flex:none;height:22px;padding:0 8px;border-radius:8px;font-size:11px;font-weight:500;--hue:var(--accent);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)"><span data-motion style="width:6px;height:6px;border-radius:50%;background:currentColor;animation:breathe 1.6s ease-in-out infinite"></span>Unattended</span>
+                <span style="flex:1;font-size:12px;color:var(--text-3)">Step in to pause at the next round</span>
+                <button style="flex:none;width:28px;height:28px;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);color:var(--text-3);display:grid;place-items:center;padding:0"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V4M4 7.5L8 3.5l4 4"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+      <aside style="width:340px;flex:none;background:var(--surface-1);border-left:1px solid var(--border-soft);display:flex;flex-direction:column">
+        <div style="flex:none;height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border-soft)"><span style="font-size:13px;font-weight:600;color:var(--text)">Research · Manual</span><span style="font-size:11px;color:var(--text-3);font-family:var(--mono)">focused pane</span></div>
+        <div style="flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Also running</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;display:flex;align-items:center;gap:9px"><span data-motion style="flex:none;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Ideas</div><div style="font-size:11px;color:var(--text-3)">auto · round 5 · unattended</div></div><span style="font-family:var(--mono);font-size:11px;color:var(--accent)">split</span></div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;display:flex;align-items:center;gap:9px"><span data-motion style="flex:none;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:breathe 1.6s ease-in-out infinite"></span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">QA</div><div style="font-size:11px;color:var(--text-3)">auto · round 2 · background</div></div><span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">tab</span></div>
+              <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;display:flex;align-items:center;gap:9px"><span style="flex:none;width:8px;height:8px;border-radius:50%;background:var(--warning)"></span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Documentation</div><div style="font-size:11px;color:var(--warning)">waiting on you</div></div><span style="flex:none;min-width:16px;height:16px;padding:0 4px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--warning);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">1</span></div>
+            </div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Cast · 1</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;display:flex;align-items:center;gap:10px"><span style="flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;--hue:var(--gemini);background:color-mix(in srgb,var(--hue) var(--tint-fill),transparent);border:1px solid color-mix(in srgb,var(--hue) var(--tint-stroke),transparent);color:var(--hue)">GM</span><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text)">Analyst</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-3)">gemini · 2.5-pro</div></div></div>
+          </div>
+          <div><div style="font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Artifacts</div>
+            <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:11px 12px">
+              <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Consumed</div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="flex:none;color:var(--gemini);display:flex"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg></span><span style="font-size:13px;color:var(--text);flex:1">Positioning brief</span><span style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-2);border:1px solid var(--border);border-radius:6px;padding:0 5px">v2</span></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  </div>
+</section>
+
+<footer style="max-width:1500px;margin:34px auto 0;padding:20px 30px 0;border-top:1px solid var(--border-soft)"><div style="font-size:12px;color:var(--text-3);line-height:1.6">Sections · app shell &amp; four screens. Toggle Light / Dark above; reduce-motion and stream speed live in Tweaks.</div></footer>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1500,&quot;height&quot;:1050},&quot;reduceMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Motion&quot;},&quot;streamSpeed&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:40,&quot;min&quot;:10,&quot;max&quot;:120,&quot;step&quot;:2,&quot;unit&quot;:&quot;ms&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Motion&quot;}}">
+class Component extends DCLogic {
+  state = { theme: "light", stream: "" };
+  liveText = "Distribution is the real risk — the graph is defensible but adoption isn't. Before Build, Research should pressure-test whether operators will run debates unattended, or whether they bail to a single prompt the moment it costs more.";
+  componentDidMount(){ this.run(); this._fit = () => this.fit(); this.fit(); requestAnimationFrame(this._fit); setTimeout(this._fit, 80); window.addEventListener("resize", this._fit); }
+  componentWillUnmount(){ clearInterval(this._t); clearTimeout(this._r); window.removeEventListener("resize", this._fit); }
+  fit(){ const el = document.querySelector("[data-frame]"); if(!el) return; const f = Math.min(1, el.clientWidth/1440); document.documentElement.style.setProperty("--fit", f.toFixed(4)); }
+  componentDidUpdate(prev){ if(prev.streamSpeed !== this.props.streamSpeed) this.run(); }
+  run(){
+    clearInterval(this._t); clearTimeout(this._r);
+    const speed = this.props.streamSpeed ?? 40;
+    this.setState({ stream: "" });
+    let i = 0;
+    this._t = setInterval(() => {
+      i += 2;
+      if (i >= this.liveText.length){ clearInterval(this._t); this.setState({ stream: this.liveText }); this._r = setTimeout(() => this.run(), 3200); }
+      else this.setState({ stream: this.liveText.slice(0, i) });
+    }, speed);
+  }
+  flag(list){
+    return list.map(s => ({ ...s,
+      _run: s.state==="running", _att: s.state==="attention", _conv: s.state==="converged",
+      _que: s.state==="queued", _idle: s.state==="idle", _fb: s.state==="fallback",
+      _stall: s.state==="stalled", _lib: s.state==="library" }));
+  }
+  renderVals(){
+    const theme = this.state.theme, isLight = theme==="light";
+    const base = [
+      { name:"Ideas", sub:"you · 2 agents", state:"running", sel:true },
+      { name:"Research", sub:"idle", state:"idle" },
+      { name:"Planning", sub:"brief ready", state:"converged", unread:true },
+      { name:"Design", sub:"idle", state:"idle" },
+      { name:"Build", sub:"idle", state:"idle" },
+      { name:"QA", sub:"idle", state:"idle" },
+      { name:"Documentation", sub:"idle", state:"idle" },
+      { name:"Go-to-Market", sub:"idle", state:"idle" },
+      { name:"Legal", sub:"idle", state:"idle" },
+      { name:"Operations", sub:"idle", state:"idle" },
+      { name:"Library", sub:"142 artifacts", state:"library" }
+    ];
+    const s2 = [
+      { name:"Ideas", sub:"auto · round 3 of 9", state:"running", sel:true },
+      { name:"Research", sub:"idle", state:"idle" },
+      { name:"Planning", sub:"brief ready", state:"converged", unread:true },
+      { name:"Design", sub:"idle", state:"idle" },
+      { name:"Build", sub:"idle", state:"idle" },
+      { name:"QA", sub:"idle", state:"idle" },
+      { name:"Documentation", sub:"idle", state:"idle" },
+      { name:"Go-to-Market", sub:"idle", state:"idle" },
+      { name:"Legal", sub:"idle", state:"idle" },
+      { name:"Operations", sub:"idle", state:"idle" },
+      { name:"Library", sub:"142 artifacts", state:"library" }
+    ];
+    const s3 = [
+      { name:"Ideas", sub:"converged · routed", state:"converged", sel:true },
+      { name:"Research", sub:"1 queued", state:"queued", unread:true },
+      { name:"Planning", sub:"brief ready", state:"converged" },
+      { name:"Design", sub:"idle", state:"idle" },
+      { name:"Build", sub:"idle", state:"idle" },
+      { name:"QA", sub:"idle", state:"idle" },
+      { name:"Documentation", sub:"idle", state:"idle" },
+      { name:"Go-to-Market", sub:"idle", state:"idle" },
+      { name:"Legal", sub:"idle", state:"idle" },
+      { name:"Operations", sub:"idle", state:"idle" },
+      { name:"Library", sub:"143 artifacts", state:"library" }
+    ];
+    const s4 = [
+      { name:"Research", sub:"you · manual", state:"running", sel:true },
+      { name:"Ideas", sub:"auto · round 5 of 9", state:"running" },
+      { name:"QA", sub:"auto · round 2", state:"running", unread:true },
+      { name:"Planning", sub:"brief ready", state:"converged", unread:true },
+      { name:"Design", sub:"idle", state:"idle" },
+      { name:"Build", sub:"idle", state:"idle" },
+      { name:"Documentation", sub:"1 waiting on you", state:"attention", alert:1 },
+      { name:"Go-to-Market", sub:"idle", state:"idle" },
+      { name:"Legal", sub:"idle", state:"idle" },
+      { name:"Operations", sub:"idle", state:"idle" },
+      { name:"Library", sub:"144 artifacts", state:"library" }
+    ];
+    return {
+      theme,
+      reduceOn: this.props.reduceMotion ? "true" : "false",
+      stream: this.state.stream,
+      setLight: () => this.setState({ theme:"light" }),
+      setDark: () => this.setState({ theme:"dark" }),
+      lightBg: isLight ? "var(--accent)" : "transparent",
+      lightFg: isLight ? "#FBFBFD" : "var(--text-2)",
+      darkBg: !isLight ? "var(--accent)" : "transparent",
+      darkFg: !isLight ? "#FBFBFD" : "var(--text-2)",
+      studios1: this.flag(base),
+      studios2: this.flag(s2),
+      studios3: this.flag(s3),
+      studios4: this.flag(s4)
+    };
+  }
+}
+</script>
+</body>
+</html>
