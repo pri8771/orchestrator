@@ -163,6 +163,45 @@ def _has_test_target(list_output, schemes):
     return any("test" in s.lower() for s in (schemes or []))
 
 
+def _concrete_sim_destination(timeout=60):
+    """A concrete simulator destination for `xcodebuild test`, or None.
+
+    The build action accepts `generic/platform=iOS Simulator`, but the test
+    action refuses it outright ("Tests must be run on a concrete device"),
+    so testing needs a real simulator UDID. Prefer an already-booted device
+    (free), else the first available iPhone. None means the caller must not
+    attempt the test action — there is no destination it could pass."""
+    if not shutil.which("xcrun"):
+        return None
+    code, out, _err = _run(["xcrun", "simctl", "list", "devices",
+                            "available", "-j"], None, timeout)
+    if code != 0:
+        return None
+    try:
+        runtimes = json.loads(out).get("devices", {})
+    except ValueError:
+        return None
+    booted, iphones = None, []
+    for devices in runtimes.values():
+        for d in devices:
+            if not isinstance(d, dict) or not d.get("udid"):
+                continue
+            if d.get("state") == "Booted":
+                booted = booted or d["udid"]
+            if "iphone" in (d.get("name") or "").lower():
+                iphones.append(d["udid"])
+    udid = booted or (iphones[0] if iphones else None)
+    return "platform=iOS Simulator,id=%s" % udid if udid else None
+
+
+def _tests_actually_executed(output):
+    """True only when xcodebuild's output shows XCTest really ran — the
+    positive evidence being a 'Test Suite ...' banner or an 'Executed N
+    test(s)' tally. A harness-level refusal (wrong destination, missing
+    runner) produces neither, and must not be reported as failing TESTS."""
+    return bool(re.search(r"Test Suite |Executed \d+ test", output or ""))
+
+
 def _generate_xcodeproj(build_dir, timeout):
     """Agents sometimes emit an XcodeGen ``project.yml`` or Tuist ``Project.swift``
     instead of a committed ``.xcodeproj``. Without this, the compile gate finds no
@@ -270,14 +309,32 @@ def _verify_xcode(build_dir, timeout, run_tests=False):
         result["summary"] += " (run_tests requested but no test target " \
                               "discoverable — build-only verification)"
         return result
-    tcode, tout, terr = _run(cmd_base + common_flags + ["test"], cwd, timeout)
+    # The test action needs a CONCRETE simulator; the generic destination that
+    # served the build action is rejected before a single test runs.
+    test_dest = _concrete_sim_destination()
+    if not test_dest:
+        result["summary"] += " (tests could not run: no concrete iOS " \
+                              "simulator available)"
+        return result
+    test_flags = ["-sdk", "iphonesimulator", "-destination", test_dest,
+                  "-configuration", "Debug",
+                  "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO"]
+    tcode, tout, terr = _run(cmd_base + test_flags + ["test"], cwd, timeout)
+    tcombined = tout + "\n" + terr
+    if tcode != 0 and not _tests_actually_executed(tcombined):
+        # Harness refusal, not a test failure: zero tests executed. Saying
+        # "TESTS FAILED" here would blame the app for the harness.
+        result["summary"] += " (tests could not run: %s)" \
+            % (_errors_tail(tcombined)[:200].strip() or "xcodebuild test "
+               "failed before executing any test")
+        return result
     tests_ok = (tcode == 0)
     result["tests_ran"] = True
     result["tests_ok"] = tests_ok
     result["summary"] += " + tests passed" if tests_ok else " + TESTS FAILED"
     if not tests_ok:
         result["errors"] = (result.get("errors", "")
-                            + "\n" + _errors_tail(tout + "\n" + terr)).strip()
+                            + "\n" + _errors_tail(tcombined)).strip()
     return result
 
 

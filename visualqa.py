@@ -260,7 +260,11 @@ def _ask_one(model, image_b64, mode, purpose, timeout=240):
         "Answer with exactly one word first — OK or BAD — then one short "
         "sentence saying what you actually see.\n"
         "OK = a designed app screen with visible, readable content whose text "
-        "and controls are cleanly laid out (nothing overlapping).\n"
+        "and controls are cleanly laid out (nothing overlapping). A "
+        "first-launch EMPTY STATE is also OK when it is clearly styled and "
+        "shows a message plus a button inviting the user to add their first "
+        "item — mostly empty space around a styled message and button is a "
+        "deliberate design, not a defect.\n"
         "BAD = a blank or nearly-blank screen, placeholder text only, the "
         "iOS home screen instead of the app, a crash/error dialog, OR a broken "
         "layout: text or controls that OVERLAP / collide / are stacked on top "
@@ -285,7 +289,10 @@ def grade(models, image_paths, design_spec, prompt_summary, timeout=240):
     """Grade the screenshots with a panel of local vision models. One image
     per call with a binary OK/BAD contract — the only thing 3-4B VLMs answer
     reliably (they echo JSON templates back instead of filling them). A
-    screen fails only when EVERY grader that answered says BAD. Returns
+    screen fails only when the FULL configured panel answered and every
+    grader said BAD — a grader that errors out or answers unparseably
+    removes the panel's authority to fail that screen (it can still pass),
+    so one flaky 4B model can never be a "unanimous" panel of one. Returns
     {"score", "verdict", "issues"} or None when no image got a usable answer.
     design_spec is accepted for signature stability; the binary questions
     deliberately don't feed it to a small model."""
@@ -293,6 +300,7 @@ def grade(models, image_paths, design_spec, prompt_summary, timeout=240):
     if isinstance(models, str):
         models = [models]
     results = []   # (name, screen_verdict, worst_note)
+    inconclusive = []   # {"screen", "note"}: BAD votes with no failing quorum
     for p in image_paths:
         try:
             with open(p, "rb") as fh:
@@ -309,7 +317,16 @@ def grade(models, image_paths, design_spec, prompt_summary, timeout=240):
         if not votes:
             continue
         bad_votes = [n for v, n in votes if v == "BAD"]
-        screen_bad = len(bad_votes) == len(votes)   # unanimous BAD only
+        # Unanimity is judged against the CONFIGURED panel, not the models
+        # that happened to answer: len(votes) == len(models) is what makes
+        # "every grader said BAD" mean every grader, not every survivor.
+        screen_bad = (len(votes) == len(models)
+                      and len(bad_votes) == len(votes))
+        if bad_votes and not screen_bad and len(votes) < len(models):
+            inconclusive.append({
+                "screen": os.path.basename(p),
+                "note": "%d/%d grader(s) answered; not a failing quorum (%s)"
+                        % (len(votes), len(models), bad_votes[0])})
         results.append((os.path.basename(p),
                         "BAD" if screen_bad else "OK",
                         bad_votes[0] if screen_bad else ""))
@@ -321,6 +338,7 @@ def grade(models, image_paths, design_spec, prompt_summary, timeout=240):
         "verdict": "FAIL" if bad else "PASS",
         "issues": [{"screen": name, "severity": "high", "note": note}
                    for name, note in bad],
+        "inconclusive": inconclusive,
     }
 
 
@@ -388,7 +406,12 @@ def run_visual_qa(cfg, cget, emit, app, app_dir, state, prompt):
             "verdict": (verdict or {}).get("verdict", "SKIPPED"),
             "score": (verdict or {}).get("score"),
             "issues": (verdict or {}).get("issues", []),
+            "inconclusive": (verdict or {}).get("inconclusive", []),
         }
+        for entry in (verdict or {}).get("inconclusive", []):
+            emit("Visual QA: %s — %s (screen NOT failed; a partial panel "
+                 "cannot fail a screen)." % (entry.get("screen", "?"),
+                                             entry.get("note", "")))
         try:
             os.makedirs(os.path.join(app_dir, "docs"), exist_ok=True)
             with open(os.path.join(app_dir, "docs", "visual_qa.json"), "w",

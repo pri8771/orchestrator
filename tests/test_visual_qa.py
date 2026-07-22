@@ -169,6 +169,56 @@ class TestGradeAggregation(unittest.TestCase):
             vqa._ask_one = real
         self.assertIsNone(v)
 
+    def test_silent_grader_cannot_leave_a_unanimous_panel_of_one(self):
+        """The streak regression (2026-07-21): qwen2.5vl errored out, gemma
+        alone said BAD, and 1-of-1 surviving votes counted as 'unanimous'.
+        A screen may only FAIL when the full configured panel answered."""
+        real = vqa._ask_one
+        vqa._ask_one = lambda m, b, mode, purpose, timeout=240: \
+            (("BAD", "nearly blank") if m == "m1" else (None, ""))
+        try:
+            v = vqa.grade(["m1", "m2"], self._shots(["main_light.png"]),
+                          "", "a habit tracker")
+        finally:
+            vqa._ask_one = real
+        self.assertEqual(v["verdict"], "PASS")
+        self.assertEqual(v["issues"], [])
+        self.assertEqual(len(v["inconclusive"]), 1)
+        self.assertEqual(v["inconclusive"][0]["screen"], "main_light.png")
+        self.assertIn("1/2", v["inconclusive"][0]["note"])
+
+    def test_full_panel_unanimous_bad_still_fails(self):
+        """The quorum fix must not weaken the real gate: when every
+        configured grader answers BAD, the screen still fails."""
+        real = vqa._ask_one
+        vqa._ask_one = lambda m, b, mode, purpose, timeout=240: \
+            ("BAD", "crash dialog")
+        try:
+            v = vqa.grade(["m1", "m2"], self._shots(["main_light.png"]),
+                          "", "app")
+        finally:
+            vqa._ask_one = real
+        self.assertEqual(v["verdict"], "FAIL")
+        self.assertEqual(v["inconclusive"], [])
+
+    def test_judge_prompt_permits_styled_empty_states(self):
+        """The other half of the streak regression: the OK/BAD rubric must
+        explicitly allow a styled first-launch empty state, or every new
+        app's honest empty home screen reads as 'nearly blank' = BAD."""
+        captured = {}
+
+        def fake_urlopen(req, timeout=0):
+            captured["ask"] = json.loads(req.data.decode("utf-8"))["prompt"]
+            raise OSError("stop before network")
+        real = vqa.urllib.request.urlopen
+        vqa.urllib.request.urlopen = fake_urlopen
+        try:
+            vqa._ask_one("m", "aW1n", "light", "a habit tracker")
+        finally:
+            vqa.urllib.request.urlopen = real
+        self.assertIn("EMPTY STATE", captured["ask"])
+        self.assertIn("deliberate design, not a defect", captured["ask"])
+
 
 class TestModelResolution(unittest.TestCase):
     def test_auto_panel_from_installed(self):
