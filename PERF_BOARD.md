@@ -200,6 +200,18 @@ default true). (b) Anywhere status is read (GUI store, statuscontext,
 `stale (process gone)` — never plain "running". Tests: dead-pid fixture
 renders stale in all three surfaces; live pid untouched.
 
+### P15. Release-gate: full evaluation + cumulative repair budget
+Two defects observed live on recall-ios (2026-07-22): (a) the gate
+SHORT-CIRCUITS at the first failing check — a visual-QA false BAD
+prevented the UI crawl from re-running, so the repair's actual fix was
+never re-verified and the next repair prompt lacks current crawl truth.
+Run EVERY gate check every pass and report all failures together.
+(b) `release_gate_repairs` resets between passes (both streak and
+recall showed "repair 1/2" on their SECOND failure) — the budget must
+be cumulative per app until the gate passes, else a nondeterministic
+judge drives unbounded repair loops. Tests: multi-failure pass reports
+all checks; counter persists across passes; passing the gate resets it.
+
 ## Dependency graph
 
 P1 → {P7, P9}; P2, P3, P4 independent; P5 → P6 (shared boundary-check
