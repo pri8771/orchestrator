@@ -95,18 +95,18 @@ app fully skipped (sabotage: mark fixture app running, assert zero of its
 files eligible even when ancient).
 
 ### P5. Interjection at round boundaries ("chime in")
-User writes `<app>/user_note_pending.md` (GUI: text box + send button in
-the project transcript view). Engine checks for it at every round boundary
-and before each phase start; if present: inject as a clearly-delimited
-`===== USER INTERJECTION (received <ts>) =====` block into the next
-round's context for ALL agents, move the file to
-`<app>/user_notes/<ts>.md` (consumed history), emit `user_interjection`
-event, record in ledger. Multi-line and multiple queued notes: concatenate
-in arrival order, consume all. Tests: note present → injected exactly once
-then consumed (sabotage: crash between inject and consume, reconcile must
-not double-inject — follow the ledger-before-state pattern in
-CODEX_HANDOFF.md); note written mid-turn is untouched until the boundary;
-empty file consumed silently, never injected as an empty block.
+CORRECTION (2026-07-22 recon): most of this EXISTS. The GUI inputBar
+(TranscriptView.swift `inputBar`/`send()`) already appends to
+`<app>/human_inbox.txt` (OrchestratorStore `sendHumanMessage`/`inboxURL`)
+and live runs already drain it at the next round barrier via
+`requestStepIn`. Do NOT build a parallel mechanism. This card is now:
+(a) verify the drain path end-to-end with a real-engine test (note
+queued mid-phase → injected exactly once next round → consumed, crash
+between inject and consume must not double-inject); (b) make consumption
+durable in the ledger if it is not already; (c) emit a
+`user_interjection` event so the activity log shows the note landed;
+(d) surface queued-but-undrained notes in the GUI (badge on the input
+bar) so the user knows their note is waiting.
 
 ### P6. Pause / resume at round boundaries
 `<app>/.pause_requested` (GUI: pause button next to the activity log).
