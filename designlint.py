@@ -35,7 +35,13 @@ import buildpolicy as buildpolicylib
 TECH_STACK_FILENAME = "tech_stack.json"
 
 _INLINE_COLOR = re.compile(r"Color\s*\(\s*red\s*:|UIColor\s*\(\s*red\s*:|#colorLiteral\s*\(")
-_RAW_FONT = re.compile(r"\.font\s*\(\s*\.system\s*\(\s*size\s*:")
+# Only a genuine numeric literal after `size:` is the violation — a
+# DesignSystem token reference (e.g. `size: DS.IconSize.tab`) starts with a
+# letter/underscore and must not false-positive here (observed live: this
+# exact shape burned two repair rounds on Aura chasing an already-correct
+# call site before the distinction was added).
+_RAW_FONT = re.compile(
+    r"\.font\s*\(\s*\.system\s*\(\s*size\s*:\s*[-+]?\.?\d")
 _TODO = re.compile(r"//\s*(TODO|FIXME)\b", re.IGNORECASE)
 # Rulebook §16 (fake-feature prohibition): a control whose action is an empty
 # closure is decorative masquerading as functional. Two single-line shapes:

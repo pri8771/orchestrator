@@ -121,6 +121,19 @@ class TestDesignLintCommentStripping(unittest.TestCase):
         src = 'Text("x").font(.system(size: 17))\n'
         self.assertTrue(any(x["rule"] == "raw_font_size" for x in self._errs(src)))
 
+    def test_raw_font_token_reference_not_flagged(self):
+        # The live false positive (Aura, 2026-07-23): a call site already
+        # using a DesignSystem token burned two repair rounds because the
+        # rule matched the `.font(.system(size:` SHAPE regardless of what
+        # followed `size:`, never distinguishing a literal from a token.
+        src = ('Image(systemName: "a")\n'
+               '    .font(.system(size: DS.IconSize.tab, weight: .semibold))\n')
+        self.assertFalse(any(x["rule"] == "raw_font_size" for x in self._errs(src)))
+
+    def test_raw_font_negative_literal_still_flagged(self):
+        src = '.font(.system(size: -2))\n'
+        self.assertTrue(any(x["rule"] == "raw_font_size" for x in self._errs(src)))
+
     def test_inline_color_in_line_comment_not_flagged(self):
         self.assertFalse(any(x["rule"] == "inline_color"
                              for x in self._errs('// avoid Color(red: 1, green: 0, blue: 0)\n')))
