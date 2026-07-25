@@ -119,5 +119,69 @@ the app runs in a smaller window than the device on modern iPhones.
 
 ---
 
+## M-00N · `.accessibilityIdentifier` placed on a TabView's content instead of its tab button
+
+An app with a 3-tab `TabView` set each tab's identifier like this:
+
+```swift
+NavigationStack(path: $statsPath) { StatsRootView() }
+    .tabItem { Label("Stats", systemImage: "chart.bar") }
+    .tag(Tab.stats)
+    .accessibilityIdentifier("tabBar.statsTab")   // WRONG: attaches to the content view
+```
+
+The UI crawl could not find `tabBar.statsTab` as a tappable element and
+failed 4 of 13 declared user flows — every flow whose first step was
+switching to the Stats or Settings tab. Two separate repair rounds "fixed"
+unrelated things and left this misplacement untouched because the identifier
+genuinely *was* set somewhere in the file; it was just attached to the wrong
+view. `xcodebuild` and Swift's type checker have no way to catch this — the
+code compiles and runs fine, it just isn't testable/tappable-by-identifier.
+
+**Generic rule:** in a `TabView`, `.accessibilityIdentifier` chained after
+`.tabItem { ... }` attaches to the tab's CONTENT (what shows when the tab is
+selected), not to the tab bar button. The tab bar button is a separate,
+UIKit-bridged control synthesized from the `.tabItem` closure. To make a tab
+bar button itself discoverable (by XCUITest, an accessibility inspector, or
+this factory's UI crawl), the identifier must be INSIDE the `.tabItem`
+closure, on the `Label` (or icon/text) itself:
+
+```swift
+.tabItem {
+    Label("Stats", systemImage: "chart.bar")
+        .accessibilityIdentifier("tabBar.statsTab")   // RIGHT
+}
+.tag(Tab.stats)
+```
+
+**How to avoid it:** any accessibilityIdentifier meant to make a *tab bar
+button* tappable-by-ID must be set on the Label inside `.tabItem { }`, never
+chained onto the tab's content view/NavigationStack. This is easy to miss
+because both placements compile and both "look" like they're identifying the
+tab — only one is discoverable as the tab bar control.
+
+**UPDATE (2026-07-24, two more apps, same night):** the "move it inside
+`.tabItem`" fix above is NOT reliable — it is genuinely inconsistent across
+builds. Two separate apps (Fieldnotes, Formcheck) had the identifier
+correctly placed INSIDE `.tabItem { Label(...).accessibilityIdentifier(...) }`
+exactly as prescribed above, verified via fresh `xcodebuild` installs and the
+UI crawl's own runner tool directly — and `app.tabBars.buttons` still
+resolved an EMPTY `identifier` for the tab (confirmed: other, non-tab-bar
+buttons in the same builds resolved their identifiers fine). One of those
+app's own build history shows agents already discovered this and DELIBERATELY
+reverted to the "wrong" chained placement, having found empirically that
+nested-in-Label was what didn't work for *their* build. In other words:
+either placement can fail, unpredictably, and neither is a dependable fix.
+
+**Real fix: stop depending on `accessibilityIdentifier` for TabView tab
+buttons in flow contracts at all.** Write declared-flow `tap` steps against
+the tab's stable, on-screen **label text** ("Settings", "Timeline") instead
+of an identifier token. `locate()`'s existing exact-label-match pass already
+handles this with no crawler changes needed — labels are what's actually
+reliable here, identifiers on TabView tab items are not. Keep
+`.accessibilityIdentifier` in the Label as a best-effort (VoiceOver users and
+some tooling still benefit when it happens to work) but do not architect a
+flows.json contract, or any other automated check, around it resolving.
+
 _Append new entries as real defects are observed. Keep each one concrete
 (what was seen) plus a GENERIC rule, so it transfers to unrelated apps._
