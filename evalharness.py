@@ -58,8 +58,15 @@ def _events_span(app_dir):
         import datetime as _dt
         f = _dt.datetime.fromisoformat(str(first))
         l = _dt.datetime.fromisoformat(str(last))
+        # events.py once wrote naive local timestamps and now writes aware
+        # local+offset ones, so a long-lived project's events.jsonl can mix
+        # both eras — and subtracting naive from aware raises TypeError, not
+        # ValueError. Both eras are local wall clock, so dropping tzinfo on a
+        # mixed pair still yields a usable span instead of crashing the report.
+        if (f.tzinfo is None) != (l.tzinfo is None):
+            f, l = f.replace(tzinfo=None), l.replace(tzinfo=None)
         return max(0, int((l - f).total_seconds())), turns
-    except ValueError:
+    except (ValueError, TypeError):
         return 0, turns
 
 

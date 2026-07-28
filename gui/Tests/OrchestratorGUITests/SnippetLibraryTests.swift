@@ -23,6 +23,32 @@ final class SnippetLibraryTests: XCTestCase {
         PromptSnippet(name: name, phase: "", text: text)
     }
 
+    // A-61 regression: save used to swallow write errors, so snippet edits
+    // looked saved and silently vanished on relaunch. It must report whether
+    // the write landed so saveSnippets can surface a failure.
+    func testSaveReportsWhetherTheWriteLanded() throws {
+        XCTAssertTrue(SnippetLibrary.save([snippet("a", "text")],
+                                          to: url("fleet")))
+        XCTAssertEqual(SnippetLibrary.loadLayer(at: url("fleet"),
+                                                label: "fleet").snippets.count, 1)
+
+        // A read-only parent dir: createDirectory succeeds (it exists), the
+        // atomic write cannot land — save must say so, never pretend.
+        let lockedDir = temp.appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: lockedDir,
+                                                withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555],
+                                              ofItemAtPath: lockedDir.path)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: lockedDir.path)
+        }
+        XCTAssertFalse(SnippetLibrary.save(
+            [snippet("a", "text")],
+            to: lockedDir.appendingPathComponent("snippets.json")),
+            "a failed write must be reported, not swallowed")
+    }
+
     func testProjectShadowsSectionShadowsFleetAndMissingUnshadows() throws {
         SnippetLibrary.save([snippet("simplify", "fleet"), snippet("fleet", "f")],
                             to: url("fleet"))

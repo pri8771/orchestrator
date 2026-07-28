@@ -355,6 +355,27 @@ class TestActingStage(_Base):
         self.assertEqual(st["stage"], "idle")         # loop still finished
         self.assertTrue(any("routing error" in w for w in warns))
 
+    def test_routing_error_is_ledgered_not_just_printed(self):
+        # The handler's own comment promises "it's ledgered" — an auditor
+        # replaying conductor_ledger.jsonl must see the fault, not an idle,
+        # healthy conductor whose crashes only ever reached stderr.
+        self._mk_session("proj", {"done": False, "status": "running"})
+
+        def boom(root, state, sessions, emit):
+            raise RuntimeError("routing blew up")
+
+        st = cond.full_poll(self.root, cond.default_state(),
+                            emit=_quiet, route_engine=boom)
+        faults = [r for r in cond.read_ledger(self.root)
+                  if r and r.get("decision") == "routing_error"]
+        self.assertEqual(len(faults), 1)
+        self.assertIn("routing blew up", faults[0]["detail"]["error"])
+        self.assertEqual(faults[0]["detail"]["type"], "RuntimeError")
+        # cursor advanced past the fault line — reconcile has no replay
+        # branch for it, so a restart must not (and does not) re-act on it.
+        self.assertEqual(st["ledger_cursor"],
+                         len(cond.read_ledger(self.root)))
+
     def test_acting_stage_crash_resumes_clean(self):
         # Extends the crash matrix to the new stage: a kill with stage
         # persisted as "acting" resumes into a known state, re-polls, idles.

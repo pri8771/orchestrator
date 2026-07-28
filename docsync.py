@@ -257,7 +257,12 @@ def detect_human_edits(app_dir, doc_map, on_warn=None):
 
 
 def clear_override(app_dir, path, on_warn=None):
-    """Explicitly hand one project-relative doc path back to the renderer."""
+    """Explicitly hand one project-relative doc path back to the renderer.
+
+    The clear covers the file's bytes AS RECORDED (content_hash), not the
+    path forever: a human edit made after the clear re-asserts the override
+    in prepare_render, so only the bytes the human reviewed and released
+    are ever reclaimed."""
     rel = str(path or "")
     if rel and not rel.startswith("docs/"):
         rel = "docs/" + rel
@@ -321,7 +326,19 @@ def prepare_render(app_dir, doc_map, on_warn=None):
     for edit in detected:
         path = edit["path"]
         if path in cleared:
-            continue
+            record = state["files"].get(path)
+            stored = record.get("content_hash") \
+                if isinstance(record, dict) else None
+            if stored == edit["content_hash"]:
+                continue
+            # A cleared record releases only the bytes it recorded. A hash
+            # mismatch means the human edited the file AGAIN after the clear
+            # (a cleared path can outlive several renders — not every
+            # protected file is rewritten each pass), and skipping it would
+            # let the next rewrite destroy those new bytes with no reconcile
+            # request — the exact datum 5.5 exists to protect. Drop the
+            # clear and fall through to re-assert the override.
+            cleared.discard(path)
         previous = state["files"].get(path, {})
         changed = previous.get("content_hash") != edit["content_hash"]
         edit["owner_sections"] = sorted(set(

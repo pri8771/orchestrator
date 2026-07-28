@@ -283,6 +283,53 @@ class TestUnknownCommandBanner(_DispatchBase):
             self.assertEqual(fh.read(), "just chatting")   # NOT drained
 
 
+class TestNonConversationalCommandBoundary(_DispatchBase):
+    """A-77: a '/command' typed during a NON-conversational phase must ride
+    the drain boundary into the command path — never folded into the
+    transcript as a 'You (human)' chat line (§13.5). Barrier builtins are
+    refused with a card instead of queued: the debate/build loops never take
+    the barrier, so a queued row would fire in a later unrelated chat."""
+
+    def setUp(self):
+        super().setUp()
+        cmdlib.ensure_seeded(orch.HERE)
+
+    def _inbox(self, text):
+        with open(os.path.join(self.app_dir, "human_inbox.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(text)
+
+    def _drain(self, transcript="T"):
+        return orch._drain_or_dispatch_inbox(
+            self.cfg, "proj", self.app_dir, self._phase(), KEY, 3,
+            "original prompt", [], {}, ["codex"], transcript, self.md,
+            "Round 3", slot="open")
+
+    def test_barrier_builtin_is_refused_not_queued(self):
+        self._inbox("/vote")
+        out = self._drain()
+        self.assertEqual(out, "T", "command must not extend the transcript")
+        self.assertNotIn("You (human)", self._md_text())
+        self.assertIn("unavailable in this phase", self._md_text())
+        self.assertFalse(orch.load_state(self.app_dir).get("command_barrier"),
+                         "nothing may be queued for a later chat to fire")
+
+    def test_non_barrier_builtin_dispatches_as_a_card(self):
+        self._inbox("/status")
+        out = self._drain()
+        self.assertEqual(out, "T")
+        self.assertNotIn("You (human)", self._md_text())
+        self.assertIn("Session `proj/ideas/chat-1`", self._md_text())
+        self.assertIn("command_ran", [e["kind"] for e in self._events()])
+
+    def test_ordinary_chat_still_folds_byte_identically(self):
+        self._inbox("plain human words")
+        out = self._drain()
+        self.assertIn("**You (human) — Round 3**", out)
+        self.assertIn("plain human words", out)
+        self.assertIn("**You (human) — Round 3**", self._md_text())
+
+
 class TestTemplateCommand(_DispatchBase):
     def setUp(self):
         super().setUp()
@@ -324,6 +371,27 @@ class TestBuiltinCommand(_DispatchBase):
                          [("vote", "second")])
         self.assertEqual(orch._take_barrier_commands(self.app_dir, state, 5), [])
 
+    def test_queued_barrier_survives_the_loops_post_dispatch_save(self):
+        # V3 9.8 regression: the conversational loop dispatches with its LIVE
+        # state dict and keeps saving that dict afterward (next_agent
+        # bookkeeping). Without write-through, the queue row existed only in
+        # a fresh disk copy and the loop's very next save_state erased it —
+        # the user saw "/vote queued" but the vote never fired.
+        state = orch.load_state(self.app_dir)
+        orch._dispatch_command(
+            self.cfg, "proj", self.app_dir, self._phase(), KEY, 3,
+            "original prompt", [], {}, ["codex"], "T", self.md, "/vote now",
+            state=state)
+        state["next_agent"] = "codex"
+        orch.save_state(self.app_dir, state)           # the loop's next save
+        disk = orch.load_state(self.app_dir)
+        self.assertEqual(disk["command_barrier"],
+                         [{"name": "vote", "args": "now",
+                           "requested_round": 3}])
+        due = orch._take_barrier_commands(self.app_dir, state, 4)
+        self.assertEqual([(d["name"], d["args"]) for d in due],
+                         [("vote", "now")])
+
     def test_status_cost_and_help_are_real_generated_cards(self):
         with open(cmdlib.commands_path(os.path.join(self.root, "proj")), "w") as fh:
             json.dump({"schema_version": 1, "commands": [
@@ -338,6 +406,23 @@ class TestBuiltinCommand(_DispatchBase):
         self.assertIn("Session `proj/ideas/chat-1`", body)
         self.assertIn("unmetered · 1 turn", body)
         self.assertIn("`/project-extra` — From project", body)
+
+
+class TestBarrierHygiene(unittest.TestCase):
+    """A-71: a queued barrier row must not outlive its run — a stale /vote
+    surviving into a NEW prompt would fire an unrequested forced vote in an
+    unrelated later chat. fallback_counts/conversation_end are per-run by
+    their own documentation and must reset with the run too."""
+
+    def test_reset_state_for_new_prompt_clears_barrier_and_per_run_keys(self):
+        state = {"command_barrier": [{"name": "vote", "args": "",
+                                      "requested_round": 4}],
+                 "fallback_counts": {"codex": 3},
+                 "conversation_end": {"chat": "ended by user"}}
+        orch.reset_state_for_new_prompt(state, "h")
+        self.assertEqual(state["command_barrier"], [])
+        self.assertEqual(state["fallback_counts"], {})
+        self.assertEqual(state["conversation_end"], {})
 
 
 class TestCompareCommand(_DispatchBase):

@@ -8,6 +8,7 @@ runtime/loaded_models.json
 runtime/loaded_models.lock
 .codex_model_probe.json
 .gemini_probe.json
+.api_probe_*.json
 
 # GUI build artifacts
 gui/.build/

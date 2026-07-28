@@ -83,6 +83,17 @@ Honest gaps as of 2026-07-15, verified against the current tree. "Spec" =
   deliberately **not** run (a separate multi-hundred-MB, flakier surface).
   Network/registry/auth/timeout install failures are reported as `ran=False`
   (unverified), never a release-blocking `ok=False`.
+- **`verify.py`'s `shell`/auto-python verification also executes generated
+  code — sandboxed + env-scrubbed as of 2026-07-28.** The auto route for a
+  Python project with a discoverable test suite runs
+  `python3 -m unittest discover`, i.e. imports and executes the agents' own
+  test modules (and an explicit `shell` `command` is agent/operator-authored
+  either way). It now runs under the same Seatbelt deny-write profile and
+  secret-scrubbed child env as the http/web paths (with the build_dir carved
+  back in, so `compileall`/`__pycache__` output is unaffected). Same
+  residual risks as above: the profile is deny-*write* only (reads and
+  network exfiltration remain possible), and non-macOS hosts get no sandbox
+  at all.
 - **`blocked_conflict` → manual resolution → `--resume` has not been proven in
   a live token-spending run.** The pause/persist/clear mechanics are
   unit-tested (`test_worktree*.py`, `test_resume.py`); the end-to-end human

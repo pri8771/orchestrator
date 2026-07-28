@@ -117,10 +117,14 @@ def consume_decision(root, route_id):
             pass
 
 
-def pending_action(intent, session_id, kind="route", reason=""):
+def pending_action(intent, session_id, kind="route", reason="",
+                   sensitivity="normal"):
     """The restart-safe queue record for a route awaiting approval — carries
     everything needed to execute it later without re-deriving from live
-    state, plus the route_id both the approval file and 7.3 dedup key on."""
+    state, plus the route_id both the approval file and 7.3 dedup key on.
+    `sensitivity` rides along so an APPROVED mint can still honor the source
+    artifact's privacy stamp (V3 8.5) — the direct mint path injects it via
+    request_extra, and the approval path must not lose it."""
     return {"action_id": intent.route_id, "route_id": intent.route_id,
             "kind": kind, "requested_by": session_id,
             "target": intent.target,
@@ -129,7 +133,8 @@ def pending_action(intent, session_id, kind="route", reason=""):
                         "content_hash": intent.content_hash,
                         "source_section": intent.source_section,
                         "rule_id": intent.rule_id,
-                        "strategy": intent.strategy}}
+                        "strategy": intent.strategy,
+                        "sensitivity": sensitivity or "normal"}}
 
 
 def read_pending(root):

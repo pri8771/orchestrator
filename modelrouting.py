@@ -274,11 +274,10 @@ def _overlay_routing(base, layer_dir, on_warn, scope_label):
                                 os.path.join(layer_dir, ROUTING_FILENAME)))
         return base
     out = dict(base)
-    # dict(base) is shallow: without this, out["fallback"]/out["chains"] alias
-    # the base's nested dicts, so a downstream mutation of the layered view
-    # would bleed into the base view.
+    # dict(base) is shallow: without this, out["fallback"] (including its
+    # nested "chains" dict) would alias the base's dict, so a downstream
+    # mutation of the layered view would bleed into the base view.
     out["fallback"] = _copy.deepcopy(base.get("fallback"))
-    out["chains"] = _copy.deepcopy(base.get("chains"))
     merged_phases = {key: dict(ov) for key, ov in base["phases"].items()}
     for key, ov in layer["phases"].items():
         merged_phases[key] = dict(merged_phases.get(key, {}), **ov)

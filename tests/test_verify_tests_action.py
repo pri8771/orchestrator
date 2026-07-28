@@ -82,6 +82,41 @@ class TestConcreteDestinationForTests(unittest.TestCase):
         dest = build_cmds[0][build_cmds[0].index("-destination") + 1]
         self.assertEqual(dest, "generic/platform=iOS Simulator")
 
+    def test_booted_watch_or_tv_sim_never_wins_the_ios_destination(self):
+        """A-37: simctl lists watchOS/tvOS runtimes too, and a paired watch
+        sim commonly boots alongside an iPhone. A booted non-iOS UDID must
+        never become the 'iOS Simulator' destination — the shutdown iPhone
+        under an iOS runtime wins instead."""
+        cross = json.dumps({"devices": {
+            "com.apple.CoreSimulator.SimRuntime.watchOS-11-0": [
+                {"udid": "WATCH-9999", "name": "Apple Watch Series 10",
+                 "state": "Booted"}],
+            "com.apple.CoreSimulator.SimRuntime.tvOS-18-0": [
+                {"udid": "TV-8888", "name": "Apple TV 4K", "state": "Booted"}],
+            "com.apple.CoreSimulator.SimRuntime.iOS-18-0": [
+                {"udid": "AAAA-1111", "name": "iPhone 16",
+                 "state": "Shutdown"}],
+        }})
+        with mock.patch.object(vlib, "_run",
+                               lambda cmd, cwd, timeout: (0, cross, "")), \
+                mock.patch.object(vlib.shutil, "which", lambda n: "/usr/bin/x"):
+            dest = vlib._concrete_sim_destination()
+        self.assertEqual(dest, "platform=iOS Simulator,id=AAAA-1111")
+
+    def test_only_non_ios_sims_means_no_destination(self):
+        """A-37: with only watch/TV simulators available there is no iOS
+        destination at all — better to skip tests honestly than hand
+        xcodebuild a watch UDID it will refuse."""
+        watch_only = json.dumps({"devices": {
+            "com.apple.CoreSimulator.SimRuntime.watchOS-11-0": [
+                {"udid": "WATCH-9999", "name": "Apple Watch Series 10",
+                 "state": "Booted"}],
+        }})
+        with mock.patch.object(vlib, "_run",
+                               lambda cmd, cwd, timeout: (0, watch_only, "")), \
+                mock.patch.object(vlib.shutil, "which", lambda n: "/usr/bin/x"):
+            self.assertIsNone(vlib._concrete_sim_destination())
+
     def test_no_available_simulator_skips_tests_honestly(self):
         script = _RunScript()
         empty = json.dumps({"devices": {}})

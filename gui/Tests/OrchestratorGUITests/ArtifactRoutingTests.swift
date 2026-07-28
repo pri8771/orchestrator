@@ -53,6 +53,44 @@ final class ArtifactRoutingTests: XCTestCase {
         XCTAssertNil(ArtifactRouteIndex.latestRoutable(projectDir: project))
     }
 
+    // A-56 regression: the run() helpers must read the pipe to EOF BEFORE
+    // waitUntilExit. A child emitting more than the 64KB pipe buffer used to
+    // deadlock (child blocked writing, GUI blocked waiting) and leak the
+    // process — the wait timeout is the failure signal here.
+    func testRunSurvivesOutputLargerThanThePipeBuffer() throws {
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bigout-\(UUID().uuidString).sh")
+        // ~266KB of output — four times the pipe buffer.
+        try """
+        i=0
+        while [ $i -lt 4096 ]; do
+          echo "................................................................"
+          i=$((i+1))
+        done
+        echo "--route done"
+        """.write(to: script, atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: script) }
+
+        let done = expectation(description: "run returned")
+        var result: (code: Int32, output: String)?
+        DispatchQueue.global().async {
+            // /bin/sh runs the "engine" path as a script; args are ignored.
+            result = ArtifactRouteCommand.run(
+                python: "/bin/sh", engine: script.path,
+                root: FileManager.default.temporaryDirectory.path,
+                artifactID: "a", sourceSession: "s", targetSession: "t")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 30)
+        let r = try XCTUnwrap(result)
+        XCTAssertEqual(r.code, 0)
+        XCTAssertGreaterThan(r.output.count, 65536,
+                             "output must exceed the pipe buffer for this "
+                             + "test to prove anything")
+        XCTAssertEqual(ArtifactRouteCommand.summary(r.output, fallback: "x"),
+                       "--route done")
+    }
+
     func testRouteSummaryPreservesEngineRefusalReason() {
         XCTAssertEqual(ArtifactRouteCommand.summary(
             "notice\n--route refused: artifact is converged\n", fallback: "failed"),

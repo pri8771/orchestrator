@@ -170,9 +170,24 @@ class Phase:
 
     @staticmethod
     def from_json(d):
+        # Path-safety chokepoint: key/folder/file feed os.path.join(app_dir,
+        # folder, file) across the engine (transcripts, backfill, docs), and
+        # workflow JSON is not purely engine-authored — the GUI's workflow
+        # editor and hand edits write <orch_dir>/workflows/<name>.json. A
+        # "../" or absolute value would write outside the session dir
+        # (backfill.py already guards its own join; normalizing HERE keeps
+        # every consumer agreeing instead of each join deciding for itself).
+        key = _safe_path_component(d["key"], None)
+        if key is None:
+            raise ValueError("workflow phase key %r is not a safe path "
+                             "component" % (d.get("key"),))
         return Phase(
-            key=d["key"], folder=d.get("folder", d["key"]),
-            file=d.get("file", d["key"] + ".md"), purpose=d.get("purpose", ""),
+            key=key,
+            folder=_safe_path_component(d.get("folder", key), key,
+                                        allow_dot=True),
+            file=_safe_path_component(d.get("file", key + ".md"),
+                                      key + ".md"),
+            purpose=d.get("purpose", ""),
             title=d.get("title"), rounds=d.get("rounds", 6),
             roles=d.get("roles"), writes=d.get("writes", False),
             reads_target=d.get("reads_target", False),
@@ -187,6 +202,25 @@ class Phase:
 
     def __repr__(self):
         return "Phase(%s)" % self.key
+
+
+def _safe_path_component(value, fallback, allow_dot=False):
+    """One path-safe component from workflow JSON, else ``fallback``.
+
+    Refuses separators, parent refs, absolute paths, and surrounding
+    whitespace — a single relative name (or "." for the folder slot, the
+    in-place marker chat phases use) is the only shape any join expects.
+    ``fallback`` of None means the caller treats a bad value as fatal."""
+    s = str(value if value is not None else "")
+    if s == "." and allow_dot:
+        return s
+    if not s or s != s.strip() or s in (".", ".."):
+        return fallback
+    if "/" in s or os.sep in s or (os.altsep and os.altsep in s):
+        return fallback
+    if os.path.isabs(s) or s.startswith("~"):
+        return fallback
+    return s
 
 
 class Workflow:

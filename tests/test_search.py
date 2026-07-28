@@ -227,6 +227,84 @@ class TestDiscoveryAndArtifacts(SearchBase):
         self.assertEqual(rows, [("gloam", "idea-batch-1", "idea_batch", 2)])
 
 
+class TestPruneVanished(SearchBase):
+    """Regression (audit A-33): _prune_vanished derived staleness from the
+    messages table only, so sessions whose only indexed content was artifacts
+    (or just a cursor) were never pruned after deletion — ghost hits forever."""
+
+    def _seed_artifact(self, app, aid="spec-001",
+                       body="The zanzibar protocol design notes"):
+        # Hand-crafted structured store: exactly what lineage_index/read_body
+        # consume (meta.json + body.md), without dragging in publish machinery.
+        adir = os.path.join(app, "artifacts", aid)
+        os.makedirs(adir, exist_ok=True)
+        _write(os.path.join(adir, "meta.json"), json.dumps(
+            {"id": aid, "type": "spec", "version": 1, "status": "final",
+             "ts": "2026-07-18T00:00:00+00:00"}))
+        _write(os.path.join(adir, "body.md"), body)
+
+    def test_artifact_only_session_is_pruned_after_delete(self):
+        # Empty messages.jsonl -> zero messages rows -> the old stale set
+        # never contained "myapp"; its artifact rows answered queries forever.
+        app = os.path.join(self.root, "myapp")
+        _write(os.path.join(app, "messages.jsonl"), "")
+        self._seed_artifact(app)
+        search.index_incremental(self.root)
+        self.assertTrue(search.query(self.root, "zanzibar")["hits"],
+                        "artifact must be searchable while the session lives")
+        shutil.rmtree(app)
+        stats = search.index_incremental(self.root)
+        self.assertEqual(stats.get("pruned"), 1)
+        self.assertFalse(search.query(self.root, "zanzibar")["hits"],
+                         "a deleted session's artifacts must leave the index")
+        conn, _ = search.open_db(self.root)
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM artifacts "
+                             "WHERE project='myapp'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
+
+    def test_prune_removes_artifact_fts_rows_too(self):
+        # Even for projects WITH messages rows the old loop left artifacts_fts
+        # rows behind — invisible to query (the JOIN drops them) but leaked in
+        # the index file permanently.
+        self.seed_phase()
+        self._seed_artifact(self.app, aid="spec-002", body="orphaned fts body")
+        search.index_incremental(self.root)
+        conn, status = search.open_db(self.root)
+        conn.close()
+        if status != search.STATUS_OK:
+            self.skipTest("FTS5 unavailable — artifacts_fts does not exist")
+        shutil.rmtree(self.app)
+        search.index_incremental(self.root)
+        conn, _ = search.open_db(self.root)
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM artifacts_fts "
+                             "WHERE project='gloam'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0, "stale artifacts_fts rows must be pruned")
+
+    def test_cursor_only_session_is_pruned_after_delete(self):
+        # A messages.jsonl holding only corrupt lines stores a cursor (any
+        # non-blank line does) but zero messages/artifacts rows — the cursor
+        # row too must go when the session vanishes.
+        app = os.path.join(self.root, "curse")
+        _write(os.path.join(app, "messages.jsonl"), "{not json}\n")
+        search.index_incremental(self.root)
+        shutil.rmtree(app)
+        stats = search.index_incremental(self.root)
+        self.assertEqual(stats.get("pruned"), 1)
+        conn, _ = search.open_db(self.root)
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM cursors WHERE project "
+                             "IN ('curse', 'ev|curse')").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
+
+
 class TestPerf(SearchBase):
     def test_median_query_under_50ms_on_10k_messages(self):
         md = os.path.join(self.app, "design", "d.md")

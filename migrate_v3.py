@@ -27,6 +27,17 @@ RECEIPT = ".orch-migrated-v3.json"
 # Raw shipped-file hashes are the installed/no-git fallback. A mismatch with no
 # recoverable baseline migrates the whole document (safe over-migration), never
 # falsely labels it seed-identical.
+#
+# RE-PIN PROTOCOL: when a shipped seed (workflows/*.json, phase_rules.json,
+# model_routing.json) changes on purpose, update its pin here IN THE SAME
+# COMMIT — recompute with:
+#   python3 -c "import migrate_v3; print(migrate_v3._file_hash('<rel>'))"
+# tests/test_migrate_v3.py (test_pinned_no_git_seed_hashes_match_every_
+# shipped_source) enforces the pairing. Shipping a seed change WITHOUT the
+# re-pin never corrupts anything, but it is lossy-of-precision: on no-git
+# installs every affected file silently degrades from the seed-identical /
+# tuned-diff paths to whole-document carry ("complete document; pristine
+# baseline unavailable").
 SEED_HASHES = {
     "workflows/answer_question.json": "b1e6e84b5e9a900bf7d9d8267ea7af76387cfb727bd6ef4c0329460cf05e5e34",
     "workflows/app_build.json": "5c13d9c437825c05ef673abd7384a4040325f4741989e2949a568f75965b997a",
@@ -99,33 +110,50 @@ def _json_text(value):
     return json.dumps(value, indent=2, sort_keys=True) + "\n"
 
 
-def _baseline(workspace, rel, current_hash):
-    """Immutable shipped JSON, or None when only whole-doc carry is honest."""
-    workspace = os.path.abspath(workspace)
-    if workspace != HERE:
-        path = os.path.join(HERE, rel)
-        try:
-            return _read_json(path)
-        except (OSError, ValueError, MigrationError):
-            return None
+def _git_seed(rel):
+    """HEAD's copy of rel from the engine checkout, accepted only when it
+    hashes to the pinned seed. A user may commit tuned fleet JSON — HEAD is
+    then not a pristine seed merely because git can read it; whole-document
+    carry is the only non-lossy claim available."""
     try:
         raw = subprocess.run(
-            ["git", "show", "HEAD:" + rel], cwd=workspace,
+            ["git", "show", "HEAD:" + rel], cwd=HERE,
             capture_output=True, check=True, timeout=10).stdout
         if SEED_HASHES.get(rel) != _sha_bytes(raw):
-            # A user may commit tuned fleet JSON. HEAD is then not a pristine
-            # seed merely because git can read it; whole-document carry is the
-            # only non-lossy claim available.
             return None
         value = json.loads(raw.decode("utf-8"))
         return value if isinstance(value, dict) else None
     except (OSError, ValueError, subprocess.SubprocessError):
-        if SEED_HASHES.get(rel) == current_hash:
+        return None
+
+
+def _baseline(workspace, rel, current_hash):
+    """Immutable shipped JSON, or None when only whole-doc carry is honest."""
+    workspace = os.path.abspath(workspace)
+    if workspace != HERE:
+        # The engine working tree is mutable (GUI rewrites, hand edits). An
+        # unverified copy diffed as the "seed" would mint phantom tuned
+        # deltas for a pristine external workspace, so trust it only while
+        # it still hashes to the pinned seed.
+        path = os.path.join(HERE, rel)
+        if SEED_HASHES.get(rel) == _file_hash(path):
             try:
-                return _read_json(os.path.join(workspace, rel))
+                return _read_json(path)
             except (OSError, ValueError, MigrationError):
                 pass
-        return None
+        # Dirty engine tree over a pristine HEAD is the common drift; the
+        # verified git fallback keeps precise per-delta migration instead of
+        # degrading external workspaces to whole-document carry.
+        return _git_seed(rel)
+    seed = _git_seed(rel)
+    if seed is not None:
+        return seed
+    if SEED_HASHES.get(rel) == current_hash:
+        try:
+            return _read_json(os.path.join(workspace, rel))
+        except (OSError, ValueError, MigrationError):
+            pass
+    return None
 
 
 def _delta_paths(seed, current, prefix=""):
@@ -652,6 +680,39 @@ def _backup(path):
     return backup
 
 
+def _rollback(workspace, written, prior_bytes, fresh_backups):
+    """Best-effort return to the exact pre-apply tree after a refused apply.
+
+    OSErrors never mask the refusal being re-raised — the .v2.bak files
+    (kept on a failed restore) still hold every prior byte."""
+    for rel in written:
+        path = os.path.join(workspace, rel)
+        prior = prior_bytes.get(rel)
+        try:
+            if prior is None:
+                os.remove(path)
+                # Prune only directories this apply minted (now empty);
+                # removedirs stops at the first non-empty ancestor.
+                try:
+                    os.removedirs(os.path.dirname(path))
+                except OSError:
+                    pass
+            else:
+                fd, tmp = tempfile.mkstemp(prefix=".migrate-v3-",
+                                           suffix=".tmp",
+                                           dir=os.path.dirname(path))
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(prior)
+                os.replace(tmp, path)
+        except OSError:
+            continue
+    for bak in fresh_backups:
+        try:
+            os.remove(bak)
+        except OSError:
+            pass
+
+
 def apply_plan(plan, allow_unmapped=False, after_target=None):
     if plan.get("already_migrated"):
         return plan.get("receipt")
@@ -660,26 +721,68 @@ def apply_plan(plan, allow_unmapped=False, after_target=None):
                              "or pass --allow-unmapped")
     workspace = plan["workspace"]
     backup_manifest = {}
-    for rel in plan.get("backups", []):
+    fresh_backups = []   # minted THIS run; deleted again on a refused apply
+
+    def record_backup(rel):
         src = os.path.join(workspace, rel)
+        fresh = not os.path.exists(src + ".v2.bak")
         backup_manifest[rel] = os.path.relpath(_backup(src), workspace)
+        if fresh:
+            fresh_backups.append(src + ".v2.bak")
+
+    for rel in plan.get("backups", []):
+        record_backup(rel)
+    # Pre-existing TARGET files (merged-into manifests/rules/routing) are
+    # about to be overwritten; without their own .v2.bak a refused apply
+    # could never return their prior bytes. prior_bytes additionally
+    # snapshots the exact pre-apply content for rollback — an idempotent
+    # .v2.bak left by an EARLIER apply is older than this run and must not
+    # be restored over newer edits.
+    prior_bytes = {}
+    for rel in sorted(plan.get("targets", {})):
+        path = os.path.join(workspace, rel)
+        try:
+            with open(path, "rb") as fh:
+                prior_bytes[rel] = fh.read()
+        except OSError:
+            prior_bytes[rel] = None
+            continue
+        if rel not in backup_manifest:
+            record_backup(rel)
     written = []
-    for rel, value in sorted(plan.get("targets", {}).items()):
-        _atomic_json(os.path.join(workspace, rel), value)
-        written.append(rel)
-        if after_target is not None:
-            after_target(rel)
-    # Positive validation at the actual loaders, not JSON parse alone.
-    section_ids = sorted({rel.split("/")[1] for rel in written
-                          if rel.startswith("sections/")
-                          and rel.count("/") >= 2})
-    for section_id in section_ids:
-        sections.load_section(section_id, workspace)
-        errors = [entry for entry in sections.lint_section(
-            section_id, workspace) if entry.get("severity") == "error"]
-        if errors:
-            raise MigrationError("migrated section %r failed lint: %s" %
-                                 (section_id, errors[0].get("message")))
+    try:
+        for rel, value in sorted(plan.get("targets", {}).items()):
+            _atomic_json(os.path.join(workspace, rel), value)
+            written.append(rel)
+            if after_target is not None:
+                after_target(rel)
+        # Positive validation at the actual loaders, not JSON parse alone.
+        section_ids = sorted({rel.split("/")[1] for rel in written
+                              if rel.startswith("sections/")
+                              and rel.count("/") >= 2})
+        for section_id in section_ids:
+            try:
+                sections.load_section(section_id, workspace)
+                errors = [entry for entry in sections.lint_section(
+                    section_id, workspace)
+                    if entry.get("severity") == "error"]
+            except (ValueError, MigrationError) as exc:
+                # The sections loaders raise bare ValueError on shape
+                # violations; normalize so main() prints APPLY REFUSED
+                # instead of dying with an unhandled traceback.
+                raise MigrationError("migrated section %r failed to "
+                                     "validate: %s" % (section_id, exc))
+            if errors:
+                raise MigrationError("migrated section %r failed lint: %s" %
+                                     (section_id, errors[0].get("message")))
+    except MigrationError:
+        # A refused apply must not leave a half-migrated workspace: restore
+        # every written target to its pre-apply bytes (or remove ones that
+        # did not exist). Only the validation refusal rolls back — a hard
+        # kill mid-write is instead healed by re-running apply (targets are
+        # idempotent; the receipt is written last).
+        _rollback(workspace, written, prior_bytes, fresh_backups)
+        raise
     receipt = {
         "schema_version": 1, "status": "complete",
         "source_hashes": dict(plan.get("source_hashes") or {}),

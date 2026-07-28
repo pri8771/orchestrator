@@ -26,9 +26,13 @@ Design:
     upsert-by-turn_id cannot do: reconciliation removes lines, and an
     upsert never removes rows — without it the index would permanently
     claim turns the transcript dropped.
-  * artifact_published events (2.5 vocabulary; producers arrive in M4)
-    are indexed from events.jsonl through the same cursor machinery under
-    the "ev|<project>" cursor key.
+  * artifact_published events (2.5 vocabulary) are indexed from
+    events.jsonl by FULL RESCAN, not a cursor: every index tick deletes
+    the project's artifact rows and re-reads the whole events.jsonl, so
+    retractions and rewrites can never leave phantom rows. The
+    "ev|<project>" cursor key of the abandoned incremental design
+    survives only as a defensive delete in _prune_vanished, shedding
+    rows written by older DBs.
 
 CLI:  python3 search.py [--root DIR] --reindex
       python3 search.py [--root DIR] --query TEXT [--json] [--limit N]
@@ -319,11 +323,20 @@ def _prune_vanished(conn, root, live_projects):
     """Migrated/removed sessions must leave the index (R2: a hit that
     cannot jump is a lie). Cursor keys are project or "ev|project"."""
     live = set(live_projects)
-    stale = [p for (p,) in conn.execute("SELECT DISTINCT project FROM messages")
-             if p not in live]
+    # Derive staleness from EVERY table carrying project rows, not just
+    # messages: an artifact-only session (empty messages.jsonl) has zero
+    # messages rows, and a corrupt-only one leaves just a cursor — judging
+    # by messages alone kept their rows as ghost hits forever.
+    seen = {p for (p,) in conn.execute("SELECT DISTINCT project FROM messages")}
+    seen |= {p for (p,) in conn.execute("SELECT DISTINCT project FROM artifacts")}
+    seen |= {p.split("|", 1)[-1] if p.startswith("ev|") else p
+             for (p,) in conn.execute("SELECT DISTINCT project FROM cursors")}
+    stale = sorted(seen - live)
     for p in stale:
         _delete_project_rows(conn, p)
         conn.execute("DELETE FROM artifacts WHERE project=?", (p,))
+        if _has_artifact_fts(conn):
+            conn.execute("DELETE FROM artifacts_fts WHERE project=?", (p,))
         conn.execute("DELETE FROM cursors WHERE project IN (?, ?)",
                      (p, "ev|%s" % p))
     return len(stale)

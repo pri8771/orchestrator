@@ -124,11 +124,13 @@ class TestParseMinYamlComments(unittest.TestCase):
         self.assertEqual(cfg["a"]["frag"], "http://x/y#z")
 
     def test_value_that_is_only_a_comment_is_not_scalar(self):
-        # `k: # comment` leaves an empty value, which this minimal parser treats
-        # as an empty nested map (same as a bare `k:`) — the point is the comment
-        # never becomes part of a scalar value.
+        # `k: # comment` leaves an empty value. It used to parse as {} (same
+        # as a bare `k:`), but a truthy empty map made a commented-out scalar
+        # pass `if value:` checks — real YAML says None, and miniyaml now
+        # agrees (A-64). The point stands: the comment text itself never
+        # becomes part of a scalar value.
         cfg = orch.parse_min_yaml("a:\n  k: # just a comment\n")
-        self.assertEqual(cfg["a"]["k"], {})
+        self.assertIsNone(cfg["a"]["k"])
 
 
 if __name__ == "__main__":

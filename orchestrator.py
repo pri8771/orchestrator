@@ -7,7 +7,10 @@ Claude (Claude Code), and Gemini/Antigravity — through a sequence of
 Markdown-file discussion phases for each app/project under a root folder.
 
 Design goals (see README.md):
-  * No API keys. Uses your normal subscription CLI sessions only.
+  * No API keys by default. Uses your normal subscription CLI sessions;
+    per-token-billed api:<provider> agents exist but require an explicit
+    per-project opt-in ("api_agents": true in run_config.json) plus a key
+    file under ~/.orchestrator/ (see README "Dependencies").
   * Standard library ONLY (a tiny built-in YAML reader is included).
   * Orchestrator — not the agents — controls turn order.
   * Detailed, substantive, rubric-driven debate that converges to consensus
@@ -1171,9 +1174,11 @@ def run_anthropic_api(cfg, prompt, timeout, model):
         return early
     pieces, usage = [], {}
     complete = False
+    stop_reason = None
+    max_tokens = int(cget(cfg, "models.api_max_tokens", 8192) or 8192)
 
     def _event(data):
-        nonlocal complete
+        nonlocal complete, stop_reason
         typ = data.get("type")
         if typ == "message_start":
             u = (data.get("message") or {}).get("usage") \
@@ -1191,6 +1196,9 @@ def run_anthropic_api(cfg, prompt, timeout, model):
             u = data.get("usage")
             if isinstance(u, dict):
                 usage.update(u)
+            delta = data.get("delta")
+            if isinstance(delta, dict) and delta.get("stop_reason"):
+                stop_reason = delta.get("stop_reason")
         elif typ == "message_stop":
             complete = True
         return ""
@@ -1199,7 +1207,7 @@ def run_anthropic_api(cfg, prompt, timeout, model):
         "anthropic", "https://api.anthropic.com/v1/messages",
         {"Content-Type": "application/json", "x-api-key": _api_key("anthropic"),
          "anthropic-version": "2023-06-01"},
-        {"model": model, "max_tokens": 8192, "stream": True,
+        {"model": model, "max_tokens": max_tokens, "stream": True,
          "messages": [{"role": "user", "content": prompt}]},
         timeout, _event)
     if err:
@@ -1207,6 +1215,13 @@ def run_anthropic_api(cfg, prompt, timeout, model):
     if not complete:
         return ("", "anthropic stream ended before message_stop (%d event(s))"
                 % events, 1, cmd)
+    if stop_reason == "max_tokens":
+        # A max_tokens cutoff still ends with a clean message_stop, so without
+        # this check a mid-sentence reply would be promoted as a complete turn
+        # — partial text is never promoted (see _api_sse doctrine).
+        return ("", "anthropic reply truncated at max_tokens=%d — raise "
+                "models.api_max_tokens to allow longer replies" % max_tokens,
+                1, cmd)
     text = "".join(pieces)
     if usage:
         traceslib.set_last_usage({
@@ -1222,8 +1237,10 @@ def run_openai_api(cfg, prompt, timeout, model):
     if early:
         return early
     pieces, usage = [], {}
+    finish_reason = None
 
     def _event(data):
+        nonlocal finish_reason
         u = data.get("usage")
         if isinstance(u, dict):
             usage.update(u)
@@ -1235,6 +1252,9 @@ def run_openai_api(cfg, prompt, timeout, model):
                 if isinstance(text, str) and text:
                     pieces.append(text)
                     _append_api_stream_delta(text)
+                # finish_reason rides the choice object, not the delta.
+                if isinstance(choice, dict) and choice.get("finish_reason"):
+                    finish_reason = choice.get("finish_reason")
         return ""
 
     err, code, done, _events = _api_sse(
@@ -1249,6 +1269,11 @@ def run_openai_api(cfg, prompt, timeout, model):
         return ("", err, code, cmd)
     if not done:
         return ("", "openai stream ended before [DONE]", 1, cmd)
+    if finish_reason == "length":
+        # [DONE] arrives even when the reply hit the model's output cap; a
+        # length-cut reply is partial text and must never be promoted.
+        return ("", "openai reply truncated (finish_reason=length) — the "
+                "model hit its output token cap", 1, cmd)
     text = "".join(pieces)
     if usage:
         traceslib.set_last_usage({
@@ -1641,19 +1666,23 @@ def run_gemini(cfg, prompt, timeout):
     # 2) Antigravity `agy` — only if no working key; needs an interactive terminal.
     use_agy = cget(cfg, "runtime.gemini_use_agy", True)
     if use_agy and which("agy"):
-        # Verified Antigravity interface is `agy [flags] -p <prompt>` (print mode).
-        # During the build phase agy must be allowed to write files in its cwd, so
-        # auto-approve tool permissions. --print-timeout keeps a headless agy from
-        # hanging. The legacy exec/run forms are kept last as a fallback.
+        # Verified Antigravity interface is `agy [flags] -p` (print mode) with
+        # the prompt piped over stdin — never on argv, for the same `ps`/
+        # cmdline exposure reason the gemini paths document (and argv also
+        # E2BIGs on very large phase contexts). During the build phase agy must
+        # be allowed to write files in its cwd, so auto-approve tool
+        # permissions. --print-timeout keeps a headless agy from hanging. The
+        # legacy exec/run forms are kept last as a fallback.
         writeflag = ["--dangerously-skip-permissions"] if cfg.get("_allow_writes") else []
         pt = ["--print-timeout", "%ds" % min(int(timeout or 300), 300)]
-        for tmpl in ([["agy"] + writeflag + pt + ["-p", prompt],
-                      ["agy", "exec", "-p", prompt],
-                      ["agy", "run", "-p", prompt]]):
+        for tmpl in ([["agy"] + writeflag + pt + ["-p"],
+                      ["agy", "exec", "-p"],
+                      ["agy", "run", "-p"]]):
             cwd, ephemeral = _agent_cwd(cfg)
             try:
                 out, err, code = _run_subprocess(tmpl, cwd, timeout,
-                                                 heartbeat=_agent_heartbeat(cfg))
+                                                 heartbeat=_agent_heartbeat(cfg),
+                                                 input_text=prompt)
             except (OSError, subprocess.SubprocessError) as exc:
                 notes.append("agy attempt failed: %s" % exc)
                 out, err, code = "", str(exc), 1
@@ -1661,7 +1690,7 @@ def run_gemini(cfg, prompt, timeout):
                 if ephemeral:
                     shutil.rmtree(cwd, ignore_errors=True)
             if code == 0 and out.strip() and not _looks_like_gemini_error(out):
-                return out, err, code, _display_cmd(tmpl)
+                return out, err, code, _display_cmd(tmpl + ["<prompt on stdin>"])
             reason = ("TTY/CLI error (needs a terminal)"
                       if _looks_like_gemini_error(out) and out.strip() else
                       ("empty" if not out.strip() else "code=%s" % code))
@@ -1671,7 +1700,12 @@ def run_gemini(cfg, prompt, timeout):
     if which("gemini"):
         model = cfg["_resolved"]["gemini_model"]
         # Prompt over stdin, not argv — see the API-key path above for why.
-        cmd = ["gemini"]
+        # --skip-trust for the same reason as the keyed path: agents run in
+        # ephemeral tempdirs the CLI treats as untrusted, and a headless trust
+        # prompt would eat stdin (the prompt itself) or hang until the
+        # heartbeat kills the turn. The startup probe validates this exact
+        # invocation shape — keep them aligned.
+        cmd = ["gemini", "--skip-trust"]
         if model:
             cmd += ["-m", model]
         if cfg.get("_allow_writes"):
@@ -2024,7 +2058,15 @@ def resolve_runner(agent, cfg=None):
                         "api:<invalid>")
             return _bad_api_id
         return lambda cfg, prompt, timeout: runner(cfg, prompt, timeout, model)
-    return RUNNERS[agent]
+    runner = RUNNERS.get(agent)
+    if runner is None:
+        # AgentError, not a raw KeyError: several dispatch paths (sequential
+        # roster turns, the conversational retry loop, the LLM tally failover)
+        # catch only AgentError — a KeyError from e.g. a typo'd /cast add id
+        # would abort the whole phase instead of degrading to a skip.
+        raise AgentError("unknown agent id %r — known agents: %s"
+                         % (agent, ", ".join(sorted(RUNNERS))))
+    return runner
 
 
 def _display_cmd(cmd):
@@ -2238,6 +2280,14 @@ def call_agent(cfg, app, phase, rnd, agent, prompt):
         _produced(_primary_model_label(cfg, agent), "direct")
         return out
     except AgentError as exc:
+        if (cfg.get("_session") or {}).get("resume"):
+            # A RESUMED call's prompt is the delta ("new messages since your
+            # last turn") — meaningless to a stateless rescue model that
+            # holds none of the phase context. Re-raise instead: the
+            # documented safety net is call_agent_sessioned's except-arm,
+            # which clears the dead session and retries with the FULL
+            # prompt (where this ladder stays available).
+            raise
         steps = _fallback_steps(cfg, agent)
         if not steps:
             raise
@@ -2729,7 +2779,10 @@ def call_agent_sessioned(cfg, app, phase, rnd, agent, full_prompt,
                         "resume": False}
         out = call_agent(cfg, app, phase, rnd, agent, full_prompt)
         new_sid = tctx.take_new_session_id() if agent == "codex" else cfg["_session"]["id"]
-        if new_sid:
+        if new_sid and not out.startswith("_[Fallback: "):
+            # A fallback-rescued first call ran STATELESS — no real session
+            # holds this phase's context, so recording the id would make
+            # every later turn resume a session that does not exist.
             sessions[session_key] = new_sid
         return out
     except AgentError:
@@ -3937,19 +3990,39 @@ def _drain_inbox_message(app_dir, md_path, transcript, section_label,
     message (or None) so the conversational loop can act on the SAME bytes
     it folded — e.g. parse an @-mention delegation (V3 4.6) without a second
     read of the append-mode inbox. Byte-identical to the historical drain
-    for every folded message."""
+    for every folded message.
+
+    Claim-then-read, never read-then-truncate: between a read and a separate
+    truncate, a message the human writes concurrently would be destroyed
+    unseen (§6.2 'never silently lost'). os.replace claims the whole file
+    atomically; a concurrent writer then lands in a FRESH inbox picked up at
+    the next drain. Caveat: a read-modify-write-rename writer (the GUI) can
+    still re-materialize a just-claimed message inside its own rewrite —
+    rare duplication, the strictly better failure mode than loss."""
     inbox = os.path.join(app_dir, "human_inbox.txt")
+    claimed = inbox + ".draining"
     try:
-        with open(inbox, encoding="utf-8") as fh:
+        os.replace(inbox, claimed)
+    except OSError:
+        return transcript, None   # missing inbox — nothing queued
+    try:
+        with open(claimed, encoding="utf-8") as fh:
             msg = fh.read().strip()
     except OSError:
-        return transcript, None
-    if not msg:
-        return transcript, None
+        msg = ""
     try:
-        open(inbox, "w", encoding="utf-8").close()  # drained
+        os.remove(claimed)
     except OSError:
         pass
+    try:
+        # Keep the empty-inbox-file invariant for pollers/tests without
+        # touching anything a concurrent writer just recreated ('a' never
+        # truncates).
+        open(inbox, "a", encoding="utf-8").close()
+    except OSError:
+        pass
+    if not msg:
+        return transcript, None
     block = "**You (human) — %s**\n\n%s\n" % (section_label, msg)
     append_md(md_path, "\n" + block)
     if phase_key:
@@ -3971,6 +4044,27 @@ def drain_human_inbox(app_dir, md_path, transcript, section_label,
         app_dir, md_path, transcript, section_label,
         phase_key=phase_key, rnd=rnd, slot=slot)
     return transcript
+
+
+def _drain_or_dispatch_inbox(cfg, app, app_dir, phasedef, key, rnd,
+                             original_prompt, prior_outputs, personas, active,
+                             transcript, md_path, section_label,
+                             extra="", state=None, slot=""):
+    """V3 9.5 at the NON-conversational drain boundary: a '/command' in the
+    inbox executes through the command path — rendered as a fenced card,
+    never folded into the transcript as a 'You (human)' chat line the agents
+    would react to (§13.5). Ordinary chat drains exactly as before
+    (byte-identical fold, so command-free sessions keep the golden-transcript
+    contract). Barrier builtins are refused via allow_barrier=False — no
+    debate or build loop ever takes the barrier."""
+    raw = _peek_command_from_inbox(app_dir)
+    if raw is None:
+        return drain_human_inbox(app_dir, md_path, transcript, section_label,
+                                 phase_key=key, rnd=rnd, slot=slot)
+    return _dispatch_command(cfg, app, app_dir, phasedef, key, rnd,
+                             original_prompt, prior_outputs, personas, active,
+                             transcript, md_path, raw, extra=extra,
+                             state=state, allow_barrier=False)
 
 
 # ---------------------------------------------------------------------------
@@ -4267,7 +4361,12 @@ def _peek_command_from_inbox(app_dir):
     """If the queued human_inbox.txt message is a '/command', drain it (clear
     the file) WITHOUT folding it into the transcript. Returns the raw
     message, or None when the inbox is empty or holds ordinary chat — in
-    which case it is left untouched for the normal drain_human_inbox path."""
+    which case it is left untouched for the normal drain_human_inbox path.
+
+    Ordinary chat is judged on a claim-free read (untouched stays literally
+    untouched); only a command is then claimed, via the same atomic
+    os.replace pattern as _drain_inbox_message so a concurrently appended
+    second message lands in a fresh inbox instead of being truncated away."""
     inbox = os.path.join(app_dir, "human_inbox.txt")
     try:
         with open(inbox, encoding="utf-8") as fh:
@@ -4276,10 +4375,35 @@ def _peek_command_from_inbox(app_dir):
         return None
     if not msg or cmdlib.parse_command(msg) is None:
         return None
+    claimed = inbox + ".draining"
     try:
-        open(inbox, "w", encoding="utf-8").close()
+        os.replace(inbox, claimed)
+    except OSError:
+        return None   # writer beat us to a rewrite — re-judge next drain
+    try:
+        with open(claimed, encoding="utf-8") as fh:
+            msg = fh.read().strip()
+    except OSError:
+        msg = ""
+    try:
+        os.remove(claimed)
     except OSError:
         pass
+    try:
+        open(inbox, "a", encoding="utf-8").close()   # empty-file invariant
+    except OSError:
+        pass
+    if not msg or cmdlib.parse_command(msg) is None:
+        # The content changed between the read and the claim and is no longer
+        # a bare command (e.g. chat appended after it) — hand it back for the
+        # ordinary drain; append so anything a writer just recreated survives.
+        if msg:
+            try:
+                with open(inbox, "a", encoding="utf-8") as fh:
+                    fh.write(msg + "\n")
+            except OSError:
+                pass
+        return None
     return msg
 
 
@@ -4321,10 +4445,17 @@ def _command_session_id(cfg):
     return "" if rel.startswith("..") else rel.replace(os.sep, "/")
 
 
-def _queue_barrier_command(app_dir, name, args, rnd):
+def _queue_barrier_command(app_dir, name, args, rnd, state=None):
     """Persist one next-round request; duplicate vote/consensus/mode requests
-    collapse by name so double-submit cannot trigger twice at the barrier."""
-    state = load_state(app_dir)
+    collapse by name so double-submit cannot trigger twice at the barrier.
+
+    When the caller's LIVE state dict is passed, the row is written through
+    it: the conversational loop keeps saving that dict after dispatch, so a
+    row appended only to a fresh disk copy would be clobbered by the very
+    next save_state and the command would never fire (V3 9.8's queue must
+    survive to the barrier)."""
+    if state is None:
+        state = load_state(app_dir)
     queued = [row for row in state.get("command_barrier", [])
               if isinstance(row, dict) and row.get("name") != name]
     queued.append({"name": name, "args": args, "requested_round": rnd})
@@ -4445,13 +4576,18 @@ def _run_command_compare(cfg, app, app_dir, key, rnd, args, active):
 
 def _dispatch_command(cfg, app, app_dir, phasedef, key, rnd, original_prompt,
                       prior_outputs, personas, active, transcript, md_path,
-                      raw_msg, extra=""):
+                      raw_msg, extra="", state=None, allow_barrier=True):
     """Resolve a drained '/command' line against the layered registry and
     dispatch by kind. Never raises: a command fault must not take the
     conversation down. Returns the (possibly extended) transcript — extended
     ONLY for a delegation command (which folds through 4.6's existing
     machinery); template/builtin/meta/unknown all render as a fenced card/
-    banner in the .md + an event, never as a chat line the live round sees."""
+    banner in the .md + an event, never as a chat line the live round sees.
+
+    allow_barrier=False (non-conversational phases) refuses vote/consensus/
+    cast with a visible card instead of queuing: only the conversational
+    loop ever takes the barrier, so a queued row would sit in
+    agent_state.json and fire a spurious vote in a later unrelated chat."""
     parsed = cmdlib.parse_command(raw_msg)
     if parsed is None:
         return transcript   # defensive — _peek_command_from_inbox pre-filtered
@@ -4500,7 +4636,13 @@ def _dispatch_command(cfg, app, app_dir, phasedef, key, rnd, original_prompt,
         sid = _command_session_id(cfg)
 
         def barrier(_args):
-            return _queue_barrier_command(app_dir, name, _args, rnd)
+            if not allow_barrier:
+                return ("**/%s unavailable in this phase** — barrier "
+                        "commands (vote/consensus/cast) apply only to "
+                        "conversational chats; this phase runs its own "
+                        "debate/build loop. Nothing was queued." % name)
+            return _queue_barrier_command(app_dir, name, _args, rnd,
+                                          state=state)
 
         def fork_existing(_args):
             code, forked = fork_session(cfg.get("root") or "", sid,
@@ -4669,6 +4811,34 @@ def derive_verification(app_dir, state):
 _STATE_LOCK = threading.RLock()
 
 
+def _prompt_body(prompt):
+    """Everything before the first engine/shepherd-written repair tail.
+    _queue_release_gate_repair and shepherd.sh both append
+    "\\n\\n## Change requested\\n" (after rstrip'ing the base), and each pass
+    rewrites the tail with the CURRENT gate-failure reason — so the tail
+    churns while the human-authored body stays put."""
+    return prompt.split("\n\n## Change requested\n")[0].rstrip("\n")
+
+
+def _reset_for_prompt_change(state, phash, bhash):
+    """reset_state_for_new_prompt + the release-gate budget carry.
+
+    The repair loop rewrites initial_prompt.md every pass (the tail embeds
+    dynamic failure text), which moves phash and triggers this reset — keyed
+    on phash alone it zeroed release_gate_repairs before the cap was ever
+    read, making the "2-attempt" repair loop unbounded. A BODY-identical
+    change (only the repair tail moved) therefore carries the cumulative
+    count across the reset; a real edit to the human-authored body still
+    zeroes it, per reset_state_for_new_prompt's documented intent."""
+    keep = state.get("release_gate_repairs") \
+        if state.get("prompt_body_hash") == bhash else 0
+    reset_state_for_new_prompt(state, phash)
+    if keep:
+        state["release_gate_repairs"] = keep
+    state["prompt_body_hash"] = bhash
+    return state
+
+
 def reset_state_for_new_prompt(state, phash):
     """A new/changed prompt is a fresh build: clear the pipeline progress AND
     the per-run FAILURE bookkeeping, in place. Mutates and returns ``state``.
@@ -4690,6 +4860,13 @@ def reset_state_for_new_prompt(state, phash):
         "release_gate_repairs": 0,
         "phase_resolutions": {},
         "enrollment_gate": None,
+        # A stale barrier row from an abandoned chat would silently fire a
+        # forced vote in the NEW run's first conversational phase; stale
+        # fallback_counts/conversation_end make the GUI badge lifetime
+        # totals instead of this run's (both are documented as per-run).
+        "command_barrier": [],
+        "fallback_counts": {},
+        "conversation_end": {},
     })
     return state
 
@@ -5038,6 +5215,21 @@ def load_tasks(app_dir):
         with open(os.path.join(app_dir, "tasks.json"), encoding="utf-8") as fh:
             data = json.load(fh)
         return data.get("tasks", []) if isinstance(data, dict) else []
+    except (OSError, ValueError):
+        return []
+
+
+def load_task_errors(app_dir):
+    """The persisted contract-error record from tasks.json. The build loop's
+    claim persistence must carry these through — _record_phase_contracts WARNs
+    the user to 'review tasks.json errors', so blanking them on the first
+    iteration would break that pointer (the mistakes ledger keeps only a
+    truncated copy)."""
+    try:
+        with open(os.path.join(app_dir, "tasks.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        errors = data.get("errors", []) if isinstance(data, dict) else []
+        return errors if isinstance(errors, list) else []
     except (OSError, ValueError):
         return []
 
@@ -6621,6 +6813,9 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
     # tech_specs, injected into every worker prompt (per-lane task slice + the
     # full shared interface contract). Missing files just mean no injection.
     backlog = load_tasks(app_dir)
+    # Carried through every claim persistence below — persisting with []
+    # would destroy the recorded parse/cycle errors on the first iteration.
+    _task_errors = load_task_errors(app_dir)
     interfaces = load_interfaces(app_dir)
     flows_contract = _flows_contract_block(load_flows(app_dir))
     if backlog or interfaces:
@@ -6658,12 +6853,23 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
     max_integrationless = int(cget(
         cfg, "runtime.max_build_iterations_without_integrator", 2) or 0)
     _lane_seen = {}   # per-lane transcript offset for session delta prompts
+    _fail_streak = {}  # consecutive failed iterations per worker slug (claim revert)
     build_rounds = itertools.count(1) if unlimited_rounds else range(1, max_rounds + 1)
     for rnd in build_rounds:
         # Sprint watchdog: stop starting new build iterations once the build slice
         # is spent, leaving the reserved tail for verify + a fast review.
         if cfg.get("_phase_deadline") and time.time() >= cfg["_phase_deadline"]:
             emit("Sprint: build time budget reached — finalizing at iteration %d." % rnd)
+            # A time-budget stop before the final iteration skips the final
+            # wave merge above — acceptable for a sprint, but never silent:
+            # name the tasks that were never scheduled.
+            _unscheduled = [str(t.get("id")) for t in backlog
+                            if not t.get("claimed_by")
+                            and str(t.get("status", "")).lower() != "done"]
+            if _unscheduled:
+                emit("WARN Sprint stop left %d task(s) never claimed/"
+                     "scheduled: %s"
+                     % (len(_unscheduled), ", ".join(_unscheduled)))
             break
         if _SHUTDOWN.is_set():
             break
@@ -6671,8 +6877,10 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         state["next_agent"] = "+".join(w["slug"] for w in roster)  # all building at once
         save_state(app_dir, state)
         append_md(md_path, "\n### Iteration %d\n\n" % rnd)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd,
-                                       phase_key=key, rnd=rnd, slot="open")
+        transcript = _drain_or_dispatch_inbox(
+            cfg, app, app_dir, phasedef, key, rnd, original_prompt,
+            prior_outputs, personas, active, transcript, md_path,
+            "Iteration %d" % rnd, extra=extra, state=state, slot="open")
 
         tree = _build_file_tree(build_dir)
         # Worker-lane context policy (runtime.build_context_policy): under
@@ -6703,22 +6911,63 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
         _wave_backlog, _wave_note = backlog, ""
         if len(waves) > 1:
             _widx = min(rnd - 1, len(waves) - 1)
-            _wave_backlog = waves[_widx]
+            # The min() above only clamps ITERATIONS beyond the wave count.
+            # With fewer iterations than waves, the trailing waves would never
+            # be scheduled at all — honor the "waves beyond the iteration
+            # budget collapse into the final iteration" contract: the last
+            # budgeted iteration works every remaining wave.
+            _final_merge = (not unlimited_rounds and rnd == max_rounds
+                            and _widx < len(waves) - 1)
+            if _final_merge:
+                _wave_backlog = [t for wv in waves[_widx:] for t in wv]
+                emit("Vertical slices: budget %d < %d waves — final iteration "
+                     "takes waves W%d-W%d."
+                     % (max_rounds, len(waves), _widx + 1, len(waves)))
+            else:
+                _wave_backlog = waves[_widx]
+            # Reverted-but-unfinished tasks from EARLIER waves would otherwise
+            # never re-enter the claim pool (each iteration only sees its own
+            # wave; earlier-wave tasks are normally all sticky-claimed, so
+            # unclaimed+not-done there means a dead worker's revert): fold
+            # them in so an orphaned slice actually gets rebuilt.
+            _stranded = [t for wv in waves[:_widx] for t in wv
+                         if not t.get("claimed_by")
+                         and str(t.get("status", "")).lower() != "done"]
+            if _stranded:
+                _wave_backlog = _stranded + _wave_backlog
+                emit("CLAIM: %d reverted task(s) from earlier waves folded "
+                     "into iteration %d's claim pool." % (len(_stranded), rnd))
             _done_n = sum(len(wv) for wv in waves[:_widx])
-            _wave_note = ("VERTICAL SLICE — iteration %d works WAVE %d/%d "
-                          "ONLY (%d task(s); %d task(s) from earlier waves "
-                          "are already built — extend, don't rewrite). "
-                          "Finish this wave's tasks end-to-end (UI + logic "
-                          "+ states) before touching anything else."
-                          % (rnd, _widx + 1, len(waves),
-                             len(_wave_backlog), _done_n))
+            if _final_merge:
+                _wave_note = ("VERTICAL SLICE — FINAL iteration %d works ALL "
+                              "remaining waves W%d-W%d (%d task(s); %d "
+                              "task(s) from earlier waves are already built "
+                              "— extend, don't rewrite). Finish these tasks "
+                              "end-to-end (UI + logic + states)."
+                              % (rnd, _widx + 1, len(waves),
+                                 len(_wave_backlog), _done_n))
+            else:
+                _wave_note = ("VERTICAL SLICE — iteration %d works WAVE %d/%d "
+                              "ONLY (%d task(s); %d task(s) from earlier waves "
+                              "are already built — extend, don't rewrite). "
+                              "Finish this wave's tasks end-to-end (UI + logic "
+                              "+ states) before touching anything else."
+                              % (rnd, _widx + 1, len(waves),
+                                 len(_wave_backlog), _done_n))
         # §19 dynamic task claiming: decide who builds what BEFORE fan-out,
         # single-threaded (no concurrent writers to race on tasks.json), then
         # persist so the assignment is visible outside this run too.
-        claims = _claim_tasks_for_iteration(roster, _wave_backlog, rnd) \
+        # Workers on a dead streak (>= 2 consecutive failed iterations) get no
+        # NEW claims — without this, lane-preferred redistribution would hand
+        # their reverted tasks straight back the very next pass. An all-dead
+        # roster keeps full membership: the stall watchdog owns that outcome,
+        # not a mass claim revert.
+        _claim_roster = [w for w in roster
+                         if _fail_streak.get(w["slug"], 0) < 2] or roster
+        claims = _claim_tasks_for_iteration(_claim_roster, _wave_backlog, rnd) \
             if _wave_backlog else {w["slug"]: [] for w in roster}
         if backlog:
-            persist_tasks(app_dir, backlog, [])
+            persist_tasks(app_dir, backlog, _task_errors)
 
         # ---- fan out: every worker builds its lane concurrently ----
         def _run_worker(pair):
@@ -6781,9 +7030,11 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
             plabel = roleslib.persona_label((personas or {}).get(w["agent"]))
             hat = " (%s)" % plabel if plabel else ""
             if err:
+                _fail_streak[w["slug"]] = _fail_streak.get(w["slug"], 0) + 1
                 block = ("**%s%s — Iteration %d (skipped: CLI unavailable)**\n\n_%s_\n"
                          % (w["label"], hat, rnd, err))
             else:
+                _fail_streak[w["slug"]] = 0
                 produced += 1
                 block = "**%s%s — Iteration %d**\n\n%s\n" % (w["label"], hat, rnd, resp)
                 live_log(app_dir, w.get("lane_id") or w["slug"], w["agent"],
@@ -6814,6 +7065,32 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                     "one build worker can run or disable that worker from the "
                     "active roster and retry." % integrationless_iterations)
             continue
+
+        # Dead-worker claim revert: a worker whose CLI is installed (so it
+        # stays in the roster) but whose every call fails (logged out, capped,
+        # fallback ladder exhausted) would keep its sticky claims forever —
+        # the build "proceeds" while its slice is silently never built. Two
+        # consecutive failed iterations (not one: a single timeout must not
+        # reshuffle a lane and break session continuity) revert its claims so
+        # live workers pick them up at the next claim pass. Only when
+        # produced > 0: with NOBODY producing there is no live worker to hand
+        # tasks to and the stall watchdog above owns the outcome.
+        for w in roster:
+            if _fail_streak.get(w["slug"], 0) < 2:
+                continue
+            _n = 0
+            for t in backlog:
+                if t.get("claimed_by") == w["slug"] and \
+                        str(t.get("status", "")).lower() != "done":
+                    t["claimed_by"] = None
+                    t["claimed_at"] = None
+                    _n += 1
+            if _n:
+                emit("CLAIM: reverted %d task(s) claimed by %s — worker failed "
+                     "%d consecutive iteration(s); tasks return to the open "
+                     "pool for redistribution."
+                     % (_n, w["label"], _fail_streak[w["slug"]]))
+                persist_tasks(app_dir, backlog, _task_errors)
 
         # ---- merge isolated lanes back into the integration tree (§5.5) ----
         if worktrees:
@@ -6884,8 +7161,10 @@ def _run_parallel_build(cfg, app, app_dir, phasedef, original_prompt, prior_outp
                         transcript += "\n" + rblock
 
         # ---- barrier reached: integrator wires the shared files + decides ----
-        transcript = drain_human_inbox(app_dir, md_path, transcript, "Iteration %d" % rnd,
-                                       phase_key=key, rnd=rnd, slot="coord")
+        transcript = _drain_or_dispatch_inbox(
+            cfg, app, app_dir, phasedef, key, rnd, original_prompt,
+            prior_outputs, personas, active, transcript, md_path,
+            "Iteration %d" % rnd, extra=extra, state=state, slot="coord")
         failover_enabled = bool(cget(cfg, "runtime.coordinator_failover_enabled", True))
         integrator = _pick_live_coordinator(cfg, active, preferred=coord) or coord
         if integrator != coord:
@@ -7081,6 +7360,9 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
     # _maybe_escalate. `cfg` itself is never touched, so a later fresh verify
     # cycle (or any other phase) is unaffected.
     _escalation_logged = False
+    attempts_run = 0   # attempts that actually invoked the repair agent —
+    # the loop can bail early (sprint deadline, agent unavailable), and the
+    # Final Output note must not overstate the repair effort.
     for attempt in range(1, max_repairs + 1):
         # Sprint: stop repairing if the run deadline is essentially here.
         if cfg.get("_deadline") and time.time() >= cfg["_deadline"] - 10:
@@ -7110,6 +7392,7 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
                  % (DISPLAY.get(coord, coord), attempt, exc))
             append_md(md_path, "_Repair attempt %d skipped: %s_\n" % (attempt, exc))
             break
+        attempts_run = attempt
         rblock = "**Repair %d (%s)**\n\n%s\n" % (attempt, DISPLAY.get(coord, coord), rresp)
         append_md(md_path, "\n" + rblock)
         msglib.append_message(app_dir, key, "repair", coord, md_path,
@@ -7124,7 +7407,12 @@ def _verify_and_repair(cfg, app, app_dir, phasedef, state, md_path, transcript, 
         if res.get("ok"):
             return transcript, "verified after %d repair(s): %s" % (attempt, res.get("summary", ""))
 
-    return transcript, "still not compiling after %d repair attempt(s)" % max_repairs
+    note = "still not compiling after %d repair attempt(s)" % attempts_run
+    if attempts_run < max_repairs:
+        # The loop bailed out early — say so, or triage reads a full budget
+        # of failed repairs that never actually ran.
+        note += " (budget %d)" % max_repairs
+    return transcript, note
 
 
 def _apply_phase_routing(cfg, key):
@@ -7429,6 +7717,12 @@ def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
                 results_by_agent[agent] = (_roster_turn(agent), None)
             except AgentError as exc:
                 results_by_agent[agent] = (None, str(exc))
+            except Exception as exc:  # noqa: BLE001 - one turn must not kill the phase
+                # Mirror the parallel branch above: single-agent rounds always
+                # take this path, so without this arm one unexpected exception
+                # (session-file OSError, a prompt-builder bug) aborts the
+                # whole phase instead of skipping the turn.
+                results_by_agent[agent] = (None, "unexpected turn error: %s" % exc)
     # Append in roster order so the transcript stays deterministic.
     for agent in round_agents:
         resp, aerr = results_by_agent.get(agent, (None, "no result"))
@@ -7471,8 +7765,13 @@ def _run_roster_turns(cfg, app, app_dir, phasedef, original_prompt,
 
 
 def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
-                              prior_outputs, state, md_path, personas, active):
+                              prior_outputs, state, md_path, personas, active,
+                              preroute=None):
     """V3 board 1.1: human-paced chat phase — no coordinator/consensus/vote.
+
+    preroute is process_phase's pristine PRE-route (models, _resolved)
+    snapshot pair; the mid-chat routing refresh rebuilds from it so that
+    REMOVING an override actually takes effect (see the refresh below).
 
     Round shape: drain human_inbox -> every roster agent responds (concurrent,
     roster-order append, PASS protocol + unavailable-skip notes preserved) ->
@@ -7568,9 +7867,27 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
         if _cur_routing != _last_routing:
             _last_routing = _cur_routing
             base = dict(cfg)
+            # Rebuild from the pristine PRE-route snapshot handed down by
+            # process_phase: _apply_phase_routing only ADDS overrides, so
+            # layering onto the already-routed copy would keep a REMOVED
+            # override (model/timeout/rounds/instructions) in force for the
+            # rest of the chat while announcing the update below.
+            if preroute is not None:
+                base["models"] = dict(preroute[0])
+                tcxlib.TurnContext(base).resolved = dict(preroute[1])
+            for _stale in ("_routed_turn_timeout", "_routed_rounds",
+                           "_phase_instructions", "_role_routing"):
+                base.pop(_stale, None)
             # Force a fresh load (fleet + chat overlay).
             tcxlib.TurnContext(base).routing = None
             cfg = _apply_phase_routing(base, key)
+            # Re-fold the routed timeout into the live turn timeout the same
+            # way process_phase does at phase open — without this, a timeout
+            # add OR removal would never actually apply mid-chat.
+            _bud = cfg.get("_budget")
+            tcxlib.TurnContext(cfg).turn_timeout = \
+                cfg.get("_routed_turn_timeout") or \
+                (int(_bud.get("chat_turn_timeout", 150)) if _bud else None)
             emit("Chat routing updated — new model assignments apply from "
                  "round %d." % rnd)
         # V3 9.8: room-mutating commands are applied only after the round in
@@ -7591,14 +7908,26 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
                         _announcement = "%s leaves the cast from round %d." % (
                             DISPLAY.get(_agent, _agent), rnd)
                     elif _op == "add" and _agent not in active \
+                            and (_agent in RUNNERS
+                                 or _agent.startswith("local:")
+                                 or _agent.startswith("api:")) \
                             and _agent_available(_agent, cfg):
+                        # Require a real agent identity BEFORE the availability
+                        # probe: for unknown names _agent_available is just
+                        # which(), so any binary on PATH ('git', 'python3')
+                        # would be admitted and later blow up in
+                        # resolve_runner.
                         active.append(_agent)
                         _announcement = "%s joins the cast from round %d." % (
                             DISPLAY.get(_agent, _agent), rnd)
                     elif _op == "add" and _agent in active:
                         _announcement = "%s is already in the cast." % _agent
                     else:
-                        _announcement = "Unknown or unavailable agent `%s`; cast unchanged." % _agent
+                        _announcement = ("`%s` is not a known agent id (or is "
+                                         "unavailable); cast unchanged. Known: "
+                                         "%s, local:<model>, api:<provider>:"
+                                         "<model>." % (_agent,
+                                                       ", ".join(sorted(RUNNERS))))
             elif _cname == "vote":
                 _available = [a for a in ordered_agents(active)
                               if _agent_available(a, cfg)]
@@ -7655,7 +7984,7 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
             transcript = _dispatch_command(
                 cfg, app, app_dir, phasedef, key, rnd, original_prompt,
                 prior_outputs, personas, active, transcript, md_path,
-                _cmd_raw, extra=extra)
+                _cmd_raw, extra=extra, state=state)
         else:
             transcript, _drained = _drain_inbox_message(
                 app_dir, md_path, transcript, unit_label,
@@ -7766,6 +8095,12 @@ def _run_conversational_phase(cfg, app, app_dir, phasedef, original_prompt,
         state["completed_phases"].append(key)
     state["current_round"] = 0
     state["next_agent"] = None
+    # The chat is over — a never-fired /vote//cast row must die WITH it, or
+    # a later unrelated conversational phase would silently fire it the
+    # first time it passes the requested round. Cleared HERE, right before
+    # the final save (not earlier): _take_barrier_commands reloads state
+    # from disk, so an earlier clear could be resurrected by that reload.
+    state["command_barrier"] = []
     save_state(app_dir, state)
     # Deliberate SUBSET of end_phase(): the six other band-B keys are never
     # set on the conversational path; clearing them here would be silent
@@ -7858,8 +8193,10 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
 
         unit_label = "%s %d" % ("Iteration" if is_build else "Round", rnd)
         _pre_drain_len = len(transcript)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label,
-                                       phase_key=key, rnd=rnd, slot="open")
+        transcript = _drain_or_dispatch_inbox(
+            cfg, app, app_dir, phasedef, key, rnd, original_prompt,
+            prior_outputs, personas, active, transcript, md_path, unit_label,
+            extra=extra, state=state, slot="open")
         human_joined = len(transcript) > _pre_drain_len
         if stepping_in:
             try:
@@ -7918,8 +8255,10 @@ def _run_debate_rounds(cfg, app, app_dir, phasedef, original_prompt,
 
         # Coordinator turn
         _pre_coord_len = len(transcript)
-        transcript = drain_human_inbox(app_dir, md_path, transcript, unit_label,
-                                       phase_key=key, rnd=rnd, slot="coord")
+        transcript = _drain_or_dispatch_inbox(
+            cfg, app, app_dir, phasedef, key, rnd, original_prompt,
+            prior_outputs, personas, active, transcript, md_path, unit_label,
+            extra=extra, state=state, slot="coord")
         # V3 board 1.7: a step-in message can land while agents were talking —
         # this pre-coordinator drain then folds it a round early. That IS the
         # join (the message is in the transcript; the marker is consumed), but
@@ -8845,6 +9184,12 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     key, folder, fname, _purpose = phasedef
     # V2 routing: everything below (roster, coordinator, build lanes, every
     # agent turn) sees this phase's model overrides through the scoped copy.
+    # The pristine pre-route models/_resolved are captured FIRST (plain
+    # locals, not cfg keys — the 2.3 gate): the conversational mid-chat
+    # routing refresh (V3 1.11) must rebuild from these — re-applying
+    # overrides onto the already-routed copy would make override REMOVAL a
+    # silent no-op.
+    _preroute = (dict(cfg.get("models") or {}), dict(cfg.get("_resolved") or {}))
     cfg = _apply_phase_routing(cfg, key)
     # Band-B per-phase state rides this view over the ROUTED copy —
     # constructed any earlier it would write phase state onto the
@@ -8859,13 +9204,16 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     # discusses the current app_build output, then runs the same real verifier and
     # bounded repair loop without starting another parallel build iteration.
     is_verify_repair = bool(verify_spec) and not is_build
-    # Per-phase round budget now lives in the workflow (GUI-editable); fall back
-    # to the legacy config `rounds:` block, then a small default. A per-project
-    # routing override (Plan tab) beats them all; its 0 = unlimited.
+    # Per-phase round budget lives in the workflow (GUI-editable). A
+    # per-project routing override (Plan tab) beats it; its 0 = unlimited.
+    # (The old config.yaml `rounds:` fallback was unreachable: phasedef is
+    # always a workflows.Phase, whose .get("rounds") is never None — the
+    # block just sat in config.yaml misleading operators into editing a
+    # knob that did nothing. The live knob is workflows/<name>.json.)
     raw_rounds = (phasedef.get("rounds") if hasattr(phasedef, "get") else None)
     if cfg.get("_routed_rounds") is not None:
         raw_rounds = cfg["_routed_rounds"]
-    max_rounds = int(raw_rounds if raw_rounds is not None else cget(cfg, "rounds.%s" % key, 3))
+    max_rounds = int(raw_rounds if raw_rounds is not None else 3)
     unlimited_rounds = max_rounds <= 0
     # V2 §7.2: completeness profile scales the round budget (min 1 for any included
     # phase — structurally-required phases must still get at least one round).
@@ -8947,6 +9295,13 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
             "%s %s" % (_purpose, original_prompt),
             max_chars=int(cget(cfg, "knowledge.max_chars", 6000)),
             top_k=int(cget(cfg, "knowledge.top_k", 3)))
+        # Fleet-learning READ half: the anti-pattern ledger lives at the
+        # knowledge ROOT (not in any domain dir), so domain retrieval never
+        # finds it — append it explicitly or recorded failures teach nothing.
+        _ledger = fllib.read_ledger(HERE)
+        if _ledger:
+            tctx.knowledge = (cfg["_knowledge"] or "") + \
+                "\n\n===== FLEET ANTI-PATTERNS (do not repeat) =====\n" + _ledger
         if cfg["_knowledge"]:
             emit("Injected %s knowledge (%d chars) into phase '%s'."
                  % (domain, len(cfg["_knowledge"]), key))
@@ -9118,9 +9473,10 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
     if bool(phasedef.get("conversational", False) if hasattr(phasedef, "get") else False):
         return _run_conversational_phase(
             cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
-            state, md_path, personas, active)
+            state, md_path, personas, active, preroute=_preroute)
     resume_round, resuming = 1, False
     _recovered_vote = None
+    _recovered_consensus = None
     if not (is_build and allow_writes) and state.get("current_phase") == key \
             and int(state.get("current_round") or 0) > 0:
         try:
@@ -9142,22 +9498,80 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
         #   * PARTIAL vote (header/ballots, no tally) — discard the whole
         #     section AND its post-round index lines, then cast cleanly.
         _drop_post_round = False
-        _fv = _FORCED_VOTE_HDR_RE.search(_kept, _header_end)
+        # Search the FULL on-disk text for the vote stage, not _kept: when the
+        # round preceding the vote never got a coordinator block (coordinator
+        # unavailable / empty round on the last budgeted round), _kept was
+        # truncated BEFORE that round — and therefore before the vote — so a
+        # COMPLETE tally would be silently deleted and the round AND vote
+        # re-run, exactly what _recover_forced_vote's docstring forbids.
+        _fv = _FORCED_VOTE_HDR_RE.search(_existing, _header_end)
         if _fv:
-            _foot = _kept.find(_PHASE_FOOTER_MARK, _fv.end())
-            _vote_end = _foot if _foot != -1 else len(_kept)
-            _recovered_vote = _recover_forced_vote(_kept[_fv.start() + 1:_vote_end])
+            _foot = _existing.find(_PHASE_FOOTER_MARK, _fv.end())
+            _vote_end = _foot if _foot != -1 else len(_existing)
+            _recovered_vote = _recover_forced_vote(
+                _existing[_fv.start() + 1:_vote_end])
             if _recovered_vote is not None:
-                _kept = _kept[:_vote_end]        # keep the vote, drop any footer
+                # Adopt: keep everything up to the tally (including any
+                # incomplete round's partial posts — the vote already consumed
+                # them as context) and advance resume_round past every on-disk
+                # round header so the rounds loop is empty; the decision on
+                # disk stands.
+                _kept = _existing[:_vote_end]    # keep the vote, drop any footer
+                _last_hdr = 0
+                for _m in _ROUND_HDR_RE.finditer(_kept):
+                    _last_hdr = max(_last_hdr, int(_m.group(1)))
+                resume_round = max(resume_round, _last_hdr + 1, max_rounds + 1)
             else:
-                _kept = _kept[:_fv.start()]      # drop the partial vote stage
-                _drop_post_round = True
+                # PARTIAL vote (no tally): keep the _kept-based reconciliation
+                # unchanged — the incomplete round is dropped and redone, so
+                # its partial posts must not survive while resume_round points
+                # at that same round (they would duplicate on re-run).
+                _fv = _FORCED_VOTE_HDR_RE.search(_kept, _header_end)
+                if _fv:
+                    _kept = _kept[:_fv.start()]  # drop the partial vote stage
+                    _drop_post_round = True
+        elif not unlimited_rounds and resume_round > max_rounds:
+            # Consensus twin of the vote reconciliation above: a crash AFTER
+            # the coordinator recorded CONSENSUS: YES on the FINAL budgeted
+            # round (the close hooks can run xcodebuild/repair calls for
+            # minutes before completed_phases is saved) resumes here with an
+            # empty rounds loop and consensus seeded False — which would
+            # re-run the phase decision as a forced vote able to pick a
+            # DIFFERENT winner than the decision already on disk. Adopt the
+            # recorded consensus instead — mirroring the _recover_forced_vote
+            # precedent that a decision already on disk stands (the quality
+            # gate is not re-run, faithful here: on the final round consensus
+            # survives gate failure anyway). A consensus crash on a NON-final
+            # round is NOT reconciled — the remaining rounds re-debate
+            # (duplicate spend, but the same decision path, never a vote).
+            # Scope to the LAST coordinator decision block so an agent merely
+            # QUOTING "CONSENSUS: YES" earlier in the round can't false-
+            # positive.
+            _last = None
+            for _m in _COORD_DECISION_RE.finditer(_kept, _header_end):
+                _last = _m
+            if _last is not None:
+                _foot = _kept.find(_PHASE_FOOTER_MARK, _last.start())
+                _dec_end = _foot if _foot != -1 else len(_kept)
+                _decision = _kept[_last.start():_dec_end]
+                if CONSENSUS_RE.search(_decision):
+                    # final_output mirrors the live path's `final_output =
+                    # cresp`: the decision body without its "**Coordinator
+                    # (...)**" transcript header line.
+                    _parts = _decision.split("\n\n", 1)
+                    _recovered_consensus = (_parts[1] if len(_parts) == 2
+                                            else _decision).strip()
+                    _kept = _kept[:_dec_end]   # keep decision, drop any footer
         # Preserve the on-disk transcript (write_md would TRUNCATE it) except
         # for a trailing incomplete round, which is dropped and redone.
         write_md(md_path, _kept)
         msglib.reconcile_messages(app_dir, key, keep_below_round=resume_round,
                                   drop_post_round=_drop_post_round)
-        transcript = _kept[_header_end:]
+        # Fenced command cards are file-visible-only (§13.5): strip them from
+        # the reconstructed LIVE context exactly as the conversational resume
+        # does, or a crash+resume would smuggle advisory card text into real
+        # agent prompts. Command-free sessions have no fences — byte no-op.
+        transcript = strip_command_cards(_kept[_header_end:])
         emit("Phase '%s': resuming a crashed run at round %d (%d completed "
              "round(s), %d char(s) of transcript recovered)."
              % (key, resume_round, resume_round - 1, len(transcript)))
@@ -9173,6 +9587,14 @@ def process_phase(cfg, app, app_dir, phasedef, original_prompt, prior_outputs,
 
     consensus = False
     final_output = ""
+    if _recovered_consensus is not None:
+        # Resume of a final-round consensus (reconciled by the gate above):
+        # seed the decision so the empty rounds loop passes it through and
+        # the forced-vote gate below never fires — the footer then records
+        # CONSENSUS: YES exactly as the crashed run would have.
+        consensus, final_output = True, _recovered_consensus
+        emit("Phase '%s': recovered a recorded CONSENSUS: YES from a crashed "
+             "run — not re-deciding." % key)
     quality_repair_limit = max(0, int(cget(cfg, "runtime.phase_quality_repair_rounds", 1) or 0))
     independent_first = _independent_first_enabled(cfg, is_build or is_verify_repair)
     if independent_first:
@@ -9819,6 +10241,17 @@ def _await_approval(app_dir, phase_key, state, timeout=7200, poll=0.25):
          % (phase_key, decision_files["approved"], phase_key, phase_key))
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if _SHUTDOWN.is_set():
+            # Stop signal during the pause: exit promptly like the sibling
+            # waits (_await_step_in/_await_inbox) — otherwise a worker thread
+            # sleeps here for up to the full timeout while the main thread's
+            # SystemExit blocks in ThreadPoolExecutor shutdown(wait=True).
+            # Deliberately NO state mutation: awaiting_approval must stay set,
+            # exactly as a crash would leave it, so the resume path re-arms
+            # the interrupted approval instead of sailing past the checkpoint.
+            emit("Approval wait for '%s' interrupted by shutdown — the "
+                 "checkpoint re-arms on resume." % phase_key)
+            return "shutdown", None
         for decision, path in decision_files.items():
             if not os.path.exists(path):
                 continue
@@ -10183,7 +10616,15 @@ def _do_finalize(cfg, args):
     if not args.finalize_in:
         emit("--finalize-artifact needs --finalize-in <project|session id>")
         return 2
-    project = parse_session_id(args.finalize_in).split("/")[0]
+    sid = parse_session_id(args.finalize_in)
+    if sid is None:
+        # main() pre-validates like its siblings, so this is belt-and-
+        # suspenders for direct callers — without it, None.split crashes
+        # with an AttributeError traceback instead of a clean CLI error.
+        emit("--finalize-in %r is not a valid project or session id"
+             % args.finalize_in)
+        return 2
+    project = sid.split("/")[0]
     project_dir = os.path.join(root, project)
     registry = artifactslib.load_registry(HERE, on_error=emit)
     meta = artifactslib.finalize(
@@ -11190,10 +11631,12 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         except OSError:
             _tsig = _tgt
     phash = sha256_text(prompt + "\n#target:" + _tgt + "\n#tsig:" + sha256_text(_tsig))
+    bhash = sha256_text(_prompt_body(prompt) + "\n#target:" + _tgt
+                        + "\n#tsig:" + sha256_text(_tsig))
 
     if state.get("prompt_hash") != phash:
         emit("App '%s': new/updated input detected — (re)starting pipeline." % app)
-        reset_state_for_new_prompt(state, phash)
+        _reset_for_prompt_change(state, phash, bhash)
         save_state(app_dir, state)
     elif state.get("done"):
         emit("App '%s': unchanged and already done — skipping." % app)
@@ -11233,6 +11676,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
                  % pending_approval)
             decision, payload = _await_approval(app_dir, pending_approval, state,
                                                 timeout=_approval_timeout(cfg))
+            if decision == "shutdown":
+                # awaiting_approval stays set (see _await_approval) so the
+                # next run re-arms this same checkpoint; bail out now so
+                # process_app's finally releases the lock promptly.
+                return
             if decision == "changes_requested":
                 if pending_approval in state.get("completed_phases", []):
                     state["completed_phases"].remove(pending_approval)
@@ -11258,7 +11706,9 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             HERE, workflow.target, on_fallback=_rules_fallback_banner(cfg))
         tctx.tech_stack_block = dlintlib.render_tech_stack(
             policy["tech_stack"] if policy is not None
-            else dlintlib.load_tech_stack(HERE))
+            else dlintlib.load_tech_stack(HERE),
+            source_label=("sections/build/target_policy.json"
+                          if policy is not None else "tech_stack.json"))
     emit("App '%s': workflow '%s' (%d phases, target=%s)."
          % (app, workflow.name, len(phases), workflow.target))
     evlib.emit_event(app_dir, "run_started", project=app,
@@ -11410,6 +11860,11 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
             if i < len(phases) - 1 and _should_pause_after(cfg, phasedef):
                 decision, payload = _await_approval(app_dir, key, state,
                                                     timeout=_approval_timeout(cfg))
+                if decision == "shutdown":
+                    # awaiting_approval stays set (see _await_approval) so the
+                    # next run re-arms this checkpoint; bail out so
+                    # process_app's finally releases the lock promptly.
+                    return
                 if decision == "edited" and (payload or "").strip():
                     # Edit & Approve: the human's text REPLACES the phase output
                     # everywhere downstream phases read it.
@@ -11627,8 +12082,10 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
         # and useful for throwaway/demo roots that shouldn't teach the fleet.
         if bool(cget(cfg, "runtime.fleet_ledger_enabled", True)):
             try:
-                _lpath, _lclusters = fllib.build_ledger(
-                    os.path.dirname(os.path.abspath(app_dir)), HERE)
+                # `root`, not dirname(app_dir): nested sessions live two levels
+                # down, so dirname would rebuild the FLEET-wide ledger from one
+                # section's chats and clobber knowledge/anti_patterns.md.
+                _lpath, _lclusters = fllib.build_ledger(root, HERE)
                 if _lpath:
                     emit("Anti-pattern ledger refreshed (%d cluster(s))." % _lclusters)
             except Exception:  # noqa: BLE001 - learning must never fail a run
@@ -12327,7 +12784,14 @@ def run_once(cfg):
     workers = _project_parallel_workers(cfg, len(apps))
     if workers <= 1 or len(apps) <= 1:
         for app in apps:
-            process_app(dict(cfg), root, app)
+            # Contain per-app crashes exactly like the parallel branch below:
+            # with the default single worker, one app's unexpected exception
+            # must not abort the rest of the pass (process_app has already
+            # recorded the crash in that app's state and failure artifact).
+            try:
+                process_app(dict(cfg), root, app)
+            except Exception as exc:  # noqa: BLE001 - parity with fut.result() below
+                emit("App '%s': unexpected worker failure: %s" % (app, exc))
         return
     emit("Project parallelism: %d app(s), %d worker(s)." % (len(apps), workers))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
@@ -12541,7 +13005,8 @@ def main():
     # these as paths, only as folder names).
     for _slug in (args.app, args.project, args.resume,
                   args.fork, args.promote, args.route_from, args.route_to,
-                  args.archive_project, args.unarchive_project):
+                  args.archive_project, args.unarchive_project,
+                  args.finalize_in):
         if _slug and parse_session_id(_slug) is None:
             ap.error("invalid project name %r — use a single folder name under "
                      "the workspace root, or a nested session id "
@@ -12775,10 +13240,18 @@ def main():
         if args.watch:
             emit("Watch mode: every %ds. Ctrl-C to stop." % args.watch)
             while True:
-                if target_app:
-                    process_app(cfg, cfg["root"], target_app)
-                else:
-                    run_once(cfg)
+                # --watch promises to loop forever: one pass's unexpected
+                # crash (already recorded by process_app) must not kill the
+                # daemon. `except Exception` deliberately lets _cleanup's
+                # SystemExit (SIGINT/SIGTERM) propagate. Also covers the
+                # --watch --app branch, which never goes through run_once.
+                try:
+                    if target_app:
+                        process_app(cfg, cfg["root"], target_app)
+                    else:
+                        run_once(cfg)
+                except Exception as exc:  # noqa: BLE001 - keep the daemon alive
+                    emit("Watch pass failed unexpectedly: %s" % exc)
                 time.sleep(args.watch)
         else:
             if target_app:

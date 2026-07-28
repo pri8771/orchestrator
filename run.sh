@@ -26,6 +26,9 @@ mkdir -p "$ROOT"
 cd "$ROOT" || { echo "Cannot cd into $ROOT"; exit 1; }
 
 # 2) Unset all API-key / pay-as-you-go credential env vars (belt and braces).
+#    Keep in lockstep with APIKeyEnv.strippedAPIKeyVars in
+#    gui/Sources/OrchestratorGUI/RunController.swift — the GUI's launch sites
+#    strip the same set (a lockstep test compares the two lists).
 unset OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY \
       OPENAI_API_BASE OPENAI_BASE_URL ANTHROPIC_AUTH_TOKEN \
       ANTHROPIC_BASE_URL GOOGLE_APPLICATION_CREDENTIALS GOOGLE_GENAI_API_KEY \
@@ -60,10 +63,14 @@ fi
 
 # 4-6) Git: add, commit if there are staged changes, push if origin exists.
 # Never stage secret-shaped files — a stray key file must not reach a remote.
+# The pattern list must cover every name .gitignore and gui/build_app.sh
+# promise never to commit/ship: *_api_key (subsumes gemini_api_key and
+# *.gemini_api_key), config.json, .env*, and the *.pem/*.key/*.p12/*.secret
+# extensions.
 if [ -d "$ROOT/.git" ]; then
   git -C "$ROOT" add -A
   SECRETS="$(git -C "$ROOT" diff --cached --name-only | \
-    grep -E '(^|/)(gemini_api_key|config\.json|\.env[^/]*)$|\.(pem|key|p12)$' || true)"
+    grep -E '(^|/)([^/]*_api_key|[^/]*\.gemini_api_key|config\.json|\.env[^/]*)$|\.(pem|key|p12|secret)$' || true)"
   if [ -n "$SECRETS" ]; then
     echo "[run.sh] REFUSING to commit secret-named files:"
     echo "$SECRETS"

@@ -1344,12 +1344,16 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
 
 def recompute_gap_report(app_dir, app, ordered_phases, phase_outputs,
                          orch_dir, artifact_reader, required_slots,
-                         on_warn=None):
+                         on_warn=None, human_overrides=None):
     """Re-scan one live session after a Situation switch.
 
     Only the generated handoff/gap pair is replaced; phase docs and human
     inputs are untouched. Existing artifacts and phase outputs remain the
     evidence source, so narrowing a Situation never discards prior work.
+    Both files are in docsync's 5.5 protected set, so `human_overrides`
+    (paths like "docs/GAP_REPORT.md", from docsync.prepare_render) skips a
+    human-owned file exactly like write_project_docs does — the recompute
+    path must not become a backdoor that clobbers overridden docs.
     Returns the scoped coverage records, or None when rendering failed.
     """
     try:
@@ -1361,13 +1365,16 @@ def recompute_gap_report(app_dir, app, ordered_phases, phase_outputs,
             coverage=coverage, required_slots=required_slots)
         if blueprint is None:
             return None
+        overrides = set(human_overrides or ())
         docs_dir = os.path.join(app_dir, "docs")
         os.makedirs(docs_dir, exist_ok=True)
-        _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), blueprint)
-        _write(os.path.join(docs_dir, "GAP_REPORT.md"),
-               render_gap_report(
-                   app, coverage,
-                   provenance_report=docslintlib.load_report(app_dir)))
+        if "docs/HANDOFF_BLUEPRINT.md" not in overrides:
+            _write(os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md"), blueprint)
+        if "docs/GAP_REPORT.md" not in overrides:
+            _write(os.path.join(docs_dir, "GAP_REPORT.md"),
+                   render_gap_report(
+                       app, coverage,
+                       provenance_report=docslintlib.load_report(app_dir)))
         if coverage or contentions:
             _emit_gaps(app_dir, artifact_reader, orch_dir or _ORCH_DIR,
                        coverage, contentions, on_warn)

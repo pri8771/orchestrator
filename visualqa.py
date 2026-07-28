@@ -32,6 +32,7 @@ import time
 import urllib.request
 
 import localmodels as lmlib
+import procutil
 import turncontext as tcxlib
 import verify as verifylib
 
@@ -50,11 +51,18 @@ _OK_BAD_RE = re.compile(r"\b(OK|BAD)\b", re.IGNORECASE)
 
 
 def _run(cmd, cwd=None, timeout=120):
-    """subprocess.run wrapper -> (code, stdout, stderr); never raises."""
+    """procutil.run_capture wrapper -> (code, stdout, stderr); never raises.
+
+    Same routing as verify.py's _run, for the same reasons: run_capture puts
+    xcodebuild/simctl in their own process group, so a timeout kills the whole
+    tree (build-service daemons included) instead of orphaning it, and the
+    engine's SIGTERM drain (kill_live_groups) reaches an in-flight gate too.
+    Timeouts surface as exit 124, like verify."""
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                           timeout=timeout)
-        return p.returncode, p.stdout or "", p.stderr or ""
+        out, err, code = procutil.run_capture(cmd, cwd=cwd, timeout=timeout)
+        return code, out, err
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after %ss" % timeout
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, "", str(exc)
 
@@ -222,22 +230,29 @@ def capture_screens(udid, app_path, bid, shots_dir):
         _run(["xcrun", "simctl", "privacy", udid, "grant", svc, bid], timeout=30)
     time.sleep(1)   # let the TCC write settle before the first launch reads it
     shots = []
+    notes = []   # every dropped palette leaves a trace — see run_visual_qa
     for mode in ("light", "dark"):
         _run(["xcrun", "simctl", "ui", udid, "appearance", mode], timeout=30)
         code, _o, err = _run(["xcrun", "simctl", "launch",
                               "--terminate-running-process", udid, bid],
                              timeout=60)
         if code != 0:
-            return shots, "launch failed (%s): %s" % (mode, err.strip()[:160])
+            notes.append("launch failed (%s): %s" % (mode, err.strip()[:160]))
+            return shots, "; ".join(notes)
         time.sleep(4)   # let the first screen settle
         path = os.path.join(shots_dir, "main_%s.png" % mode)
         code, _o, err = _run(["xcrun", "simctl", "io", udid, "screenshot",
                               path], timeout=30)
         if code == 0 and os.path.exists(path):
             shots.append(path)
+        else:
+            # Don't drop the shot silently: with one palette missing the gate
+            # would grade light-only and the degradation would vanish.
+            notes.append("screenshot failed (%s): %s"
+                         % (mode, err.strip()[:160] or "no file written"))
     _run(["xcrun", "simctl", "ui", udid, "appearance", "light"], timeout=30)
     _run(["xcrun", "simctl", "terminate", udid, bid], timeout=30)
-    return shots, ""
+    return shots, "; ".join(notes)
 
 
 def parse_ok_bad(reply):
@@ -342,6 +357,24 @@ def grade(models, image_paths, design_spec, prompt_summary, timeout=240):
     }
 
 
+def _persist(app_dir, result):
+    """docs/visual_qa.json writer — EVERY gate exit goes through it, skips
+    included. A skip that left a previous pass's verdict in place let the GUI
+    and the eval harness read a stale PASS/FAIL as if it graded the CURRENT
+    build (the repair loop may have rewritten the UI since); a "SKIPPED"
+    record with the skip reason is honest. graded_at dates the evidence so
+    consumers can tell runs apart. Best-effort like every persist here."""
+    rec = dict(result)
+    rec["graded_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    try:
+        os.makedirs(os.path.join(app_dir, "docs"), exist_ok=True)
+        with open(os.path.join(app_dir, "docs", "visual_qa.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(rec, fh, indent=2)
+    except OSError:
+        pass
+
+
 def run_visual_qa(cfg, cget, emit, app, app_dir, state, prompt):
     """The gate. Returns a human reason string on FAIL (caller routes it into
     the iterate-repair loop), else None (pass or skip). cget/emit are injected
@@ -357,12 +390,16 @@ def run_visual_qa(cfg, cget, emit, app, app_dir, state, prompt):
     if not ollama_up():
         emit("Visual QA: Ollama server not running — skipping (start it to "
              "enable free local screenshot grading).")
+        _persist(app_dir, {"verdict": "SKIPPED",
+                           "reason": "Ollama server not running", "models": []})
         return None
     models = resolve_vision_models(cget(cfg, "runtime.visual_qa_model", ""),
                                    lmlib.installed_models_cached())
     if not models:
         emit("Visual QA: no vision model pulled (ollama pull %s) — skipping."
              % DEFAULT_VISION_MODEL)
+        _persist(app_dir, {"verdict": "SKIPPED",
+                           "reason": "no vision model pulled", "models": []})
         return None
     try:
         dd = os.path.join(app_dir, ".orchestrator_runtime", "visual_qa_dd")
@@ -370,18 +407,25 @@ def run_visual_qa(cfg, cget, emit, app, app_dir, state, prompt):
         app_path, note = build_for_simulator(build_dir, dd, timeout)
         if not app_path:
             emit("Visual QA: %s — skipping." % note)
+            _persist(app_dir, {"verdict": "SKIPPED", "reason": note,
+                               "models": models})
             return None
         bid = bundle_id(app_path)
         if not bid:
             emit("Visual QA: no CFBundleIdentifier in built app — skipping.")
+            _persist(app_dir, {"verdict": "SKIPPED",
+                               "reason": "no CFBundleIdentifier in built app",
+                               "models": models})
             return None
         udid, note = pick_simulator()
         if not udid:
             emit("Visual QA: %s — skipping." % note)
+            _persist(app_dir, {"verdict": "SKIPPED", "reason": note,
+                               "models": models})
             return None
         emit("Visual QA: %s; launching %s." % (note, bid))
         shots_dir = os.path.join(app_dir, "docs", "screenshots")
-        shots, note = capture_screens(udid, app_path, bid, shots_dir)
+        shots, capture_note = capture_screens(udid, app_path, bid, shots_dir)
         # Downstream gates (UI crawl) reuse this booted simulator + installed
         # app instead of building/installing again.
         tcxlib.TurnContext(cfg).sim_ctx = {
@@ -389,8 +433,17 @@ def run_visual_qa(cfg, cget, emit, app, app_dir, state, prompt):
         if not shots:
             # The app not even launching IS a finding — but it's the release
             # gate's job to catch broken builds; report and skip here.
-            emit("Visual QA: %s — skipping." % (note or "no screenshots"))
+            emit("Visual QA: %s — skipping." % (capture_note or "no screenshots"))
+            _persist(app_dir, {"verdict": "SKIPPED",
+                               "reason": capture_note or "no screenshots",
+                               "models": models})
             return None
+        if capture_note:
+            # Partial capture (a palette is missing). The contract is light
+            # AND dark; grading whatever survived without saying so would
+            # silently bless an app that can't show its dark side.
+            emit("Visual QA: PARTIAL capture — %s; grading the %d captured "
+                 "screenshot(s)." % (capture_note, len(shots)))
         design_spec = ""
         for k in ("design_handoff", "design", "design_discussion"):
             v = (state.get("phase_outputs") or {}).get(k)
@@ -407,18 +460,38 @@ def run_visual_qa(cfg, cget, emit, app, app_dir, state, prompt):
             "score": (verdict or {}).get("score"),
             "issues": (verdict or {}).get("issues", []),
             "inconclusive": (verdict or {}).get("inconclusive", []),
+            # "" when both palettes were captured; anything else means the
+            # panel graded a PARTIAL capture — persisted so the degradation
+            # survives into docs/visual_qa.json instead of vanishing.
+            "capture_note": capture_note,
         }
+        # A crash on the dark-mode relaunch is an app defect (the design
+        # rules demand both palettes), not a harness skip — a graded-OK
+        # light screen must not bless it. (A light-launch failure never gets
+        # here: it returns above with zero shots. A failed `simctl io
+        # screenshot` with a healthy launch stays a recorded-but-non-fatal
+        # harness note.) Overrides a PASS from grading in the persisted
+        # record too.
+        dark_crash = capture_note.startswith("launch failed")
+        if dark_crash:
+            result["verdict"] = "FAIL"
+            result["issues"] = list(result["issues"]) + [{
+                "screen": "main_dark", "severity": "high",
+                "note": capture_note}]
         for entry in (verdict or {}).get("inconclusive", []):
             emit("Visual QA: %s — %s (screen NOT failed; a partial panel "
                  "cannot fail a screen)." % (entry.get("screen", "?"),
                                              entry.get("note", "")))
-        try:
-            os.makedirs(os.path.join(app_dir, "docs"), exist_ok=True)
-            with open(os.path.join(app_dir, "docs", "visual_qa.json"), "w",
-                      encoding="utf-8") as fh:
-                json.dump(result, fh, indent=2)
-        except OSError:
-            pass
+        _persist(app_dir, result)
+        if dark_crash:
+            # Fail regardless of what the graders said about the light shot —
+            # and regardless of an unusable grader panel: the crash finding
+            # stands on its own.
+            reason = ("visual QA failed — app did not relaunch for the "
+                      "dark-mode screenshot (%s); both palettes are required"
+                      % capture_note)
+            emit("App '%s': VISUAL QA FAILED — %s" % (app, reason))
+            return reason
         if verdict is None:
             emit("Visual QA: grader reply unparseable — skipping.")
             return None

@@ -131,6 +131,44 @@ class TestWorkflowsSchema(unittest.TestCase):
                          "phases with no phase_rules entry: %s" % sorted(used - covered))
 
 
+class TestPhasePathSafety(unittest.TestCase):
+    """from_json is the path-safety chokepoint: key/folder/file feed
+    os.path.join(app_dir, folder, file) engine-wide, and workflow JSON is
+    GUI/hand-editable — a '../' or absolute value must never escape the
+    session dir (backfill.py guards its own join; every other consumer
+    relies on this normalization)."""
+
+    _BASE = {"key": "k", "purpose": "p"}
+
+    def test_traversal_folder_falls_back_to_key(self):
+        for bad in ("../../..", "/etc", "a/b", "..", "~x", " k "):
+            p = wf.Phase.from_json(dict(self._BASE, folder=bad))
+            self.assertEqual(p.folder, "k", "folder=%r must not survive" % bad)
+
+    def test_traversal_file_falls_back_to_key_md(self):
+        for bad in ("../escape.md", "/tmp/x.md", "a/b.md", ".."):
+            p = wf.Phase.from_json(dict(self._BASE, file=bad))
+            self.assertEqual(p.file, "k.md", "file=%r must not survive" % bad)
+
+    def test_unsafe_key_is_fatal(self):
+        # key is the fallback for folder/file, so a bad key can't be
+        # silently patched — the phase is rejected outright.
+        with self.assertRaises(ValueError):
+            wf.Phase.from_json({"key": "../evil", "purpose": "p"})
+
+    def test_dot_folder_still_allowed(self):
+        # "." is the in-place marker chat phases use (chat.md at the app
+        # root) — harmless in a join and must keep working.
+        p = wf.Phase.from_json(dict(self._BASE, folder="."))
+        self.assertEqual(p.folder, ".")
+
+    def test_ordinary_values_untouched(self):
+        p = wf.Phase.from_json({"key": "tech_specs", "folder": "specs",
+                                "file": "specs.md", "purpose": "p"})
+        self.assertEqual((p.key, p.folder, p.file),
+                         ("tech_specs", "specs", "specs.md"))
+
+
 class TestPhaseFieldCoercion(unittest.TestCase):
     """bool()/list() applied directly to a raw JSON value misparses the
     stringly-typed values agents (and hand-edited JSON) sometimes emit."""

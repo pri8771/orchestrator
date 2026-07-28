@@ -126,6 +126,64 @@ class TestShepherdFunctions(unittest.TestCase):
         proc = self._run('PARENTS=(Foo Bar); is_parent FooBaz; echo "rc=$?"')
         self.assertIn("rc=1", proc.stdout)
 
+    def test_effective_max_builds_prefers_queue_lanes_override(self):
+        with open(os.path.join(self.root, ".orch-queue-order.json"), "w") as fh:
+            json.dump({"lanes": 1}, fh)
+        proc = self._run("DEFAULT_MAX_BUILDS=7; effective_max_builds")
+        self.assertEqual(proc.stdout.strip(), "1")
+
+    def test_effective_max_builds_restores_default_after_queue_file_removed(self):
+        # A-81: the lanes override must not outlive the queue file. One bash
+        # process, two iterations' worth of recomputation — the override
+        # applies while the file exists, and the CONFIGURED default comes back
+        # once it is deleted (the old `[ -n "$_l" ] && MAX_BUILDS=$_l` kept
+        # the last override pinned for the process lifetime).
+        with open(os.path.join(self.root, ".orch-queue-order.json"), "w") as fh:
+            json.dump({"lanes": 1}, fh)
+        snippet = (
+            'DEFAULT_MAX_BUILDS=3\n'
+            'MAX_BUILDS=$(effective_max_builds); echo "with=$MAX_BUILDS"\n'
+            'rm -f "$ROOT/.orch-queue-order.json"\n'
+            'MAX_BUILDS=$(effective_max_builds); echo "without=$MAX_BUILDS"\n'
+        )
+        proc = self._run(snippet)
+        self.assertIn("with=1", proc.stdout)
+        self.assertIn("without=3", proc.stdout)
+
+    def test_effective_max_builds_ignores_invalid_lanes(self):
+        # Non-positive / non-int lanes are queue_lanes noise, not an override.
+        with open(os.path.join(self.root, ".orch-queue-order.json"), "w") as fh:
+            json.dump({"lanes": "two"}, fh)
+        proc = self._run("DEFAULT_MAX_BUILDS=4; effective_max_builds")
+        self.assertEqual(proc.stdout.strip(), "4")
+
+
+@unittest.skipUnless(_has_git_and_bash(), "requires bash")
+class TestShepherdCheckLanesHook(unittest.TestCase):
+    """A-81 through the REAL script (`bash shepherd.sh --check-lanes`, same
+    family as --check-lock): the reported lane budget must track the queue
+    file's presence, not stick at the last override."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="shep_lanes_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _check_lanes(self):
+        env = dict(os.environ)
+        env["ORCH_ROOT"] = self.root
+        env["ORCH_MAX_BUILDS"] = "5"
+        return subprocess.run(["bash", SHEPHERD_SH, "--check-lanes"],
+                              cwd=REPO_ROOT, capture_output=True, text=True,
+                              timeout=30, env=env).stdout.strip()
+
+    def test_reports_override_while_file_exists_then_configured_default(self):
+        qf = os.path.join(self.root, ".orch-queue-order.json")
+        with open(qf, "w") as fh:
+            json.dump({"lanes": 2}, fh)
+        self.assertEqual(self._check_lanes(), "2")
+        os.remove(qf)
+        self.assertEqual(self._check_lanes(), "5")
+
 
 @unittest.skipUnless(shutil.which("python3"), "requires python3")
 class TestShepherdAutoRepairHeredoc(unittest.TestCase):

@@ -140,10 +140,6 @@ class TestExternalGate(unittest.TestCase):
         self.assertNotIn("denies external", res[1])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestLibraryMiningBothGates(unittest.TestCase):
     """Review regression: the library_mining scaffold WRITES and the build
     EXECS — a {writes:none, exec:true} section must NOT scaffold (the write
@@ -201,46 +197,16 @@ class TestLibraryMiningBothGates(unittest.TestCase):
     def test_flat_legacy_allows_scaffold(self):
         self.assertTrue(self._run_hook(None))
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestLibraryMiningBothGates(unittest.TestCase):
-    """Review regression: the library_mining scaffold WRITES and the build
-    EXECS — a section must have BOTH capabilities, not just exec."""
-
-    def setUp(self):
-        self.root = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
-
-    def _caps(self, writes, exc):
-        return {"writes": writes, "exec": exc, "external": False}
-
-    def test_writes_none_exec_true_denies_writes(self):
-        cfg = _cfg(self.root, os.path.join(self.root, "p", "ideas", "c"))
-        os.makedirs(cfg["_app_dir"])
-        # {writes:none, exec:true}: exec allowed, writes denied -> the
-        # scaffold (a write) must be blocked even though exec is allowed.
+    def test_writes_none_exec_true_denies_writes_helper_level(self):
+        # Helper-level view of the same gate: exec allowed, writes denied.
+        cfg = _cfg(self.root, self.app_dir)
         import unittest.mock
-        with unittest.mock.patch.object(orch, "_section_capabilities",
-                                        lambda c: self._caps("none", True)):
+        with unittest.mock.patch.object(
+                orch, "_section_capabilities",
+                lambda c: {"writes": "none", "exec": True, "external": False}):
             self.assertFalse(orch._section_writes_allowed(cfg))
             self.assertTrue(orch._section_exec_allowed(cfg))
 
-    def test_writes_workspace_exec_true_allows_both(self):
-        cfg = _cfg(self.root, os.path.join(self.root, "p", "ideas", "c"))
-        os.makedirs(cfg["_app_dir"])
-        import unittest.mock
-        with unittest.mock.patch.object(orch, "_section_capabilities",
-                                        lambda c: self._caps("workspace", True)):
-            self.assertTrue(orch._section_writes_allowed(cfg))
-            self.assertTrue(orch._section_exec_allowed(cfg))
 
-    def test_flat_legacy_allows_both(self):
-        cfg = _cfg(self.root, os.path.join(self.root, "flat"))
-        os.makedirs(cfg["_app_dir"])
-        self.assertTrue(orch._section_writes_allowed(cfg))
-        self.assertTrue(orch._section_exec_allowed(cfg))
+if __name__ == "__main__":
+    unittest.main()

@@ -342,7 +342,7 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         ip, err = _resolve_safe_ip(hostname)
         if err:
             raise urllib.error.URLError("blocked host: %s" % err)
-        return self.do_open(_pinned_conn_factory(http.client.HTTPConnection, ip), req)
+        return self.do_open(_pinned_conn_factory(_PinnedHTTPConnection, ip), req)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -353,7 +353,7 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         ip, err = _resolve_safe_ip(hostname)
         if err:
             raise urllib.error.URLError("blocked host: %s" % err)
-        return self.do_open(_pinned_conn_factory(http.client.HTTPSConnection, ip),
+        return self.do_open(_pinned_conn_factory(_PinnedHTTPSConnection, ip),
                             req, context=self._context)
 
 

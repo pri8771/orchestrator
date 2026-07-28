@@ -342,6 +342,27 @@ class TestTerminationWiring(_Base):
         self.assertEqual(set(report["payload"]["checks"]),
                          {"doc_gap_empty", "dod_tier", "eval_threshold"})
 
+    def test_large_open_gaps_capped_on_event_line_but_full_in_ledger(self):
+        # A converged report's open_gaps has NO cap (the durable report and
+        # ledger stay 'honest about remaining work') — but the events.jsonl
+        # line must not carry all of it past emit_event's PIPE_BUF cap.
+        # Mirrors _check_gap_empty's ids[:20], adding open_gap_count.
+        sid = "proj/documentation/chat-1"
+        self._app(sid)
+        state = cond.default_state()
+        evidence = {"idle_cycles": 5,
+                    "open_gaps": ["gap-%03d" % i for i in range(30)]}
+        cond._record_termination(self.root, state, sid,
+                                 "converged_open_items", evidence, emit=_quiet)
+        notices = evlib.read_events(os.path.join(self.root, sid),
+                                    kinds=("converged",))
+        self.assertEqual(1, len(notices))
+        self.assertEqual(20, len(notices[0]["evidence"]["open_gaps"]))
+        self.assertEqual(30, notices[0]["evidence"]["open_gap_count"])
+        led = [r for r in cond.read_ledger(self.root)
+               if r and r.get("decision") == "converged_open_items"]
+        self.assertEqual(30, len(led[0]["detail"]["evidence"]["open_gaps"]))
+
     def test_self_reported_done_does_not_terminate(self):
         # §23: a session CLAIMING done (agent_state) with the goal NOT actually
         # met (missing adherence grade) must NOT be terminated.
@@ -761,6 +782,61 @@ class TestBudgetStallWiring(_Base):
         run([])                        # quota reset (a new day / freed budget)
         self.assertEqual(len(minted), 1)   # the SAME route now fires
 
+    def test_route_deferred_ledgered_once_per_quota_day(self):
+        # A deferral re-evaluates EVERY poll (1s wake tick) while quota
+        # holds — but it is ONE decision, so the append-only ledger must
+        # not grow a duplicate route_deferred line per poll. A new quota
+        # day re-ledgers honestly.
+        import conductor_routing as crlib
+        import artifacts as artlib
+        research = self._app("proj/research/chat-1")
+        with open(os.path.join(research, "costs.jsonl"), "w") as fh:
+            fh.write(json.dumps({"provider": "google",
+                                 "ts": "2026-07-20 09:00:00"}) + "\n")
+        os.makedirs(os.path.join(self.root, "proj/ideas/chat-1"),
+                    exist_ok=True)
+        meta = {"id": "a1", "artifact_type": "idea", "content_hash": "h1",
+               "lineage": [], "hop_count": 0, "status": "final"}
+        state = cond.default_state()
+        state["over_quota"] = ["google"]
+
+        def cfg_for(_sd, section, *_a, **_k):
+            return crlib.RouteConfig(routes={"idea": "research"}) \
+                if section == "ideas" else crlib.RouteConfig()
+
+        def arts(app_dir, *a, **k):
+            return [meta] if app_dir.endswith("ideas/chat-1") else []
+
+        def run():
+            with unittest.mock.patch.object(crlib, "load_route_config",
+                                            cfg_for), \
+                    unittest.mock.patch.object(artlib, "list_artifacts",
+                                               arts), \
+                    unittest.mock.patch.object(artlib, "is_admissible",
+                                               lambda *a, **k: True), \
+                    unittest.mock.patch.object(artlib, "lineage_index",
+                                               lambda *a, **k: {}), \
+                    unittest.mock.patch("sessions.mint_delegation_session",
+                                        lambda *a, **k: "x"):
+                cond.route_engine(
+                    self.root, state,
+                    ["proj/ideas/chat-1", "proj/research/chat-1"],
+                    emit=_quiet)
+
+        run()
+        run()   # a second poll, same quota day: no duplicate line
+        deferred = [r for r in cond.read_ledger(self.root)
+                    if r and r.get("decision") == "route_deferred"]
+        self.assertEqual(len(deferred), 1)
+        # The dedupe map is pruned at engine start, so a NEW quota day (the
+        # documented reset) ledgers the still-deferred route again.
+        state["deferred_ledgered"] = {
+            k: "2020-01-01" for k in state["deferred_ledgered"]}
+        run()
+        deferred = [r for r in cond.read_ledger(self.root)
+                    if r and r.get("decision") == "route_deferred"]
+        self.assertEqual(len(deferred), 2)
+
     def test_drain_pending_defers_approved_route_over_quota(self):
         import conductor_permissions as cplib
         research = self._app("proj/research/chat-1")
@@ -790,6 +866,36 @@ class TestBudgetStallWiring(_Base):
         self.assertEqual(minted, [])           # deferred, not executed
         self.assertTrue(cplib.is_pending(self.root, "r1"))  # still queued
 
+    def test_drain_pending_deferral_ledgered_once_per_quota_day(self):
+        # The approved-but-deferred action stays pending across polls by
+        # design — its route_deferred line must still be deduped like the
+        # fresh-route path, or it spams the ledger every poll.
+        import conductor_permissions as cplib
+        research = self._app("proj/research/chat-1")
+        with open(os.path.join(research, "costs.jsonl"), "w") as fh:
+            fh.write(json.dumps({"provider": "google",
+                                 "ts": "2026-07-20 09:00:00"}) + "\n")
+        action = {"action_id": "r1", "target": "research",
+                 "payload": {"artifact_id": "a1", "content_hash": "h1",
+                            "source_section": "ideas", "rule_id": "route:idea"},
+                 "requested_by": "proj/ideas/chat-1"}
+        cplib.enqueue_pending(self.root, action)
+        adir = cplib.approvals_dir(self.root)
+        os.makedirs(adir, exist_ok=True)
+        open(os.path.join(adir, "r1.ok"), "w").close()
+        state = cond.default_state()
+        state["over_quota"] = ["google"]
+        with unittest.mock.patch("sessions.mint_delegation_session",
+                                 lambda *a, **k: "x"):
+            cond.route_engine(self.root, state, ["proj/research/chat-1"],
+                              emit=_quiet)
+            cond.route_engine(self.root, state, ["proj/research/chat-1"],
+                              emit=_quiet)
+        deferred = [r for r in cond.read_ledger(self.root)
+                    if r and r.get("decision") == "route_deferred"]
+        self.assertEqual(len(deferred), 1)     # one decision, one line
+        self.assertTrue(cplib.is_pending(self.root, "r1"))  # still queued
+
     def test_budget_halt_survives_restart_via_reconcile(self):
         cond.ledger_append(self.root, {
             "decision": "budget_exhausted", "session": None, "ts": 5.0,
@@ -798,6 +904,142 @@ class TestBudgetStallWiring(_Base):
                                         emit=_quiet)
         self.assertIsNotNone(state["halted"])
         self.assertEqual(state["halted"]["reason"], "spend_exhausted")
+
+
+class TestBudgetHaltLift(_Base):
+    """A workspace halt must be liftable exactly as documented ("until the
+    cap is lifted — a new manifest / a new day"), and guard_route's per-route
+    budget_exhausted lines (which carry a route_id) must never replay as a
+    whole-workspace halt."""
+
+    def test_per_route_budget_line_does_not_halt_on_reconcile(self):
+        cond.ledger_append(self.root, {
+            "decision": "budget_exhausted", "session": "proj/research/chat-1",
+            "route_id": "abc123", "ts": 5.0,
+            "detail": {"reason": "hop budget exhausted"}})
+        state = cond.reconcile_on_start(self.root, cond.default_state(),
+                                        emit=_quiet)
+        self.assertIsNone(state["halted"])
+
+    def test_halt_lifts_when_caps_raised(self):
+        state = cond.default_state()
+        state["halted"] = {"reason": "turns_exhausted", "ts": 1.0}
+        cond.evaluate_terminations(self.root, state, [],
+                                   {"budgets": {"turns": 999999}}, emit=_quiet)
+        self.assertIsNone(state["halted"])
+        decisions = [r.get("decision")
+                     for r in cond.read_ledger(self.root) if r]
+        self.assertIn("budget_lifted", decisions)
+
+    def test_halt_lifts_when_budgets_removed(self):
+        state = cond.default_state()
+        state["halted"] = {"reason": "turns_exhausted", "ts": 1.0}
+        cond.evaluate_terminations(self.root, state, [], {"goal": "x"},
+                                   emit=_quiet)
+        self.assertIsNone(state["halted"])
+
+    def test_halt_stays_while_still_exhausted(self):
+        state = cond.default_state()
+        state["halted"] = {"reason": "turns_exhausted", "ts": 1.0}
+        cond.ledger_append(self.root, {"decision": "route_approved",
+                                       "ts": 1.0})
+        cond.evaluate_terminations(self.root, state, [],
+                                   {"budgets": {"turns": 1}}, emit=_quiet)
+        self.assertIsNotNone(state["halted"])
+
+    def test_removing_budgets_clears_stale_over_quota(self):
+        state = cond.default_state()
+        state["over_quota"] = ["google"]
+        cond.evaluate_terminations(self.root, state, [], {"goal": "x"},
+                                   emit=_quiet)
+        self.assertEqual(state["over_quota"], [])
+
+    def test_empty_manifest_poll_clears_stale_over_quota(self):
+        # goal_manifest.json deleted -> SAFE_DEFAULT enables no layer, so
+        # evaluate_terminations never runs — full_poll itself must clear the
+        # stash or the provider's routes defer forever.
+        state = cond.default_state()
+        state["over_quota"] = ["google"]
+        out = cond.full_poll(self.root, state, emit=_quiet)
+        self.assertEqual(out["over_quota"], [])
+
+    def test_lift_survives_restart_via_reconcile(self):
+        cond.ledger_append(self.root, {
+            "decision": "budget_exhausted", "session": None, "ts": 5.0,
+            "detail": {"reason": "spend_exhausted"}})
+        cond.ledger_append(self.root, {
+            "decision": "budget_lifted", "session": None, "ts": 6.0,
+            "detail": {"reason": "spend_exhausted"}})
+        state = cond.reconcile_on_start(self.root, cond.default_state(),
+                                        emit=_quiet)
+        self.assertIsNone(state["halted"])
+
+
+class TestApprovedRoutePrivacy(_Base):
+    """V3 8.5 parity: an APPROVED mint must honor the source artifact's
+    privacy stamp exactly like the direct-mint path — approval gates
+    oversight, it does not waive privacy."""
+
+    def _queue_approved(self, sensitivity):
+        import conductor_permissions as cplib
+        payload = {"artifact_id": "a1", "content_hash": "h1",
+                   "source_section": "ideas", "rule_id": "route:idea",
+                   "strategy": "move", "sensitivity": sensitivity}
+        cplib.enqueue_pending(self.root, {
+            "action_id": "r1", "route_id": "r1", "target": "research",
+            "payload": payload, "requested_by": "proj/ideas/chat-1"})
+        adir = cplib.approvals_dir(self.root)
+        os.makedirs(adir, exist_ok=True)
+        open(os.path.join(adir, "r1.ok"), "w").close()
+
+    def _drain(self, persist_result):
+        import orchestrator as orchlib
+        import sessions as seslib_local
+        self._app("proj/ideas/chat-1")
+        stamped = []
+        sdir = os.path.join(self.root, "proj/research/delegation-1")
+        with unittest.mock.patch.object(
+                seslib_local, "mint_delegation_session",
+                lambda *a, **k: sdir), \
+                unittest.mock.patch.object(
+                    orchlib, "persist_private_session",
+                    lambda d: stamped.append(d) or persist_result):
+            state = cond.route_engine(self.root, cond.default_state(),
+                                      ["proj/ideas/chat-1"], emit=_quiet)
+        return stamped, state
+
+    def test_approved_private_route_stamps_the_child(self):
+        self._queue_approved("private")
+        stamped, state = self._drain(True)
+        self.assertEqual(stamped, [os.path.join(
+            self.root, "proj/research/delegation-1")])
+        self.assertTrue(state["routed"].get("r1"))
+
+    def test_approved_normal_route_never_stamps(self):
+        self._queue_approved("normal")
+        stamped, _state = self._drain(True)
+        self.assertEqual(stamped, [])
+
+    def test_stamp_failure_refuses_the_route(self):
+        self._queue_approved("private")
+        stamped, state = self._drain(False)
+        self.assertEqual(len(stamped), 1)
+        # mint_failed semantics: NOT marked routed, retried on a later poll.
+        self.assertNotIn("r1", state["routed"])
+
+    def test_pending_action_carries_sensitivity(self):
+        import conductor_permissions as cplib
+        import conductor_routing as crlib
+        intent = crlib.RouteIntent(
+            artifact_id="a9", content_hash="h9", source_section="ideas",
+            target="research", strategy="move", rule_id="route:idea",
+            verdict=crlib.ALLOW)
+        action = cplib.pending_action(intent, "proj/ideas/chat-1",
+                                      sensitivity="private")
+        self.assertEqual(action["payload"]["sensitivity"], "private")
+        # Default stays "normal" so old callers/records keep today's meaning.
+        action = cplib.pending_action(intent, "proj/ideas/chat-1")
+        self.assertEqual(action["payload"]["sensitivity"], "normal")
 
 
 if __name__ == "__main__":

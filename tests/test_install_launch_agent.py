@@ -59,6 +59,10 @@ class TestInstallUninstallWithShims(unittest.TestCase):
         os.makedirs(self.bin)
         self._shim("uname", 'echo "Darwin"')
         self._shim("launchctl", "exit 0")
+        # plutil is macOS-only too; shim it so the script's -lint validation
+        # step runs hermetically on Linux (a real-plutil test below is
+        # darwin-gated).
+        self._shim("plutil", "exit 0")
 
     def _shim(self, name, body):
         path = os.path.join(self.bin, name)
@@ -109,6 +113,54 @@ class TestInstallUninstallWithShims(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("Uninstalled %s" % LABEL, proc.stdout)
         self.assertFalse(os.path.exists(self._plist_path()))
+
+    def test_xml_metacharacters_in_paths_and_label_are_escaped(self):
+        # A-62: '&' / '<' / '>' in an interpolated path or label used to land
+        # verbatim inside the plist's <string> elements — malformed XML that
+        # launchctl rejects. They must come out entity-escaped.
+        root = os.path.join(self.home, "Apps & Tools", "factory<root>")
+        label = "com.orch.a&b"
+        proc = self._run(extra_env={"ORCH_ROOT": root,
+                                    "ORCH_LAUNCH_LABEL": label})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        plist_path = os.path.join(self.home, "Library", "LaunchAgents",
+                                  "%s.plist" % label)
+        with open(plist_path, encoding="utf-8") as fh:
+            plist = fh.read()
+        self.assertIn("Apps &amp; Tools", plist)
+        self.assertIn("factory&lt;root&gt;", plist)
+        self.assertIn("<string>com.orch.a&amp;b</string>", plist)
+        self.assertNotIn("Apps & Tools", plist)
+
+    def test_launchctl_load_failure_is_fatal_and_reported(self):
+        # A-62: launchctl's exit status used to be swallowed — the script
+        # printed 'Installed and loaded' even when the load failed.
+        self._shim("launchctl", "exit 1")
+        proc = self._run()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("launchctl load failed", proc.stderr)
+        self.assertNotIn("Installed and loaded", proc.stdout)
+
+    def test_plutil_lint_failure_is_fatal_and_skips_launchctl_load(self):
+        # An invalid plist must stop the install BEFORE launchd sees it.
+        self._shim("plutil", "exit 1")
+        marker = os.path.join(self.home, "launchctl.calls")
+        self._shim("launchctl", 'echo "$@" >> "%s"; exit 0' % marker)
+        proc = self._run()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("plutil -lint", proc.stderr)
+        self.assertNotIn("Installed and loaded", proc.stdout)
+        self.assertFalse(os.path.exists(marker))
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires real plutil")
+    def test_escaped_plist_passes_real_plutil_lint(self):
+        # End-to-end on macOS: delegate the shim to the REAL plutil so the
+        # escaped plist is genuinely parsed. Before the A-62 fix, a root
+        # containing '&' failed this lint.
+        self._shim("plutil", 'exec /usr/bin/plutil "$@"')
+        root = os.path.join(self.home, "Apps & Tools", "factory<root>")
+        proc = self._run(extra_env={"ORCH_ROOT": root})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

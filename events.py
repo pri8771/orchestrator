@@ -217,14 +217,27 @@ def emit_event(app_dir, kind, **fields):
         # POSIX guarantees an append() write is atomic only up to PIPE_BUF
         # (>=512; 4096 on Linux). A longer line can interleave with a concurrent
         # writer's line and corrupt events.jsonl. Per-field caps aren't enough
-        # when there are many fields, so shrink the largest string field until
-        # the whole line fits — keeping it valid JSON.
+        # when there are many fields, so trim the BULKIEST field until the
+        # whole line fits — keeping it valid JSON. Strings are halved; a
+        # nested dict/list (which used to hit "non-string bloat" and defeat
+        # the cap outright — conductor termination/budget evidence payloads)
+        # is flattened to its truncated JSON text, which later passes can
+        # keep halving. Bulkiest-first also keeps small identifying fields
+        # (ts/kind/session) intact until nothing bigger is left to trim.
         while len(line.encode("utf-8", "replace")) > _MAX_EVENT_LINE_BYTES:
-            longest = max((k for k, v in evt.items() if isinstance(v, str)),
-                          key=lambda k: len(evt[k]), default=None)
-            if longest is None or len(evt[longest]) <= 16:
-                break  # non-string bloat we can't trim — accept best-effort
-            evt[longest] = evt[longest][:len(evt[longest]) // 2] + "…"
+            sizes = {k: len(v) if isinstance(v, str)
+                     else len(json.dumps(v, default=str))
+                     for k, v in evt.items() if isinstance(v, (str, dict, list))}
+            bulkiest = max(sizes, key=lambda k: sizes[k], default=None)
+            if bulkiest is None or sizes[bulkiest] <= 16:
+                break  # nothing trimmable left — accept best-effort
+            value = evt[bulkiest]
+            if isinstance(value, str):
+                evt[bulkiest] = value[:len(value) // 2] + "…"
+            else:
+                flat = json.dumps(value, default=str)
+                evt[bulkiest] = flat[:_MAX_FIELD_CHARS] + "…" \
+                    if len(flat) > _MAX_FIELD_CHARS else flat
             line = json.dumps(evt, default=str)
         with open(events_path(app_dir), "a", encoding="utf-8") as fh:
             fh.write(line + "\n")

@@ -2,6 +2,21 @@ import Foundation
 import Darwin
 import Combine
 
+// README's no-cost promise: engine/CLI child processes must never see
+// pay-as-you-go credentials or base-URL overrides — every call counts
+// against the logged-in CLIs. ONE canonical list for every GUI launch
+// site, kept in lockstep with run.sh's `unset` block (step 2); three
+// drifting copies previously left the enrollment launch holding
+// GOOGLE_APPLICATION_CREDENTIALS (Vertex billing) and custom base URLs.
+enum APIKeyEnv {
+    static let strippedAPIKeyVars = [
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+        "GOOGLE_API_KEY", "OPENAI_API_BASE", "OPENAI_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+        "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_GENAI_API_KEY",
+    ]
+}
+
 @MainActor
 final class RunController: ObservableObject {
     struct Hooks {
@@ -54,9 +69,7 @@ final class RunController: ObservableObject {
         process.currentDirectoryURL = rootURL
         process.arguments = [script.path] + arguments
         var environment = ProcessInfo.processInfo.environment
-        for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-                    "GOOGLE_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-                    "OPENAI_BASE_URL", "GOOGLE_APPLICATION_CREDENTIALS"] {
+        for key in APIKeyEnv.strippedAPIKeyVars {
             environment.removeValue(forKey: key)
         }
         process.environment = environment

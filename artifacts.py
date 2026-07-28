@@ -1430,15 +1430,17 @@ _ROUTE_TRUNC_MARKER = "\n[...routed artifact body truncated to fit context budge
 
 def is_admissible(project_dir, meta, on_error=None, *, index=None):
     """THE shared admission predicate for routing (4.5 route_push, later
-    4.7 retrieval + 7.2 guards). Today 'admissible' means the live,
-    routable tip of a RESOLVED lineage:
+    4.7 retrieval + 7.2 guards). 'Admissible' means the live, routable
+    tip of a RESOLVED lineage:
       * is_routable(meta)                — not a converged tombstone (4.3)
-      * status == 'published'            — not draft, not superseded
+      * status == 'final'                — the finalization policies' (4.8)
+                                           terminal state; not draft/
+                                           pending_review/superseded
       * not is_stale(...)                — no authoritative successor
       * latest_final(root) IS this id    — lineage not branched/dangling
-    Refusals are reported via on_error. 4.8 will tighten THIS body to a
-    policy-driven status=='final' check without touching route_push or its
-    callers — the one admission seam."""
+    Refusals are reported via on_error. This body IS the policy-driven
+    status check 4.8 promised ('published' is RETIRED — see STATUS), kept
+    behind route_push and its callers as the one admission seam."""
     if on_error is None:
         on_error = lambda _m: None
     if not isinstance(meta, dict):
@@ -1998,7 +2000,7 @@ def retrieve(project_dir, query_text, max_chars=6000, top_k=3,
     '' when nothing is relevant.
 
     Only the LIVE, admissible tip of each lineage participates
-    (is_admissible: published, not stale, not converged, the resolved
+    (is_admissible: status 'final', not stale, not converged, the resolved
     latest); a branched/unreconciled lineage contributes NOTHING and its
     skip is reported once via on_error — retrieval never guesses a branch.
     The current session's own publications are omitted (self-echo, keyed on

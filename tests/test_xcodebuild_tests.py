@@ -1,6 +1,7 @@
 """Real `xcodebuild test` execution (item 2): build-then-test ordering,
 graceful degradation when no test target is discoverable, and the additive
 tests_ran/tests_ok fields in persisted verify results."""
+import json
 import os
 import tempfile
 import unittest
@@ -66,8 +67,25 @@ class TestVerifyXcodeRunTests(unittest.TestCase):
             calls.append(cmd)
             if "-list" in cmd:
                 return (0, list_output, "") if list_output is not None else (1, "", "boom")
+            if cmd[:3] == ["xcrun", "simctl", "list"]:
+                # _concrete_sim_destination()'s device query: hand it a booted
+                # iPhone so the test action gets a concrete destination.
+                return (0, json.dumps({"devices": {
+                    "com.apple.CoreSimulator.SimRuntime.iOS-18-0": [
+                        {"udid": "TEST-UDID-1234", "state": "Booted",
+                         "name": "iPhone 15", "isAvailable": True}]}}), "")
             if cmd[-1] == "test":
-                return (test_result, "test output" if test_result == 0 else "", "" if test_result == 0 else "XCTAssertEqual failed")
+                # Both outcomes must carry the positive evidence
+                # _tests_actually_executed() requires (a Test Suite banner /
+                # Executed tally) — a bare failure string now reads as a
+                # harness refusal, not a failing test run.
+                if test_result == 0:
+                    return (0, "Test Suite 'DemoTests' passed.\n"
+                               "Executed 3 tests, with 0 failures", "")
+                return (test_result,
+                        "Test Suite 'DemoTests' failed.\n"
+                        "Executed 3 tests, with 1 failure",
+                        "XCTAssertEqual failed")
             if cmd[-1] == "build":
                 return (build_result, "build output" if build_result == 0 else "", "" if build_result == 0 else "error: cannot find X")
             raise AssertionError("unexpected command: %r" % (cmd,))
@@ -100,6 +118,10 @@ class TestVerifyXcodeRunTests(unittest.TestCase):
         # build must run before test.
         actions = [c[-1] for c in calls if c[-1] in ("build", "test")]
         self.assertEqual(actions, ["build", "test"])
+        # The test action must target the CONCRETE simulator resolved from
+        # simctl, never the generic build destination (xcodebuild rejects it).
+        test_cmd = next(c for c in calls if c[-1] == "test")
+        self.assertIn("platform=iOS Simulator,id=TEST-UDID-1234", test_cmd)
 
     def test_failing_test_run_is_recorded_but_ok_reflects_build_only(self):
         with tempfile.TemporaryDirectory() as d:

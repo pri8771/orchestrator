@@ -23,8 +23,10 @@ SECTION_FILENAME = "section.json"
 DEFAULT_POLICY_FILENAME = "target_policy.json"
 SEED_POLICY_FILENAME = "target_policy.seed.json"
 
-_CACHE = {}
-_WARNED = set()
+# (path, target) -> ((mtime_ns, size), policy dict | Exception)
+_CACHE: "dict[tuple, tuple]" = {}
+# (path, (mtime_ns, size)) keys for fallback warnings already emitted
+_WARNED: "set[tuple]" = set()
 
 
 def _read_json(path):
@@ -75,6 +77,21 @@ def _validate_policy(data, target):
             stack.get("banned"), list) or not isinstance(
                 stack.get("notes"), str):
         raise ValueError("targets.%s.tech_stack has an invalid shape" % target)
+    # Entry SHAPES matter too: designlint.render_tech_stack does e["name"] and
+    # " — " + e["for"]/e["why"] unconditionally, so a bare-string entry (a
+    # natural hand-edit shorthand) or a non-str for/why would pass the list
+    # checks above, be cached VALID here, and then crash every app-workflow
+    # run at startup.  Reject them so the seed fallback engages instead.
+    for key in ("allowed", "banned"):
+        for entry in stack[key]:
+            if not isinstance(entry, dict) or \
+                    not str(entry.get("name", "")).strip() or any(
+                        f in entry and not isinstance(entry[f], str)
+                        for f in ("for", "why", "url_contains")):
+                raise ValueError(
+                    "targets.%s.tech_stack.%s entries must be objects with a "
+                    "non-empty name (for/why/url_contains strings when present)"
+                    % (target, key))
     for tier in ("prototype", "mvp", "v1", "production_draft"):
         items = policy["dod"].get(tier)
         if not isinstance(tier, str) or not isinstance(items, list) or not all(

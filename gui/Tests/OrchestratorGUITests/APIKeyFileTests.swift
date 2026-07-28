@@ -13,6 +13,42 @@ final class APIKeyFileTests: XCTestCase {
         return url
     }
 
+    // A-57 regression: the GUI's canonical strip list must stay in lockstep
+    // with run.sh's `unset` block — three drifting copies previously left the
+    // enrollment launch holding GOOGLE_APPLICATION_CREDENTIALS (Vertex
+    // billing) and base-URL overrides, breaking the README's no-cost promise.
+    func testStrippedAPIKeyVarsMatchRunShUnsetBlock() throws {
+        XCTAssertEqual(Set(APIKeyEnv.strippedAPIKeyVars).count,
+                       APIKeyEnv.strippedAPIKeyVars.count,
+                       "duplicate entries in the canonical list")
+        // Tests/OrchestratorGUITests/… → repo root/run.sh
+        let runSh = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // OrchestratorGUITests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // gui
+            .deletingLastPathComponent()   // repo root
+            .appendingPathComponent("run.sh")
+        guard let text = try? String(contentsOf: runSh, encoding: .utf8) else {
+            throw XCTSkip("run.sh not found (built outside the repo checkout)")
+        }
+        // Join the `unset … \` continuation block, then keep the
+        // SHOUTING_CASE tokens (drops `unset`, `2>/dev/null`, `|| true`).
+        let lines = text.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.hasPrefix("unset ") })
+        else { return XCTFail("run.sh has no unset block") }
+        var joined = ""
+        for line in lines[start...] {
+            joined += " " + line.replacingOccurrences(of: "\\", with: " ")
+            if !line.hasSuffix("\\") { break }
+        }
+        let shellVars = Set(joined.split(separator: " ").map(String.init)
+            .filter { $0.range(of: "^[A-Z][A-Z0-9_]+$",
+                               options: .regularExpression) != nil })
+        XCTAssertEqual(shellVars, Set(APIKeyEnv.strippedAPIKeyVars),
+                       "run.sh's unset block and APIKeyEnv.strippedAPIKeyVars "
+                       + "must strip the same set")
+    }
+
     func testSaveWritesUnderDotOrchestratorMatchingTheEnginePath() throws {
         let base = try tempBase()
         XCTAssertTrue(APIKeyFile.save("gemini_api_key", key: "AIza-fake-test-key", base: base))

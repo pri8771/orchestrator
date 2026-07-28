@@ -67,6 +67,43 @@ def _git_root(path):
     return os.path.realpath(proc.stdout.strip())
 
 
+def _origin_has_uncommitted_changes(origin):
+    """Best-effort: does the git origin's working tree diverge from HEAD?
+
+    --no-optional-locks is load-bearing: a plain ``git status``
+    opportunistically refreshes .git/index — a WRITE into the origin this
+    module promises never to make. Returns True/False, or None when git
+    cannot answer (unknown — warn-only, never a refusal).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "--no-optional-locks", "-C", origin,
+             "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return bool(proc.stdout.strip())
+
+
+def _head_divergence_warnings(origin):
+    """Warnings (possibly empty) that a git promotion clones committed HEAD
+    while intake and the compliance audit read the WORKING TREE — enrolling
+    WIP is legitimate, so divergence warns, never refuses."""
+    dirty = _origin_has_uncommitted_changes(origin)
+    if dirty is None:
+        return ["cannot tell whether the origin working tree is clean; "
+                "promotion clones committed HEAD only, which may differ "
+                "from the tree the enrollment audit observed"]
+    if dirty:
+        return ["origin has uncommitted or untracked changes; promotion "
+                "clones committed HEAD only, so app_build will NOT include "
+                "them — commit in the origin first if the audited working "
+                "tree is what should be promoted"]
+    return []
+
+
 def _top_level_inventory(source):
     items = []
     try:
@@ -289,6 +326,8 @@ def scaffold(workspace, source, name=None):
     warnings = []
     if not facts["is_git_root"]:
         warnings.append("target is not a Git repository root; promotion will snapshot-copy it")
+    else:
+        warnings.extend(_head_divergence_warnings(origin))
     return {"slug": slug, "app_dir": app_dir, "facts": facts, "warnings": warnings}
 
 
@@ -327,7 +366,9 @@ def prepare_writable_clone(app_dir, source, slug):
 
     The clone/copy is built under a private sibling and renamed into place
     only after Git initialization and branch creation succeed.  A failed
-    promotion therefore leaves no runnable partial build tree.
+    promotion therefore leaves no runnable partial build tree.  The result's
+    "warnings" list carries the HEAD-vs-working-tree divergence note for
+    dirty git origins (the audit read the tree; the clone gets HEAD).
     """
     project = os.path.realpath(os.path.expanduser(str(app_dir or "")))
     origin = os.path.realpath(os.path.expanduser(str(source or "")))
@@ -339,6 +380,11 @@ def prepare_writable_clone(app_dir, source, slug):
         raise EnrollError("enrolled origin and project must remain disjoint")
     if not valid_slug(slug):
         raise EnrollError("invalid enrollment slug %r" % slug)
+    # A git promotion clones committed HEAD, while intake and the compliance
+    # audit read the WORKING TREE — surface any divergence (returned as
+    # "warnings") instead of silently promoting bytes nobody audited.
+    is_git_origin = _git_root(origin) == origin
+    warnings = _head_divergence_warnings(origin) if is_git_origin else []
     destination = os.path.join(project, "app_build")
     staging = os.path.join(project, ".app_build.enroll.tmp")
     if os.path.lexists(destination):
@@ -360,13 +406,14 @@ def prepare_writable_clone(app_dir, source, slug):
                 and current_branch == expected_branch:
             _assert_no_origin_links(destination, origin)
             return {"path": destination, "branch": "enroll/%s" % slug,
-                    "source": origin, "created_at": existing.get("created_at")}
+                    "source": origin, "created_at": existing.get("created_at"),
+                    "warnings": warnings}
         raise EnrollError("app_build already exists; refusing to overwrite it")
     if os.path.lexists(staging):
         raise EnrollError("a prior clone staging directory exists; inspect %s" % staging)
 
     try:
-        if _git_root(origin) == origin:
+        if is_git_origin:
             _run_checked(["git", "clone", "--no-hardlinks", "--", origin, staging])
         else:
             os.mkdir(staging)
@@ -405,4 +452,5 @@ def prepare_writable_clone(app_dir, source, slug):
         "branch": branch,
         "source": origin,
         "created_at": created_at,
+        "warnings": warnings,
     }

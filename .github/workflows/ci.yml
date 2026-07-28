@@ -22,7 +22,12 @@ jobs:
       - name: Run engine test suite (strict warnings)
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
       - name: Tests must not mutate the repo (clean-tree guard)
-        run: git diff --exit-code
+        # git diff catches tracked-file edits; the porcelain check catches
+        # NEW untracked files/dirs (the most common test pollution — e.g. a
+        # seeded situations/ tree), which git diff is blind to.
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)" || { echo "untracked/modified files after tests:"; git status --porcelain; exit 1; }
       - name: Doctor smoke test (text + JSON)
         run: |
           python orchestrator.py --doctor
@@ -75,3 +80,14 @@ jobs:
       - name: Run GUI unit tests
         working-directory: gui
         run: swift test
+      # The verify.py http-boot Seatbelt tests are @skipUnless(sandbox-exec)
+      # — permanently skipped on the ubuntu test jobs, so without this step
+      # the one end-to-end proof the sandbox actually denies sensitive writes
+      # never runs in CI at all. Runs at the checkout root (tests/ lives
+      # there, not under gui/). Scoped to this one module: the rest of the
+      # suite is CI-vetted on Linux, not macOS.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sandbox functional tests (sandbox-exec is macOS-only)
+        run: python3 -m unittest tests.test_verify_http_sandbox -v

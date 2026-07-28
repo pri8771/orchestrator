@@ -20,13 +20,21 @@ a prototype — you pick the workflow.
   the file locks are Unix APIs). The **GUI**, the **iOS build/verify**
   (`xcodebuild`, simulator, code-signing), and `install_launch_agent.sh` are
   **macOS-only**; on Linux use the CLI and schedule `run.sh` with cron/systemd.
-- **Dependencies:** Python 3 standard library only. No API keys — `run.sh` and
-  the GUI strip `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` /
-  `GOOGLE_API_KEY` (and related vars) before launching, so every call counts
-  only against your normal subscriptions. One exception: the gemini CLI can run
-  headless with a key read from `~/.orchestrator/gemini_api_key` (kept outside
-  the repo; secret-shaped filenames are gitignored and `run.sh` refuses to
-  commit them).
+- **Dependencies:** Python 3 standard library only. No API keys by default —
+  `run.sh` and the GUI strip `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+  `GEMINI_API_KEY` / `GOOGLE_API_KEY` (and related vars) before launching, so
+  every call counts only against your normal subscriptions. One exception: the
+  gemini CLI can run headless with a key read from
+  `~/.orchestrator/gemini_api_key` (kept outside the repo; secret-shaped
+  filenames are gitignored and `run.sh` refuses to commit them). Separately, a
+  project can **opt in** to direct-API agents (`api:anthropic:<model>`,
+  `api:openai:<model>`, `api:google:<model>`) by setting `"api_agents": true`
+  in its `run_config.json`; these **bill the provider account per token** and
+  read keys only from `~/.orchestrator/anthropic_api_key` /
+  `openai_api_key` / `google_api_key` (google also falls back to
+  `gemini_api_key` — same Generative Language credential). Keys are never read
+  from the environment, and without the per-project opt-in the `api:` runners
+  refuse to make any network call.
 
 ---
 
@@ -373,8 +381,9 @@ best-effort — a missing tool skips a gate, never blocks a run):
 
 1. **Release gate** — the app compiles for the iOS Simulator (verify.py).
 2. **Design lint** (`designlint.py`, zero tokens) — no inline colors/font
-   sizes outside DesignSystem.swift; banned packages (tech_stack.json) are
-   errors. Findings: `docs/design_lint.json`.
+   sizes outside DesignSystem.swift; banned packages are errors (registry:
+   `sections/build/target_policy.json` when the Build section exists — the
+   shipped default — else `tech_stack.json`). Findings: `docs/design_lint.json`.
 3. **Visual QA** (`visualqa.py`, local vision panel) — light+dark screenshots
    graded by every installed vision model; unanimous BAD fails.
 4. **UI crawl** (`uicrawl.py` + `uitest-runner/`) — taps every element, checks

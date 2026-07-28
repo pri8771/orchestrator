@@ -6,6 +6,7 @@ simulator or Ollama."""
 import json
 import os
 import plistlib
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -106,6 +107,49 @@ class TestCaptureGrantsPermissions(unittest.TestCase):
         calls = self._capture()
         self.assertFalse(any("privacy" in c and "reset" in c for c in calls),
                          "capture_screens must never `privacy reset` (re-arms the dialog)")
+
+
+class TestCaptureDegradationIsRecorded(unittest.TestCase):
+    """A-40: a missing palette must never vanish. capture_screens reports a
+    note alongside the PARTIAL shot list (it used to stay '' for a dropped
+    screenshot), and the gate fails on a dark-relaunch crash / records a
+    screenshot flake instead of silently grading light-only."""
+
+    def _capture(self, fake_run):
+        with unittest.mock.patch.object(vqa, "_install_with_rescue",
+                                        return_value=""), \
+             unittest.mock.patch.object(vqa.time, "sleep"), \
+             unittest.mock.patch.object(vqa, "_run", side_effect=fake_run):
+            return vqa.capture_screens("UDID", "/tmp/App.app", "com.x.app",
+                                       tempfile.mkdtemp())
+
+    def test_dark_launch_failure_returns_partial_shots_with_note(self):
+        launches = []
+
+        def fake_run(cmd, cwd=None, timeout=120):
+            if "launch" in cmd:
+                launches.append(cmd)
+                if len(launches) == 2:   # the dark-mode relaunch
+                    return 1, "", "app crashed on dark relaunch"
+            if "screenshot" in cmd:
+                open(cmd[-1], "w").close()
+            return 0, "", ""
+        shots, note = self._capture(fake_run)
+        self.assertEqual(len(shots), 1)
+        self.assertIn("launch failed (dark)", note)
+        self.assertIn("app crashed", note)
+
+    def test_failed_dark_screenshot_leaves_a_note(self):
+        def fake_run(cmd, cwd=None, timeout=120):
+            if "screenshot" in cmd:
+                if "dark" in os.path.basename(cmd[-1]):
+                    return 1, "", "io error"
+                open(cmd[-1], "w").close()
+            return 0, "", ""
+        shots, note = self._capture(fake_run)
+        self.assertEqual(len(shots), 1)
+        self.assertIn("screenshot failed (dark)", note)
+        self.assertIn("io error", note)
 
 
 class TestGradeAggregation(unittest.TestCase):
@@ -326,6 +370,65 @@ class TestGateSkipPaths(unittest.TestCase):
         self.assertEqual(saved["screenshots"],
                          [os.path.relpath(shots_taken[0], self.app_dir)])
 
+    def _run_gate_with_capture(self, capture_note, grade_verdict="PASS"):
+        """Drive run_visual_qa with every effectful step faked and a
+        light-only capture carrying `capture_note`. Returns (reason, saved)."""
+        real = (vqa.tools_available, vqa.ollama_up, vqa.resolve_vision_models,
+                vqa.build_for_simulator, vqa.bundle_id, vqa.pick_simulator,
+                vqa.capture_screens, vqa.grade)
+
+        def fake_capture(udid, app_path, bid, shots_dir):
+            os.makedirs(shots_dir, exist_ok=True)
+            p = os.path.join(shots_dir, "main_light.png")
+            open(p, "wb").close()
+            return [p], capture_note
+
+        vqa.tools_available = lambda: True
+        vqa.ollama_up = lambda timeout=3: True
+        vqa.resolve_vision_models = lambda c, i: ["qwen2.5vl:3b"]
+        vqa.build_for_simulator = lambda b, d, t: ("/tmp/Fake.app", "")
+        vqa.bundle_id = lambda p: "com.example.fake"
+        vqa.pick_simulator = lambda: ("UDID-1", "booted")
+        vqa.capture_screens = fake_capture
+        vqa.grade = lambda m, i, d, p, timeout=240: {
+            "score": 90, "verdict": grade_verdict, "issues": []}
+        try:
+            cfg = {"runtime": {"visual_qa_enabled": True}}
+            reason = vqa.run_visual_qa(cfg, _cget, _emit, "x", self.app_dir,
+                                       {"phase_outputs": {}}, "prompt")
+        finally:
+            (vqa.tools_available, vqa.ollama_up, vqa.resolve_vision_models,
+             vqa.build_for_simulator, vqa.bundle_id, vqa.pick_simulator,
+             vqa.capture_screens, vqa.grade) = real
+        with open(os.path.join(self.app_dir, "docs", "visual_qa.json")) as fh:
+            saved = json.load(fh)
+        return reason, saved
+
+    def test_dark_crash_fails_the_gate_even_when_light_grades_ok(self):
+        """A-40: an app that crashes on the dark-mode relaunch used to PASS
+        visual QA with zero trace (one light shot, note discarded). It must
+        FAIL — both in the returned reason and the persisted record."""
+        reason, saved = self._run_gate_with_capture(
+            "launch failed (dark): app crashed on dark relaunch")
+        self.assertIsNotNone(reason)
+        self.assertIn("dark", reason)
+        self.assertIn("launch failed (dark)", reason)
+        self.assertEqual(saved["verdict"], "FAIL")
+        self.assertIn("launch failed (dark)",
+                      saved.get("capture_note", ""))
+        self.assertTrue(any("launch failed (dark)" in (i.get("note") or "")
+                            for i in saved["issues"]))
+
+    def test_screenshot_flake_is_recorded_but_does_not_fail(self):
+        """A missing dark screenshot with a healthy launch is a harness-side
+        flake, not an app defect: the gate may still pass, but the
+        degradation must be persisted, never silently dropped."""
+        reason, saved = self._run_gate_with_capture(
+            "screenshot failed (dark): io error")
+        self.assertIsNone(reason)
+        self.assertEqual(saved.get("capture_note"),
+                         "screenshot failed (dark): io error")
+
     def test_pass_verdict_returns_none(self):
         real = (vqa.tools_available, vqa.ollama_up, vqa.resolve_vision_models,
                 vqa.build_for_simulator, vqa.bundle_id, vqa.pick_simulator,
@@ -354,6 +457,152 @@ class TestGateSkipPaths(unittest.TestCase):
             (vqa.tools_available, vqa.ollama_up, vqa.resolve_vision_models,
              vqa.build_for_simulator, vqa.bundle_id, vqa.pick_simulator,
              vqa.capture_screens, vqa.grade) = real
+
+
+class TestRunRoutedThroughProcutil(unittest.TestCase):
+    """A-85: simctl/xcodebuild must run via procutil.run_capture (own process
+    group, group-kill on timeout, reachable by the engine's kill_live_groups
+    SIGTERM drain) — never plain subprocess.run, which leaves xcodebuild's
+    build-service daemons orphaned when only the direct child is killed."""
+
+    def test_run_uses_run_capture(self):
+        with unittest.mock.patch.object(vqa.procutil, "run_capture",
+                                        return_value=("out", "err", 0)) as rc:
+            self.assertEqual(vqa._run(["xcrun", "simctl", "list"], timeout=5),
+                             (0, "out", "err"))
+        rc.assert_called_once_with(["xcrun", "simctl", "list"], cwd=None,
+                                   timeout=5)
+
+    def test_timeout_maps_to_exit_124(self):
+        with unittest.mock.patch.object(
+                vqa.procutil, "run_capture",
+                side_effect=subprocess.TimeoutExpired(["x"], 5)):
+            code, out, err = vqa._run(["x"], timeout=5)
+        self.assertEqual((code, out), (124, ""))
+        self.assertIn("timed out", err)
+
+    def test_oserror_never_raises(self):
+        with unittest.mock.patch.object(vqa.procutil, "run_capture",
+                                        side_effect=OSError("no such binary")):
+            code, _out, err = vqa._run(["nope"])
+        self.assertEqual(code, 1)
+        self.assertIn("no such binary", err)
+
+
+class TestSkipPersistsVerdict(unittest.TestCase):
+    """A-88: every skip path must overwrite docs/visual_qa.json — a verdict
+    left over from an earlier pass (a pre-repair FAIL, or a PASS blessing a
+    UI that was rewritten since) must never read as current-run evidence in
+    the GUI or the eval harness."""
+
+    def setUp(self):
+        self.app_dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.app_dir, "app_build"), exist_ok=True)
+        # A previous pass's verdict that must NOT survive a skip.
+        os.makedirs(os.path.join(self.app_dir, "docs"), exist_ok=True)
+        with open(os.path.join(self.app_dir, "docs", "visual_qa.json"),
+                  "w", encoding="utf-8") as fh:
+            json.dump({"verdict": "FAIL", "score": 0}, fh)
+        self.cfg = {"runtime": {"visual_qa_enabled": True}}
+
+    def _saved(self):
+        with open(os.path.join(self.app_dir, "docs", "visual_qa.json")) as fh:
+            return json.load(fh)
+
+    def test_ollama_down_stamps_skipped(self):
+        with unittest.mock.patch.object(vqa, "tools_available", lambda: True), \
+             unittest.mock.patch.object(vqa, "ollama_up",
+                                        lambda timeout=3: False):
+            self.assertIsNone(vqa.run_visual_qa(
+                self.cfg, _cget, _emit, "x", self.app_dir, {}, "prompt"))
+        saved = self._saved()
+        self.assertEqual(saved["verdict"], "SKIPPED")
+        self.assertIn("Ollama", saved["reason"])
+        self.assertIn("graded_at", saved)
+
+    def test_no_vision_model_stamps_skipped(self):
+        with unittest.mock.patch.object(vqa, "tools_available", lambda: True), \
+             unittest.mock.patch.object(vqa, "ollama_up",
+                                        lambda timeout=3: True), \
+             unittest.mock.patch.object(vqa.lmlib, "installed_models_cached",
+                                        lambda: []):
+            self.assertIsNone(vqa.run_visual_qa(
+                self.cfg, _cget, _emit, "x", self.app_dir, {}, "prompt"))
+        saved = self._saved()
+        self.assertEqual(saved["verdict"], "SKIPPED")
+        self.assertIn("no vision model", saved["reason"])
+        self.assertEqual(saved["models"], [])
+
+    def test_build_failure_stamps_skipped_with_reason(self):
+        with unittest.mock.patch.object(vqa, "tools_available", lambda: True), \
+             unittest.mock.patch.object(vqa, "ollama_up",
+                                        lambda timeout=3: True), \
+             unittest.mock.patch.object(vqa.lmlib, "installed_models_cached",
+                                        lambda: ["qwen2.5vl:3b"]), \
+             unittest.mock.patch.object(
+                 vqa, "build_for_simulator",
+                 lambda b, d, t: ("", "simulator build failed: boom")):
+            self.assertIsNone(vqa.run_visual_qa(
+                self.cfg, _cget, _emit, "x", self.app_dir, {}, "prompt"))
+        saved = self._saved()
+        self.assertEqual(saved["verdict"], "SKIPPED")
+        self.assertEqual(saved["reason"], "simulator build failed: boom")
+        self.assertEqual(saved["models"], ["qwen2.5vl:3b"])
+
+    def test_no_bundle_id_stamps_skipped(self):
+        with unittest.mock.patch.object(vqa, "tools_available", lambda: True), \
+             unittest.mock.patch.object(vqa, "ollama_up",
+                                        lambda timeout=3: True), \
+             unittest.mock.patch.object(vqa.lmlib, "installed_models_cached",
+                                        lambda: ["qwen2.5vl:3b"]), \
+             unittest.mock.patch.object(vqa, "build_for_simulator",
+                                        lambda b, d, t: ("/tmp/Fake.app", "")), \
+             unittest.mock.patch.object(vqa, "bundle_id", lambda p: ""):
+            self.assertIsNone(vqa.run_visual_qa(
+                self.cfg, _cget, _emit, "x", self.app_dir, {}, "prompt"))
+        saved = self._saved()
+        self.assertEqual(saved["verdict"], "SKIPPED")
+        self.assertIn("CFBundleIdentifier", saved["reason"])
+
+    def test_no_simulator_stamps_skipped(self):
+        with unittest.mock.patch.object(vqa, "tools_available", lambda: True), \
+             unittest.mock.patch.object(vqa, "ollama_up",
+                                        lambda timeout=3: True), \
+             unittest.mock.patch.object(vqa.lmlib, "installed_models_cached",
+                                        lambda: ["qwen2.5vl:3b"]), \
+             unittest.mock.patch.object(vqa, "build_for_simulator",
+                                        lambda b, d, t: ("/tmp/Fake.app", "")), \
+             unittest.mock.patch.object(vqa, "bundle_id",
+                                        lambda p: "com.example.fake"), \
+             unittest.mock.patch.object(
+                 vqa, "pick_simulator",
+                 lambda: ("", "no available iPhone simulator")):
+            self.assertIsNone(vqa.run_visual_qa(
+                self.cfg, _cget, _emit, "x", self.app_dir, {}, "prompt"))
+        saved = self._saved()
+        self.assertEqual(saved["verdict"], "SKIPPED")
+        self.assertEqual(saved["reason"], "no available iPhone simulator")
+
+    def test_no_screenshots_stamps_skipped(self):
+        with unittest.mock.patch.object(vqa, "tools_available", lambda: True), \
+             unittest.mock.patch.object(vqa, "ollama_up",
+                                        lambda timeout=3: True), \
+             unittest.mock.patch.object(vqa.lmlib, "installed_models_cached",
+                                        lambda: ["qwen2.5vl:3b"]), \
+             unittest.mock.patch.object(vqa, "build_for_simulator",
+                                        lambda b, d, t: ("/tmp/Fake.app", "")), \
+             unittest.mock.patch.object(vqa, "bundle_id",
+                                        lambda p: "com.example.fake"), \
+             unittest.mock.patch.object(vqa, "pick_simulator",
+                                        lambda: ("UDID-1", "booted")), \
+             unittest.mock.patch.object(
+                 vqa, "capture_screens",
+                 lambda u, a, b, s: ([], "install failed: boom")):
+            self.assertIsNone(vqa.run_visual_qa(
+                self.cfg, _cget, _emit, "x", self.app_dir, {}, "prompt"))
+        saved = self._saved()
+        self.assertEqual(saved["verdict"], "SKIPPED")
+        self.assertEqual(saved["reason"], "install failed: boom")
 
 
 if __name__ == "__main__":

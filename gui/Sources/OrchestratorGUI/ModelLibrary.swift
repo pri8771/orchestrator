@@ -201,12 +201,31 @@ struct ModelRouting: Equatable {
     // spark") and/or local tags ("local:qwen3-coder:30b"), tried top to bottom.
     var chains: [String: [String]] = [:]
     var phases: [String: PhaseRoute] = [:]
+    // The file as loaded, verbatim. save(to:) merges typed fields OVER this
+    // (and over a fresh disk read) instead of reconstructing the JSON, so
+    // keys this struct doesn't model survive a GUI edit: engine-honored
+    // fields (gemini_reasoning / ollama_reasoning at phase AND role level),
+    // documentation (_docs, _examples), and future schema keys. Rebuilding
+    // from typed fields destroyed all of those and silently downgraded
+    // schema_version — the file is SHARED with the engine, not GUI-owned.
+    var rawRoot: [String: Any] = [:]
+
+    // Unknown raw keys can't be edited in the GUI, so they must never make a
+    // grid look dirty — equality covers the modeled fields only.
+    static func == (lhs: ModelRouting, rhs: ModelRouting) -> Bool {
+        lhs.enabled == rhs.enabled
+            && lhs.cloudToLocal == rhs.cloudToLocal
+            && lhs.fallbackModel == rhs.fallbackModel
+            && lhs.chains == rhs.chains
+            && lhs.phases == rhs.phases
+    }
 
     static func load(from url: URL) -> ModelRouting {
         var r = ModelRouting()
         guard let data = try? Data(contentsOf: url),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return r }
+        r.rawRoot = root
         r.enabled = (root["enabled"] as? Bool) ?? true
         if let fb = root["fallback"] as? [String: Any] {
             r.cloudToLocal = (fb["cloud_to_local"] as? Bool) ?? true
@@ -243,43 +262,118 @@ struct ModelRouting: Equatable {
         return r
     }
 
-    func save(to url: URL) {
-        var phasesObj: [String: Any] = [:]
-        for (key, p) in phases where !p.isEmpty {
-            var ov: [String: Any] = [:]
-            if !p.claude.isEmpty { ov["claude"] = p.claude }
-            if !p.codex.isEmpty { ov["codex"] = p.codex }
-            if !p.codexReasoning.isEmpty { ov["codex_reasoning"] = p.codexReasoning }
-            if !p.claudeReasoning.isEmpty { ov["claude_reasoning"] = p.claudeReasoning }
-            if !p.gemini.isEmpty { ov["gemini"] = p.gemini }
-            if !p.ollama.isEmpty { ov["ollama"] = p.ollama }
-            if !p.agents.isEmpty { ov["agents"] = p.agents }
-            if !p.composition.isEmpty { ov["composition"] = p.composition }
-            if let size = p.castSize { ov["cast_size"] = size }
-            if p.timeout > 0 { ov["timeout"] = p.timeout }
-            if let ro = p.roles, !ro.isEmpty {
-                var rolesObj: [String: Any] = [:]
-                if !ro.worker.isEmpty { rolesObj["worker"] = ro.worker.jsonObject }
-                if !ro.integrator.isEmpty { rolesObj["integrator"] = ro.integrator.jsonObject }
-                if !rolesObj.isEmpty { ov["roles"] = rolesObj }
-            }
-            if let r = p.rounds { ov["rounds"] = r }
-            if !p.instructions.isEmpty { ov["instructions"] = p.instructions }
-            phasesObj[key] = ov
+    // The six RoleFields keys — everything else inside roles.worker /
+    // roles.integrator (e.g. ollama_reasoning) is engine-honored but not
+    // GUI-modeled and must ride through a save untouched.
+    private static let modeledRoleKeys = [
+        "claude", "codex", "codex_reasoning", "claude_reasoning",
+        "gemini", "ollama",
+    ]
+    // Phase-level keys the GUI models. Anything else (gemini_reasoning,
+    // ollama_reasoning, future keys) is preserved as residual.
+    private static let modeledPhaseKeys = [
+        "claude", "codex", "codex_reasoning", "claude_reasoning", "gemini",
+        "ollama", "agents", "composition", "cast_size", "timeout", "roles",
+        "rounds", "instructions",
+    ]
+
+    private func mergedRole(_ typed: RoleFields,
+                            over raw: [String: Any]) -> [String: Any] {
+        var out = raw
+        for k in Self.modeledRoleKeys { out.removeValue(forKey: k) }
+        for (k, v) in typed.jsonObject { out[k] = v }
+        return out
+    }
+
+    // Typed values merged over one phase's raw dict: modeled keys are
+    // authoritative from the struct (cleared fields disappear), everything
+    // else survives verbatim.
+    private func mergedPhase(_ p: PhaseRoute?,
+                             over raw: [String: Any]) -> [String: Any] {
+        var out = raw
+        for k in Self.modeledPhaseKeys where k != "roles" {
+            out.removeValue(forKey: k)
         }
-        var fb: [String: Any] = ["cloud_to_local": cloudToLocal,
-                                 "local_model": fallbackModel]
+        if let p {
+            if !p.claude.isEmpty { out["claude"] = p.claude }
+            if !p.codex.isEmpty { out["codex"] = p.codex }
+            if !p.codexReasoning.isEmpty { out["codex_reasoning"] = p.codexReasoning }
+            if !p.claudeReasoning.isEmpty { out["claude_reasoning"] = p.claudeReasoning }
+            if !p.gemini.isEmpty { out["gemini"] = p.gemini }
+            if !p.ollama.isEmpty { out["ollama"] = p.ollama }
+            if !p.agents.isEmpty { out["agents"] = p.agents }
+            if !p.composition.isEmpty { out["composition"] = p.composition }
+            if let size = p.castSize { out["cast_size"] = size }
+            if p.timeout > 0 { out["timeout"] = p.timeout }
+            if let r = p.rounds { out["rounds"] = r }
+            if !p.instructions.isEmpty { out["instructions"] = p.instructions }
+        }
+        // Roles: per-role residual merge (unknown fields inside worker/
+        // integrator, and unknown sibling keys of "roles", all survive).
+        let typedRoles = p?.roles ?? RoleOverrides()
+        var rolesOut = (raw["roles"] as? [String: Any]) ?? [:]
+        let worker = mergedRole(
+            typedRoles.worker,
+            over: (rolesOut["worker"] as? [String: Any]) ?? [:])
+        if worker.isEmpty { rolesOut.removeValue(forKey: "worker") }
+        else { rolesOut["worker"] = worker }
+        let integrator = mergedRole(
+            typedRoles.integrator,
+            over: (rolesOut["integrator"] as? [String: Any]) ?? [:])
+        if integrator.isEmpty { rolesOut.removeValue(forKey: "integrator") }
+        else { rolesOut["integrator"] = integrator }
+        if rolesOut.isEmpty { out.removeValue(forKey: "roles") }
+        else { out["roles"] = rolesOut }
+        return out
+    }
+
+    func save(to url: URL) {
+        // Fresh read-then-merge: start from the file's CURRENT bytes (falling
+        // back to what load() saw), overlay typed fields, and write the
+        // union — never a reconstruction. See rawRoot's comment for what the
+        // old rebuild destroyed.
+        var root: [String: Any]
+        if let data = try? Data(contentsOf: url),
+           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            root = obj
+        } else {
+            root = rawRoot
+        }
+
+        root["enabled"] = enabled
+        // Never invent or downgrade metadata the engine owns — fill only
+        // when absent (a brand-new file).
+        if root["schema_version"] == nil { root["schema_version"] = 1 }
+        if root["_docs"] == nil {
+            root["_docs"] = "Per-phase model routing + fallback ladder. Edited by the GUI (Settings -> Routing); field reference in modelrouting.py."
+        }
+
+        var fb = (root["fallback"] as? [String: Any]) ?? [:]
+        fb["cloud_to_local"] = cloudToLocal
+        fb["local_model"] = fallbackModel
         let cleanChains = chains.filter { !$0.value.isEmpty }
-        if !cleanChains.isEmpty { fb["chains"] = cleanChains }
-        let obj: [String: Any] = [
-            "schema_version": 1,
-            "_docs": "Per-phase model routing + fallback ladder. Edited by the GUI (Settings -> Routing); field reference in modelrouting.py.",
-            "enabled": enabled,
-            "fallback": fb,
-            "phases": phasesObj,
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: obj,
+        if !cleanChains.isEmpty {
+            fb["chains"] = cleanChains
+        } else if fb["chains"] != nil {
+            fb["chains"] = [String: Any]()   // keep the key, engine-file shape
+        }
+        root["fallback"] = fb
+
+        var phasesObj = (root["phases"] as? [String: Any]) ?? [:]
+        var phaseKeys = Set(phasesObj.keys)
+        phaseKeys.formUnion(phases.keys)
+        for key in phaseKeys {
+            let raw = (phasesObj[key] as? [String: Any]) ?? [:]
+            let merged = mergedPhase(
+                phases[key].flatMap { $0.isEmpty ? nil : $0 }, over: raw)
+            if merged.isEmpty { phasesObj.removeValue(forKey: key) }
+            else { phasesObj[key] = merged }
+        }
+        root["phases"] = phasesObj
+
+        if var data = try? JSONSerialization.data(withJSONObject: root,
                                                   options: [.prettyPrinted, .sortedKeys]) {
+            data.append(0x0A)   // the engine's files end in a newline
             try? data.write(to: url, options: .atomic)
         }
     }

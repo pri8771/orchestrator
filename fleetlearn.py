@@ -258,6 +258,25 @@ def _summarize_with_local_model(clusters, model, timeout=120):
         return ""
 
 
+def read_ledger(here, max_chars=2000):
+    """The current anti-pattern ledger text, for prompt injection — the READ
+    half of the fleet-learning loop (build_ledger writes it; without this,
+    "every recorded failure teaches future runs" was write-only). Applies the
+    same ORCH_LEDGER_DIR redirection as build_ledger so tests never read the
+    repo's own tracked file. Empty string when absent/unreadable — injection
+    is best-effort and must never block a phase."""
+    override = os.environ.get("ORCH_LEDGER_DIR")
+    if override and os.path.abspath(here) == os.path.dirname(os.path.abspath(__file__)):
+        here = override
+    path = os.path.join(here, "knowledge", "anti_patterns.md")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read().strip()
+    except OSError:
+        return ""
+    return text[:max_chars] if text else ""
+
+
 def build_ledger(root, here, model=""):
     """Cluster incidents + bad ratings fleet-wide and write
     knowledge/anti_patterns.md. Returns (path, cluster_count).

@@ -178,6 +178,139 @@ class TestDesignLintCommentStripping(unittest.TestCase):
         self.assertTrue(any(x["rule"] == "todo_marker" for x in warns))
 
 
+class TestHardcodedShapeGateCoverage(unittest.TestCase):
+    """A-17: QUALITY_RULES.md sells §3.5 ('no scattered color/font literals')
+    as GATED with a hard error, but the shipped regexes only knew the exact
+    `.font(.system(size: <digit>` and `(red:`-first spellings — the explicit
+    Font.system(size:) form, CGFloat-wrapped literals, and the hue:/white:/
+    .sRGB color initializers all sailed through. Every hardcode shape must
+    flag; every token/semantic/asset reference must stay clean."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _rules(self, src):
+        with open(os.path.join(self.d, "V.swift"), "w", encoding="utf-8") as fh:
+            fh.write(src)
+        e, _w = designlint.scan(self.d, self.d)
+        return {x["rule"] for x in e}
+
+    # -- raw_font_size shapes that previously slipped the gate --
+    def test_explicit_font_system_spelling_flagged(self):
+        self.assertIn("raw_font_size",
+                      self._rules('.font(Font.system(size: 24, weight: .bold))\n'))
+
+    def test_font_system_assigned_to_let_flagged(self):
+        self.assertIn("raw_font_size",
+                      self._rules('let f = Font.system(size: 24)\n'))
+
+    def test_cgfloat_wrapped_literal_flagged(self):
+        # CGFloat(16) is still a literal — laundering through the cast must
+        # not defeat the gate.
+        self.assertIn("raw_font_size",
+                      self._rules('.font(.system(size: CGFloat(16)))\n'))
+
+    def test_explicit_font_system_token_reference_not_flagged(self):
+        # c9f217f's literal-vs-token distinction must survive the wider prefix.
+        self.assertNotIn("raw_font_size",
+                         self._rules('let f = Font.system(size: DS.Type.body)\n'))
+
+    def test_cgfloat_wrapped_token_not_flagged(self):
+        self.assertNotIn(
+            "raw_font_size",
+            self._rules('.font(.system(size: CGFloat(DS.IconSize.tab)))\n'))
+
+    # -- inline_color shapes that previously slipped the gate --
+    def test_color_hue_flagged(self):
+        self.assertIn("inline_color", self._rules(
+            'let c = Color(hue: 0.6, saturation: 0.8, brightness: 0.9)\n'))
+
+    def test_color_white_flagged(self):
+        self.assertIn("inline_color", self._rules('let c = Color(white: 0.95)\n'))
+
+    def test_uicolor_white_flagged(self):
+        self.assertIn("inline_color",
+                      self._rules('let c = UIColor(white: 0.2, alpha: 1)\n'))
+
+    def test_color_with_explicit_colorspace_flagged(self):
+        self.assertIn("inline_color", self._rules(
+            'let c = Color(.sRGB, red: 0.1, green: 0.2, blue: 0.3, opacity: 1)\n'))
+
+    def test_semantic_asset_and_token_colors_not_flagged(self):
+        # The spellings the rule wants INSTEAD must never false-positive.
+        src = ('let a = Color(.systemBackground)\n'
+               'let b = Color("AccentColor")\n'
+               'let c = Color(DS.accent)\n')
+        self.assertNotIn("inline_color", self._rules(src))
+
+
+class TestExemptionPathAnchoring(unittest.TestCase):
+    """A-18: the test/preview exemption was a raw substring over the whole
+    build-relative path, so an app named e.g. ContestTracker ('test' hiding
+    inside 'Contest') had EVERY product source exempted from the hard gate —
+    and, inversely, its only Info.plist skipped by the launch-screen scan,
+    firing missing_launch_screen on a correctly configured app. The predicate
+    is now anchored to whole path components and Xcode naming conventions."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _mk(self, rel, content=""):
+        p = os.path.join(self.d, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(content)
+
+    _VIOLATION = 'let c = Color(red: 1, green: 0, blue: 0)\n'
+
+    def _flagged(self, rel):
+        self._mk(rel, self._VIOLATION)
+        errors, _w = designlint.scan(self.d, self.d)
+        return any(x["rule"] == "inline_color" for x in errors)
+
+    def test_contest_app_product_source_is_linted(self):
+        # The card's live shape: 'test' as a mid-word substring must not
+        # exempt an entire app's product source.
+        self.assertTrue(self._flagged("ContestTracker/Sources/HomeView.swift"))
+
+    def test_snake_case_test_helpers_now_linted(self):
+        # Deliberate behavior change (verifier-pinned): lowercase mid-name
+        # 'test' no longer exempts — Swift's convention is FooTests.swift.
+        self.assertTrue(self._flagged("Sources/test_helpers.swift"))
+
+    def test_conventional_tests_target_dir_still_exempt(self):
+        self.assertFalse(self._flagged("AppTests/FixtureTests.swift"))
+
+    def test_lowercase_tests_dir_still_exempt(self):
+        self.assertFalse(self._flagged("tests/Fixture.swift"))
+
+    def test_preview_provider_basename_still_exempt(self):
+        self.assertFalse(self._flagged("Sources/Home_Previews.swift"))
+
+    def test_xcode_preview_content_dir_still_exempt(self):
+        self.assertFalse(self._flagged("App/Preview Content/Mock.swift"))
+
+    def test_contest_app_plist_launch_key_now_counts(self):
+        # Inverse bite: the app's ONLY Info.plist carries UILaunchScreen, and
+        # the scan must read it instead of dropping it over the 'test' inside
+        # 'ContestTracker' — else a configured app hard-fails.
+        self._mk("ContestTracker.xcodeproj/project.pbxproj", "/* no launch keys */")
+        self._mk("ContestTracker/Info.plist",
+                 "<plist><dict><key>UILaunchScreen</key><dict/></dict></plist>")
+        errors, _w = designlint.scan(self.d, self.d)
+        self.assertFalse(any(x["rule"] == "missing_launch_screen" for x in errors),
+                         "configured app false-failed: %s" % errors)
+
+    def test_tests_target_plist_still_does_not_satisfy_launch_check(self):
+        # A launch key living ONLY in a test target's plist must not count
+        # for the app target.
+        self._mk("App.xcodeproj/project.pbxproj", "/* no launch keys */")
+        self._mk("AppTests/Info.plist",
+                 "<plist><dict><key>UILaunchScreen</key><dict/></dict></plist>")
+        errors, _w = designlint.scan(self.d, self.d)
+        self.assertTrue(any(x["rule"] == "missing_launch_screen" for x in errors))
+
+
 class TestLaunchScreenLint(unittest.TestCase):
     """designlint's letterboxing check (M-004): an iOS app target with no
     launch-screen configuration anywhere renders in a legacy-size, letterboxed

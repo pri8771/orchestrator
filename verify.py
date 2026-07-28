@@ -182,7 +182,15 @@ def _concrete_sim_destination(timeout=60):
     except ValueError:
         return None
     booted, iphones = None, []
-    for devices in runtimes.values():
+    for runtime_key, devices in runtimes.items():
+        # simctl lists watchOS/tvOS/visionOS runtimes too, and a paired watch
+        # sim commonly boots alongside an iPhone — a booted watch UDID must
+        # never become the "iOS Simulator" destination (xcodebuild rejects it
+        # before running a single test, which reads as "tests could not run").
+        # Case-sensitive "iOS" does not substring-match watchOS/tvOS/visionOS;
+        # mirrors visualqa.pick_simulator's runtime filter.
+        if "iOS" not in runtime_key:
+            continue
         for d in devices:
             if not isinstance(d, dict) or not d.get("udid"):
                 continue
@@ -390,7 +398,16 @@ def _verify_shell(build_dir, command, timeout):
             return {"ran": False, "ok": False, "tool": "shell",
                     "summary": "no verification command and no auto-detectable "
                                "build for this project — skipping.", "errors": ""}
-    code, out, err = _run(["/bin/sh", "-lc", command], build_dir, timeout)
+    # This path executes agent-authored code as code: the auto python route
+    # runs `unittest discover`, which imports the generated test modules at
+    # module scope, and an explicit spec["command"] is LLM/operator-written
+    # shell either way. Run it under the same Seatbelt wrap + secret-env
+    # scrub as the http boot and npm paths — this was the one code-executing
+    # verifier with neither. _run_sandboxed degrades to plain /bin/sh -lc
+    # where sandbox-exec is absent, so non-macOS behavior is unchanged.
+    env = {k: v for k, v in os.environ.items() if not _is_secret_env(k)}
+    code, out, err = _run_sandboxed(command, build_dir, timeout,
+                                    env=env, write_root=build_dir)
     ok = (code == 0)
     return {"ran": True, "ok": ok, "tool": "shell",
             "summary": ("`%s` succeeded" % command) if ok
@@ -473,7 +490,32 @@ def _free_port():
 _SANDBOX_DENY_WRITE_SUBPATHS = (
     "~/.ssh", "~/.aws", "~/.orchestrator", "~/.gnupg", "~/.netrc",
     "~/Library/Keychains",
+    # Agent-CLI credential/config dirs and persistence paths with no
+    # legitimate build-time write use: sandboxed code (an npm postinstall, a
+    # booted generated server) must not be able to plant hooks in
+    # ~/.claude/settings.json, drop a LaunchAgent plist, poison ~/.npmrc, or
+    # append to shell rc files / ~/.gitconfig. (`subpath` on a plain file
+    # denies writes to it; nonexistent entries are harmless.) Deliberately
+    # NOT ~/.config, ~/.local/bin or ~/bin — legitimate tooling writes there
+    # (configstore-backed npm packages, `pip install --user`), and denying
+    # them would turn real installs into fabricated verification failures,
+    # which is worse than unsandboxed.
+    "~/.claude", "~/.codex", "~/.gemini", "~/.npmrc", "~/.gitconfig",
+    "~/Library/LaunchAgents", "~/Library/LaunchDaemons",
+    "~/.zshrc", "~/.zprofile", "~/.zshenv",
+    "~/.bashrc", "~/.bash_profile", "~/.profile",
 )
+
+
+def _sb_path(path):
+    """A filesystem path as a Seatbelt (SBPL/Scheme) string literal. Without
+    escaping, a path containing `"` ends the literal early — sandbox-exec then
+    refuses to run anything ('unbound variable'), or worse, a crafted
+    directory name injects its own profile rules. Backslash-escape the two
+    SBPL string metacharacters; applied to every interpolated path (deny
+    entries, engine_dir, write_root) so the deny/allow rules always mean the
+    literal path."""
+    return path.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _sandbox_wrap(cmd_str, write_root=None):
@@ -501,12 +543,13 @@ def _sandbox_wrap(cmd_str, write_root=None):
     engine_dir = os.path.dirname(os.path.abspath(__file__))
     deny_paths = [os.path.expanduser(p) for p in _SANDBOX_DENY_WRITE_SUBPATHS] + [engine_dir]
     lines = (["(version 1)", "(allow default)", "(deny file-write*"]
-             + ['  (subpath "%s")' % p for p in deny_paths]
+             + ['  (subpath "%s")' % _sb_path(p) for p in deny_paths]
              + [")"])
     if write_root:
         # Re-allow writes under the project being verified — wins over the deny
         # above because Seatbelt applies the last matching rule.
-        lines.append('(allow file-write* (subpath "%s"))' % os.path.abspath(write_root))
+        lines.append('(allow file-write* (subpath "%s"))'
+                     % _sb_path(os.path.abspath(write_root)))
     profile = "\n".join(lines)
     try:
         fd, profile_path = tempfile.mkstemp(prefix="verify_sandbox_", suffix=".sb")
@@ -550,7 +593,11 @@ def _verify_http(build_dir, spec, timeout):
     root = "http://127.0.0.1:%d/" % port
     ready_timeout = int(spec.get("ready_timeout") or min(60, timeout))
 
-    env = dict(os.environ)
+    # Same scrub as _npm_env, same reason: the boot command executes
+    # agent-authored code (npm start runs whatever the generated package.json
+    # points at), which must never see our provider keys or other
+    # secret-shaped env straight out of the operator's environment.
+    env = {k: v for k, v in os.environ.items() if not _is_secret_env(k)}
     env["PORT"] = str(port)
     proc = None
     server_pgid = None
@@ -641,6 +688,16 @@ def _verify_http(build_dir, spec, timeout):
             os.remove(out_path)   # temp log — never leave it behind
         except OSError:
             pass
+        # The Seatbelt profile too: sandbox-exec parses it at process start
+        # and the server is dead by now, so removal is safe. Only the
+        # Popen-failure branch above cleaned it up before — every SUCCESSFUL
+        # (or timed-out) verification leaked one verify_sandbox_*.sb into the
+        # temp dir, contradicting _run_sandboxed's cleanup contract.
+        if sandbox_profile_path:
+            try:
+                os.remove(sandbox_profile_path)
+            except OSError:
+                pass
     if booted:
         return {"ran": True, "ok": True, "tool": "http boot",
                 "summary": "server booted (`%s`) and responded %s on :%d"

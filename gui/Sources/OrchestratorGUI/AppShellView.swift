@@ -1723,14 +1723,16 @@ private struct PhaseTuningEditor: View {
 
     @State private var routing = ModelRouting()
     @State private var snippets: [PromptSnippet] = []
-    @State private var loaded = false
     @State private var profileName = ""
 
     private func binding(_ key: String) -> Binding<PhaseRoute> {
         Binding(get: { routing.phases[key] ?? PhaseRoute() },
                 set: { newVal in
                     routing.phases[key] = newVal.isEmpty ? nil : newVal
-                    store.writeProjectRouting(routing, for: project)
+                    // Reload-before-mutate: persist ONLY this phase over a
+                    // fresh read — writing the whole snapshot clobbered any
+                    // grid/Inspector edits made since it was taken.
+                    store.writeProjectRoutingPhase(key, newVal, for: project)
                 })
     }
 
@@ -1760,10 +1762,10 @@ private struct PhaseTuningEditor: View {
         }
         .padding(.vertical, DS.space.xxs)
         .onAppear {
-            guard !loaded else { return }
+            // Every appearance, never loaded-once — the routing grid edits
+            // the same file, and a stale snapshot must not linger on screen.
             routing = store.readProjectRouting(project)
             snippets = store.loadSnippets()
-            loaded = true
         }
     }
 }
@@ -1849,7 +1851,6 @@ private struct ProjectFallbackOverrides: View {
     let project: Project
     @State private var routing = ModelRouting()
     @State private var fleet = ModelRouting()
-    @State private var loaded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.space.xs) {
@@ -1869,19 +1870,22 @@ private struct ProjectFallbackOverrides: View {
                     .opacity(overridden ? 1 : 0.6)
                     FallbackChainEditor(agent: agent, chain: Binding(
                         get: { routing.chains[agent] ?? [] },
-                        set: {
-                            routing.chains[agent] = $0.isEmpty ? nil : $0
-                            store.writeProjectRouting(routing, for: project)
+                        set: { steps in
+                            routing.chains[agent] = steps.isEmpty ? nil : steps
+                            // Reload-before-mutate: only this agent's chain is
+                            // overlaid on a fresh read, so the tuning editor's
+                            // phases (same file) can't be reverted by this
+                            // view's older snapshot.
+                            store.writeProjectRoutingChain(agent, steps, for: project)
                         }))
                 }
             }
         }
         .padding(.vertical, DS.space.xxs)
         .onAppear {
-            guard !loaded else { return }
+            // Every appearance, never loaded-once — see PhaseTuningEditor.
             routing = store.readProjectRouting(project)
             fleet = store.readModelRouting()
-            loaded = true
         }
     }
 }

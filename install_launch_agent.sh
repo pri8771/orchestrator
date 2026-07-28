@@ -7,7 +7,7 @@
 #   INTERVAL=900 bash install_launch_agent.sh   # custom interval (seconds)
 #   bash install_launch_agent.sh uninstall  # stop + remove
 #
-# Logs go to .orchestrator/logs/launchagent.out/.err
+# Logs go to <engine dir>/logs/launchagent.out/.err (the plist's StandardOutPath)
 # ============================================================================
 set -uo pipefail
 
@@ -36,6 +36,20 @@ fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$ORCH_DIR/logs" "$ROOT"
 
+# Plist <string>/<integer> bodies are raw XML character data: a path like
+# "~/Documents/Apps & Tools/orchestrator" (or a label/interval carrying '<')
+# interpolated verbatim yields an unparseable plist that launchctl rejects.
+# '&' must be escaped FIRST so it can't double-escape the entities it creates;
+# &, < and > are the full set XML requires inside element content. sed, not
+# ${var//pat/rep}: bash 5.2's patsub_replacement expands '&' in the replacement
+# to the match (turning &lt; into <lt;), while this script also targets 3.2 —
+# sed's \& is the one spelling that is literal on every version.
+xml_escape(){ printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+LABEL_XML=$(xml_escape "$LABEL")
+ORCH_DIR_XML=$(xml_escape "$ORCH_DIR")
+ROOT_XML=$(xml_escape "$ROOT")
+INTERVAL_XML=$(xml_escape "$INTERVAL")
+
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -43,23 +57,23 @@ cat > "$PLIST" <<PLIST
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>$LABEL</string>
+    <string>$LABEL_XML</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>$ORCH_DIR/run.sh</string>
+        <string>$ORCH_DIR_XML/run.sh</string>
         <string>--once</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>$ROOT</string>
+    <string>$ROOT_XML</string>
     <key>StartInterval</key>
-    <integer>$INTERVAL</integer>
+    <integer>$INTERVAL_XML</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>$ORCH_DIR/logs/launchagent.out</string>
+    <string>$ORCH_DIR_XML/logs/launchagent.out</string>
     <key>StandardErrorPath</key>
-    <string>$ORCH_DIR/logs/launchagent.err</string>
+    <string>$ORCH_DIR_XML/logs/launchagent.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -69,8 +83,14 @@ cat > "$PLIST" <<PLIST
 </plist>
 PLIST
 
+# Validate the generated XML BEFORE handing it to launchd: a bad plist must
+# fail loudly here with plutil's parse diagnostic, not as launchctl weirdness.
+plutil -lint "$PLIST" >/dev/null || { echo "install_launch_agent: generated plist failed plutil -lint: $PLIST" >&2; exit 1; }
+
 launchctl unload "$PLIST" 2>/dev/null || true
-launchctl load "$PLIST"
+# launchctl's own failure used to be swallowed — the script printed 'Installed
+# and loaded' regardless of exit status. Surface it as the install failure it is.
+launchctl load "$PLIST" || { echo "install_launch_agent: launchctl load failed for $PLIST" >&2; exit 1; }
 echo "Installed and loaded $LABEL (every ${INTERVAL}s)."
 echo "Status : launchctl list | grep $LABEL"
 echo "Stop   : bash install_launch_agent.sh uninstall"

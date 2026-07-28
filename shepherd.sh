@@ -15,10 +15,16 @@ cd "$(dirname "$0")" || { echo "shepherd: cannot cd to script dir" >&2; exit 1; 
 # user. ORCH_PARENTS is a space-separated list of portfolio-parent app names.
 ROOT="${ORCH_ROOT:-$HOME/Documents/iOS-App-Factory}"
 read -ra PARENTS <<< "${ORCH_PARENTS:-}"
-MAX_BUILDS="${ORCH_MAX_BUILDS:-3}"; MAX_PARENTS="${ORCH_MAX_PARENTS:-2}"
+DEFAULT_MAX_BUILDS="${ORCH_MAX_BUILDS:-3}"; MAX_PARENTS="${ORCH_MAX_PARENTS:-2}"
 # GUI queue panel writes $ROOT/.orch-queue-order.json {"order":[...],"lanes":N}.
 # lanes overrides MAX_BUILDS; order apps launch first (missing/done ones skip).
 queue_lanes(){ python3 -c "import json;v=json.load(open('$ROOT/.orch-queue-order.json')).get('lanes');print(v if isinstance(v,int) and v>0 else '')" 2>/dev/null; }
+# Build-lane budget for ONE iteration: the queue file's lanes override when
+# present, else the configured default. MAX_BUILDS is recomputed from this every
+# loop pass so deleting the queue file (or dropping its lanes key) RESTORES the
+# configured value — the old `[ -n "$_l" ] && MAX_BUILDS=$_l` only ever
+# overwrote, making any override permanent for the process lifetime.
+effective_max_builds(){ local l; l=$(queue_lanes); echo "${l:-$DEFAULT_MAX_BUILDS}"; }
 queue_order_dirs(){ python3 -c "
 import json
 for a in (json.load(open('$ROOT/.orch-queue-order.json')).get('order') or []):
@@ -52,11 +58,20 @@ lock_stem(){
 # the relaunch this unblocks — so a redundant launch still dedups safely. The
 # lock stem is derived via lock_stem so a nested session's real encoded lock is
 # consulted, not a raw "project/section/chat.lock" that no live run ever holds.
-locked(){
-  local f="$ROOT/.orch-locks/$(lock_stem "$1").lock" pid
-  [ -f "$f" ] || return 1
-  pid=$(grep -oE 'pid=[0-9]+' "$f" 2>/dev/null | head -1 | cut -d= -f2)
+# Shared liveness core: a lock FILE only counts while its recorded pid is
+# alive. Used by locked() AND the per-iteration lane counter below — counting
+# stale files as running lanes permanently loses MAX_BUILDS capacity after a
+# crash/reboot, and when every lane is a corpse the fleet deadlocks forever
+# (no launch ever runs, so the engine's acquire_app_lock reclaim never fires).
+lock_live(){
+  local pid
+  pid=$(grep -oE 'pid=[0-9]+' "$1" 2>/dev/null | head -1 | cut -d= -f2)
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+locked(){
+  local f="$ROOT/.orch-locks/$(lock_stem "$1").lock"
+  [ -f "$f" ] || return 1
+  lock_live "$f"
 }
 # A user (or the GUI) disables autorun by dropping this marker in the app dir.
 # EVERY launch path must honor it — including the repair path: a release-gate
@@ -101,14 +116,32 @@ if [ "${1:-}" = "--lock-name" ]; then lock_stem "${2:-}"; echo; exit 0; fi
 # Print discovered runnable session ids (flat + nested), one per line, and exit.
 if [ "${1:-}" = "--list-sessions" ]; then list_sessions; exit 0; fi
 
-while true; do
-  _l=$(queue_lanes); [ -n "$_l" ] && MAX_BUILDS=$_l
+# Count live lanes into $parents_running/$builds_running (globals, bash 3.2).
+# Same staleness rule as locked(): a dead pid's leftover lock is capacity, not
+# a running lane.
+count_lanes(){
   parents_running=0; builds_running=0
   for L in "$ROOT"/.orch-locks/*.lock; do
     [ -f "$L" ] || continue
+    lock_live "$L" || continue
     b=$(basename "$L" .lock)
     if is_parent "$b"; then parents_running=$((parents_running+1)); else builds_running=$((builds_running+1)); fi
   done
+}
+# Diagnostic hook (same family as --check-lock): print the lane count and exit,
+# so the counter's staleness rule is testable without entering the fleet loop.
+if [ "${1:-}" = "--check-capacity" ]; then
+  count_lanes
+  echo "parents_running=$parents_running builds_running=$builds_running"
+  exit 0
+fi
+# Print the effective build-lane budget (queue override or configured default)
+# and exit, so the per-iteration reset rule is testable without the fleet loop.
+if [ "${1:-}" = "--check-lanes" ]; then effective_max_builds; exit 0; fi
+
+while true; do
+  MAX_BUILDS=$(effective_max_builds)
+  count_lanes
 
   # Repairs first: apps that finished but failed compile verification carry a
   # .repair_pending marker (+ iterate workflow with a change request). They are

@@ -132,7 +132,8 @@ enum SnippetLibrary {
         return (result, [])
     }
 
-    static func save(_ snippets: [PromptSnippet], to url: URL) {
+    @discardableResult
+    static func save(_ snippets: [PromptSnippet], to url: URL) -> Bool {
         let objects = snippets.map { snippet -> [String: Any] in
             var object: [String: Any] = ["name": snippet.name,
                                          "phase": snippet.phase,
@@ -152,10 +153,15 @@ enum SnippetLibrary {
         }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
-        if let data = try? JSONSerialization.data(withJSONObject: objects,
-                                                  options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: url, options: .atomic)
-        }
+        // Report whether the write landed — a swallowed failure left edits
+        // alive only in memory, silently vanishing on relaunch. Callers that
+        // claim "saved" (saveSnippets) must check this.
+        do {
+            let data = try JSONSerialization.data(withJSONObject: objects,
+                                                  options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch { return false }
     }
 }
 

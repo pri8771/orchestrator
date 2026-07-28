@@ -104,6 +104,36 @@ class TestBuildTargetPolicy(unittest.TestCase):
                 (path, str(error))))
         self.assertEqual(len(seen), 1)
 
+    def test_malformed_tech_stack_entries_engage_seed_fallback(self):
+        # A-29: render_tech_stack does e["name"] / " — " + e["for"]
+        # unconditionally, so entry shapes the renderer cannot handle must be
+        # rejected by validation (engaging the seed) instead of being cached
+        # VALID and crashing every app-workflow run at startup.
+        for bad_entry in ("GRDB",                      # bare-string shorthand
+                          {},                          # no name
+                          {"name": "GRDB", "for": 123}):  # non-str for
+            buildpolicy.clear_cache()
+            root = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, root, True)
+            shutil.copytree(os.path.join(HERE, "sections", "build"),
+                            os.path.join(root, "sections", "build"))
+            active = os.path.join(root, "sections", "build",
+                                  "target_policy.json")
+            with open(active, encoding="utf-8") as fh:
+                data = json.load(fh)
+            data["targets"]["ios"]["tech_stack"]["allowed"].append(bad_entry)
+            with open(active, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            seen = []
+            policy = buildpolicy.load_target_policy(
+                root, "app", on_fallback=lambda path, error: seen.append(
+                    (path, str(error))))
+            self.assertEqual([p for p, _ in seen], [active],
+                             "seed fallback must engage for %r" % (bad_entry,))
+            self.assertIn("tech_stack", seen[0][1])
+            # The resolved (seed) stack must render without crashing.
+            designlint.render_tech_stack(policy["tech_stack"])
+
     def test_global_and_non_build_manifests_are_platform_neutral(self):
         paths = [os.path.join(HERE, name) for name in (
             "phase_rules.json", "tech_stack.json", "definition_of_done.json")]

@@ -17,6 +17,7 @@
 import http.server
 import os
 import shutil
+import socket
 import tempfile
 import threading
 import time
@@ -303,6 +304,79 @@ class TestSSRFProtection(_LocalServerMixin):
         # Proxied: ProxyHandler rewrites req.host to the proxy's address.
         req.host = "proxy.internal:8080"
         self.assertTrue(urlfetch._is_proxied(req))
+
+
+class TestPinnedConnectionWiring(unittest.TestCase):
+    """Regression (audit A-36): the handlers must instantiate the _Pinned*
+    connection classes — passing the stock http.client classes left connect()
+    re-resolving the hostname, reopening the exact DNS-rebinding TOCTOU the
+    pin exists to close. Fully offline: DNS and the socket layer are stubbed,
+    and the stub answers a DIFFERENT address on every lookup (the attacker's
+    short-TTL trick), ending on a private one — so any fresh resolution at
+    connect time is caught, not just hostname pass-through."""
+
+    REBIND_ANSWERS = ["93.184.216.34", "93.184.216.35", "10.0.0.1"]
+
+    def _stubs(self):
+        calls, connects = [], []
+
+        def fake_getaddrinfo(host, *a, **kw):
+            calls.append(host)
+            ip = self.REBIND_ANSWERS[min(len(calls) - 1,
+                                         len(self.REBIND_ANSWERS) - 1)]
+            return [(socket.AF_INET, socket.SOCK_STREAM,
+                     socket.IPPROTO_TCP, "", (ip, 0))]
+
+        def fake_create_connection(address, *a, **kw):
+            connects.append(address)
+            raise OSError("stub: no real socket in this test")
+
+        return calls, connects, fake_getaddrinfo, fake_create_connection
+
+    def _patched(self, fake_gai, fake_cc):
+        return unittest.mock.patch.multiple(
+            urlfetch.socket, getaddrinfo=fake_gai, create_connection=fake_cc)
+
+    def test_http_handler_resolves_once_and_connects_to_that_ip(self):
+        # Driven at the handler (one opened request), where the docstring's
+        # one-getaddrinfo promise lives: resolve+validate once, pin, and the
+        # connect adds ZERO further lookups of the hostname.
+        calls, connects, fake_gai, fake_cc = self._stubs()
+        handler = urlfetch._PinnedHTTPHandler()
+        req = urllib.request.Request("http://rebind.example/x")
+        req.timeout = 5   # normally set by OpenerDirector.open
+        with self._patched(fake_gai, fake_cc):
+            with self.assertRaises(urllib.error.URLError):
+                handler.http_open(req)
+        self.assertEqual(calls.count("rebind.example"), 1)
+        self.assertEqual(connects, [("93.184.216.34", 80)],
+                         "the socket must get the validated IP, not the host")
+
+    def test_https_handler_pins_too(self):
+        calls, connects, fake_gai, fake_cc = self._stubs()
+        handler = urlfetch._PinnedHTTPSHandler()
+        req = urllib.request.Request("https://rebind.example/x")
+        req.timeout = 5
+        with self._patched(fake_gai, fake_cc):
+            with self.assertRaises(urllib.error.URLError):
+                handler.https_open(req)
+        self.assertEqual(calls.count("rebind.example"), 1)
+        self.assertEqual(connects, [("93.184.216.34", 443)])
+
+    def test_fetch_url_connects_to_pinned_ip_not_a_rebound_answer(self):
+        # End to end: fetch_url's static pre-check takes answer #1, the
+        # handler resolves+pins answer #2, and the connect performs NO third
+        # lookup — which would have received the attacker's 10.0.0.1.
+        calls, connects, fake_gai, fake_cc = self._stubs()
+        with self._patched(fake_gai, fake_cc), \
+             unittest.mock.patch.object(urllib.request, "getproxies",
+                                        lambda: {}):   # ambient proxies off
+            res = urlfetch.fetch_url("http://rebind.example/x", timeout=5)
+        self.assertFalse(res["ok"])   # stubbed socket refuses; never raises
+        self.assertEqual(calls.count("rebind.example"), 2,
+                         "pre-check + pin only — nothing at connect time")
+        self.assertEqual(connects, [("93.184.216.35", 80)],
+                         "connect must use the handler's pinned address")
 
 
 class TestCacheFilename(unittest.TestCase):

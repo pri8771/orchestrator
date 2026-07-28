@@ -84,8 +84,14 @@ class MigratorTest(unittest.TestCase):
             if name.endswith(".json")}
         self.assertEqual(set(migrate_v3.SEED_HASHES), expected)
         for rel, digest in migrate_v3.SEED_HASHES.items():
-            self.assertEqual(migrate_v3._file_hash(
-                os.path.join(migrate_v3.HERE, rel)), digest, rel)
+            self.assertEqual(
+                migrate_v3._file_hash(os.path.join(migrate_v3.HERE, rel)),
+                digest,
+                "%s no longer matches its SEED_HASHES pin. If the seed change "
+                "is intended, re-pin it IN THE SAME COMMIT (protocol comment "
+                "above SEED_HASHES in migrate_v3.py); otherwise revert the "
+                "file. An un-re-pinned seed silently downgrades no-git "
+                "installs to whole-document carry." % rel)
 
     def test_pristine_real_configs_are_all_seed_identical_and_dry_run_writes_zero(self):
         before = _tree_hash(self.workspace)
@@ -225,6 +231,116 @@ class MigratorTest(unittest.TestCase):
             self.workspace, "sections", "ideas", "rules.json"))
         self.assertEqual(rules["phases"]["prompt_contract"]["rules"].count(
             "MIGRATED-RULE-EVIDENCE"), 1)
+
+    def _fake_engine(self):
+        """A copy of the shipped seeds posing as the engine checkout, with
+        migrate_v3.HERE patched at it for the rest of the test."""
+        engine = tempfile.mkdtemp(prefix="orch_fake_engine_")
+        self.addCleanup(shutil.rmtree, engine, ignore_errors=True)
+        shutil.copytree(os.path.join(migrate_v3.HERE, "workflows"),
+                        os.path.join(engine, "workflows"))
+        for name in ("phase_rules.json", "model_routing.json"):
+            shutil.copy2(os.path.join(migrate_v3.HERE, name),
+                         os.path.join(engine, name))
+        self.addCleanup(setattr, migrate_v3, "HERE", migrate_v3.HERE)
+        migrate_v3.HERE = engine
+        return engine
+
+    def _drift_engine_routing(self, engine):
+        """GUI-style rewrite of the engine's working-tree model_routing.json:
+        drops a documentation block, replaces phases wholesale."""
+        path = os.path.join(engine, "model_routing.json")
+        drifted = _read(path)
+        drifted.pop("_examples", None)
+        drifted["phases"] = {"prompt_contract": {"codex": "drifted-model"}}
+        _write(path, drifted)
+
+    def test_external_workspace_ignores_drifted_engine_tree_baseline(self):
+        # A-23: a rewritten engine working-tree copy must never be diffed as
+        # the "seed" for an external workspace — pristine files would mint
+        # phantom tuned deltas computed against the drift.
+        engine = self._fake_engine()          # no .git: git fallback is dead
+        self._drift_engine_routing(engine)
+        plan = migrate_v3.build_plan(self.workspace)
+        self.assertIn("model_routing.json", plan["seed_identical"])
+        self.assertEqual([e for e in plan["entries"]
+                          if e["source"] == "model_routing.json"], [])
+        self.assertNotIn("model_routing.json", plan["backups"])
+        self.assertEqual(plan["targets"], {})
+
+    def test_dirty_engine_tree_falls_back_to_head_seed_for_external_tuning(self):
+        # A-23: dirty engine tree over a pristine HEAD — the hash-verified
+        # git fallback keeps precise per-delta migration for a TUNED external
+        # workspace instead of whole-document carry or phantom deltas.
+        engine = self._fake_engine()
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+               "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]
+        subprocess.run(git + ["init", "-q"], cwd=engine, check=True)
+        subprocess.run(git + ["add", "-A"], cwd=engine, check=True)
+        subprocess.run(git + ["commit", "-qm", "seed"], cwd=engine,
+                       check=True)
+        self._drift_engine_routing(engine)
+        routing_path = os.path.join(self.workspace, "model_routing.json")
+        routing = _read(routing_path)
+        routing.setdefault("phases", {})["prompt_contract"] = {
+            "codex": "migration-model", "codex_reasoning": "high"}
+        _write(routing_path, routing)
+        plan = migrate_v3.build_plan(self.workspace)
+        # One entry per owning section, but never a phantom (/_examples) or
+        # whole-document delta.
+        self.assertEqual({e["delta"] for e in plan["entries"]
+                          if e["source"] == "model_routing.json"},
+                         {"/phases/prompt_contract"})
+
+    def test_refused_apply_rolls_back_to_pre_apply_tree(self):
+        # A-24: validation runs against the real loaders only after every
+        # target is written, so a lint failure must restore each written
+        # byte — previously APPLY REFUSED left a half-migrated workspace.
+        self.tune_trio()
+        broken = {"name": "broken_flow", "title": "Broken",
+                  "description": "x", "target": "chat", "build_phase": None,
+                  "budget": None, "overrides": None, "phases": [{}]}
+        _write(os.path.join(self.workspace, "workflows", "broken_flow.json"),
+               broken)
+        before = _tree_hash(self.workspace)
+        plan = migrate_v3.build_plan(self.workspace)
+        self.assertEqual(plan["unmapped"], [])
+        self.assertIn("sections/broken_flow/section.json", plan["targets"])
+        with self.assertRaises(migrate_v3.MigrationError):
+            migrate_v3.apply_plan(plan)
+        self.assertEqual(_tree_hash(self.workspace), before,
+                         "APPLY REFUSED must leave the workspace untouched")
+        self.assertFalse(os.path.isdir(os.path.join(
+            self.workspace, "sections", "broken_flow")))
+
+    def test_loader_valueerror_is_refused_as_migration_error_with_rollback(self):
+        # A-24: the sections loaders raise bare ValueError on shape
+        # violations; apply must convert to MigrationError (so main() prints
+        # APPLY REFUSED, not a traceback) after rolling back.
+        self.tune_trio()
+        before = _tree_hash(self.workspace)
+        real_lint = sections.lint_section
+        self.addCleanup(setattr, sections, "lint_section", real_lint)
+        def boom(name, orch_dir):
+            raise ValueError("synthetic shape violation")
+        sections.lint_section = boom
+        plan = migrate_v3.build_plan(self.workspace)
+        with self.assertRaises(migrate_v3.MigrationError):
+            migrate_v3.apply_plan(plan)
+        self.assertEqual(_tree_hash(self.workspace), before)
+
+    def test_apply_backs_up_overwritten_target_manifest(self):
+        # A-24: pre-existing TARGET files that are merged-into and rewritten
+        # get a .v2.bak recorded in the receipt — previously only SOURCE rels
+        # were backed up, leaving prior target bytes unrecoverable.
+        self.tune_trio()
+        manifest_path = os.path.join(self.workspace, "sections", "ideas",
+                                     "section.json")
+        prior = _read_bytes(manifest_path)
+        plan = migrate_v3.build_plan(self.workspace)
+        receipt = migrate_v3.apply_plan(plan)
+        self.assertEqual(_read_bytes(manifest_path + ".v2.bak"), prior)
+        self.assertIn("sections/ideas/section.json", receipt["backups"])
 
     def test_custom_workflow_gets_data_complete_reviewable_section(self):
         custom = {

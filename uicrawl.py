@@ -28,6 +28,7 @@ import shutil
 import subprocess
 
 import localmodels as lmlib
+import procutil
 import visualqa as vqalib
 
 RUNNER_DIRNAME = "uitest-runner"
@@ -35,10 +36,17 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _run(cmd, cwd=None, timeout=120, env=None):
+    # Routed through procutil for parity with verify.py's _run: run_capture
+    # launches the command in its own process group, so a timeout tears down
+    # xcodebuild's whole tree (build-service daemons included) rather than
+    # orphaning it, and the engine's SIGTERM drain (kill_live_groups) can stop
+    # an in-flight crawl too. Timeouts surface as exit 124, like verify.
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                           timeout=timeout, env=env)
-        return p.returncode, p.stdout or "", p.stderr or ""
+        out, err, code = procutil.run_capture(cmd, cwd=cwd, timeout=timeout,
+                                              env=env)
+        return code, out, err
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after %ss" % timeout
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, "", str(exc)
 

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "name": "prototype_sprint",
+  "description": "The smallest slice that proves the idea: what it is, the core screens, and that it builds \u2014 mirrors completeness.py's 'prototype' profile intent generalized to doc slots.",
+  "doc_slots": [
+    "problem_statement",
+    "target_user",
+    "value_proposition",
+    "product_requirements",
+    "feature_list",
+    "user_flows",
+    "design_language",
+    "technical_architecture",
+    "build_plan",
+    "test_plan"
+  ],
+  "pipeline_ref": "",
+  "overrides": {
+    "sections": {
+      "gtm": {
+        "enabled": false
+      },
+      "legal_compliance": {
+        "enabled": false
+      }
+    },
+    "phases": {},
+    "casts": {}
+  }
+}

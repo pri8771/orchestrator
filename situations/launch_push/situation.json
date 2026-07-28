@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "launch_push",
+  "description": "Everything a real ship needs beyond the build: legal, marketing, and launch readiness.",
+  "doc_slots": [
+    "privacy_policy",
+    "terms_of_service",
+    "app_store_compliance",
+    "positioning",
+    "pricing",
+    "launch_plan",
+    "marketing_channels",
+    "release_checklist"
+  ],
+  "pipeline_ref": "",
+  "overrides": {
+    "sections": {},
+    "phases": {},
+    "casts": {}
+  }
+}

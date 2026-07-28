@@ -114,6 +114,16 @@ class TestLoadRoutingForApp(unittest.TestCase):
         # untouched fleet-only phase passes through unchanged
         self.assertEqual(r["phases"]["tech_specs"], {"ollama": "qwen2.5-coder:7b"})
 
+    def test_overlay_output_shape_matches_flat_routing(self):
+        # Regression (A-65): the overlay used to deepcopy a nonexistent
+        # top-level "chains" key, injecting a spurious "chains": None into
+        # every layered dict — a shape no flat path produces or reads.
+        write_routing(self.app, {"phases": {
+            "build_coordination": {"claude": "claude-opus-4-8"}}})
+        r = mr.load_routing_for_app(self.fleet, self.app)
+        self.assertNotIn("chains", r)
+        self.assertEqual(set(r), set(mr.load_routing(self.fleet)))
+
     def test_app_enabled_and_cloud_to_local_never_shadow_fleet(self):
         # ModelRouting.save (GUI) always round-trips enabled=true and
         # cloud_to_local=true even though the Plan tab never edits them —

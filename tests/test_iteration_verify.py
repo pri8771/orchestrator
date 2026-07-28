@@ -217,5 +217,44 @@ class TestContractErrorWarn(unittest.TestCase):
             self.assertEqual(mk.load_mistakes(app_dir), [])
 
 
+class TestRepairAttemptCountIsHonest(unittest.TestCase):
+    """A-73: _verify_and_repair's fall-through note claimed 'after N repair
+    attempt(s)' with N=max_repairs even when the loop bailed out early
+    (agent unavailable, sprint deadline) — overstating the repair effort to
+    whoever triages the failed build."""
+
+    def _run(self, call_agent):
+        app_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, app_dir, True)
+        build_dir = os.path.join(app_dir, "app_build")
+        os.makedirs(build_dir)
+        md_path = os.path.join(app_dir, "build.md")
+        cfg = {"runtime": {"verify_build_enabled": True},
+               "_build_dir": build_dir, "_workflow_name": "app_build"}
+        phasedef = wf.Phase("build_verification", ".", "build.md", "build",
+                            writes=True,
+                            verify={"type": "shell", "command": "false",
+                                    "repair_iterations": 3})
+        with unittest.mock.patch.object(orch.verifylib, "run_verification",
+                                        lambda *a, **k: dict(VERIFY_FAIL)), \
+             unittest.mock.patch.object(orch, "call_agent", call_agent):
+            _t, note = orch._verify_and_repair(
+                cfg, "demo", app_dir, phasedef, {"prompt_hash": "h"},
+                md_path, "", "codex")
+        return note
+
+    def test_agent_unavailable_reports_zero_attempts_and_the_budget(self):
+        def unavailable(*_a, **_k):
+            raise orch.AgentError("codex CLI logged out")
+        note = self._run(unavailable)
+        self.assertIn("after 0 repair attempt(s)", note)
+        self.assertIn("(budget 3)", note)
+
+    def test_full_budget_reports_the_real_count_without_budget_suffix(self):
+        note = self._run(lambda *_a, **_k: "did some repair work")
+        self.assertIn("after 3 repair attempt(s)", note)
+        self.assertNotIn("budget", note)
+
+
 if __name__ == "__main__":
     unittest.main()

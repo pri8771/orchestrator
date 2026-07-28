@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "name": "v2_iteration",
+  "description": "A second pass on a shipped app: what changed, what's still open, and where to pick up.",
+  "doc_slots": [
+    "overview",
+    "changelog",
+    "known_limitations",
+    "task_graph"
+  ],
+  "pipeline_ref": "",
+  "overrides": {
+    "sections": {},
+    "phases": {},
+    "casts": {}
+  }
+}

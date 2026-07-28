@@ -194,6 +194,10 @@ class TestGeminiInvocationUsesStdin(unittest.TestCase):
         self.assertNotIn("-p", captured["cmd"])
         self.assertNotIn("hello", captured["cmd"])
         self.assertEqual(captured["cmd"][0], "gemini")
+        # Must match the startup probe's invocation: without --skip-trust the
+        # CLI can emit a trust prompt in the ephemeral tempdir and consume the
+        # piped prompt as its answer.
+        self.assertIn("--skip-trust", captured["cmd"])
 
     def test_keyless_fallback_passes_prompt_on_stdin(self):
         captured = self._capture()
@@ -210,6 +214,56 @@ class TestGeminiInvocationUsesStdin(unittest.TestCase):
         self.assertNotIn("-p", captured["cmd"])
         self.assertNotIn("hello", captured["cmd"])
         self.assertEqual(captured["cmd"][0], "gemini")
+        # The availability probe runs keyless with --skip-trust; the runtime
+        # keyless path must use the same shape or the probe validates an
+        # invocation that never actually runs.
+        self.assertIn("--skip-trust", captured["cmd"])
+
+
+class TestAgyInvocationUsesStdin(unittest.TestCase):
+    """A-67: the agy (Antigravity) fallback must pipe the prompt over stdin
+    like every other runner — on argv the full phase context is visible via
+    `ps`, and a huge prompt E2BIGs execve. agy keeps the -p print-mode FLAG
+    (verified: `agy -p` with no positional reads the whole prompt from stdin),
+    but the prompt text itself must never appear in argv or the display cmd."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._old_run_subprocess = orch._run_subprocess
+        self._old_agent_cwd = orch._agent_cwd
+        self._old_which = orch.which
+        self._old_api_key = orch._gemini_api_key
+
+    def tearDown(self):
+        orch._run_subprocess = self._old_run_subprocess
+        orch._agent_cwd = self._old_agent_cwd
+        orch.which = self._old_which
+        orch._gemini_api_key = self._old_api_key
+
+    def test_agy_path_passes_prompt_on_stdin(self):
+        captured = {}
+
+        def fake_run_subprocess(cmd, cwd, timeout, env=None, heartbeat=None, input_text=None):
+            captured["cmd"] = list(cmd)
+            captured["input_text"] = input_text
+            return "reply", "", 0
+
+        orch._run_subprocess = fake_run_subprocess
+        orch._agent_cwd = lambda _cfg: (self.tmp, False)
+        orch.which = lambda name: "/usr/bin/agy" if name == "agy" else None
+        orch._gemini_api_key = lambda cfg: None
+        cfg = {"_resolved": {"gemini_model": ""}, "_allow_writes": False}
+
+        out, err, code, displayed = orch.run_gemini(cfg, "hello", timeout=17)
+
+        self.assertEqual(out, "reply")
+        self.assertEqual(captured["cmd"][0], "agy")
+        self.assertEqual(captured["input_text"], "hello")
+        self.assertNotIn("hello", captured["cmd"])
+        self.assertIn("-p", captured["cmd"])   # print-mode flag stays
+        self.assertIn("<prompt on stdin>", displayed)
+        self.assertNotIn("hello", displayed)   # prompt never leaks into display
 
 
 class TestPerWorkerHealthKey(unittest.TestCase):

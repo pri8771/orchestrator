@@ -213,6 +213,127 @@ class TestConversationalPhase(ConversationalBase):
         self.assertEqual(state["conversation_end"][KEY], "ended by user")
 
 
+class TestCastAddValidation(ConversationalBase):
+    """A-76: /cast add must require a real agent identity (RUNNERS key,
+    local:<model>, api:<provider>:<model>) BEFORE the availability probe —
+    for unknown names _agent_available is just which(), so any binary on
+    PATH ('git') would be admitted and later blow up in resolve_runner."""
+
+    def test_cast_add_of_path_binary_is_refused_with_a_card(self):
+        self._inbox("hello")
+        # Round 1's turn queues the command; the barrier applies it when
+        # round 3 opens (requested_round=2 < 3), so keep the chat alive
+        # through round 3.
+        self.on_round[1] = lambda: self._inbox("/cast add git")
+        self.on_round[2] = lambda: self._inbox("keep going")
+        self.on_round[3] = self._end
+        state = self._state()
+        orch.process_phase(self._cfg(), "demo", self.app_dir, self._phase(),
+                           "seed", [], state)
+        text = self._md()
+        self.assertIn("is not a known agent id", text)
+        self.assertNotIn("joins the cast", text)
+        # 'git' never became a roster member — no turn was ever run for it.
+        self.assertNotIn("git", [a for _r, a, _sk in self.calls])
+
+
+class TestBarrierDiesWithTheChat(ConversationalBase):
+    """A-71: a /vote queued during a chat that ends before the barrier fires
+    must be cleared by the finalize — otherwise the row persists in
+    agent_state.json and silently fires a forced vote in a later unrelated
+    conversational phase."""
+
+    def test_unfired_queued_vote_is_cleared_on_finalize(self):
+        import commands as cmdlib
+        cmdlib.ensure_seeded(orch.HERE)
+        self._inbox("/vote")           # queued at round 1's open peek
+        self.on_round[1] = self._end   # chat ends before the barrier fires
+        state = self._state()
+        orch.process_phase(self._cfg(), "demo", self.app_dir, self._phase(),
+                           "seed", [], state)
+        self.assertEqual(orch.load_state(self.app_dir)["command_barrier"], [])
+        self.assertNotIn("### Forced Vote", self._md())
+
+
+class TestMidChatRoutingRemoval(ConversationalBase):
+    """A-75: the mid-chat routing refresh must rebuild from the pristine
+    pre-route cfg — _apply_phase_routing only ADDS overrides, so layering
+    onto the already-routed copy made REMOVING an override (model, timeout)
+    a silent no-op while still announcing 'Chat routing updated'."""
+
+    def test_removing_an_override_mid_chat_takes_effect(self):
+        import json
+        routing_path = os.path.join(self.app_dir, "model_routing.json")
+        _write(routing_path, json.dumps(
+            {"schema_version": 1,
+             "phases": {KEY: {"codex": "routed-codex", "timeout": 555}}}))
+        seen = {}
+        inner = orch.call_agent_sessioned   # the ConversationalBase fake
+
+        def recording(cfg, app, phase, rnd, agent, prompt,
+                      delta_prompt=None, session_key=None):
+            seen.setdefault(rnd, ((cfg.get("models") or {}).get("codex"),
+                                  cfg.get("_turn_timeout")))
+            return inner(cfg, app, phase, rnd, agent, prompt,
+                         delta_prompt=delta_prompt, session_key=session_key)
+        orch.call_agent_sessioned = recording
+
+        def remove_override_and_continue():
+            _write(routing_path, json.dumps({"schema_version": 1,
+                                             "phases": {}}))
+            self._inbox("keep going")
+        self._inbox("hello")
+        self.on_round[1] = remove_override_and_continue
+        self.on_round[2] = self._end
+        cfg = self._cfg()
+        cfg["models"] = {"codex": "base-codex"}
+        orch.process_phase(cfg, "demo", self.app_dir, self._phase(),
+                           "seed", [], self._state())
+        # Round 1 ran on the routed model + timeout...
+        self.assertEqual(seen[1], ("routed-codex", 555))
+        # ...and round 2 reverted BOTH the instant the override was removed.
+        self.assertEqual(seen[2], ("base-codex", None))
+
+
+class TestInboxDrainRace(unittest.TestCase):
+    """A-70: the drain claims the inbox atomically (os.replace) instead of
+    read-then-truncate — a message the human writes concurrently must land in
+    a fresh inbox for the next drain, never be truncated away unseen."""
+
+    def setUp(self):
+        self.app_dir = tempfile.mkdtemp()
+        self.md = os.path.join(self.app_dir, "chat.md")
+        open(self.md, "w").close()
+        self.inbox = os.path.join(self.app_dir, "human_inbox.txt")
+
+    def test_message_written_after_the_claim_survives(self):
+        import unittest.mock
+        _write(self.inbox, "first message")
+        real_replace = os.replace
+
+        def replace_then_concurrent_write(src, dst):
+            # The writer lands the instant the engine claims the file — the
+            # exact interleaving the old read-then-truncate destroyed.
+            real_replace(src, dst)
+            _write(src, "second message")
+        with unittest.mock.patch.object(orch.os, "replace",
+                                        replace_then_concurrent_write):
+            transcript, msg = orch._drain_inbox_message(
+                self.app_dir, self.md, "", "Round 1")
+        self.assertEqual(msg, "first message")
+        self.assertIn("first message", transcript)
+        with open(self.inbox, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().strip(), "second message")
+
+    def test_drained_inbox_is_left_empty_but_present(self):
+        _write(self.inbox, "hello")
+        _t, msg = orch._drain_inbox_message(self.app_dir, self.md, "",
+                                            "Round 1")
+        self.assertEqual(msg, "hello")
+        with open(self.inbox, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "")   # invariant pollers rely on
+
+
 class TestPhaseSchemaRoundTrip(unittest.TestCase):
     def test_conversational_round_trips(self):
         p = wf.Phase("c", "c", "c.md", "p", conversational=True)
@@ -257,7 +378,11 @@ class TestAwaitInboxCadence(unittest.TestCase):
         elapsed = _t.monotonic() - t0
         th.join()
         self.assertEqual(decision, "message")
-        self.assertLess(elapsed, 0.75,
+        # Worst legitimate case is ~0.55s (0.3s writer sleep + one full 250ms
+        # tick); 1.5s keeps real slack for a contended shared CI runner while
+        # still discriminating — the legacy ~2s poll's earliest wake would be
+        # ~2.0s, well past this bound, so the sub-second tick stays pinned.
+        self.assertLess(elapsed, 1.5,
                         "wake took %.2fs — the 250ms tick is not in effect" % elapsed)
 
     def test_idle_wait_does_zero_content_reads_and_bounded_cpu(self):
@@ -297,5 +422,5 @@ class TestAwaitInboxCadence(unittest.TestCase):
         elapsed = _t.monotonic() - t0
         th.join()
         self.assertEqual(decision, "end")
-        self.assertLess(elapsed, 0.75)
+        self.assertLess(elapsed, 1.5)   # same discriminating bound as above
         self.assertIsNone(self.state.get("awaiting_human"))

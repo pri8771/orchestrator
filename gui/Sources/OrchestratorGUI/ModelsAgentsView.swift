@@ -13,7 +13,6 @@ import AppKit
 struct ModelsAgentsView: View {
     @EnvironmentObject var store: OrchestratorStore
     @State private var routing = ModelRouting()
-    @State private var loaded = false
 
     var body: some View {
         ScrollView {
@@ -48,16 +47,20 @@ struct ModelsAgentsView: View {
             .padding(DS.space.margin)
         }
         .onAppear {
-            if !loaded {
-                routing = store.readModelRouting()
-                loaded = true
-            }
+            // Refresh on EVERY appearance, never loaded-once: the Defaults
+            // grid, Inspector, or applyProfile may have written the shared
+            // file since this view was last on screen, and a stale snapshot
+            // here used to silently revert those edits on the next ladder edit.
+            routing = store.readModelRouting()
             store.probeAgentVersions()
         }
     }
 
     private func persistRouting() {
-        store.writeModelRouting(routing)
+        // This view owns only the fallback ladders — overlay them onto a
+        // fresh disk read (reload-before-mutate) instead of persisting the
+        // whole snapshot, so stale phases can't clobber newer edits.
+        store.writeModelRoutingChains(routing.chains)
     }
 
     // MARK: Local Models (roster + active limit)

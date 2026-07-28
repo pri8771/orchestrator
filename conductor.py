@@ -709,12 +709,22 @@ def reconcile_on_start(root, state, emit=print):
             applied += 1
         # 7.5b: a workspace budget halt in the tail also already happened —
         # rebuild state['halted'] so routing stays stopped after a crash
-        # between the budget_exhausted append and its save.
-        if rec.get("decision") == "budget_exhausted" and not state.get("halted"):
+        # between the budget_exhausted append and its save. Only WORKSPACE
+        # records qualify: guard_route's per-route hop-budget verdict shares
+        # this decision name but always carries a route_id (workspace records
+        # never do), and must not replay as a whole-workspace halt.
+        if rec.get("decision") == "budget_exhausted" \
+                and not rec.get("route_id") and not state.get("halted"):
             detail = rec.get("detail") if isinstance(rec.get("detail"),
                                                      dict) else {}
             state["halted"] = {"reason": detail.get("reason"),
                                "ts": rec.get("ts")}
+            applied += 1
+        # The lift is durable too (see _lift_workspace_halt): replay it, or a
+        # crash between the budget_lifted append and the state save re-halts
+        # a workspace whose caps were already raised.
+        if rec.get("decision") == "budget_lifted" and state.get("halted"):
+            state["halted"] = None
             applied += 1
         # 7.11: a pipeline_loaded decision in the tail already happened.
         # The ledger stores only the preset's PATH (the normalized preset
@@ -899,11 +909,21 @@ def _record_termination(root, state, sid, reason, evidence, emit=print):
         try:
             import events as eventslib
             parts = sid.split("/")
+            event_detail = detail
+            gaps = detail.get("open_gaps")
+            if isinstance(gaps, list) and len(gaps) > 20:
+                # The report file and ledger line above keep the FULL gap
+                # list ('honest about remaining work'); only the event line
+                # is capped (mirroring _check_gap_empty's ids[:20]) so a
+                # large converged payload can't push it past emit_event's
+                # PIPE_BUF atomicity cap.
+                event_detail = dict(detail, open_gaps=gaps[:20],
+                                    open_gap_count=len(gaps))
             eventslib.emit_event(
                 os.path.join(root, sid), event_kind,
                 project=parts[0] if parts else sid,
                 section=parts[1] if len(parts) > 1 else "",
-                session=sid, reason=str(measurement), evidence=detail)
+                session=sid, reason=str(measurement), evidence=event_detail)
         except Exception:
             pass
     if reason == "stalled":
@@ -946,7 +966,25 @@ def _consume_pipeline_request(root, state, emit=print):
     try:
         with open(path, encoding="utf-8") as fh:
             req = json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return state   # the common case: no pending request
+    except (OSError, ValueError) as exc:
+        # Peek-and-clear applies to a BROKEN marker too: a torn/invalid
+        # write must be drained (or every later poll re-reads it forever)
+        # AND surfaced (§6.2 — the operator's "Run pipeline" click must
+        # never vanish silently). preset_path is None: the marker was
+        # unreadable, so no path claim would be honest.
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+              "session": None, "decision": "pipeline_load_failed",
+              "detail": {"preset_path": None,
+                        "error": "unreadable request marker: %s" % exc}}
+        state["ledger_cursor"] = ledger_append(root, rec)
+        save_conductor_state(root, state)
+        emit("conductor: pipeline request unreadable — drained (%s)" % exc)
         return state
     try:
         os.remove(path)
@@ -1072,6 +1110,23 @@ def _record_workspace_termination(root, state, reason, evidence, emit=print,
     emit("conductor: WORKSPACE HALTED — %s (%s)" % (reason, report))
 
 
+def _lift_workspace_halt(root, state, evidence, emit=print):
+    """The documented exit from a 7.5b workspace halt ("until the cap is
+    lifted — a new manifest / a new day for wall-clock"): one ledger line +
+    state['halted'] cleared, mirroring _record_workspace_termination so a
+    crash between the append and the save replays the lift on restart."""
+    prior = state.get("halted") if isinstance(state.get("halted"), dict) else {}
+    rec = {"v": SCHEMA_VERSION, "ts": time.time(), "stage": "evaluating",
+           "decision": "budget_lifted", "session": None,
+           "detail": {"reason": prior.get("reason"), "evidence": evidence}}
+    new_len = ledger_append(root, rec)
+    state["halted"] = None
+    state["ledger_cursor"] = new_len
+    save_conductor_state(root, state)
+    emit("conductor: workspace halt LIFTED — %s no longer exhausted"
+         % (prior.get("reason") or "budget"))
+
+
 def evaluate_terminations(root, state, sessions, manifest, emit=print):
     """The four-layer termination stack, evaluated in the card's specified
     order goal -> stall -> budget -> quiescence. Goal/stall run PER SESSION
@@ -1117,6 +1172,19 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
 
     # --- global budgets (7.5b) --------------------------------------------- #
     budgets = manifest.get("budgets")
+    if not budgets:
+        if state.get("halted"):
+            # The operator removed the budgets block entirely — the
+            # documented "new manifest" lift. (An empty manifest never
+            # reaches here; that path leaves the halt standing until
+            # budgets reappear.)
+            _lift_workspace_halt(root, state, {"budgets": None}, emit)
+        if state.get("over_quota"):
+            # Same removal must clear the stashed daily-quota list: with no
+            # budgets the quota check never runs again, so a stale entry
+            # would defer routes to that provider forever.
+            state["over_quota"] = []
+            save_conductor_state(root, state)
     if budgets:
         records = []
         for sid in sessions:
@@ -1124,6 +1192,12 @@ def evaluate_terminations(root, state, sessions, manifest, emit=print):
         bc = ctlib.budget_check(budgets, read_ledger(root), records,
                                 time.time(), time.strftime("%Y-%m-%d"))
         state["over_quota"] = sorted(bc.get("over_quota") or [])
+        if not bc["exhausted"] and state.get("halted"):
+            # Caps raised / a new day: the exhaustion that halted the
+            # workspace no longer holds — lift before the halted early-return
+            # below, or routing stays dead forever on a stale verdict.
+            _lift_workspace_halt(root, state,
+                                 dict(bc.get("evidence") or {}), emit)
         if bc["exhausted"] and not state.get("halted"):
             budget_evidence = dict(bc["evidence"])
             if bc.get("provider"):
@@ -1365,14 +1439,35 @@ def sync_situations(root, state, sessions, emit=print):
             workflow = wflib.load_workflow(
                 sstate.get("workflow") or "app_build",
                 os.path.dirname(os.path.abspath(__file__)))
+            # 5.5: the recompute rewrites HANDOFF_BLUEPRINT/GAP_REPORT — both
+            # in docsync's protected set — so it must run inside the same
+            # prepare/finish bracket the normal render path uses, or it
+            # clobbers human-overridden docs AND (by writing outside a
+            # milestone commit) poisons the next pass's ownership diff into
+            # marking the engine's own bytes human-owned. prepare_render is
+            # safe unconditionally: with no docs repo it degrades to
+            # {enabled: False} and finish_render is a no-op.
+            import docsync as docsynclib
+            here = os.path.dirname(os.path.abspath(__file__))
+            sync_context = docsynclib.prepare_render(
+                app_dir, docslib.load_doc_map(here, emit), on_warn=emit)
+            overrides = set(sync_context.get("overrides") or [])
             coverage = docslib.recompute_gap_report(
                 app_dir, project, workflow.phases,
                 sstate.get("phase_outputs") or {},
-                os.path.dirname(os.path.abspath(__file__)), artlib,
+                here, artlib,
                 record.get("required_slots") if record.get("valid") else None,
-                on_warn=emit)
+                on_warn=emit, human_overrides=overrides)
             if coverage is None:
                 ok = False
+            else:
+                written = [p for p in ("docs/HANDOFF_BLUEPRINT.md",
+                                       "docs/GAP_REPORT.md")
+                           if p not in overrides]
+                docsynclib.finish_render(
+                    app_dir, sync_context, written, here, app=project,
+                    workflow=workflow.name, phase="situation_recompute",
+                    on_warn=emit)
         if ok:
             ok = _cancel_stale_situation_routes(
                 root, state, project, record, emit)
@@ -1454,6 +1549,13 @@ def full_poll(root, state, emit=print, route_engine=None):
     if (manifest.get("goal") or manifest.get("quiescence_cycles")
             or manifest.get("budgets") or manifest.get("stall")):
         state = evaluate_terminations(root, state, sessions, manifest, emit)
+    elif state.get("over_quota"):
+        # No termination layer enabled at all (e.g. goal_manifest.json was
+        # deleted -> SAFE_DEFAULT): evaluate_terminations never runs, so a
+        # previously persisted over_quota list would defer that provider's
+        # routes on every later poll with nothing left to clear it.
+        state["over_quota"] = []
+        save_conductor_state(root, state)
     # V3 7.2: act on this poll's admissible newly-final artifacts. Routing
     # is off unless a .conductor/routing enable + rules exist; the acting
     # stage owns NO dir-minting — every route mints through sessions
@@ -1464,6 +1566,19 @@ def full_poll(root, state, emit=print, route_engine=None):
             state = route_engine(root, state, sessions, emit)
         except Exception as exc:  # noqa: BLE001 - a routing fault must not
             # wedge the observation loop; it's ledgered and the poll ends.
+            # The ledger write is guarded (a broken disk must not mask the
+            # emit) — a fault that only reached stderr would leave the
+            # append-only decision record showing an idle, healthy conductor.
+            try:
+                rec = {"v": SCHEMA_VERSION, "ts": time.time(),
+                       "stage": "acting", "session": None,
+                       "decision": "routing_error",
+                       "detail": {"error": str(exc)[:500],
+                                  "type": type(exc).__name__}}
+                state["ledger_cursor"] = ledger_append(root, rec)
+                save_conductor_state(root, state)
+            except Exception:  # noqa: BLE001 - best-effort audit trail
+                pass
             emit("conductor: routing error (loop continues): %s" % exc)
     set_stage(root, state, "idle")
     return state
@@ -1696,12 +1811,16 @@ def main(argv=None):
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-    # The acting engine runs ONLY under --route: reachable and wired, but not
-    # silently autonomous before permissions/termination/dials land.
+    # The acting engine runs ONLY under --route: reachable and wired, never
+    # silently autonomous — the operator opts in per run.
     engine = route_engine if args.route else None
     if args.route:
+        # Must agree with the --route help text: the 7.4/7.5/7.6 guardrails
+        # ARE live on routed sessions (the 'no dials yet' skeleton-era banner
+        # falsely promised an unguarded run).
         print("conductor: --route ENABLED — autonomous session minting is on "
-              "(no termination/permission dials yet; supervise this run).",
+              "(7.4 permissions, 7.5 termination, and 7.6 oversight dials "
+              "are enforced on every routed session).",
               file=sys.stderr)
     try:
         state = full_poll(root, state, route_engine=engine)
@@ -1767,6 +1886,30 @@ def route_engine(root, state, sessions, emit=print):
     section_providers = _recent_section_providers(root, sessions) \
         if over_quota else {}
 
+    # A quota deferral is ONE decision, not one per poll: full_poll re-runs on
+    # every events.jsonl wake (1s tick), so re-appending route_deferred each
+    # cycle would grow the append-only ledger without bound (each line fsynced,
+    # then the whole file re-counted/re-parsed — quadratic I/O). Dedupe per
+    # route_id within the local quota day — budget_check's own window — so the
+    # retry AFTER a reset is still ledgered honestly. The map rides along in
+    # conductor_state.json via the _ledger_route saves; pruning to today keeps
+    # it bounded.
+    quota_day = time.strftime("%Y-%m-%d")
+    deferred_ledgered = state.setdefault("deferred_ledgered", {})
+    if not isinstance(deferred_ledgered, dict):   # defensive, like load_
+        deferred_ledgered = state["deferred_ledgered"] = {}
+    for stale_rid in [k for k, d in deferred_ledgered.items()
+                      if d != quota_day]:
+        del deferred_ledgered[stale_rid]
+
+    def _defer_once(rid):
+        """True the FIRST time this route defers today (caller ledgers);
+        False on every later poll while the same quota window holds."""
+        if deferred_ledgered.get(rid) == quota_day:
+            return False
+        deferred_ledgered[rid] = quota_day
+        return True
+
     sections_dir = _sections_dir()
     active_preset = state.get("pipeline")
     classify = _build_classifier(root)
@@ -1818,7 +1961,8 @@ def route_engine(root, state, sessions, emit=print):
                            action["target"]),
                 "artifact_id": p["artifact_id"],
                 "content_hash": p["content_hash"], "route_id": rid,
-                "source_section": p["source_section"], "rule_id": p["rule_id"]}
+                "source_section": p["source_section"], "rule_id": p["rule_id"],
+                "sensitivity": p.get("sensitivity") or "normal"}
 
     def _drain_pending():
         # 7.4b: approvals that landed (possibly while the conductor was down)
@@ -1873,11 +2017,13 @@ def route_engine(root, state, sessions, emit=print):
                 # route would get — an approved-but-not-yet-executed action
                 # stays pending and is retried once the provider's daily
                 # quota resets (never removed, never marked routed).
-                _ledger_route(root, {
-                    **base, "decision": "route_deferred",
-                    "detail": {**base["detail"],
-                               "provider": section_providers.get(target),
-                               "reason": "provider over daily request quota"}})
+                # Ledgered once per quota day: this branch re-runs every poll.
+                if _defer_once(rid):
+                    _ledger_route(root, {
+                        **base, "decision": "route_deferred",
+                        "detail": {**base["detail"],
+                                   "provider": section_providers.get(target),
+                                   "reason": "provider over daily request quota"}})
                 continue
             elif decision == "approved":
                 _ensure_wave_snapshot()
@@ -1890,6 +2036,16 @@ def route_engine(root, state, sessions, emit=print):
                         reply_to=os.path.join(root, action["requested_by"]),
                         create_session=create_session,
                         on_error=lambda m: emit("conductor mint: %s" % m))
+                    # V3 8.5 parity with the direct-mint path: an approved
+                    # route of a PRIVATE artifact must stamp the minted
+                    # child or refuse — approval gates oversight, it does
+                    # not waive privacy. (Notification targets reuse the
+                    # REQUESTER's dir and must never be stamped here.)
+                    if sdir and payload.get("sensitivity") == "private" \
+                            and not orchlib.persist_private_session(sdir):
+                        emit("conductor: privacy stamp failed for %s — "
+                             "refusing the route" % sdir)
+                        sdir = None
                 if sdir:
                     # CRASH-SAFETY: routed must land in the SAME save as the
                     # ledger cursor advance for this decision. The prior code
@@ -2483,15 +2639,18 @@ def route_engine(root, state, sessions, emit=print):
                                        "reason": "do-not-route decision"}})
                     elif over_quota and section_providers.get(intent.target) \
                             in over_quota:
-                        _ledger_route(root, {
-                            "session": sid, "route_id": intent.route_id,
-                            "route_key": intent.route_key,
-                            "decision": "route_deferred",
-                            "detail": {"target": intent.target,
-                                       "provider": section_providers.get(
-                                           intent.target),
-                                       "reason": "provider over daily "
-                                                 "request quota"}})
+                        # Once per quota day (the sibling re-defers each poll
+                        # while its plan siblings await approval).
+                        if _defer_once(intent.route_id):
+                            _ledger_route(root, {
+                                "session": sid, "route_id": intent.route_id,
+                                "route_key": intent.route_key,
+                                "decision": "route_deferred",
+                                "detail": {"target": intent.target,
+                                           "provider": section_providers.get(
+                                               intent.target),
+                                           "reason": "provider over daily "
+                                                     "request quota"}})
                     elif intent.verdict != crlib.ALLOW or not intent.target:
                         crlib.execute_intents(
                             [intent], sid, root,
@@ -2634,13 +2793,17 @@ def route_engine(root, state, sessions, emit=print):
                 if over_quota and section_providers.get(i.target) in over_quota:
                     # DEFER (not drop, not execute over-quota): don't mint and
                     # don't mark routed, so the still-admissible source re-plans
-                    # next cycle once the provider's daily quota resets.
-                    _ledger_route(root, {
-                        "session": sid, "route_id": i.route_id,
-                        "route_key": i.route_key, "decision": "route_deferred",
-                        "detail": {"target": i.target,
-                                   "provider": section_providers.get(i.target),
-                                   "reason": "provider over daily request quota"}})
+                    # next cycle once the provider's daily quota resets. The
+                    # re-plan happens EVERY poll while quota holds, so the
+                    # ledger line is deduped to once per quota day.
+                    if _defer_once(i.route_id):
+                        _ledger_route(root, {
+                            "session": sid, "route_id": i.route_id,
+                            "route_key": i.route_key,
+                            "decision": "route_deferred",
+                            "detail": {"target": i.target,
+                                       "provider": section_providers.get(i.target),
+                                       "reason": "provider over daily request quota"}})
                     continue
                 if cplib.is_pending(root, i.route_id):
                     # CRITICAL: once a route is queued for approval, its
@@ -2671,7 +2834,11 @@ def route_engine(root, state, sessions, emit=print):
             for i, reason, feedback, capability_exceeds in gated:
                 base = {"session": sid, "route_id": i.route_id,
                         "route_key": i.route_key}
-                action = cplib.pending_action(i, sid, reason=reason)
+                action = cplib.pending_action(
+                    i, sid, reason=reason,
+                    sensitivity=("private"
+                                 if meta.get("sensitivity") == "private"
+                                 else "normal"))
                 if cplib.enqueue_pending(root, action):
                     def _emit_approval_events():
                         import events as eventslib

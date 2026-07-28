@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "compliance_pass",
+  "description": "A focused legal + adversarial security review of an existing app.",
+  "doc_slots": [
+    "privacy_policy",
+    "terms_of_service",
+    "app_store_compliance",
+    "security_review",
+    "known_limitations",
+    "qa_report"
+  ],
+  "pipeline_ref": "",
+  "overrides": {
+    "sections": {},
+    "phases": {},
+    "casts": {}
+  }
+}

@@ -180,4 +180,42 @@ final class SectionSettingsLogicTests: XCTestCase {
                                               rulesURL: url),
                        "a failed write must never report Saved (R2)")
     }
+
+    // A-60 regression: rules.json is engine-seeded, not GUI-owned — the
+    // shipped template carries a top-level "_comment", and rebuilding the
+    // root as {schema_version, phases} destroyed it (and downgraded any
+    // future schema_version) on the first Save Rules.
+    func testSaveKeepsUnknownTopLevelKeysAndSchemaVersion() {
+        let url = tmpRules()
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        let original = """
+        {"schema_version": 2, "_comment": "seeded note — hands off",
+         "global_app_rules": ["fleet-wide rule"],
+         "phases": {"gather": {"rules": ["old"]}}}
+        """
+        try? Data(original.utf8).write(to: url)
+        XCTAssertTrue(SectionRulesLogic.save(edited: ["gather": "new"],
+                                             rulesURL: url))
+        let reloaded = try! JSONSerialization.jsonObject(
+            with: Data(contentsOf: url)) as! [String: Any]
+        XCTAssertEqual(reloaded["_comment"] as? String, "seeded note — hands off")
+        XCTAssertEqual(reloaded["global_app_rules"] as? [String],
+                       ["fleet-wide rule"])
+        XCTAssertEqual(reloaded["schema_version"] as? Int, 2,
+                       "schema_version must never be downgraded")
+        let gather = (reloaded["phases"] as! [String: Any])["gather"]
+            as! [String: Any]
+        XCTAssertEqual(gather["rules"] as? [String], ["new"])
+
+        // A brand-new file still gets schema_version 1.
+        let fresh = url.deletingLastPathComponent()
+            .appendingPathComponent("fresh.json")
+        XCTAssertTrue(SectionRulesLogic.save(edited: ["p": "r"],
+                                             rulesURL: fresh))
+        let obj = try! JSONSerialization.jsonObject(
+            with: Data(contentsOf: fresh)) as! [String: Any]
+        XCTAssertEqual(obj["schema_version"] as? Int, 1)
+    }
 }

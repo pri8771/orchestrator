@@ -292,6 +292,65 @@ class TestErrorClasses(_ApiBase):
         self.assertIsNone(traceslib.pop_last_usage())
 
 
+class TestTruncationSurfaced(_ApiBase):
+    """A-66: max-length-cut replies still stream a clean end-of-message
+    sentinel (message_stop / [DONE]) — the runners must fail the turn, never
+    promote the partial text as a complete answer."""
+
+    def test_anthropic_max_tokens_stop_reason_fails_the_turn(self):
+        ev = _FakeResp._event
+        stream = (ev({"type": "message_start",
+                      "message": {"usage": {"input_tokens": 5}}})
+                  + ev({"type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "cut mid-sen"}})
+                  + ev({"type": "message_delta",
+                        "delta": {"stop_reason": "max_tokens"},
+                        "usage": {"output_tokens": 8192}})
+                  + ev({"type": "message_stop"}))
+        with self._patched(lambda req, timeout=None: _FakeResp(stream)):
+            out, err, rc, _ = orch.run_anthropic_api(self.cfg, "hi", 30, "m1")
+        self.assertEqual((out, rc), ("", 1))
+        self.assertIn("truncated at max_tokens", err)
+
+    def test_anthropic_max_tokens_is_configurable(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _FakeResp(_SUCCESS["anthropic"])
+
+        self.cfg.setdefault("models", {})["api_max_tokens"] = 32000
+        with self._patched(fake_urlopen):
+            out, err, rc, _ = orch.run_anthropic_api(self.cfg, "hi", 30, "m1")
+        self.assertEqual((err, rc), ("", 0))
+        self.assertEqual(captured["body"].get("max_tokens"), 32000)
+
+    def test_openai_finish_reason_length_fails_the_turn(self):
+        ev = _FakeResp._event
+        stream = (ev({"choices": [{"delta": {"content": "cut mid-sen"},
+                                   "finish_reason": None}]})
+                  + ev({"choices": [{"delta": {}, "finish_reason": "length"}]})
+                  + ev({"choices": [], "usage": {"prompt_tokens": 5,
+                                                 "completion_tokens": 100}})
+                  + b"data: [DONE]\n\n")
+        with self._patched(lambda req, timeout=None: _FakeResp(stream)):
+            out, err, rc, _ = orch.run_openai_api(self.cfg, "hi", 30, "m1")
+        self.assertEqual((out, rc), ("", 1))
+        self.assertIn("finish_reason=length", err)
+
+    def test_openai_normal_stop_still_succeeds(self):
+        # finish_reason == "stop" is the healthy end state and must not trip
+        # the truncation guard.
+        ev = _FakeResp._event
+        stream = (ev({"choices": [{"delta": {"content": "done"},
+                                   "finish_reason": None}]})
+                  + ev({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+                  + b"data: [DONE]\n\n")
+        with self._patched(lambda req, timeout=None: _FakeResp(stream)):
+            out, err, rc, _ = orch.run_openai_api(self.cfg, "hi", 30, "m1")
+        self.assertEqual((out, err, rc), ("done", "", 0))
+
+
 class TestOptIn(_ApiBase):
     def test_refusal_without_opt_in_and_no_http(self):
         cfg = {}   # api_agents_enabled unset
@@ -351,8 +410,14 @@ class TestDispatchAndDisplay(_ApiBase):
     def test_static_and_local_dispatch_unchanged(self):
         self.assertIs(orch.resolve_runner("codex"), orch.run_codex)
         self.assertTrue(callable(orch.resolve_runner("local:qwen3:8b")))
-        with self.assertRaises(KeyError):
+
+    def test_unknown_agent_id_is_agenterror_not_keyerror(self):
+        # A-76: AgentError-only handlers (sequential roster turns, the
+        # conversational retry loop, the tally failover) must be able to skip
+        # a bogus id — a raw KeyError would abort the whole phase.
+        with self.assertRaises(orch.AgentError) as ctx:
             orch.resolve_runner("mystery")
+        self.assertIn("unknown agent id", str(ctx.exception))
 
     def test_display_labels_api_ids_readably(self):
         self.assertEqual(orch._derive_display("api:anthropic:claude-sonnet-5"),

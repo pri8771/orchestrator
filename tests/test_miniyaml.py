@@ -48,6 +48,32 @@ class TestParseMinYaml(unittest.TestCase):
         self.assertEqual(got, {"models": {"claude": "c", "n": 5},
                                "runtime": {"flag": True}})
 
+    def test_comment_only_value_is_null_not_empty_map(self):
+        # Regression (A-64): `key:  # comment` used to parse as {} — a
+        # truthy dict where every consumer expects a scalar/None (real YAML
+        # says None), so a commented-out value passed `if team:` checks.
+        self.assertEqual(miniyaml.parse_min_yaml("a: # note\nb: 2"),
+                         {"a": None, "b": 2})
+
+    def test_comment_annotated_section_header_stays_a_map(self):
+        # The same shape WITH deeper lines is a section header, not a
+        # commented-out scalar — it must keep parsing as its nested map.
+        self.assertEqual(
+            miniyaml.parse_min_yaml("ios:  # apple stuff\n  team: x\nb: 2"),
+            {"ios": {"team": "x"}, "b": 2})
+
+    def test_bare_empty_value_still_opens_a_nested_map(self):
+        # No comment involved: `key:` with children is the ordinary nested-
+        # map opener and must be untouched by the comment-only null rule.
+        self.assertEqual(miniyaml.parse_min_yaml("ios:\n  team: x"),
+                         {"ios": {"team": "x"}})
+
+    def test_duplicate_key_after_comment_only_value_wins(self):
+        # A later duplicate key replaces the provisional child map; the
+        # end-of-parse null demotion must not clobber the replacement.
+        self.assertEqual(miniyaml.parse_min_yaml("a: # note\na: 3"),
+                         {"a": 3})
+
     def test_reexported_from_orchestrator(self):
         # Backward-compat: orchestrator still exposes the same callables.
         self.assertIs(orch.parse_min_yaml, miniyaml.parse_min_yaml)
@@ -98,17 +124,21 @@ class TestConfigYamlScalarShapes(unittest.TestCase):
         self.assertEqual(self.cfg["runtime"]["global_worker_cap"],
                          {"cli_remote": 12, "local_model": 1})
 
-    def test_top_level_rounds_map(self):
+    def test_top_level_map_of_int_scalars(self):
         # A whole nested map whose every value is the same int scalar shape.
-        # The per-phase counts are an operator tunable — a "speed profile" may
-        # drop them all from 9 to 2 — so pin the SHAPE (a non-empty str->int
-        # map carrying the known phase keys), not a literal count. This is a
-        # miniyaml scalar-parsing regression test, not a config-values test.
-        rounds = self.cfg["rounds"]
-        self.assertIsInstance(rounds, dict)
-        self.assertTrue(rounds, "rounds parsed as an empty map")
-        self.assertIn("prompt_contract", rounds)
-        self.assertTrue(all(isinstance(k, str) for k in rounds))
+        # (Formerly pinned against config.yaml's `rounds:` block; that block
+        # was DEAD config — the engine always found rounds on the workflow
+        # phase — and got removed. The parsing shape it guarded, a top-level
+        # str->int map with comments, is pinned synthetically instead.)
+        snippet = (
+            "# per-phase counts\n"
+            "rounds:\n"
+            "  prompt_contract: 9\n"
+            "  # build gets fewer\n"
+            "  write_tests: 6\n"
+        )
+        rounds = miniyaml.parse_min_yaml(snippet)["rounds"]
+        self.assertEqual(rounds, {"prompt_contract": 9, "write_tests": 6})
         self.assertTrue(all(isinstance(v, int) for v in rounds.values()))
 
     def test_loads_via_orchestrator_load_config(self):

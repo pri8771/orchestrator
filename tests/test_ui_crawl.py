@@ -4,8 +4,10 @@ flows, skip paths, and the flows-json parse/persist round trip — with the
 runner and simulator faked so the suite never needs Xcode."""
 import json
 import os
+import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 import orchestrator as orch
 import uicrawl as uc
@@ -150,6 +152,37 @@ class TestGatePolicy(unittest.TestCase):
         self.assertIsNone(self._gate(report))
         reason = self._gate(report, {"ui_crawl_fail_on_dead_buttons": True})
         self.assertIn("Restore Purchases", reason)
+
+
+class TestRunRoutedThroughProcutil(unittest.TestCase):
+    """A-85: the crawler's xcodebuild invocations must run via
+    procutil.run_capture (own process group, group-kill on timeout,
+    reachable by the engine's kill_live_groups SIGTERM drain) — never plain
+    subprocess.run, which leaves xcodebuild's build-service daemons and the
+    rest of the tree orphaned when only the direct child is killed."""
+
+    def test_run_uses_run_capture_and_passes_env(self):
+        with unittest.mock.patch.object(uc.procutil, "run_capture",
+                                        return_value=("out", "err", 0)) as rc:
+            self.assertEqual(
+                uc._run(["xcodebuild", "-version"], timeout=7, env={"A": "1"}),
+                (0, "out", "err"))
+        rc.assert_called_once_with(["xcodebuild", "-version"], cwd=None,
+                                   timeout=7, env={"A": "1"})
+
+    def test_timeout_maps_to_exit_124(self):
+        with unittest.mock.patch.object(
+                uc.procutil, "run_capture",
+                side_effect=subprocess.TimeoutExpired(["x"], 5)):
+            code, out, err = uc._run(["x"], timeout=5)
+        self.assertEqual((code, out), (124, ""))
+        self.assertIn("timed out", err)
+
+    def test_real_command_round_trip(self):
+        # Guards against signature drift between the wrapper and procutil.
+        code, out, err = uc._run(["/bin/echo", "hi"], timeout=10)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.strip(), "hi")
 
 
 class TestDiscoveredControls(unittest.TestCase):

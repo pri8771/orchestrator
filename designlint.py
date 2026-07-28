@@ -7,8 +7,11 @@ gate; violations of the hard rules route into the bounded repair loop with
 file:line findings, softer signals are warnings.
 
 Hard rules (errors — the same rules phase_rules.json mandates):
-  * inline_color      Color(red:/UIColor(red:/#colorLiteral outside DesignSystem*.swift
-  * raw_font_size     .font(.system(size: outside DesignSystem*.swift
+  * inline_color      a component-literal Color/UIColor init (red:/hue:/white:,
+                      optionally after an .sRGB-style colorspace) or
+                      #colorLiteral outside DesignSystem*.swift
+  * raw_font_size     a numeric (incl. CGFloat-wrapped) .system(size:) /
+                      Font.system(size:) outside DesignSystem*.swift
   * banned_package    an SPM dependency named in tech_stack.json "banned"
 
 Soft signals (warnings):
@@ -19,7 +22,9 @@ Soft signals (warnings):
   * unlisted_package         a third-party SPM dependency not in "allowed"
                              (strict mode promotes this to an error)
 
-tech_stack.json (next to the engine) is the approved-library registry:
+The approved-library registry resolves from sections/build/target_policy.json
+when a Build section exists (the shipped default — the fleet tech_stack.json
+is then an empty tombstone), else tech_stack.json next to the engine:
   {"allowed": [{"name": "...", "url_contains": "...", "for": "..."}],
    "banned": [{"name": "...", "why": "..."}], "notes": "..."}
 
@@ -34,14 +39,28 @@ import buildpolicy as buildpolicylib
 
 TECH_STACK_FILENAME = "tech_stack.json"
 
-_INLINE_COLOR = re.compile(r"Color\s*\(\s*red\s*:|UIColor\s*\(\s*red\s*:|#colorLiteral\s*\(")
+# A hardcoded color is any COMPONENT-literal initializer — red:/hue:/white:
+# as the first argument, with or without a leading Color.RGBColorSpace value
+# (.sRGB/.sRGBLinear/.displayP3) — plus #colorLiteral. Matching the parameter
+# names keeps the semantic/asset/token spellings the rule wants INSTEAD —
+# Color(.systemBackground), Color("AccentColor"), Color(DS.accent) — clean
+# (A-17: the old regex only knew `red:` first, so hue:/white:/.sRGB hardcodes
+# sailed through a gate QUALITY_RULES.md sells as a hard error).
+_INLINE_COLOR = re.compile(
+    r"(?:UI)?Color\s*\(\s*(?:\.\s*(?:sRGB|sRGBLinear|displayP3)\s*,\s*)?"
+    r"(?:red|hue|white)\s*:"
+    r"|#colorLiteral\s*\(")
 # Only a genuine numeric literal after `size:` is the violation — a
 # DesignSystem token reference (e.g. `size: DS.IconSize.tab`) starts with a
 # letter/underscore and must not false-positive here (observed live: this
 # exact shape burned two repair rounds on Aura chasing an already-correct
-# call site before the distinction was added).
+# call site before the distinction was added). The prefix is any `.system(`
+# member access, not just the `.font(.system(` chain, so the explicit
+# `Font.system(size: 24)` spelling (inline or assigned to a let) is caught
+# too, and a literal laundered through CGFloat(16) still counts as a literal
+# (A-17: all three shapes previously slipped the hard gate).
 _RAW_FONT = re.compile(
-    r"\.font\s*\(\s*\.system\s*\(\s*size\s*:\s*[-+]?\.?\d")
+    r"\.\s*system\s*\(\s*size\s*:\s*(?:CGFloat\s*\(\s*)?[-+]?\.?\d")
 _TODO = re.compile(r"//\s*(TODO|FIXME)\b", re.IGNORECASE)
 # Rulebook §16 (fake-feature prohibition): a control whose action is an empty
 # closure is decorative masquerading as functional. Two single-line shapes:
@@ -81,11 +100,16 @@ def load_tech_stack(here):
     return out
 
 
-def render_tech_stack(stack):
-    """Human block spliced into tech-spec/build context ('' when empty)."""
+def render_tech_stack(stack, source_label="tech_stack.json"):
+    """Human block spliced into tech-spec/build context ('' when empty).
+
+    `source_label` names the file the stack actually CAME from — with a
+    Build section present that is sections/build/target_policy.json, and
+    telling agents/users to edit tech_stack.json (an empty tombstone on
+    such installs) sends every stack change to a file that does nothing."""
     if not stack["allowed"] and not stack["banned"]:
         return ""
-    lines = ["===== APPROVED TECH STACK (tech_stack.json — binding) ====="]
+    lines = ["===== APPROVED TECH STACK (%s — binding) =====" % source_label]
     if stack["allowed"]:
         lines.append("Allowed third-party packages (anything else needs justification):")
         for e in stack["allowed"]:
@@ -114,6 +138,34 @@ def _swift_files(build_dir):
 
 def _is_design_system(path):
     return os.path.basename(path).lower().startswith("designsystem")
+
+
+# A CamelCase Test/Preview token as Xcode spells scaffolding names: AppTests/,
+# MyAppUITests/, FooTests.swift, Foo_Previews.swift, Preview Content/. The
+# lookahead rejects the token mid-word in ordinary CamelCase (TestamentApp),
+# and case-sensitivity rejects lowercase 'test' inside contest/latest/protest.
+_SCAFFOLD_TOKEN = re.compile(r"(?:Test|Preview)s?(?![a-z])")
+
+
+def _is_test_or_preview(rel):
+    """True when the build-relative path is test/preview scaffolding.
+
+    A-18: the old check was a bare substring over the whole path
+    (`"test" in rel.lower()`), so an app named e.g. ContestTracker had EVERY
+    product source exempted from the token rules (the hard gate silently
+    vacuous) and its only Info.plist skipped by the launch-screen scan (false
+    missing_launch_screen burning repair rounds). Anchor to path components:
+    a whole component named test(s)/preview(s) in any case, or a component
+    carrying a CamelCase Test/Preview token. snake_case test_helpers.swift is
+    deliberately NOT exempt — Swift's convention is FooTests.swift (pinned by
+    tests/test_quality_rules.py)."""
+    for comp in rel.replace("\\", "/").split("/"):
+        stem = comp.rsplit(".", 1)[0] if "." in comp else comp
+        if stem.lower() in ("test", "tests", "preview", "previews"):
+            return True
+        if _SCAFFOLD_TOKEN.search(comp):
+            return True
+    return False
 
 
 def _code_portion(line, in_block):
@@ -183,7 +235,7 @@ def scan(build_dir, here):
         ds_file = _is_design_system(path)
         # Tests/previews may hardcode fixtures; only product source is held
         # to the token rules.
-        test_file = "test" in rel.lower() or "preview" in rel.lower()
+        test_file = _is_test_or_preview(rel)
         in_block = False   # /* */ comment state, carried across lines per file
         for i, line in enumerate(lines, 1):
             # Code-token checks match the CODE portion only (comments + string
@@ -237,8 +289,12 @@ def scan(build_dir, here):
                 has_xcodeproj = True
         for fn in filenames:
             p = os.path.join(dirpath, fn)
-            low = os.path.relpath(p, build_dir).lower()
-            if fn == "Info.plist" and "test" not in low:
+            # Same anchored predicate as the source exemption (A-18): a test
+            # target's plist must not satisfy the launch-screen check, but an
+            # app merely NAMED like one (ContestTracker) must have its only
+            # Info.plist read, or a correctly configured app hard-fails.
+            if fn == "Info.plist" \
+                    and not _is_test_or_preview(os.path.relpath(p, build_dir)):
                 plists.append(p)
             if fn.startswith("LaunchScreen") and fn.endswith(".storyboard"):
                 launch_ok = True

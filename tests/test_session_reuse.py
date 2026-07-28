@@ -186,5 +186,55 @@ class TestCallAgentSessioned(unittest.TestCase):
         self.assertIsNone(calls[0]["session"])
 
 
+class TestFallbackRespectsSessions(unittest.TestCase):
+    """The fallback ladder must not hijack sessioned calls: a RESUMED call's
+    delta prompt is meaningless to a stateless rescue model (it holds none of
+    the phase context), and a ladder-rescued FIRST call ran stateless, so its
+    pre-picked session id backs no real session and must not be recorded."""
+
+    def setUp(self):
+        self._once = orch._call_agent_once
+        self._steps = orch._fallback_steps
+        self._installed = orch.lmlib.installed_models_cached
+        orch.lmlib.installed_models_cached = lambda: {}
+
+    def tearDown(self):
+        orch._call_agent_once = self._once
+        orch._fallback_steps = self._steps
+        orch.lmlib.installed_models_cached = self._installed
+
+    def test_resumed_call_failure_reraises_instead_of_delta_fallback(self):
+        prompts = []
+
+        def once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
+            prompts.append(prompt)
+            raise orch.AgentError("usage cap")
+
+        orch._call_agent_once = once
+        orch._fallback_steps = lambda cfg, agent: ["backup-model"]
+        cfg = {"_session": {"id": "S1", "resume": True}}
+        with self.assertRaises(orch.AgentError):
+            orch.call_agent(cfg, "app", "tech_specs", 2, "claude", "DELTA")
+        # The ladder must NOT have retried the delta prompt statelessly —
+        # call_agent_sessioned's except-arm owns this failure (full prompt).
+        self.assertEqual(prompts, ["DELTA"])
+
+    def test_rescued_first_call_does_not_store_session_id(self):
+        def once(cfg, app, phase, rnd, agent, prompt, parent_call=None):
+            if (cfg.get("_session") or {}).get("id"):
+                raise orch.AgentError("primary down")   # the sessioned primary
+            return "rescued"                            # the stateless ladder step
+
+        orch._call_agent_once = once
+        orch._fallback_steps = lambda cfg, agent: ["backup-model"]
+        cfg = {"_allow_writes": False, "_resolved": {}}
+        out = orch.call_agent_sessioned(
+            cfg, "app", "initial_discussion", 1, "claude",
+            "FULL", delta_prompt="DELTA", session_key="k")
+        self.assertIn("rescued", out)
+        self.assertTrue(out.startswith("_[Fallback: "))
+        self.assertNotIn("k", cfg.get("_claude_sessions", {}))
+
+
 if __name__ == "__main__":
     unittest.main()

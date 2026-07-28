@@ -136,6 +136,34 @@ class TestWritableEnrollmentClone(CloneFixture):
                       os.path.realpath(self.origin), subject)
         self.assertEqual(_tree_hash(self.origin), _tree_hash_without_git(build))
 
+    def test_dirty_git_origin_surfaces_head_divergence_warning(self):
+        # Regression (A-52): the git clone materializes committed HEAD while
+        # intake and the compliance audit read the working tree — uncommitted
+        # origin state used to be dropped with no signal at either seam.
+        self.init_git()
+        _write(os.path.join(self.origin, "Sources", "App.swift"),
+               "struct Edited {}\n")  # uncommitted WIP the audit would see
+        scaffolded = enroll.scaffold(self.root, self.origin, name="dirty")
+        self.assertTrue(any("uncommitted" in w for w in scaffolded["warnings"]),
+                        scaffolded["warnings"])
+        result = enroll.prepare_writable_clone(
+            scaffolded["app_dir"], self.origin, "dirty")
+        self.assertTrue(any("uncommitted" in w for w in result["warnings"]),
+                        result["warnings"])
+        # Warn, never refuse: enrolling WIP is legitimate, and the clone
+        # still succeeds — from HEAD, exactly as the warning says.
+        with open(os.path.join(result["path"], "Sources", "App.swift"),
+                  encoding="utf-8") as fh:
+            self.assertIn("Original", fh.read())
+
+    def test_clean_git_origin_has_no_divergence_warning(self):
+        self.init_git()
+        scaffolded = enroll.scaffold(self.root, self.origin, name="clean")
+        self.assertEqual(scaffolded["warnings"], [])
+        result = enroll.prepare_writable_clone(
+            scaffolded["app_dir"], self.origin, "clean")
+        self.assertEqual(result["warnings"], [])
+
     def test_prepared_clone_is_idempotent_for_crash_safe_promotion_retry(self):
         app_dir = enroll.scaffold(self.root, self.origin, name="retry")["app_dir"]
         first = enroll.prepare_writable_clone(app_dir, self.origin, "retry")

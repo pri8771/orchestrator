@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "research_spike",
+  "description": "Research-only: is this worth building, and what do we not yet know.",
+  "doc_slots": [
+    "problem_statement",
+    "market_landscape",
+    "competitor_analysis",
+    "user_research",
+    "technical_feasibility"
+  ],
+  "pipeline_ref": "",
+  "overrides": {
+    "sections": {},
+    "phases": {},
+    "casts": {}
+  }
+}

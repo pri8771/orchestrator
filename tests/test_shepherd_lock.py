@@ -96,6 +96,60 @@ class TestShepherdLockedStaleness(unittest.TestCase):
 
 
 @unittest.skipUnless(_has_bash(), "requires bash")
+class TestShepherdLaneCounter(unittest.TestCase):
+    """The per-iteration lane counter must apply the SAME staleness rule as
+    locked(): a dead pid's leftover lock is capacity, not a running lane.
+    Counting stale files consumed MAX_BUILDS lanes forever after a crash or
+    reboot — with every lane a corpse, no launch could ever run to reclaim
+    them and the fleet deadlocked on "still pending". Exercised through the
+    real script via the --check-capacity hook."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="shep_cap_")
+        os.makedirs(os.path.join(self.root, ".orch-locks"))
+        self._procs = []
+
+    def tearDown(self):
+        for p in self._procs:
+            try:
+                p.terminate()
+                p.wait(timeout=5)
+            except Exception:
+                pass
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write_lock(self, app, pid):
+        with open(os.path.join(self.root, ".orch-locks",
+                               "%s.lock" % app), "w") as fh:
+            fh.write("pid=%s host=test started=2026-07-15 12:00:00\n" % pid)
+
+    def _capacity(self):
+        env = dict(os.environ)
+        env["ORCH_ROOT"] = self.root
+        out = subprocess.run(["bash", SHEPHERD, "--check-capacity"],
+                             cwd=REPO_ROOT, capture_output=True, text=True,
+                             timeout=30, env=env).stdout.strip()
+        return dict(kv.split("=") for kv in out.split())
+
+    def test_dead_pid_locks_do_not_consume_lanes(self):
+        p = subprocess.Popen(["sleep", "30"])
+        p.terminate()
+        p.wait(timeout=5)
+        for app in ("deadA", "deadB", "deadC"):
+            self._write_lock(app, p.pid)
+        self.assertEqual(self._capacity()["builds_running"], "0")
+
+    def test_live_pid_lock_counts_as_a_lane(self):
+        p = subprocess.Popen(["sleep", "60"])
+        self._procs.append(p)
+        self._write_lock("liveapp", p.pid)
+        self.assertEqual(self._capacity()["builds_running"], "1")
+
+    def test_empty_lock_dir_counts_zero(self):
+        self.assertEqual(self._capacity()["builds_running"], "0")
+
+
+@unittest.skipUnless(_has_bash(), "requires bash")
 class TestShepherdAutorunDisabled(unittest.TestCase):
     """autorun_disabled() — the shared guard EVERY launch path (children AND the
     release-gate repair loop) must honor. Its absence from the repair loop let a

@@ -60,6 +60,10 @@ dmg:
 verify: test-strict gui-build gui-test doctor
 	@echo "verify: all gates passed"
 
+# `build` is the literal root-level dir a pip >= 21.3 in-tree `pip install .`
+# leaves behind (see pyproject.toml's mypy exclude) — a stale full engine copy
+# that pollutes mypy and ships in the app bundle via build_app.sh's find. The
+# tracked sections/build/ path is a different literal path and is untouched.
 clean:
-	rm -rf gui/.build gui/dist .mypy_cache .ruff_cache *.egg-info dist
+	rm -rf build gui/.build gui/dist .mypy_cache .ruff_cache .pytest_cache *.egg-info dist
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

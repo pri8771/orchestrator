@@ -125,6 +125,34 @@ class TestAddressing(NestedBase):
             self.assertEqual(orch.valid_app_slug(name), ok, name)
 
 
+class TestFinalizeInValidation(NestedBase):
+    """A-79: --finalize-in must ride main()'s session-id validation like its
+    siblings (route_from/route_to) — an invalid id exits 2 via the clean
+    ap.error instead of crashing _do_finalize with an AttributeError."""
+
+    def test_invalid_finalize_in_is_a_clean_cli_error(self):
+        import sys
+        import unittest.mock as mock
+        argv = ["orchestrator.py", "--root", self.root,
+                "--finalize-artifact", "x", "--finalize-in", "a/b"]
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(sys, "stderr", err):
+            with self.assertRaises(SystemExit) as ctx:
+                orch.main()
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("invalid project name", err.getvalue())
+
+    def test_do_finalize_guard_returns_2_not_attributeerror(self):
+        # Belt-and-suspenders for direct callers that skip main()'s loop.
+        class _Args:
+            finalize_in = "a/b"
+            finalize_artifact = "x"
+            finalize_by = "cli"
+            by_human = False
+        self.assertEqual(orch._do_finalize({"root": self.root}, _Args()), 2)
+
+
 class TestLockEncoding(NestedBase):
     def test_fixture_pins_both_implementations(self):
         with open(FIXTURE, encoding="utf-8") as fh:

@@ -67,15 +67,19 @@ enum SectionRulesLogic {
     }
 
     /// Serialize edited bullet text back, preserving non-"rules" fields
-    /// of each phase entry (required_output / acceptance_checks survive).
+    /// of each phase entry (required_output / acceptance_checks survive)
+    /// AND unknown top-level keys — the shipped template carries "_comment",
+    /// and the file is engine-seeded, not GUI-owned, so rebuilding the root
+    /// destroyed hand-added notes (same merge discipline as
+    /// ModelRouting.save). schema_version fills only when absent.
     static func save(edited: [String: String], rulesURL: URL) -> Bool {
-        var phases: [String: Any] = [:]
+        var root: [String: Any] = [:]
         if let data = try? Data(contentsOf: rulesURL),
            let obj = try? JSONSerialization.jsonObject(with: data),
-           let dict = obj as? [String: Any],
-           let existing = dict["phases"] as? [String: Any] {
-            phases = existing
+           let dict = obj as? [String: Any] {
+            root = dict
         }
+        var phases = root["phases"] as? [String: Any] ?? [:]
         for (key, text) in edited {
             var entry = phases[key] as? [String: Any] ?? [:]
             let bullets = text.split(separator: "\n")
@@ -84,15 +88,19 @@ enum SectionRulesLogic {
             entry["rules"] = bullets
             phases[key] = entry
         }
-        let doc: [String: Any] = ["schema_version": 1, "phases": phases]
+        root["phases"] = phases
+        if root["schema_version"] == nil { root["schema_version"] = 1 }
         guard let out = try? JSONSerialization.data(
-            withJSONObject: doc, options: [.prettyPrinted, .sortedKeys])
+            withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         else { return false }
         do {
             try FileManager.default.createDirectory(
                 at: rulesURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true)
-            try out.write(to: rulesURL)
+            // .atomic: a crash mid-write must not leave a torn rules.json —
+            // phase_rules._load_layer treats that as corrupt and disables
+            // the section's rules overlay until hand-repaired.
+            try out.write(to: rulesURL, options: .atomic)
         } catch { return false }
         // R2: confirm by re-reading — a write that does not read back
         // identical is a failure, never a silent "Saved".

@@ -51,7 +51,8 @@ class LiveSituationSwitchTests(unittest.TestCase):
         scans = []
 
         def recompute(app_dir, project, phases, outputs, orch_dir,
-                      artifact_reader, required_slots, on_warn=None):
+                      artifact_reader, required_slots, on_warn=None,
+                      human_overrides=None):
             scans.append((app_dir, list(required_slots), dict(outputs)))
             os.makedirs(os.path.join(app_dir, "docs"), exist_ok=True)
             with open(os.path.join(app_dir, "docs", "GAP_REPORT.md"), "w",
@@ -126,8 +127,16 @@ class LiveSituationSwitchTests(unittest.TestCase):
                   encoding="utf-8") as fh:
             json.dump({"situation": "does-not-exist"}, fh)
         shown = []
-        record = conductor._read_project_situation(
-            self.root, "project", shown.append)
+        # _read_project_situation loads from the ENGINE dir (HERE), and
+        # load_situation's first act is to seed the six default situations —
+        # unmocked, that materializes an untracked situations/ tree in the
+        # repo checkout (a working-tree mutation CI's clean-tree guard must
+        # catch). The unknown-ref path only needs the situation file to be
+        # ABSENT, which seeding-as-no-op preserves.
+        with mock.patch("situations.ensure_seeded",
+                        lambda *a, **k: None):
+            record = conductor._read_project_situation(
+                self.root, "project", shown.append)
         self.assertFalse(record["valid"])
         self.assertIsNone(record["required_slots"])
         self.assertTrue(conductor.situation_allows_route(
@@ -190,6 +199,29 @@ class ScopedGapTests(unittest.TestCase):
         self.assertNotIn("Target User", report)
         self.assertEqual({row["slot_id"] for row in coverage},
                          {"problem_statement"})
+
+    def test_recompute_honors_human_overrides(self):
+        # 5.5 regression: both recompute targets are in docsync's protected
+        # set, and the recompute path used to bypass the override gate the
+        # normal render path enforces — silently clobbering human edits.
+        docs_dir = os.path.join(self.app_dir, "docs")
+        os.makedirs(docs_dir)
+        human = "MY hand-written gap analysis. Do not touch.\n"
+        with open(os.path.join(docs_dir, "GAP_REPORT.md"), "w") as fh:
+            fh.write(human)
+        coverage = docs.recompute_gap_report(
+            self.app_dir, "project",
+            workflows.load_workflow("app_build").phases,
+            {"research": "evidence"},
+            os.path.dirname(os.path.dirname(__file__)), artifacts,
+            ["problem_statement"], on_warn=self.fail,
+            human_overrides={"docs/GAP_REPORT.md"})
+        self.assertIsNotNone(coverage)
+        with open(os.path.join(docs_dir, "GAP_REPORT.md")) as fh:
+            self.assertEqual(fh.read(), human)   # preserved verbatim
+        # The non-overridden half still renders normally.
+        self.assertTrue(os.path.exists(
+            os.path.join(docs_dir, "HANDOFF_BLUEPRINT.md")))
 
     def test_goal_ignores_open_gaps_outside_required_slots(self):
         os.makedirs(os.path.join(self.app_dir, "docs"))

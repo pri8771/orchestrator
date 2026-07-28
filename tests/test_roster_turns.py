@@ -94,7 +94,32 @@ class TestSkipNotes(RosterBase):
             self._md("chat.md"))
 
 
-class TestChatPass(RosterBase):
+class TestSequentialUnexpectedError(RosterBase):
+    def test_non_agenterror_skips_the_turn_not_the_phase(self):
+        # A-74: the sequential path (parallel_discussion_rounds=False — also
+        # every single-agent round) caught only AgentError, so one unexpected
+        # exception (session-file OSError, a prompt-builder bug) aborted the
+        # whole phase — unlike the parallel branch's belt-and-suspenders
+        # handler. It must degrade to the same skip note instead.
+        orch._agent_available = lambda a, cfg=None: a in ("codex", "claude")
+
+        def broken(cfg, app, phase, rnd, agent, prompt,
+                   delta_prompt=None, session_key=None):
+            if (session_key or "").endswith(":coord"):
+                return "Done.\n\nCONSENSUS: YES\n\n## Final Output\n\nX.\n"
+            if agent == "claude":
+                raise OSError("session file vanished")
+            return "codex take"
+        orch.call_agent_sessioned = broken
+        out = orch.process_phase(self._cfg(agents=("codex", "claude")), "r",
+                                 self.app_dir,
+                                 wf.Phase("design_discussion", ".", "d.md",
+                                          "p", rounds=2),
+                                 "p", [], self._state())
+        text = self._md("d.md")
+        self.assertIn("unexpected turn error: session file vanished", text)
+        self.assertIn("codex take", text)   # the healthy agent still spoke
+        self.assertIn("X.", out)            # and the phase completed
     def test_pass_slip_gated_on_round_two(self):
         # Round 1 PASS records as a normal block (the rnd > 1 gate); round 2
         # PASS renders the slip. Neither surface had chat coverage.

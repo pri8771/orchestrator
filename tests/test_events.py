@@ -140,6 +140,26 @@ class TestConductorNotificationVocabulary(unittest.TestCase):
         self.assertEqual(["stalled"], [r["kind"] for r in
                                        evlib.read_events(self.dir)])
 
+    def test_nested_evidence_bloat_still_stays_under_cap(self):
+        # The shrink loop used to give up on non-string bloat ("break") —
+        # a conductor termination/budget evidence dict (e.g. open_gaps)
+        # then wrote one oversized line, defeating the PIPE_BUF atomicity
+        # the cap exists for. Nested dict/list fields must be flattened
+        # until the line fits, with top-level identifiers surviving.
+        evidence = {"k%02d" % i: "v" * 500 for i in range(20)}
+        self.assertTrue(evlib.emit_event(
+            self.dir, "budget_exhausted", session="p/research/c1",
+            reason="spend_exhausted", evidence=evidence,
+            gaps=["g" * 400] * 10))
+        with open(evlib.events_path(self.dir), encoding="utf-8") as fh:
+            line = fh.readline().rstrip("\n")
+        self.assertLessEqual(len(line.encode("utf-8")), 3500)
+        evt = json.loads(line)
+        self.assertEqual(evt["kind"], "budget_exhausted")
+        self.assertEqual(evt["session"], "p/research/c1")
+        self.assertEqual(evt["reason"], "spend_exhausted")
+        self.assertNotIn("…", evt["ts"])   # ts never sacrificed first
+
 
 class TestArtifactBusVocabulary(unittest.TestCase):
     """V3 board 2.5: the six bus kinds are registered ahead of their

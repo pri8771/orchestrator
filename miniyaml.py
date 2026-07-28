@@ -63,6 +63,11 @@ def parse_min_yaml(text):
     root = {}
     # stack of (indent, container)
     stack = [(-1, root)]
+    # `key:  # comment` is ambiguous mid-parse: a commented-out scalar (null,
+    # like real YAML) or a comment-annotated section header (map). Open a
+    # child map either way, remember the triple, and decide at the end —
+    # only a triple whose map stayed empty (no deeper lines) demotes to None.
+    comment_only = []
     for rawline in text.splitlines():
         if not rawline.strip() or rawline.lstrip().startswith("#"):
             continue
@@ -72,7 +77,8 @@ def parse_min_yaml(text):
             continue
         key, _, val = line.partition(":")
         key = key.strip()
-        val = strip_inline_comment(val.strip())
+        raw_val = val.strip()
+        val = strip_inline_comment(raw_val)
         # pop to correct parent
         while stack and indent <= stack[-1][0]:
             stack.pop()
@@ -81,6 +87,12 @@ def parse_min_yaml(text):
             child = {}
             parent[key] = child
             stack.append((indent, child))
+            if raw_val.startswith("#"):
+                comment_only.append((parent, key, child))
         else:
             parent[key] = coerce_scalar(val)
+    for parent, key, child in comment_only:
+        # `is child` guards against a later duplicate key having replaced it.
+        if parent.get(key) is child and not child:
+            parent[key] = None
     return root

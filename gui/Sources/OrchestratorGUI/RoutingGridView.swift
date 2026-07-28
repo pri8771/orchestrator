@@ -261,8 +261,14 @@ struct RoutingGridView: View {
                 .appendingPathComponent("model_routing.json")
         case .section(let name):
             // The 3.4 session layer: fleet -> project -> section overlay.
+            // MODEL routing lives in model_routing.json (modelrouting.py's
+            // ROUTING_FILENAME) — sections/<name>/routing.json is the
+            // CONDUCTOR's artifact-routing config (conductor_routing.py,
+            // {artifact_routes, rules}); writing a ModelRouting there both
+            // hid every section model edit from the engine AND destroyed
+            // the seeded conductor rules.
             return store.orchDirURL.appendingPathComponent(
-                "sections/\(name)/routing.json")
+                "sections/\(name)/model_routing.json")
         }
     }
 
@@ -319,6 +325,11 @@ struct RoutingGridView: View {
         // `let`: save(to:) is nonmutating; the compiler flags `var` here.
         guard let m = matrix else { return }
         m.draft.save(to: routingURL)
+        // The store's TTL cache pairs every save with an invalidation
+        // (writeModelRouting); a direct save must do the same or readers
+        // get pre-Apply routing for up to 2s — and a concurrent
+        // reload-before-mutate writer can revert this Apply.
+        store.invalidateRoutingCache(at: routingURL)
         matrix = m
         savedDraft = m.draft
         loadedMTime = store.routingFileMTime(at: routingURL)

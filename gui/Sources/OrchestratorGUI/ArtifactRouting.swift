@@ -258,8 +258,11 @@ enum ArtifactRouteCommand {
         process.standardError = pipe
         do {
             try process.run()
-            process.waitUntilExit()
+            // Read to EOF BEFORE waitUntilExit — the safe order when the
+            // output could exceed the 64KB pipe buffer (waiting first
+            // deadlocks child-writer against GUI-waiter).
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             return (process.terminationStatus,
                     String(data: data, encoding: .utf8) ?? "")
         } catch {
@@ -295,8 +298,10 @@ enum ArtifactFinalizeCommand {
         process.standardError = pipe
         do {
             try process.run()
-            process.waitUntilExit()
+            // Read to EOF BEFORE waitUntilExit — same pipe-buffer rule as
+            // ArtifactRouteCommand.run above.
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             return (process.terminationStatus,
                     String(data: data, encoding: .utf8) ?? "")
         } catch {

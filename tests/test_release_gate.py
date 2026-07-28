@@ -164,6 +164,64 @@ class TestQueueReleaseGateRepair(_GateBase):
         self.assertNotIn("first failure", text)
 
 
+class TestRepairBudgetSurvivesPromptHashReset(_GateBase):
+    """The repair rewrite embeds dynamic failure text in the prompt tail, so
+    every pass moves the prompt hash and takes the new-prompt reset — keyed
+    on phash alone the reset zeroed release_gate_repairs before the cap was
+    ever read, making the "capped" loop unbounded (the budget_exhausted
+    artifact was dead code). A body-identical reset must carry the count;
+    a real human edit to the body must still zero it."""
+
+    def _hashes(self):
+        # Mirrors _run_app_pipeline's computation for a target-less workflow.
+        with open(os.path.join(self.dir, "initial_prompt",
+                               "initial_prompt.md")) as fh:
+            prompt = fh.read()
+        phash = orch.sha256_text(prompt + "\n#target:" + "\n#tsig:"
+                                 + orch.sha256_text(""))
+        bhash = orch.sha256_text(orch._prompt_body(prompt) + "\n#target:"
+                                 + "\n#tsig:" + orch.sha256_text(""))
+        return phash, bhash
+
+    def test_budget_accumulates_across_tail_rewrites(self):
+        state = {}
+        phash, bhash = self._hashes()
+        orch._reset_for_prompt_change(state, phash, bhash)
+        self.assertEqual(state["release_gate_repairs"], 0)
+
+        orch._queue_release_gate_repair("x", self.dir, state, "reason A")
+        self.assertEqual(state["release_gate_repairs"], 1)
+        phash2, bhash2 = self._hashes()
+        self.assertNotEqual(phash, phash2)   # the rewrite moved the hash...
+        self.assertEqual(bhash, bhash2)      # ...but not the body hash
+        orch._reset_for_prompt_change(state, phash2, bhash2)
+        self.assertEqual(state["release_gate_repairs"], 1)   # carried
+
+        orch._queue_release_gate_repair("x", self.dir, state, "reason B")
+        self.assertEqual(state["release_gate_repairs"], 2)
+        phash3, bhash3 = self._hashes()
+        orch._reset_for_prompt_change(state, phash3, bhash3)
+        self.assertEqual(state["release_gate_repairs"], 2)   # still carried
+
+        # The cap finally engages — a third repair is refused.
+        orch._queue_release_gate_repair("x", self.dir, state, "reason C")
+        self.assertEqual(state["release_gate_repairs"], 2)
+
+    def test_real_body_edit_still_zeroes_the_budget(self):
+        state = {}
+        phash, bhash = self._hashes()
+        orch._reset_for_prompt_change(state, phash, bhash)
+        orch._queue_release_gate_repair("x", self.dir, state, "reason A")
+        # The human rewrites the actual ask — a genuinely new build.
+        with open(os.path.join(self.dir, "initial_prompt",
+                               "initial_prompt.md"), "w") as fh:
+            fh.write("Build a DIFFERENT thing.")
+        phash2, bhash2 = self._hashes()
+        self.assertNotEqual(bhash, bhash2)
+        orch._reset_for_prompt_change(state, phash2, bhash2)
+        self.assertEqual(state["release_gate_repairs"], 0)
+
+
 class TestManifestTranscriptRecovery(_GateBase):
     def test_recovers_fence_from_transcript_without_llm(self):
         os.makedirs(os.path.join(self.dir, "portfolio_selection"))

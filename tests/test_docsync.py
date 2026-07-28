@@ -108,6 +108,32 @@ class TestDocsGitSync(unittest.TestCase):
         self.assertEqual(len(self.artifacts()), 2,
                          "a distinct post-clear edit gets a new dedupe key")
 
+    def test_edit_while_still_cleared_reasserts_override_not_overwrite(self):
+        # Regression (A-51): a 'cleared' record used to skip EVERY detected
+        # edit on its path until a render actually rewrote the file, so a
+        # NEW human edit landing in that window was silently destroyed by
+        # the next rewrite — no override, no reconcile request.
+        self.render()
+        path = os.path.join(self.app, "docs", "PRD.md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("human one\n")
+        self.render()
+        self.assertEqual(len(self.artifacts()), 1)
+
+        self.assertTrue(docsync.clear_override(self.app, "docs/PRD.md"))
+        # The human edits AGAIN while the record still says 'cleared'.
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("human two\n")
+        context, written, _ok = self.render()
+        self.assertIn("docs/PRD.md", context["overrides"])
+        self.assertNotIn("docs/PRD.md", written)
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "human two\n")
+        self.assertEqual(len(self.artifacts()), 2,
+                         "the post-clear edit mints its own reconcile")
+        record = docsync.load_state(self.app)["files"]["docs/PRD.md"]
+        self.assertEqual(record["status"], "human-overridden")
+
     def test_bot_identity_parent_exclusion_and_no_remote(self):
         self.render()
         repo = os.path.join(self.app, "docs")

@@ -1709,10 +1709,10 @@ final class OrchestratorStore: ObservableObject {
                           model: String) {
         let dir = rootURL.appendingPathComponent("\(id)/approvals")
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONSerialization.data(
-                withJSONObject: ["agent": agent, "model": model]) {
-            try? data.write(to: dir.appendingPathComponent("\(phaseKey).retry"))
-        }
+        // writeJSON: atomic + surfaces failure — a swallowed error here left
+        // the user believing a retry was queued that never reached disk.
+        writeJSON(["agent": agent, "model": model],
+                  to: dir.appendingPathComponent("\(phaseKey).retry"))
     }
 
     // V3 board 1.11: mid-chat model swap — merge one per-agent override into
@@ -1733,10 +1733,12 @@ final class OrchestratorStore: ObservableObject {
         if let model { ph[agent] = model } else { ph.removeValue(forKey: agent) }
         phases[phaseKey] = ph
         obj["phases"] = phases
-        if let data = try? JSONSerialization.data(withJSONObject: obj,
-                                                  options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: url)
-        }
+        // writeJSON: .atomic matters here — the engine re-reads this file at
+        // the round barrier, and a read landing mid-write sees truncated JSON,
+        // which load_routing fails open to defaults (dropping EVERY per-chat
+        // override, not just this swap). Failure surfaces instead of leaving
+        // the chip "pending" forever.
+        writeJSON(obj, to: url)
     }
 
     // V3 board 1.8 ("Let them discuss"): promote a chat session to an auto
@@ -1769,10 +1771,21 @@ final class OrchestratorStore: ObservableObject {
             let pipe = Pipe()
             proc.standardOutput = pipe
             proc.standardError = pipe
-            try? proc.run()
-            proc.waitUntilExit()
+            do {
+                try proc.run()
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.surfaceError("Fork failed to start: \(error.localizedDescription)")
+                }
+                return
+            }
+            // Read to EOF BEFORE waitUntilExit — the safe order when the
+            // output could exceed the 64KB pipe buffer (a verbose traceback
+            // would deadlock child-writer against GUI-waiter and leak the
+            // process; conciergeAsk documents the same rule).
             let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
                              encoding: .utf8) ?? ""
+            proc.waitUntilExit()
             let name = out.split(separator: "\n")
                 .first { $0.hasPrefix("FORKED: ") }
                 .map { String($0.dropFirst("FORKED: ".count)) }
@@ -1839,8 +1852,7 @@ final class OrchestratorStore: ObservableObject {
             proc.arguments = EnrollmentCLI.arguments(
                 engine: engine, root: root, source: source)
             var environment = ProcessInfo.processInfo.environment
-            for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-                        "GOOGLE_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
+            for key in APIKeyEnv.strippedAPIKeyVars {
                 environment.removeValue(forKey: key)
             }
             proc.environment = environment
@@ -2746,6 +2758,42 @@ final class OrchestratorStore: ObservableObject {
         objectWillChange.send()
     }
 
+    // MARK: Reload-before-mutate writers
+    //
+    // Editor views hold a loaded-once ModelRouting snapshot for display, so
+    // writing the whole snapshot back would clobber every MODELED field some
+    // other editor (the Defaults grid, the Inspector, applyProfile, a hand
+    // edit) changed since the snapshot was taken — save(to:)'s raw-preserving
+    // merge only protects UNmodeled keys. Each writer below re-reads the file
+    // fresh (ModelRouting.load, bypassing the TTL cache: a mutation is a rare
+    // click and the cached copy may itself be seconds stale), overlays ONLY
+    // the section the calling editor owns, and saves the union.
+
+    /// Fleet fallback.chains — the only section Models & Agents edits.
+    func writeModelRoutingChains(_ chains: [String: [String]]) {
+        var current = ModelRouting.load(from: modelRoutingURL)
+        current.chains = chains
+        writeModelRouting(current)
+    }
+
+    /// One phase of a project's routing file (Plan tab tuning editor).
+    /// nil route deletes the phase key (an all-defaults row).
+    func writeProjectRoutingPhase(_ key: String, _ route: PhaseRoute?,
+                                  for project: Project) {
+        var current = ModelRouting.load(from: projectRoutingURL(project))
+        current.phases[key] = route.flatMap { $0.isEmpty ? nil : $0 }
+        writeProjectRouting(current, for: project)
+    }
+
+    /// One agent's chain in a project's routing file (Fallback Overrides).
+    /// An empty chain deletes the key — the project inherits the fleet ladder.
+    func writeProjectRoutingChain(_ agent: String, _ steps: [String],
+                                  for project: Project) {
+        var current = ModelRouting.load(from: projectRoutingURL(project))
+        current.chains[agent] = steps.isEmpty ? nil : steps
+        writeProjectRouting(current, for: project)
+    }
+
     // MARK: - Library: reusable phase-prompt snippets + saved run profiles
     //
     // Snippets layer fleet -> section -> project by name; phase "" means
@@ -2903,7 +2951,12 @@ final class OrchestratorStore: ObservableObject {
         case .project(let projectDir):
             url = projectDir.appendingPathComponent("snippets.json")
         }
-        SnippetLibrary.save(snippets, to: url)
+        // A failed write must surface — the editor treats this call as
+        // success, so a swallowed error meant edits vanished on relaunch.
+        guard SnippetLibrary.save(snippets, to: url) else {
+            surfaceError("Couldn't save \(url.lastPathComponent) — the snippet edit is not on disk.")
+            return
+        }
         objectWillChange.send()
     }
 
@@ -2941,9 +2994,9 @@ final class OrchestratorStore: ObservableObject {
         obj["workflow"] = project.workflow
         let slug = NewAppIntakeSheet.slugify(trimmed)
         let url = profilesDirURL.appendingPathComponent(slug + ".json")
-        if let data = try? JSONSerialization.data(withJSONObject: obj,
-                                                  options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: url, options: .atomic)
+        // Success is only claimed when the write landed — writeJSON surfaces
+        // a failure banner; a "Saved" line over a lost file silently reverts.
+        if writeJSON(obj, to: url) {
             runLog += "Saved profile “\(trimmed)” (\(slug).json).\n"
         }
         objectWillChange.send()
@@ -2958,14 +3011,23 @@ final class OrchestratorStore: ObservableObject {
         let wf = obj.removeValue(forKey: "workflow") as? String
         let dir = rootURL.appendingPathComponent(name)
         let routingURL = dir.appendingPathComponent("model_routing.json")
-        if let out = try? JSONSerialization.data(withJSONObject: obj,
-                                                 options: [.prettyPrinted, .sortedKeys]) {
-            try? out.write(to: routingURL, options: .atomic)
-            modelRoutingCache[routingURL] = nil
+        // Both writes must land before "Applied" is claimed — a user creating
+        // a project from a profile would otherwise get default routing with
+        // no warning. writeJSON / the catch surface the failure banner.
+        guard writeJSON(obj, to: routingURL) else {
+            objectWillChange.send()
+            return
         }
+        modelRoutingCache[routingURL] = nil
         if let wf, !wf.isEmpty {
-            try? (wf + "\n").write(to: dir.appendingPathComponent("workflow.txt"),
-                                   atomically: true, encoding: .utf8)
+            do {
+                try (wf + "\n").write(to: dir.appendingPathComponent("workflow.txt"),
+                                      atomically: true, encoding: .utf8)
+            } catch {
+                surfaceError("Couldn't save workflow.txt for \(name): \(error.localizedDescription)")
+                objectWillChange.send()
+                return
+            }
         }
         runLog += "Applied profile “\(profile.name)” to \(name).\n"
         objectWillChange.send()
@@ -2983,9 +3045,11 @@ final class OrchestratorStore: ObservableObject {
         if let verdict {
             let obj: [String: Any] = ["verdict": verdict,
                                       "ts": ISO8601DateFormatter().string(from: Date())]
-            if let data = try? JSONSerialization.data(withJSONObject: obj,
-                                                      options: [.prettyPrinted, .sortedKeys]) {
-                try? data.write(to: url, options: .atomic)
+            // Gate BOTH the "Rated" line and the exemplar launch on the write:
+            // fleet learning (presort / anti-pattern ledger) reads rating.json,
+            // so claiming a rating that never landed makes the fleet silently
+            // disagree with what the user was told. writeJSON surfaces failure.
+            if writeJSON(obj, to: url) {
                 runLog += "Rated \(project.name) \(verdict).\n"
                 // A good project immediately teaches: its phase outputs
                 // become few-shot exemplars future phase runs see.
@@ -3054,10 +3118,7 @@ final class OrchestratorStore: ObservableObject {
                 p.executableURL = URL(fileURLWithPath: bin)
                 p.arguments = ["-p", prompt]
                 var env = ProcessInfo.processInfo.environment
-                for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-                          "GOOGLE_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-                          "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL",
-                          "GOOGLE_APPLICATION_CREDENTIALS"] {
+                for k in APIKeyEnv.strippedAPIKeyVars {
                     env.removeValue(forKey: k)
                 }
                 p.environment = env
@@ -3102,6 +3163,15 @@ final class OrchestratorStore: ObservableObject {
         let routing = ModelRouting.load(from: url)
         modelRoutingCache[url] = (now, routing)
         return routing
+    }
+
+    /// For editors that save(to:) a routing URL directly (RoutingGridView's
+    /// per-scope Apply — the section scope has no typed writer): drop the TTL
+    /// entry so the next read hits disk. Skipping this served pre-save routing
+    /// for up to modelRoutingTTL, and a reload-before-mutate writer overlaying
+    /// onto that stale copy could silently revert the Apply.
+    func invalidateRoutingCache(at url: URL) {
+        modelRoutingCache[url] = nil
     }
 
     // Routing-file mtime — powers the grid's "file changed on disk" banner.
@@ -3394,10 +3464,20 @@ final class OrchestratorStore: ObservableObject {
             if re.firstMatch(in: text, range: range) != nil {
                 text = re.stringByReplacingMatches(in: text, range: range,
                                                    withTemplate: "$1\(v)")
-            } else if let runtimeRange = text.range(of: "runtime:\\n") {
+                writeConfig(text)
+            } else if let runtimeRange = text.range(of: "runtime:\n") {
+                // Older engine copies predate recently added runtime keys —
+                // insert directly under the section header, matching the
+                // "models:\n" insert sites. (This once searched for a literal
+                // backslash-n and never fired, so the toggle looked saved
+                // while nothing reached disk.)
                 text.insert(contentsOf: "  \(key): \(v)\n", at: runtimeRange.upperBound)
+                writeConfig(text)
+            } else {
+                // No key and no runtime: section — be honest instead of
+                // writing unchanged text (matches setAgentEnabled).
+                surfaceError("Could not find \(key) or a runtime: section in \(configURL.lastPathComponent).")
             }
-            writeConfig(text)
         }
     }
 
@@ -3409,11 +3489,15 @@ final class OrchestratorStore: ObservableObject {
             if re.firstMatch(in: text, range: range) != nil {
                 text = re.stringByReplacingMatches(in: text, range: range,
                                                    withTemplate: "$1\(value ? "true" : "false")")
-            } else if let runtimeRange = text.range(of: "runtime:\\n") {
+                writeConfig(text)
+            } else if let runtimeRange = text.range(of: "runtime:\n") {
+                // See setRuntimeInt: real-newline search, or the insert is dead code.
                 text.insert(contentsOf: "  \(key): \(value ? "true" : "false")\n",
                             at: runtimeRange.upperBound)
+                writeConfig(text)
+            } else {
+                surfaceError("Could not find \(key) or a runtime: section in \(configURL.lastPathComponent).")
             }
-            writeConfig(text)
         }
     }
 
@@ -3963,16 +4047,27 @@ final class OrchestratorStore: ObservableObject {
     }
 
     // Writes <project>/run_config.json, which the engine reads (completeness picks
-    // the phase subset; stop_after_phase truncates; autonomy sets the mode). Only
-    // non-default values are written; an empty config file is skipped entirely.
+    // the phase subset; stop_after_phase truncates; autonomy sets the mode).
+    // Read-merge like the file's OTHER writers (ProjectSensitivityFile.write,
+    // SituationApplyService.confirm): run_config.json also carries the engine-
+    // read "sensitivity" privacy floor and "situation", so a wholesale rewrite
+    // on an existing project would silently strip a user's private flag. A
+    // default value DELETES its key, so reverting to defaults actually clears
+    // an earlier write instead of being skipped.
     func writeRunConfig(project name: String, autonomy: String,
                         completeness: String, stopAfter: String) {
-        var cfg: [String: Any] = [:]
-        if !autonomy.isEmpty && autonomy != "fully_autonomous" { cfg["autonomy"] = autonomy }
-        if !completeness.isEmpty { cfg["completeness"] = completeness }
-        if !stopAfter.isEmpty { cfg["stop_after_phase"] = stopAfter }
-        guard !cfg.isEmpty else { return }
         let url = rootURL.appendingPathComponent(name).appendingPathComponent("run_config.json")
+        var cfg: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let existing = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            cfg = existing
+        }
+        if !autonomy.isEmpty && autonomy != "fully_autonomous" { cfg["autonomy"] = autonomy }
+        else { cfg.removeValue(forKey: "autonomy") }
+        if !completeness.isEmpty { cfg["completeness"] = completeness }
+        else { cfg.removeValue(forKey: "completeness") }
+        if !stopAfter.isEmpty { cfg["stop_after_phase"] = stopAfter }
+        else { cfg.removeValue(forKey: "stop_after_phase") }
         writeJSON(cfg, to: url)
     }
 
@@ -4798,7 +4893,9 @@ final class OrchestratorStore: ObservableObject {
         do {
             let data = try JSONSerialization.data(
                 withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: url)
+            // .atomic: the engine reads these files mid-run — a torn
+            // half-written JSON is worse than a stale one.
+            try data.write(to: url, options: .atomic)
             // A successful write clears a stale error banner: otherwise a red
             // banner from an earlier transient failure lingers after the retry
             // that fixed it (rulebook: clear errors that no longer apply).

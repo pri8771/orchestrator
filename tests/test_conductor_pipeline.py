@@ -80,6 +80,26 @@ class TestConsumePipelineRequest(_Base):
                             for r in led))
         self.assertFalse(os.path.exists(cond.pipeline_request_path(self.root)))
 
+    def test_corrupt_marker_is_drained_and_ledgered(self):
+        # Peek-and-clear applies to a torn/invalid marker write too: drained
+        # (never silently re-read on every later poll) AND surfaced (ledger
+        # line + banner) — a GUI "Run pipeline" click must never just vanish.
+        os.makedirs(cond.conductor_dir(self.root), exist_ok=True)
+        with open(cond.pipeline_request_path(self.root), "w") as fh:
+            fh.write("{this is not json")
+        banners = []
+        state = cond._consume_pipeline_request(self.root, cond.default_state(),
+                                               emit=banners.append)
+        self.assertIsNone(state["pipeline"])
+        self.assertFalse(os.path.exists(cond.pipeline_request_path(self.root)))
+        led = cond.read_ledger(self.root)
+        failed = [r for r in led
+                  if r.get("decision") == "pipeline_load_failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIsNone(failed[0]["detail"]["preset_path"])
+        self.assertEqual(state["ledger_cursor"], len(led))   # cursor advanced
+        self.assertTrue(any("unreadable" in b for b in banners))
+
     def test_invalid_request_never_disturbs_a_prior_active_preset(self):
         self._request()
         state = cond._consume_pipeline_request(self.root, cond.default_state(),

@@ -34,7 +34,14 @@ class TestAwaitApproval(unittest.TestCase):
             result["decision"], result["payload"] = orch._await_approval(
                 d, phase, state, timeout=10, poll=0.1)
         t = threading.Thread(target=run); t.start()
-        time.sleep(0.3)
+        # Bounded poll instead of a fixed 0.3s nap: a loaded shared runner
+        # can take longer than 0.3s just to schedule the thread. The 5s
+        # deadline still fails loudly (same assertion) if the pause never
+        # happens.
+        deadline = time.time() + 5
+        while time.time() < deadline \
+                and state.get("awaiting_approval") != phase:
+            time.sleep(0.02)
         self.assertEqual(state.get("awaiting_approval"), phase)  # paused
         if drop_name:
             # Atomic write (temp file + rename), matching the real writer
@@ -83,6 +90,36 @@ class TestAwaitApproval(unittest.TestCase):
         self.assertEqual(decision, "timeout")
         self.assertIsNone(payload)
         self.assertIsNone(state.get("awaiting_approval"))
+
+
+class TestAwaitApprovalShutdown(unittest.TestCase):
+    """A-78: a stop signal during a checkpoint pause must exit the wait
+    promptly (the process otherwise hangs up to 2h joining the worker thread)
+    — WITHOUT clearing awaiting_approval, so the resume path re-arms the
+    interrupted checkpoint instead of sailing past the human decision."""
+
+    def tearDown(self):
+        orch._SHUTDOWN.clear()
+
+    def test_shutdown_exits_promptly_and_keeps_the_marker(self):
+        d = tempfile.mkdtemp()
+        state = {}
+        result = {}
+
+        def run():
+            result["decision"], result["payload"] = orch._await_approval(
+                d, "scope_and_prd", state, timeout=7200, poll=0.1)
+        t = threading.Thread(target=run)
+        t.start()
+        time.sleep(0.3)
+        self.assertEqual(state.get("awaiting_approval"), "scope_and_prd")
+        orch._SHUTDOWN.set()
+        t.join(timeout=5)   # well under the 7200s timeout
+        self.assertFalse(t.is_alive(), "the wait must exit on shutdown")
+        self.assertEqual(result["decision"], "shutdown")
+        self.assertIsNone(result["payload"])
+        # The marker survives — exactly what the re-arm-on-resume path needs.
+        self.assertEqual(state.get("awaiting_approval"), "scope_and_prd")
 
 
 if __name__ == "__main__":
