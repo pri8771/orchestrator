@@ -110,50 +110,31 @@ cost:
 agents:
   codex_enabled: true
   claude_enabled: true
-  # Gemini stays enabled, but a STARTUP PROBE decides whether it actually
-  # joins each run: the engine makes one tiny headless `gemini -p` call (like
-  # the codex model probe; verdict cached 4h in .gemini_probe.json). On a
-  # failed probe (exit 41 / missing GEMINI_API_KEY / TTY-tier error) gemini is
-  # auto-disabled for the run with one logged line + an events.jsonl
-  # agent_disabled event — instead of every turn burning its timeout on the
-  # same failure. For reliable headless access, put an API key in
-  # ~/.orchestrator/gemini_api_key (see models.gemini_api_key_file).
-  gemini_enabled: true
-  # Local model via Ollama — OFF by default in docs; enabled here by default for
-  # richer multi-LLM discussion.
-  # Local models join as debate/review/build workers only: they never become the
-  # coordinator while any cloud agent is enabled, and they sit out time-budgeted
-  # (sprint) workflows unless runtime.local_models_in_sprints is true.
-  ollama_enabled: true
+  # Gemini is OFF by default: the free tier's daily request quota (20/day/
+  # model) is too small for multi-round debates, and the headless CLI needs
+  # an API key to be reliable. Flip to true to opt in — a STARTUP PROBE then
+  # decides whether it actually joins each run: the engine makes one tiny
+  # headless `gemini -p` call (like the codex model probe; verdict cached 4h
+  # in .gemini_probe.json). On a failed probe (exit 41 / missing
+  # GEMINI_API_KEY / TTY-tier error) gemini is auto-disabled for the run with
+  # one logged line + an events.jsonl agent_disabled event — instead of every
+  # turn burning its timeout on the same failure. For reliable headless
+  # access, put an API key in ~/.orchestrator/gemini_api_key (see
+  # models.gemini_api_key_file).
+  gemini_enabled: false
+  # Local model via Ollama — OFF by default: it only helps once `ollama` is
+  # installed with roster models actually pulled (`--doctor` lists what's
+  # missing). Flip to true for richer multi-LLM discussion on a machine that
+  # has them. Local models join as debate/review/build workers only: they
+  # never become the coordinator while any cloud agent is enabled, and they
+  # sit out time-budgeted (sprint) workflows unless
+  # runtime.local_models_in_sprints is true.
+  ollama_enabled: false
 
-# Max rounds per phase. One round = every enabled bot speaks once, so with all
-# 3 bots enabled a phase caps at 27 bot messages (9 rounds x 3). A phase ends
-# early the moment the coordinator declares consensus.
-rounds:
-  prompt_contract: 9
-  initial_discussion: 9
-  product_research: 9
-  portfolio_selection: 9
-  per_app_product_brief: 9
-  next_steps_small: 9
-  detailed_discussion: 9
-  app_features: 9
-  design_discussion: 9
-  design_handoff: 9
-  ios_architecture_review: 9
-  tech_specs: 9
-  project_plan: 9
-  task_assignments: 9
-  implementation_readiness_gate: 9
-  # Build phase gets many iterations so the app can actually be finished; it ends
-  # early when the coordinator judges the app functionally complete.
-  build_coordination: 9
-  write_tests: 6
-  build_verification: 9
-  human_qa_checklist: 9
-  app_store_readiness: 9
-  final_review: 9
-  portfolio_audit: 9
+# Per-phase round budgets moved to workflows/<name>.json (each phase's
+# `rounds` field, GUI-editable in the Routing grid) — the `rounds:` block that
+# used to sit here was dead: the engine always found a value on the workflow
+# phase, so editing this file never changed a round count.
 
 runtime:
   timeout_seconds_per_agent: 1800
@@ -419,7 +400,11 @@ runtime:
   # app not running) routes into the bounded iterate-repair loop. Verdict +
   # screenshots persist to <app>/docs/. Skips gracefully when xcodebuild,
   # simctl, Ollama, or the vision model is unavailable.
-  visual_qa_enabled: true
+  # OFF by default: it needs Ollama running with a pulled vision model to be
+  # more than a per-build simulator round-trip, and small VLM graders earn
+  # their keep only once the fleet's anti-pattern ledger is being consulted.
+  # Flip to true on a machine with the vision roster installed.
+  visual_qa_enabled: false
   # "" = auto: every installed vision model (gemma3:12b/4b, qwen2.5vl:3b)
   # votes and only a UNANIMOUS BAD fails a screen — small VLM graders are
   # noisy, and a false FAIL burns a whole repair loop. Set a model id to
