@@ -2,15 +2,15 @@
 
 ## Progress — COMPLETE (2026-07-28)
 
-**Every card is fixed except A-49.** CI blockers CI-1…4 ✅ · HIGH A-01…A-13 ✅
+**All 88 cards are fixed.** CI blockers CI-1…4 ✅ · HIGH A-01…A-13 ✅
 · MEDIUM A-14…A-40 ✅ · LOW A-41…A-88 ✅ (A-82 resolved by materializing the
-six situations/ seeds as repo files — stage them).
+six situations/ seeds as repo files).
 
-**A-49 is deliberately left open — it is an operator decision, not a code
-fix:** the working tree flips `gemini_enabled`/`ollama_enabled`/
-`visual_qa_enabled` to false while their committed comments still describe
-them as on-by-default. Either commit the flips WITH corrected comments, or
-`git restore config.yaml` — the code is correct either way.
+**A-49 closed 2026-07-28 (82c9945)** — the operator decision went to
+*opt-in*: `gemini_enabled`/`ollama_enabled`/`visual_qa_enabled` are committed
+as `false` with the three comment blocks rewritten to describe the opt-in
+honestly. Rationale: gemini's free tier is 20 req/day/model, and
+ollama/visual-QA only help once the local models are actually pulled.
 
 **Final gate:** 2289 engine tests OK (strict; +147 net new regression tests
 since the audit), 414 GUI tests OK (+20), ruff clean, mypy clean, shell
@@ -514,7 +514,7 @@ Because the base rule is `(allow default)`, EVERYTHING else under $HOME stays wr
 
 ### A-49 [LOW] Uncommitted config.yaml flag flips contradict their own committed comments (gemini/ollama/visual_qa)
 
-**Where:** `config.yaml:127`  ·  lens: seeds-config  ·  verified: CONFIRMED
+**Where:** `config.yaml:127`  ·  lens: seeds-config  ·  verified: CONFIRMED  ·  **CLOSED 82c9945 (opt-in)**
 
 **Evidence:** Working-tree config.yaml (uncommitted, per git diff) flips three flags to false while the comment block directly above each still asserts the opposite: line 113 'Gemini stays enabled, but a STARTUP PROBE decides whether it actually joins each run' above `gemini_enabled: false` (line 121); lines 122-123 'Local model via Ollama — OFF by default in docs; enabled here by default for richer multi-LLM discussion' above `ollama_enabled: false` (line 127); and the visual-QA gate description above `visual_qa_enabled: false` (line 422) still reads as an active gate. Anyone (human or agent) reading the file infers the opposite of actual behavior. Probe caches corroborate the runtime reality: .gemini_probe.json (written today, 0.6h old) records a 90s gemini CLI timeout, so the flips look deliberate.
 
