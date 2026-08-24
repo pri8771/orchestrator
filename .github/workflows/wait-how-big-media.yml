@@ -1,0 +1,54 @@
+name: Build Wait How Big media
+
+on:
+  push:
+    branches:
+      - wait-how-big-social-media
+    paths:
+      - 'wait-how-big-social/scripts/**'
+      - '.github/workflows/wait-how-big-media.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wait-how-big-social-media
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wait-how-big-social-media
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install media dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core fonts-liberation
+          python -m pip install --upgrade pip
+          python -m pip install pillow
+
+      - name: Render launch media
+        run: |
+          python wait-how-big-social/scripts/render_media.py
+          python wait-how-big-social/scripts/verify_assets.py
+
+      - name: Commit generated assets
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add wait-how-big-social/assets wait-how-big-social/asset_verification.json wait-how-big-social/render_summary.json
+          if git diff --cached --quiet; then
+            echo 'No asset changes.'
+            exit 0
+          fi
+          git commit -m 'media: generate Wait How Big launch assets'
+          git push origin HEAD:wait-how-big-social-media
