@@ -1,0 +1,213 @@
+{
+  "files": [
+    {
+      "file": "WHB-000_brand-trailer.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "8.000000"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "8.000000"
+      },
+      "bytes": 456725
+    },
+    {
+      "file": "WHB-001_million-vs-billion-seconds.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "11.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "11.911995"
+      },
+      "bytes": 248229
+    },
+    {
+      "file": "WHB-002_thirty-earths-to-the-moon.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "12.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "12.910000"
+      },
+      "bytes": 277246
+    },
+    {
+      "file": "WHB-003_sun-volume-earths.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "11.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "11.911995"
+      },
+      "bytes": 347387
+    },
+    {
+      "file": "WHB-004_challenger-deep.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "12.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "12.910000"
+      },
+      "bytes": 266454
+    },
+    {
+      "file": "WHB-005_pacific-vs-land.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "11.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "11.911995"
+      },
+      "bytes": 289154
+    },
+    {
+      "file": "WHB-006_people-standing-square.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "12.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "12.910000"
+      },
+      "bytes": 307757
+    },
+    {
+      "file": "WHB-007_billion-vs-trillion-dollars.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "12.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "12.910000"
+      },
+      "bytes": 212103
+    },
+    {
+      "file": "WHB-008_earth-history-one-year.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "14.000000"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "14.000000"
+      },
+      "bytes": 287867
+    },
+    {
+      "file": "WHB-009_saturn-between-earth-and-moon.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "12.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "12.910000"
+      },
+      "bytes": 298122
+    },
+    {
+      "file": "WHB-010_mid-ocean-ridge.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "11.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "11.911995"
+      },
+      "bytes": 435823
+    },
+    {
+      "file": "WHB-011_blue-whale-basketball-court.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "11.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "11.911995"
+      },
+      "bytes": 310516
+    },
+    {
+      "file": "WHB-012_million-vs-billion-hours.mp4",
+      "video": {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920,
+        "duration": "11.933333"
+      },
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "duration": "11.911995"
+      },
+      "bytes": 289727
+    }
+  ],
+  "errors": []
+}
