@@ -1,0 +1,61 @@
+name: Wait How Big social operator
+
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate without creating Buffer posts'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wait-how-big-social-operator
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BUFFER_API_KEY: ${{ secrets.WHB_BUFFER_API_KEY }}
+      WHB_KILL_SWITCH: ${{ vars.WHB_KILL_SWITCH }}
+      WHB_DRY_RUN: ${{ inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify and unpack operator
+        run: |
+          echo '0fe0839dbfb3fb3c6f86cef8520794e9de5d5cf874720b5d122a4e2feed071cc  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
+          rm -rf /tmp/whb-operator
+          mkdir -p /tmp/whb-operator
+          unzip -q wait-how-big-social/operator/operator_bundle.zip -d /tmp/whb-operator
+          cp wait-how-big-social/operator/state.json /tmp/whb-operator/state.json
+
+      - name: Operate publishing queue
+        run: python /tmp/whb-operator/operator.py
+
+      - name: Persist non-secret operator state
+        if: always()
+        run: |
+          if [ -f /tmp/whb-operator/state.json ]; then
+            cp /tmp/whb-operator/state.json wait-how-big-social/operator/state.json
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add wait-how-big-social/operator/state.json
+          if git diff --cached --quiet; then
+            echo 'No state changes.'
+            exit 0
+          fi
+          git commit -m 'social: update Wait How Big operator state'
+          git push
