@@ -7,6 +7,11 @@ logged into** — **Codex**, **Claude** (Claude Code), and **Gemini/Antigravity*
 optionally joined by a **local Ollama model** — debate to consensus and then
 *act*, driven through **pluggable workflows**.
 
+The repository also hosts the fail-closed **Wait, How Big?** social publishing
+experiment. Its verified account state, security boundaries, known blockers,
+and continuation prompt are documented in
+[`wait-how-big-social/README.md`](wait-how-big-social/README.md).
+
 It started as an app-builder. It's now a general multi-agent reasoning engine:
 the same debate → consensus → forced-vote → (optional) build machinery can build
 an app, answer a question, research a topic, audit a codebase, or productionize
