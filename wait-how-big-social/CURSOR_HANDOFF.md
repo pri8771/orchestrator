@@ -23,6 +23,9 @@ Verified external state:
 - TikTok: @waithowbignow, https://www.tiktok.com/@waithowbignow, connected to Buffer.
 - Buffer Free account login identity: waithowbig@unsubscriber.me. Its email is
   verified and it has exactly the three channels above.
+- Buffer channel IDs for cross-checking only: X
+  6a8f2926ccaf649a671fa86d, Instagram 6a8f1d89ccaf649a671f69fc,
+  TikTok 6a8fb214ccaf649a6724d002.
 - Never use unrelated Buffer onepersonops@unsubscriber.me, X @OnePerson0ops or
   @OnePersonOpsMgr, or TikTok @wootworwoot / @appleuser535236940.
 - No passwords, passkeys, 2FA codes, API keys, OAuth codes, or recovery data are

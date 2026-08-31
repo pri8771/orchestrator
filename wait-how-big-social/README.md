@@ -25,6 +25,13 @@ Do not describe connected accounts, a configured key form, a schedule receipt,
 or queued media as a launch. A launch requires a successful dry run followed by
 a deliberate normal run and verified public post IDs/timestamps.
 
+Verified Buffer channel IDs (non-secret identifiers used only for
+cross-checking):
+
+- X `WaitHowBig`: `6a8f2926ccaf649a671fa86d`
+- Instagram `waithowbig`: `6a8f1d89ccaf649a671f69fc`
+- TikTok `waithowbignow`: `6a8fb214ccaf649a6724d002`
+
 ## Login identities and destinations
 
 Use these identifiers only at the corresponding official site. Enter all
