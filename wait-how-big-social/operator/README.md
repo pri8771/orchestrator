@@ -4,7 +4,7 @@ The operator is runnable and fail-closed. This repair changes local source and t
 
 ## What changed
 
-`whb_operator.py`, `queue.json` and `config.json` are now plain reviewable source beside their deterministic `operator_bundle.zip`. The executable no longer shadows Python's `operator` module. The original thirteen queue items, media URLs, captions and three established channel IDs are preserved exactly.
+`whb_operator.py`, `queue.json` and `config.json` are now plain reviewable source beside their deterministic `operator_bundle.zip`. The executable no longer shadows Python's `operator` module. The thirteen queue items, captions and three established channel IDs are preserved. WHB-001 now references the [reviewed media correction](../assets/reviewed/README.md); the other twelve media URLs are unchanged.
 
 A read-only dry run is explicitly allowed while `WHB_KILL_SWITCH=true` or local publication is paused. It queries the intended channels/history, checks media availability and writes only `plan.json`. It never writes fake post IDs/statuses, actual posts, or the accepted scheduling anchor. The proposed anchor and proposed payloads are labeled planned. Current-state input `state.json` remains byte-for-byte unchanged.
 

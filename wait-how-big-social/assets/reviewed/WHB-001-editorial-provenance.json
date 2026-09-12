@@ -1,0 +1,131 @@
+{
+  "content_id": "WHB-001",
+  "source_task": "BOTS-117",
+  "asset": "WHB-001-million-vs-billion-seconds-2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec.mp4",
+  "sha256": "2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec",
+  "bytes": 918675,
+  "original_asset_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-001_million-vs-billion-seconds.mp4",
+  "original_asset_sha256": "53f9389d20eda9a7bdd4dbfbfd81888ad9350b0591236d2e9afe4af5473f2c3e",
+  "original_generator_ref": "a528dce41833c6abdea3be713cb30f02379e7220",
+  "original_generator_path": "wait-how-big-social/scripts/render_media.py",
+  "repair": "Replace arbitrary 220/800 bars with numerical durations, explicit NOT A SCALE CHART label and exact 1 BILLION = 1,000 \u00d7 1 MILLION relationship.",
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "retained original silent AAC track"
+  },
+  "author_verification": {
+    "all_video_frames_decoded": 360,
+    "authored_scene_states_visually_inspected": 6,
+    "decoded_audio_channel_samples": 1050610,
+    "nonzero_audio_samples": 0,
+    "perceptual_full_playback_claimed": false
+  },
+  "editorial_review": {
+    "verdict": "PASS",
+    "blocking_findings": [],
+    "reviewed_at_utc": "2026-09-12T23:41:55.449787+00:00",
+    "actual_model": "claude-haiku-4-5-20251001",
+    "thinking_tokens": 0,
+    "native_image_blocks": 2,
+    "tool_calls": 0,
+    "invocations": 1,
+    "reported_cost_usd": 0.007078,
+    "cost_basis": "CLI reported list-price equivalent; incremental subscription billing was not independently verified.",
+    "usage": {
+      "input_tokens": 3633,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 327,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "not_available",
+      "iterations": [
+        {
+          "input_tokens": 3633,
+          "output_tokens": 327,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard"
+    },
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 5333,
+        "outputTokens": 349,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.007078,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+        "thinkingTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "provider": "firstParty",
+        "costBasis": "list"
+      }
+    },
+    "images": [
+      {
+        "scene_index": 2,
+        "video_timestamp_seconds": 4.666666666666667,
+        "sha256": "4cd699230b3ed4f8b4d40ba5718a96ea12cd591ac8e1660b403180b466d62146",
+        "width": 720,
+        "height": 1280
+      },
+      {
+        "scene_index": 5,
+        "video_timestamp_seconds": 10.9,
+        "sha256": "a8227fe8dc0e7c6e8afef90e63330d086052b1d39ac5a9932f430cc1ccd8174d",
+        "width": 720,
+        "height": 1280
+      }
+    ],
+    "scope": "Actual independent model inspection of exactly two native PNG image blocks from repaired WHB-001: scenes 2/5 at 4.666667 and 10.9 seconds. Supplied complete six-scene text, exact unit arithmetic and author full-decode evidence were also reviewed. The model did not inspect the MP4, the other four frames, hear audio, run tools or verify platform presentation.",
+    "raw_verdict": "```json\n{\n  \"verdict\": \"PASS\",\n  \"blocking_findings\": [],\n  \"image_observations\": \"Scene 2 (4.67s): progress bar ~45% filled (coral). Scene 5 (10.9s): progress bar ~100% filled (coral). Both frames display identical text layout with time comparison box. Scene 5 adds footer text 'A billion is one thousand millions.' and 'FOLLOW FOR THE NEXT PERSPECTIVE SHIFT.' confirming sequential progression through six scenes.\",\n  \"math_assessment\": \"Conversions verified: 1,000,000 seconds \u00f7 86,400 sec/day = 11.574... \u2192 11.6 days (correct rounding). 1,000,000,000 seconds \u00f7 (86,400 \u00d7 365.25) = 31.688... \u2192 31.7 Julian years (correct rounding). Ratio 1,000:1 stated accurately. Explicit 'NOT A SCALE CHART' disclaimer prevents misinterpretation of visual bar proportions.\",\n  \"coverage_limit\": \"Review scope: visual layout, text consistency, mathematical accuracy across two representative frames only. Audio zero-sampled (silent); full playback, user experience, and platform acceptance outside scope. Author decode confirms successful decoding of all 360 frames; only two frames inspected.\",\n  \"issues_none\": true\n}\n```",
+    "clarifications": [
+      "The reviewer statement about sequential progression through six scenes is supported by supplied text/timing, not six-image model coverage; only two frames were supplied.",
+      "The repaired central comparison has no quantitative bars. The remaining strip is scene progress. Reviewer wording about visual bar proportions should not be read as asserting remaining data bars.",
+      "All-zero audio and 360-frame decode are author-supplied native decoder evidence, not actions performed or perceptually reviewed by Haiku.",
+      "No full perceptual playback, motion-safety, destination overlay, platform or public-post acceptance is conferred."
+    ],
+    "full_review_receipt_sha256": "caa7b77ba57cccbe2e8154e71f80c78deba1e747a7e7a9d3558b21f7098b5975"
+  },
+  "arithmetic": {
+    "seconds_per_day": 86400,
+    "conventional_julian_days_per_year": 365.25,
+    "million_seconds_days": "11.574074074...",
+    "billion_seconds_julian_years": "31.688087814...",
+    "rounded_values": [
+      "11.6 days",
+      "31.7 years"
+    ],
+    "exact_billion_to_million_ratio": 1000,
+    "gregorian_mean_days_per_year": 365.2425
+  },
+  "publication_authority": false,
+  "limitations": [
+    "Independent model visually inspected only two representative frames; full scene text/math and author decode evidence were supplied.",
+    "No real-time perceptual playback or platform-overlay acceptance is claimed.",
+    "Changing the queue URL invalidates old queue-bound plans/grants. Root must verify exact public asset bytes after merge and obtain current applicable release evidence."
+  ]
+}
