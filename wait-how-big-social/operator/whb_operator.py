@@ -98,7 +98,7 @@ def gql(api_key: str, query: str, variables: dict[str, Any] | None = None) -> di
             payload = json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Buffer HTTP {exc.code}") from None
-    except urllib.error.URLError as exc:
+    except urllib.error.URLError:
         raise RuntimeError("Buffer network error") from None
     if payload.get("errors"):
         raise RuntimeError("Buffer GraphQL error; inspect through the official account")
@@ -519,6 +519,9 @@ def main() -> int:
                           "actual_mutations": 0, "plan_sha256": sha(canonical(plan)),
                           "binding": plan["binding"], "actual_state_changed": False}))
         return 0
+    # The dry-run branch returned above; every remaining path needs durable state.
+    if state_dir is None:
+        raise RuntimeError("Durable state directory is required")
     with state_lock(Path(state_dir)):
         # Reload after taking the sole-writer lock to prevent races with another local process.
         state = load_json(state_path, default_state())
