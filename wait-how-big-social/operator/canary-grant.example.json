@@ -1,0 +1,16 @@
+{
+  "authorized": false,
+  "mode": "manual_canary",
+  "target": "WHB-000:twitter",
+  "max_mutations": 1,
+  "authorization_ref": null,
+  "history_review_ref": null,
+  "expires_at": "2000-01-01T00:00:00Z",
+  "plan_sha256": "COPY_EXACT_REVIEWED_PLAN_HASH",
+  "binding": {
+    "queue_sha256": "COPY_FROM_REVIEWED_PLAN",
+    "source_sha256": "COPY_FROM_REVIEWED_PLAN",
+    "config_sha256": "COPY_FROM_REVIEWED_PLAN",
+    "channels_sha256": "COPY_FROM_REVIEWED_PLAN"
+  }
+}
