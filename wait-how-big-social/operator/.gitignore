@@ -1,0 +1,5 @@
+__pycache__/
+plan.json
+*.grant.json
+operator.lock
+state.json.*
