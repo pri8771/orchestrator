@@ -145,31 +145,46 @@ def get_org_and_channels(api_key: str) -> tuple[str, dict[str, dict[str, Any]]]:
 
 
 def get_channel_posts(api_key: str, org_id: str, channel_id: str) -> list[dict[str, Any]]:
-    data = gql(
-        api_key,
-        """query GetPosts($organizationId: OrganizationId!, $channelId: ChannelId!) {
-          posts(
-            first: 100
-            input: {
-              organizationId: $organizationId
-              sort: [{ field: createdAt, direction: desc }]
-              filter: {
-                channelIds: [$channelId]
-                status: [scheduled, sending, needs_approval, sent, error]
-              }
-            }
-          ) {
-            edges {
-              node {
-                id text dueAt status channelId externalLink
-                assets { source }
-              }
-            }
-          }
-        }""",
-        {"organizationId": org_id, "channelId": channel_id},
-    )
-    return [edge.get("node") or {} for edge in ((data.get("posts") or {}).get("edges") or [])]
+    # Buffer returned an empty collection for a combined status filter even when
+    # the same post was visible to a single-status query and direct-ID lookup.
+    # Query each status independently in one HTTP request; never infer absence
+    # from a missing/malformed branch of the response.
+    statuses = ("scheduled", "sending", "needs_approval", "sent", "error")
+    branches = []
+    for status in statuses:
+        branches.append(f"""history_{status}: posts(
+          first: 100
+          input: {{
+            organizationId: $organizationId
+            sort: [{{ field: createdAt, direction: desc }}]
+            filter: {{ channelIds: [$channelId], status: [{status}] }}
+          }}
+        ) {{
+          edges {{ node {{
+            id text dueAt status channelId externalLink assets {{ source }}
+          }} }}
+        }}""")
+    query = ("query GetPosts($organizationId: OrganizationId!, $channelId: ChannelId!) {\n"
+             + "\n".join(branches) + "\n}")
+    data = gql(api_key, query, {"organizationId": org_id, "channelId": channel_id})
+    if not isinstance(data, dict):
+        raise RuntimeError("Malformed Buffer history response")
+    posts, seen = [], set()
+    for status in statuses:
+        branch = data.get("history_" + status)
+        if not isinstance(branch, dict) or not isinstance(branch.get("edges"), list):
+            raise RuntimeError("Incomplete Buffer status history")
+        if len(branch["edges"]) > 100:
+            raise RuntimeError("Buffer history exceeds per-status bound")
+        for edge in branch["edges"]:
+            post = edge.get("node") if isinstance(edge, dict) else None
+            if (not isinstance(post, dict) or not isinstance(post.get("id"), str)
+                    or not post["id"].strip() or post.get("channelId") != channel_id
+                    or post.get("status") != status or post["id"] in seen):
+                raise RuntimeError("Invalid or inconsistent Buffer history record")
+            seen.add(post["id"])
+            posts.append(post)
+    return posts
 
 
 def media_available(url: str) -> bool:
@@ -342,7 +357,7 @@ def build_plan(queue: list[dict[str, Any]], state: dict[str, Any], org_id: str,
             "organization_id": org_id, "proposed_anchor_utc": iso(anchor),
             "planned": planned, "observed_existing": observed,
             "publication_held": True, "actual_mutations": 0,
-            "history_limit": "latest_100_per_channel_is_not_proof_of_lifetime_absence",
+            "history_limit": "latest_100_per_status_per_channel_is_not_proof_of_lifetime_absence",
             "normal_github_publishing": "disabled_ephemeral_runner_state"}
 
 
