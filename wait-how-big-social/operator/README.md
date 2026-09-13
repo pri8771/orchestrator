@@ -52,7 +52,7 @@ $env:WHB_KILL_SWITCH = 'true'
 python 'D:\DEPLOYMENT\wait-how-big-social\operator\whb_operator.py'
 ```
 
-`plan.json` is written beside the source, separate from actual state. Its output includes `plan_sha256` and four binding hashes. Review its exact channel, caption, media, due time and current media/source acceptance. Read history through the official account: the API's latest 100 posts per channel is a bounded observation, **not proof of lifetime absence**. Preserve that actual review in `history_review_ref`. If a schedule is now past due, set `WHB_PROPOSED_ANCHOR_UTC` to an explicitly reviewed future UTC time during the next dry run; this changes the proposed plan without rewriting actual historical anchor.
+`plan.json` is written beside the source, separate from actual state. Its output includes `plan_sha256` and four binding hashes. Review its exact channel, caption, media, due time and current media/source acceptance. Read history through the official account: the API's latest 100 posts per status per channel is a bounded observation, **not proof of lifetime absence**. Preserve that actual review in `history_review_ref`. If a schedule is now past due, set `WHB_PROPOSED_ANCHOR_UTC` to an explicitly reviewed future UTC time during the next dry run; this changes the proposed plan without rewriting actual historical anchor.
 
 Copy `canary-grant.example.json` to an untracked `*.grant.json`. Fill the actual authorization reference, history review reference, expiry, exact reviewed `plan_sha256`, four bindings, and one target such as `WHB-000:twitter`. Only the root's already-authorized reviewed release sets `authorized: true`. The included example is intentionally invalid/expired. A grant never selects more than one mutation.
 
@@ -92,3 +92,9 @@ If the host was killed, `operator.lock` may remain. First establish that no publ
 [BOTS-117](https://priyanshchordia-1779372280524.atlassian.net/browse/BOTS-117) is the real source association. No native Jira edit or Done transition is performed. Historical account/launch directions and existing independent account grants remain authoritative for root's release; this repair creates none.
 
 Usable now: reviewable source, deterministic bundle, offline tests, read-only bootstrap while held, and a narrowly granted local canary with durable intent/reconciliation. Remaining live inputs: independent final review/integration, current official account/API/media verification, exact release grant, durable host admission and destination readback. Continuous GitHub publishing remains unavailable until a separately reviewed durable remote intent mechanism exists; this is an explicit safe release boundary, not a claimed autonomous launch.
+
+## Live history-filter correction — BOTS-117
+
+On September 13, 2026, Buffer returned an empty collection for the combined status filter although the known WHB-001 post was returned by a single-status query and a direct-ID lookup. Sorting was checked independently and did not cause the omission. The adapter now sends one request with five aliased single-status queries, each bounded to the latest 100 posts for the exact channel. It returns at most 500 records per channel. Missing or malformed branches, invalid channel/status records and duplicate IDs fail closed. An explicit valid empty collection remains empty. This is bounded history, not proof of lifetime absence.
+
+The first WHB-001 X post is already public. Keep its durable effect and publication receipt; do not recreate it as a test. This patch changes history lookup only, not credentials, media, authorization, mutation retry, or unattended publishing policy.
