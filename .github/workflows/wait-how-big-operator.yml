@@ -36,7 +36,7 @@ jobs:
 
       - name: Verify and unpack reviewed operator
         run: |
-          echo '646894095014994e473a76c8aa7d295a2b6ca07e049c9689b4921b52e297eaff  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
+          echo '4212083fbcfbad290ce2fd365674fff120229227e6c30df2723ada4dc560722a  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/whb-operator"
           unzip -q wait-how-big-social/operator/operator_bundle.zip -d "$RUNNER_TEMP/whb-operator"
           cp wait-how-big-social/operator/state.json "$RUNNER_TEMP/whb-operator/state.json"
