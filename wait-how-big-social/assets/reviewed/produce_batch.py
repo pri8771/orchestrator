@@ -60,6 +60,7 @@ def main() -> int:
     prior = load_prior_ids()
     started_batch = time.perf_counter()
     results = []
+    completed_items = 0
     for item in items:
         if STOP_FILE.exists() or os.environ.get("WHB_STOP") == "1":
             print("STOP engaged mid-batch")
@@ -81,6 +82,7 @@ def main() -> int:
             }
             append_receipt(row)
             results.append(row)
+            completed_items += 1
             continue
         attempt = 0
         last_err = None
@@ -109,6 +111,7 @@ def main() -> int:
                 append_receipt(row)
                 results.append(row)
                 if match:
+                    completed_items += 1
                     break
                 last_err = "hash_mismatch"
             except Exception as exc:  # noqa: BLE001 — receipt must record failure
@@ -141,7 +144,7 @@ def main() -> int:
     (ROOT / "S04_05_BATCH_RECEIPT.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary))
     # Success if every requested item is ok or an intentional dedupe skip; failures otherwise.
-    return 0 if (ok_count + skipped) == len(results) and len(results) == len(items) else 1
+    return 0 if completed_items == len(items) else 1
 
 
 if __name__ == "__main__":

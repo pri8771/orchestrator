@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[1] / "wait-how-big-social/assets/reviewed/produce_batch.py"
 
@@ -61,6 +62,21 @@ class BatchIntegrityTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(receipt["ok_count"], 1)
         self.assertEqual(receipt["skipped_duplicate_count"], 0)
+
+    def test_transient_read_error_can_recover(self):
+        digest = hashlib.sha256(self.asset.read_bytes()).hexdigest()
+        with mock.patch.object(self.batch, "sha256_file", side_effect=[OSError("transient read error"), digest]):
+            code, receipt = self.run_batch()
+        self.assertEqual(code, 0)
+        self.assertEqual([row["result"] for row in receipt["items"]], ["error", "ok"])
+        self.assertEqual(receipt["ok_count"], 1)
+
+    def test_persistent_read_error_fails(self):
+        with mock.patch.object(self.batch, "sha256_file", side_effect=OSError("persistent read error")):
+            code, receipt = self.run_batch()
+        self.assertEqual(code, 1)
+        self.assertEqual([row["result"] for row in receipt["items"]], ["error", "error"])
+        self.assertEqual(receipt["ok_count"], 0)
 
     def test_stop_preserves_ledger(self):
         self.run_batch()
