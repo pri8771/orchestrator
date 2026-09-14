@@ -1,0 +1,24 @@
+{
+  "content_id": "WHB-015",
+  "fps": 30,
+  "frame_counts": [
+    58,
+    50,
+    65,
+    65,
+    58,
+    64
+  ],
+  "duration_seconds": 12,
+  "phases": [
+    0.12,
+    0.28,
+    0.45,
+    0.62,
+    0.8,
+    1.0
+  ],
+  "repair": "Numerical comparison with explicit not-a-scale-chart or volume-not-packing label.",
+  "jira_key": "BOTS-122",
+  "duration_note": "Corrected S04-01: frame_counts imply 12.0s @30fps; prior claim of 20s was metadata-only drift."
+}

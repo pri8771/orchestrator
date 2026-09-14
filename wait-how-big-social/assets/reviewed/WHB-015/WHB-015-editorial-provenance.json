@@ -1,0 +1,74 @@
+{
+  "content_id": "WHB-015",
+  "source_task": "BOTS-122",
+  "topic": "Challenger Deep vs Everest",
+  "asset": "WHB-015-everest-challenger-deep-990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf.mp4",
+  "sha256": "990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf",
+  "bytes": 1136677,
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "tts": {
+    "engine": "macOS say",
+    "voice": "Samantha",
+    "rate_wpm": 180,
+    "license": "Apple macOS system voice; no voice cloning",
+    "public_redistribution_cleared": false,
+    "upload_decision": "Do not ship narrated Samantha TTS; use silent caption path."
+  },
+  "claim_cards": [
+    {
+      "claim": "Challenger Deep depth ~10,935 m",
+      "source": "NOAA Ocean Exploration",
+      "checked": true
+    },
+    {
+      "claim": "Mount Everest summit ~8,849 m above sea level",
+      "source": "Nepal/China 2020 survey",
+      "checked": true
+    },
+    {
+      "claim": "Everest summit placed at bottom would still be ~2.1 km underwater",
+      "calculation": "10935 - 8849 = 2086 m ≈ 2.1 km",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset; macOS Samantha TTS retained only in local narrated_archive (uncleared)",
+    "third_party_assets": []
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04.json#WHB-015",
+  "captions": {
+    "twitter": "Drop Everest into Challenger Deep and its summit would still sit roughly 2.1 km underwater.\n\nTallest mountain above sea level: ~8,849 m\nDeepest ocean point: ~10,935 m",
+    "instagram": "Put Everest at Challenger Deep and the summit would remain about 2.1 km below the surface.\n\nDepth source: NOAA Ocean Exploration\n#oceanfacts #geography #visualscience",
+    "tiktok": "Everest is enormous. Challenger Deep is deeper. The summit would still be roughly 2.1 km underwater. #ocean #geography #scale"
+  },
+  "publication_authority": false,
+  "status": "upload_ready_silent_assets_bound",
+  "narrated_archive": {
+    "asset": "WHB-015-narrated-dff2eefeec74a96938ae33a47423ba72ba8563ac594a38afdf3c071da32d8464.mp4",
+    "sha256": "dff2eefeec74a96938ae33a47423ba72ba8563ac594a38afdf3c071da32d8464",
+    "bytes": 1189715,
+    "audio": "macOS Samantha TTS AIFF muxed (non-silent)",
+    "tts_public_redistribution_cleared": false,
+    "note": "Indexed for evidence only; do not use as upload/media_url until TTS rights cleared."
+  },
+  "variant": "silent_tts_free",
+  "recommended_upload": {
+    "variant": "silent_mp4_plus_platform_captions",
+    "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-015-everest-challenger-deep-990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf.mp4",
+    "sha256": "990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf"
+  },
+  "s04_01_repair": {
+    "duration_seconds_was": 20,
+    "duration_seconds_now": 12,
+    "bound_silent_sha256": "990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf",
+    "queue_media_url_target": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-015-everest-challenger-deep-990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf.mp4"
+  }
+}
