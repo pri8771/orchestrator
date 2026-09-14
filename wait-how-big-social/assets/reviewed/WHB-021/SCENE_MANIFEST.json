@@ -1,0 +1,23 @@
+{
+  "content_id": "WHB-021",
+  "fps": 30,
+  "frame_counts": [
+    58,
+    50,
+    65,
+    65,
+    58,
+    64
+  ],
+  "duration_seconds": 12,
+  "phases": [
+    0.12,
+    0.28,
+    0.45,
+    0.62,
+    0.8,
+    1.0
+  ],
+  "repair": "Numerical comparison with explicit caveat label; silent/caption path.",
+  "jira_key": "BOTS-120"
+}

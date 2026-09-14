@@ -1,0 +1,43 @@
+{
+  "content_id": "WHB-017",
+  "source_task": "BOTS-120",
+  "topic": "Light-year vs AU",
+  "asset": "WHB-017-light-year-in-aus-7e38a8da65023d5a55fcb591d208f5a452439061b5a3a9dceaf57426292df676.mp4",
+  "sha256": "7e38a8da65023d5a55fcb591d208f5a452439061b5a3a9dceaf57426292df676",
+  "bytes": 957388,
+  "variant": "silent_tts_free",
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "claim_cards": [
+    {
+      "claim": "1 AU: 149597870.7 km",
+      "source": "IAU astronomical unit",
+      "checked": true
+    },
+    {
+      "claim": "1 light-year: 9.4607304725808e12 km",
+      "source": "IAU / Julian-year c definition",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset",
+    "third_party_assets": []
+  },
+  "captions": {
+    "twitter": "One light-year is not “a little farther than the Sun.”\n\nUsing IAU definitions: about 63,241 astronomical units fit in one light-year.\n\nDistance math — not a star map.",
+    "instagram": "1 AU = 149,597,870.7 km. One light-year ≈ 9.461×10¹² km. Divide them and you get ≈ 63,241 AU.\n\nSources: IAU AU and light-year definitions\n#spacefacts #scale #astronomy",
+    "tiktok": "A light-year holds about 63,241 Earth–Sun distances (AUs). IAU definitions, not vibes. #space #math #scale"
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04_03.json#WHB-017",
+  "publication_authority": false,
+  "status": "staged_upload_ready_silent",
+  "disclaimer": "DISTANCE COMPARISON — NOT A STAR MAP"
+}

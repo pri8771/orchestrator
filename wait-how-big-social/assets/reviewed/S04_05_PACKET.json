@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "jira_key": "BOTS-120",
+  "task": "S04-05",
+  "max_items": 3,
+  "mode": "verify_staged_silent_hashes",
+  "notes": "Finite local prep; no publish; tokens null (no LLM).",
+  "items": [
+    {
+      "content_id": "WHB-017",
+      "sha256": "7e38a8da65023d5a55fcb591d208f5a452439061b5a3a9dceaf57426292df676",
+      "relative_path": "WHB-017/WHB-017-silent-video.mp4",
+      "captions": {
+        "twitter": "One light-year is not \u201ca little farther than the Sun.\u201d\n\nUsing IAU definitions: about 63,241 astronomical units fit in one light-year.\n\nDistance math \u2014 not a star map.",
+        "instagram": "1 AU = 149,597,870.7 km. One light-year \u2248 9.461\u00d710\u00b9\u00b2 km. Divide them and you get \u2248 63,241 AU.\n\nSources: IAU AU and light-year definitions\n#spacefacts #scale #astronomy",
+        "tiktok": "A light-year holds about 63,241 Earth\u2013Sun distances (AUs). IAU definitions, not vibes. #space #math #scale"
+      },
+      "topic": "Light-year vs AU"
+    },
+    {
+      "content_id": "WHB-018",
+      "sha256": "44ea2ff3e0139c01849a9ea1c99d1628c8fcc18fc4554a96cb4ca509bfe94a5b",
+      "relative_path": "WHB-018/WHB-018-silent-video.mp4",
+      "captions": {
+        "twitter": "An Olympic pool is about 2,500 m\u00b3.\nLake Superior is about 12,100 km\u00b3.\n\nThat is roughly 4.8 billion pools \u2014 a volume comparison, not packing.",
+        "instagram": "50\u00d725\u00d72 m \u2248 2,500 m\u00b3. Lake Superior \u2248 12,100 km\u00b3 \u2248 1.21\u00d710\u00b9\u00b3 m\u00b3. Divide: \u2248 4.84 billion Olympic pools.\n\nSources: FINA-class pool geometry; EPA/NOAA Great Lakes volumes\n#geography #scale #dataviz",
+        "tiktok": "Lake Superior holds about 4.8 billion Olympic pools. Volume math, not packing. #geography #scale"
+      },
+      "topic": "Lake Superior vs Olympic pool"
+    },
+    {
+      "content_id": "WHB-019",
+      "sha256": "6e7dbbcc365a7a5206a118762908ddbfc19085ec54aad459d9fdc508841fc8e7",
+      "relative_path": "WHB-019/WHB-019-silent-video.mp4",
+      "captions": {
+        "twitter": "At an illustrative 70 beats/minute for 80 years: about 2.9 billion heartbeats.\n\nA day has 86,400 seconds. Scale is the point \u2014 not medical advice.",
+        "instagram": "Illustrative only: 70 bpm \u00d7 60 \u00d7 24 \u00d7 365.25 \u00d7 80 \u2248 2.94 billion beats. One day = 86,400 seconds.\n\nNot medical advice; rates vary.\n#mathfacts #scale #time",
+        "tiktok": "About 2.9 billion heartbeats in an 80-year span at 70 bpm \u2014 illustration, not diagnosis. #math #time"
+      },
+      "topic": "Lifetime heartbeats (illustrative)"
+    }
+  ]
+}
