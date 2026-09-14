@@ -1,0 +1,74 @@
+{
+  "content_id": "WHB-013",
+  "source_task": "BOTS-122",
+  "improves_topic": "WHB-002",
+  "asset": "WHB-013-earth-moon-gap-df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe.mp4",
+  "sha256": "df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe",
+  "bytes": 1043831,
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "tts": {
+    "engine": "macOS say",
+    "voice": "Samantha",
+    "rate_wpm": 180,
+    "license": "Apple macOS system voice; no voice cloning",
+    "public_redistribution_cleared": false,
+    "upload_decision": "Do not ship narrated Samantha TTS; use silent caption path."
+  },
+  "claim_cards": [
+    {
+      "claim": "Mean Earth–Moon distance is about 384,400 km",
+      "source": "NASA Moon Fact Sheet",
+      "checked": true
+    },
+    {
+      "claim": "Earth equatorial diameter is about 12,756 km",
+      "source": "NASA Earth Fact Sheet",
+      "checked": true
+    },
+    {
+      "claim": "About 30.1 Earth diameters fit in the average gap",
+      "calculation": "384400 / 12756 ≈ 30.1",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics; WHB brand palette from render_whb001.py",
+    "audio": "none on silent upload asset; macOS Samantha TTS retained only in local narrated_archive (uncleared)",
+    "third_party_assets": []
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04.json#WHB-013",
+  "captions": {
+    "twitter": "The Moon is not \"right next to\" Earth.\n\nAt the average distance, about 30 Earths fit in the gap.\n\n384,400 km ÷ 12,756 km ≈ 30.1 — math, not a compressed diagram.",
+    "instagram": "Most textbook diagrams compress this distance beyond recognition. At the mean Earth–Moon gap, about 30 Earth diameters fit between them.\n\nSources: NASA Moon & Earth fact sheets\n#spacefacts #visualscience #dataviz",
+    "tiktok": "The Moon looks close because diagrams cheat. Divide NASA's mean distance by Earth's diameter and roughly 30 Earths fit in the gap. #space #nasa #scale"
+  },
+  "publication_authority": false,
+  "status": "upload_ready_silent_assets_bound",
+  "narrated_archive": {
+    "asset": "WHB-013-narrated-09c08fd0829fa13759393752465b1abfbaabde51dee53fba4e900279225564c3.mp4",
+    "sha256": "09c08fd0829fa13759393752465b1abfbaabde51dee53fba4e900279225564c3",
+    "bytes": 1096120,
+    "audio": "macOS Samantha TTS AIFF muxed (non-silent)",
+    "tts_public_redistribution_cleared": false,
+    "note": "Indexed for evidence only; do not use as upload/media_url until TTS rights cleared."
+  },
+  "variant": "silent_tts_free",
+  "recommended_upload": {
+    "variant": "silent_mp4_plus_platform_captions",
+    "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-013-earth-moon-gap-df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe.mp4",
+    "sha256": "df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe"
+  },
+  "s04_01_repair": {
+    "duration_seconds_was": 20,
+    "duration_seconds_now": 12,
+    "bound_silent_sha256": "df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe",
+    "queue_media_url_target": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-013-earth-moon-gap-df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe.mp4"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "content_id": "WHB-021",
+  "source_task": "BOTS-120",
+  "topic": "Antarctic ice sheet volume",
+  "asset": "WHB-021-antarctica-ice-volume-cc76b404885909d7248b2da9cac36df4d1ff2d7d62b7fed8106976d6df553e69.mp4",
+  "sha256": "cc76b404885909d7248b2da9cac36df4d1ff2d7d62b7fed8106976d6df553e69",
+  "bytes": 1049638,
+  "variant": "silent_tts_free",
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "claim_cards": [
+    {
+      "claim": "Antarctic ice volume: ~26.5 million km³",
+      "source": "NSIDC / USGS-class ice-sheet volume estimates (rounded)",
+      "checked": true
+    },
+    {
+      "claim": "Sea-level equivalent (approx.): ~58 m",
+      "source": "Common SLE conversion cited with ice-sheet volume (approximate)",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset",
+    "third_party_assets": []
+  },
+  "captions": {
+    "twitter": "Antarctica holds on the order of 26.5 million km³ of ice.\n\nThat is an ice-sheet volume estimate — cite the range; ice volume is not liquid water sitting ready.",
+    "instagram": "~26.5 million km³ of Antarctic ice (rounded NSIDC/USGS-class figures). Approximate sea-level equivalent ~58 m if fully melted — a conversion, not a forecast.\n\n#climate #antarctica #scale",
+    "tiktok": "Antarctic ice: about 26.5 million cubic kilometers. Volume estimate with caveats. #antarctica #scale"
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04_03.json#WHB-021",
+  "publication_authority": false,
+  "status": "staged_upload_ready_silent",
+  "disclaimer": "VOLUME ESTIMATE — CITE THE RANGE"
+}

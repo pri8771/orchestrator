@@ -1,0 +1,4 @@
+# BOTS-117: the reviewed bundle and source hashes must survive Windows checkout.
+*.py text eol=lf
+*.json text eol=lf
+*.zip binary

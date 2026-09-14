@@ -1,0 +1,43 @@
+{
+  "content_id": "WHB-020",
+  "source_task": "BOTS-120",
+  "topic": "Everest vs FL350 cruise",
+  "asset": "WHB-020-everest-vs-cruise-40d6b60d3bfe811311163566e22ea36c04415654103ac073d4280828e7c19388.mp4",
+  "sha256": "40d6b60d3bfe811311163566e22ea36c04415654103ac073d4280828e7c19388",
+  "bytes": 972248,
+  "variant": "silent_tts_free",
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "claim_cards": [
+    {
+      "claim": "Everest summit: 8849 m",
+      "source": "Nepal/China 2020 survey",
+      "checked": true
+    },
+    {
+      "claim": "FL350: 35000 ft ≈ 10668 m",
+      "source": "Flight level definition (100 ft increments)",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset",
+    "third_party_assets": []
+  },
+  "captions": {
+    "twitter": "Everest summit ≈ 8,849 m.\nTypical cruise FL350 ≈ 10,668 m.\n\nAbout 1.8 km higher than the summit — altitude math, not a flight path.",
+    "instagram": "8,849 m vs FL350 (35,000 ft ≈ 10,668 m). Difference ≈ 1,819 m.\n\nSources: Nepal/China Everest survey; flight-level definition\n#geography #aviation #scale",
+    "tiktok": "Cruise at FL350 sits about 1.8 km above Everest's summit. #geography #aviation"
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04_03.json#WHB-020",
+  "publication_authority": false,
+  "status": "staged_upload_ready_silent",
+  "disclaimer": "ALTITUDE COMPARISON — NOT A FLIGHT PATH"
+}

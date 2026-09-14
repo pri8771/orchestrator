@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "jira_key": "BOTS-117",
+  "channels": {
+    "twitter": {
+      "id": "6a8f2926ccaf649a671fa86d",
+      "handle": "WaitHowBig"
+    },
+    "instagram": {
+      "id": "6a8f1d89ccaf649a671f69fc",
+      "handle": "waithowbig"
+    },
+    "tiktok": {
+      "id": "6a8fb214ccaf649a6724d002",
+      "handle": "waithowbignow"
+    }
+  },
+  "max_scheduled_per_channel": 10,
+  "maximum_queue_items": 17,
+  "maximum_mutations_per_run": 1,
+  "bootstrap_max_age_hours": 24,
+  "publishing_mode": "durable_local_manual_canary_only",
+  "jira_key_note": "BOTS-122 S04 queue expansion; historical BOTS-117 retained in channels provenance",
+  "related_jira_keys": [
+    "BOTS-117",
+    "BOTS-122"
+  ]
+}

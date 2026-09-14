@@ -1,0 +1,43 @@
+{
+  "content_id": "WHB-018",
+  "source_task": "BOTS-120",
+  "topic": "Lake Superior vs Olympic pool",
+  "asset": "WHB-018-superior-vs-olympic-pool-44ea2ff3e0139c01849a9ea1c99d1628c8fcc18fc4554a96cb4ca509bfe94a5b.mp4",
+  "sha256": "44ea2ff3e0139c01849a9ea1c99d1628c8fcc18fc4554a96cb4ca509bfe94a5b",
+  "bytes": 997594,
+  "variant": "silent_tts_free",
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "claim_cards": [
+    {
+      "claim": "Olympic pool volume: 2500 m³",
+      "source": "50×25×2 m FINA-class geometry",
+      "checked": true
+    },
+    {
+      "claim": "Lake Superior volume: ~12100 km³",
+      "source": "EPA/NOAA Great Lakes volumes (rounded)",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset",
+    "third_party_assets": []
+  },
+  "captions": {
+    "twitter": "An Olympic pool is about 2,500 m³.\nLake Superior is about 12,100 km³.\n\nThat is roughly 4.8 billion pools — a volume comparison, not packing.",
+    "instagram": "50×25×2 m ≈ 2,500 m³. Lake Superior ≈ 12,100 km³ ≈ 1.21×10¹³ m³. Divide: ≈ 4.84 billion Olympic pools.\n\nSources: FINA-class pool geometry; EPA/NOAA Great Lakes volumes\n#geography #scale #dataviz",
+    "tiktok": "Lake Superior holds about 4.8 billion Olympic pools. Volume math, not packing. #geography #scale"
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04_03.json#WHB-018",
+  "publication_authority": false,
+  "status": "staged_upload_ready_silent",
+  "disclaimer": "VOLUME COMPARISON — NOT PACKING"
+}

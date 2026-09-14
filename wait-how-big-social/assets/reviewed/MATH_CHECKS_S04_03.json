@@ -1,0 +1,120 @@
+{
+  "jira_key": "BOTS-120",
+  "all_pass": true,
+  "checks": [
+    {
+      "content_id": "WHB-017",
+      "sources": [
+        {
+          "label": "1 AU",
+          "value": "149597870.7 km",
+          "authority": "IAU astronomical unit"
+        },
+        {
+          "label": "1 light-year",
+          "value": "9.4607304725808e12 km",
+          "authority": "IAU / Julian-year c definition"
+        }
+      ],
+      "calculation": "9.4607304725808e12 / 149597870.7",
+      "exact": 63241.07708426629,
+      "display": "\u2248 63,241 AU",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-018",
+      "sources": [
+        {
+          "label": "Olympic pool volume",
+          "value": "2500 m\u00b3",
+          "authority": "50\u00d725\u00d72 m FINA-class geometry"
+        },
+        {
+          "label": "Lake Superior volume",
+          "value": "~12100 km\u00b3",
+          "authority": "EPA/NOAA Great Lakes volumes (rounded)"
+        }
+      ],
+      "calculation": "(12100 * 1e9) / 2500",
+      "exact": 4840000000.0,
+      "display": "\u2248 4.84 billion pools",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-019",
+      "sources": [
+        {
+          "label": "Illustrative resting rate",
+          "value": "70 bpm",
+          "authority": "Mid adult resting range illustration (not a clinical claim)"
+        },
+        {
+          "label": "Lifetime window",
+          "value": "80 years",
+          "authority": "Chosen illustration window"
+        },
+        {
+          "label": "Seconds per day",
+          "value": "86400",
+          "authority": "SI day"
+        }
+      ],
+      "calculation": "70 * 60 * 24 * 365.25 * 80",
+      "exact": 2945376000.0,
+      "display": "\u2248 2.94 billion beats",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-020",
+      "sources": [
+        {
+          "label": "Everest summit",
+          "value": "8849 m",
+          "authority": "Nepal/China 2020 survey"
+        },
+        {
+          "label": "FL350",
+          "value": "35000 ft \u2248 10668 m",
+          "authority": "Flight level definition (100 ft increments)"
+        }
+      ],
+      "calculation": "35000 * 0.3048 - 8849",
+      "exact": 1819.0,
+      "display": "\u2248 1.82 km above Everest",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-021",
+      "sources": [
+        {
+          "label": "Antarctic ice volume",
+          "value": "~26.5 million km\u00b3",
+          "authority": "NSIDC / USGS-class ice-sheet volume estimates (rounded)"
+        },
+        {
+          "label": "Sea-level equivalent (approx.)",
+          "value": "~58 m",
+          "authority": "Common SLE conversion cited with ice-sheet volume (approximate)"
+        }
+      ],
+      "calculation": "26.5e6",
+      "exact": 26500000.0,
+      "display": "~26.5 million km\u00b3",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-022",
+      "sources": [
+        {
+          "label": "UHD width\u00d7height",
+          "value": "3840\u00d72160",
+          "authority": "CTA Ultra HD / consumer 4K frame definition"
+        }
+      ],
+      "calculation": "3840 * 2160",
+      "exact": 8294400,
+      "display": "8,294,400 pixels \u2248 8.3 MP",
+      "pass": true
+    }
+  ]
+}

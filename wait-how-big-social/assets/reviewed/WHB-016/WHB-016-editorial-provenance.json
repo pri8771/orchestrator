@@ -1,0 +1,73 @@
+{
+  "content_id": "WHB-016",
+  "source_task": "BOTS-122",
+  "topic": "Million vs billion hours",
+  "asset": "WHB-016-million-vs-billion-hours-78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492.mp4",
+  "sha256": "78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492",
+  "bytes": 937863,
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "tts": {
+    "engine": "macOS say",
+    "voice": "Samantha",
+    "rate_wpm": 180,
+    "license": "Apple macOS system voice; no voice cloning",
+    "public_redistribution_cleared": false,
+    "upload_decision": "Do not ship narrated Samantha TTS; use silent caption path."
+  },
+  "claim_cards": [
+    {
+      "claim": "1 million hours ≈ 114 years",
+      "calculation": "1000000 / (24 × 365.25) ≈ 114.08",
+      "checked": true
+    },
+    {
+      "claim": "1 billion hours ≈ 114,000 years",
+      "calculation": "1000000000 / (24 × 365.25) ≈ 114,077",
+      "checked": true
+    },
+    {
+      "claim": "1 billion = 1,000 × 1 million",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset; macOS Samantha TTS retained only in local narrated_archive (uncleared)",
+    "third_party_assets": []
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04.json#WHB-016",
+  "captions": {
+    "twitter": "1 million hours ≈ 114 years.\n1 billion hours ≈ 114,000 years.\n\nThree extra zeros move from a lifetime into deep prehistory.",
+    "instagram": "One million hours: about 114 years. One billion hours: about 114,000 years. Three zeros move the comparison from a lifetime to deep prehistory.\n\n#mathfacts #dataviz #visuallearning",
+    "tiktok": "A million hours is 114 years. A billion hours is about 114,000 years. #time #math #scale"
+  },
+  "publication_authority": false,
+  "status": "upload_ready_silent_assets_bound",
+  "narrated_archive": {
+    "asset": "WHB-016-narrated-9d5c76d374cb0a537f18629ec6f02020e83211196d1dbab6aa5ca022c40add07.mp4",
+    "sha256": "9d5c76d374cb0a537f18629ec6f02020e83211196d1dbab6aa5ca022c40add07",
+    "bytes": 989732,
+    "audio": "macOS Samantha TTS AIFF muxed (non-silent)",
+    "tts_public_redistribution_cleared": false,
+    "note": "Indexed for evidence only; do not use as upload/media_url until TTS rights cleared."
+  },
+  "variant": "silent_tts_free",
+  "recommended_upload": {
+    "variant": "silent_mp4_plus_platform_captions",
+    "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-016-million-vs-billion-hours-78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492.mp4",
+    "sha256": "78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492"
+  },
+  "s04_01_repair": {
+    "duration_seconds_was": 20,
+    "duration_seconds_now": 12,
+    "bound_silent_sha256": "78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492",
+    "queue_media_url_target": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-016-million-vs-billion-hours-78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492.mp4"
+  }
+}

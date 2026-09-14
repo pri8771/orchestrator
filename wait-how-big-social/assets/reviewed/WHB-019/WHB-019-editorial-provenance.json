@@ -1,0 +1,48 @@
+{
+  "content_id": "WHB-019",
+  "source_task": "BOTS-120",
+  "topic": "Lifetime heartbeats (illustrative)",
+  "asset": "WHB-019-lifetime-heartbeats-6e7dbbcc365a7a5206a118762908ddbfc19085ec54aad459d9fdc508841fc8e7.mp4",
+  "sha256": "6e7dbbcc365a7a5206a118762908ddbfc19085ec54aad459d9fdc508841fc8e7",
+  "bytes": 999891,
+  "variant": "silent_tts_free",
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "claim_cards": [
+    {
+      "claim": "Illustrative resting rate: 70 bpm",
+      "source": "Mid adult resting range illustration (not a clinical claim)",
+      "checked": true
+    },
+    {
+      "claim": "Lifetime window: 80 years",
+      "source": "Chosen illustration window",
+      "checked": true
+    },
+    {
+      "claim": "Seconds per day: 86400",
+      "source": "SI day",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset",
+    "third_party_assets": []
+  },
+  "captions": {
+    "twitter": "At an illustrative 70 beats/minute for 80 years: about 2.9 billion heartbeats.\n\nA day has 86,400 seconds. Scale is the point — not medical advice.",
+    "instagram": "Illustrative only: 70 bpm × 60 × 24 × 365.25 × 80 ≈ 2.94 billion beats. One day = 86,400 seconds.\n\nNot medical advice; rates vary.\n#mathfacts #scale #time",
+    "tiktok": "About 2.9 billion heartbeats in an 80-year span at 70 bpm — illustration, not diagnosis. #math #time"
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04_03.json#WHB-019",
+  "publication_authority": false,
+  "status": "staged_upload_ready_silent",
+  "disclaimer": "TIME COMPARISON — ILLUSTRATIVE RANGE"
+}

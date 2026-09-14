@@ -1,0 +1,38 @@
+{
+  "content_id": "WHB-022",
+  "source_task": "BOTS-120",
+  "topic": "4K / UHD pixel count",
+  "asset": "WHB-022-uhd-pixel-count-0ddd4d52922385e37335e52a0d07207447445480592cfc1769ccc1ad58c9ffd0.mp4",
+  "sha256": "0ddd4d52922385e37335e52a0d07207447445480592cfc1769ccc1ad58c9ffd0",
+  "bytes": 924332,
+  "variant": "silent_tts_free",
+  "format": {
+    "duration_seconds": 12,
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "H.264/avc1",
+    "audio": "none (video-only silent MP4; audio_tracks=0)"
+  },
+  "claim_cards": [
+    {
+      "claim": "UHD width×height: 3840×2160",
+      "source": "CTA Ultra HD / consumer 4K frame definition",
+      "checked": true
+    }
+  ],
+  "rights": {
+    "visuals": "Original Pillow-generated graphics",
+    "audio": "none on silent upload asset",
+    "third_party_assets": []
+  },
+  "captions": {
+    "twitter": "“4K” / UHD is 3840 × 2160.\n\nThat is exactly 8,294,400 pixels — about 8.3 megapixels. Arithmetic, not a camera review.",
+    "instagram": "3840 × 2160 = 8,294,400 pixels ≈ 8.3 MP.\n\nSource: CTA Ultra HD frame geometry\n#tech #math #dataviz",
+    "tiktok": "4K is 8.3 megapixels: 3840 times 2160. #tech #math"
+  },
+  "math_check_ref": "assets/reviewed/MATH_CHECKS_S04_03.json#WHB-022",
+  "publication_authority": false,
+  "status": "staged_upload_ready_silent",
+  "disclaimer": "PIXEL MATH — NOT A PRODUCT REVIEW"
+}

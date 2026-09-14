@@ -1,0 +1,31 @@
+name: Wait How Big operator tests
+
+on:
+  push:
+    paths:
+      - 'wait-how-big-social/operator/**'
+      - 'wait-how-big-social/tests/**'
+      - '.github/workflows/whb-tests.yml'
+      - '.github/workflows/wait-how-big-operator.yml'
+  pull_request:
+    paths:
+      - 'wait-how-big-social/operator/**'
+      - 'wait-how-big-social/tests/**'
+      - '.github/workflows/whb-tests.yml'
+      - '.github/workflows/wait-how-big-operator.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test account, state, dry-run and uncertain-effect behavior without credentials
+        run: python -m unittest discover -s wait-how-big-social/tests -v
