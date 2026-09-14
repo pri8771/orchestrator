@@ -3,6 +3,7 @@
 import json
 import sys
 from pathlib import Path
+from typing import TypedDict
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1080, 1920
@@ -19,7 +20,17 @@ REG_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
-ITEMS = {
+class SceneSpec(TypedDict):
+    hook: str
+    big: str
+    sub: str
+    visual: str
+    frame_counts: list[int]
+    phases: list[float]
+    duration_seconds: int
+
+
+ITEMS: dict[str, SceneSpec] = {
     "WHB-013": {
         "hook": "THIRTY EARTHS TO THE MOON",
         "big": "~30 EARTHS IN THE GAP",

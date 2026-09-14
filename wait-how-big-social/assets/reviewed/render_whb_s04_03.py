@@ -3,6 +3,7 @@
 import json
 import sys
 from pathlib import Path
+from typing import TypedDict
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1080, 1920
@@ -24,7 +25,17 @@ REG_CANDIDATES = [
 FRAME = [58, 50, 65, 65, 58, 64]
 PHASES = [0.12, 0.28, 0.45, 0.62, 0.80, 1.0]
 
-ITEMS = {
+class SceneSpec(TypedDict):
+    hook: str
+    big: str
+    sub: str
+    visual: str
+    frame_counts: list[int]
+    phases: list[float]
+    duration_seconds: int
+
+
+ITEMS: dict[str, SceneSpec] = {
     "WHB-017": {
         "hook": "ONE LIGHT-YEAR IN AUs",
         "big": "≈ 63,241 AU",
