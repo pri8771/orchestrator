@@ -143,6 +143,58 @@
         "tiktok": "A million hours is 114 years. A billion hours is about 114,000 years. #time #math #scale"
       },
       "thumbnail_offset_ms": 2000
+    },
+    {
+      "content_id": "WHB-013",
+      "relative_hours": 134,
+      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-013-earth-moon-gap-df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe.mp4",
+      "captions": {
+        "twitter": "The Moon is not \"right next to\" Earth.\n\nAt the average distance, about 30 Earths fit in the gap.\n\n384,400 km ÷ 12,756 km ≈ 30.1 — math, not a compressed diagram.",
+        "instagram": "Most textbook diagrams compress this distance beyond recognition. At the mean Earth–Moon gap, about 30 Earth diameters fit between them.\n\nSources: NASA Moon & Earth fact sheets\n#spacefacts #visualscience #dataviz",
+        "tiktok": "The Moon looks close because diagrams cheat. Divide NASA's mean distance by Earth's diameter and roughly 30 Earths fit in the gap. #space #nasa #scale"
+      },
+      "thumbnail_offset_ms": 2000,
+      "media_sha256": "df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe",
+      "media_variant": "silent_tts_free"
+    },
+    {
+      "content_id": "WHB-014",
+      "relative_hours": 140,
+      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-014-sun-volume-earths-ec3a5da266fa32508fe5ca27ccba95a49590d7add3ab501b3390fe33dc98187e.mp4",
+      "captions": {
+        "twitter": "The Sun is about 109× wider than Earth.\n\nBut width is only one dimension.\n\nBy volume, about 1.3 million Earths fit inside it — a volume comparison, not packing.",
+        "instagram": "The Sun is roughly 109× wider than Earth, but volume grows in three dimensions. About 1.3 million Earths would fill its volume — a volume comparison, not physical packing.\n\nSource: NASA Science\n#spacefacts #visuallearning #sciencecommunication",
+        "tiktok": "The Sun is about 109× wider than Earth—but volume grows in three dimensions. Result: ~1.3 million Earths. Volume comparison, not packing. #space #science #scale"
+      },
+      "thumbnail_offset_ms": 2000,
+      "media_sha256": "ec3a5da266fa32508fe5ca27ccba95a49590d7add3ab501b3390fe33dc98187e",
+      "media_variant": "silent_tts_free"
+    },
+    {
+      "content_id": "WHB-015",
+      "relative_hours": 158,
+      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-015-everest-challenger-deep-990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf.mp4",
+      "captions": {
+        "twitter": "Drop Everest into Challenger Deep and its summit would still sit roughly 2.1 km underwater.\n\nTallest mountain above sea level: ~8,849 m\nDeepest ocean point: ~10,935 m",
+        "instagram": "Put Everest at Challenger Deep and the summit would remain about 2.1 km below the surface.\n\nDepth source: NOAA Ocean Exploration\n#oceanfacts #geography #visualscience",
+        "tiktok": "Everest is enormous. Challenger Deep is deeper. The summit would still be roughly 2.1 km underwater. #ocean #geography #scale"
+      },
+      "thumbnail_offset_ms": 2000,
+      "media_sha256": "990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf",
+      "media_variant": "silent_tts_free"
+    },
+    {
+      "content_id": "WHB-016",
+      "relative_hours": 164,
+      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-016-million-vs-billion-hours-78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492.mp4",
+      "captions": {
+        "twitter": "1 million hours ≈ 114 years.\n1 billion hours ≈ 114,000 years.\n\nThree extra zeros move from a lifetime into deep prehistory.",
+        "instagram": "One million hours: about 114 years. One billion hours: about 114,000 years. Three zeros move the comparison from a lifetime to deep prehistory.\n\n#mathfacts #dataviz #visuallearning",
+        "tiktok": "A million hours is 114 years. A billion hours is about 114,000 years. #time #math #scale"
+      },
+      "thumbnail_offset_ms": 2000,
+      "media_sha256": "78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492",
+      "media_variant": "silent_tts_free"
     }
   ]
 }

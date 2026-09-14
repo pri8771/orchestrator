@@ -1,0 +1,87 @@
+{
+  "jira_key": "BOTS-122",
+  "all_pass": true,
+  "checks": [
+    {
+      "content_id": "WHB-013",
+      "sources": [
+        {
+          "label": "mean Earth-Moon distance",
+          "value_km": "384400",
+          "authority": "NASA Moon Fact Sheet"
+        },
+        {
+          "label": "Earth equatorial diameter",
+          "value_km": "12756",
+          "authority": "NASA Earth Fact Sheet"
+        }
+      ],
+      "calculation": "384400 / 12756",
+      "exact_ratio": "30.13483850736908121668234556",
+      "rounded_earths_in_gap": "30.1",
+      "display": "~30 Earths in the gap",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-014",
+      "sources": [
+        {
+          "label": "Sun diameter",
+          "value_km": "1392700",
+          "authority": "NASA Sun Fact Sheet"
+        },
+        {
+          "label": "Earth diameter",
+          "value_km": "12742",
+          "authority": "NASA Earth Fact Sheet"
+        }
+      ],
+      "calculation": "(1392700 / 12742)^3",
+      "exact_volume_ratio": "1305749.669378532739320410516",
+      "million_earth_volumes": "1.305749669378532739320410516",
+      "rounded_million_earth_volumes": "1.31",
+      "display": "~1.3 million Earth volumes",
+      "label": "volume comparison, not physical packing",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-015",
+      "sources": [
+        {
+          "label": "Challenger Deep depth",
+          "value_m": "10935",
+          "authority": "NOAA Ocean Exploration"
+        },
+        {
+          "label": "Mount Everest summit elevation",
+          "value_m": "8849",
+          "authority": "Nepal/China 2020 survey (NOAA/NASA cited)"
+        }
+      ],
+      "calculation": "10935 - 8849",
+      "exact_remaining_m": "2086",
+      "rounded_remaining_km": "2.1",
+      "display": "summit still ~2.1 km underwater",
+      "pass": true
+    },
+    {
+      "content_id": "WHB-016",
+      "sources": [
+        {
+          "label": "hours per Julian year",
+          "value": "8766",
+          "authority": "24 \u00d7 365.25"
+        }
+      ],
+      "calculation_million": "1000000 / (24 * 365.25)",
+      "calculation_billion": "1000000000 / (24 * 365.25)",
+      "exact_million_years": "114.0771161305042208532968287",
+      "exact_billion_years": "114077.1161305042208532968287",
+      "rounded_million_years": "114",
+      "rounded_billion_years": "114000",
+      "ratio": "1000:1",
+      "display": "114 years vs 114,000 years",
+      "pass": true
+    }
+  ]
+}

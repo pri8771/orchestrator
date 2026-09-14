@@ -298,8 +298,17 @@ class BundleTests(unittest.TestCase):
 
     def test_queue_preserves_all_thirteen_existing_media_and_channel_ids(self):
         queue = json.loads((ROOT / 'operator/queue.json').read_text(encoding='utf-8'))
-        self.assertEqual(len(queue['queue']), 13)
+        # S04 appended WHB-013..016; original thirteen launch IDs must remain first and intact.
+        self.assertEqual(len(queue['queue']), 17)
+        original = [item['content_id'] for item in queue['queue'][:13]]
+        self.assertEqual(original, [f'WHB-{i:03d}' for i in range(13)])
+        self.assertEqual([item['content_id'] for item in queue['queue'][13:]],
+                         ['WHB-013', 'WHB-014', 'WHB-015', 'WHB-016'])
+        for item in queue['queue']:
+            self.assertTrue(item['media_url'].startswith(
+                'https://raw.githubusercontent.com/pri8771/orchestrator/'))
         config = json.loads((ROOT / 'operator/config.json').read_text(encoding='utf-8'))
+        self.assertEqual(config.get('maximum_queue_items'), 17)
         self.assertEqual({s:c['id'] for s,c in config['channels'].items()}, {
             'twitter':'6a8f2926ccaf649a671fa86d', 'instagram':'6a8f1d89ccaf649a671f69fc',
             'tiktok':'6a8fb214ccaf649a6724d002'})

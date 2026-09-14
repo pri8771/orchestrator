@@ -296,9 +296,10 @@ def exact_match(post: dict[str, Any], payload: dict[str, Any], require_due: bool
     return True
 
 
-def validate_queue(queue_doc: dict[str, Any]) -> list[dict[str, Any]]:
+def validate_queue(queue_doc: dict[str, Any], maximum_queue_items: int | None = None) -> list[dict[str, Any]]:
     queue = queue_doc.get("queue") or []
-    if not 1 <= len(queue) <= 13: raise RuntimeError("Queue must contain 1 to 13 items")
+    limit = maximum_queue_items if maximum_queue_items is not None else int(load_json(CONFIG_PATH, {}).get("maximum_queue_items", 17))
+    if not 1 <= len(queue) <= limit: raise RuntimeError(f"Queue must contain 1 to {limit} items")
     ids = [item.get("content_id") for item in queue]
     if any(not x for x in ids) or len(set(ids)) != len(ids): raise RuntimeError("Queue IDs must be unique")
     for item in queue:

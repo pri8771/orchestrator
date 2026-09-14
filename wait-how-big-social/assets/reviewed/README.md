@@ -29,3 +29,16 @@ The renderer writes six PNG scene states and a manifest; the native encoder crea
 MP4 container metadata can differ on a rebuild. Do not rename different bytes to the accepted hash filename: retain the approved asset above, or bind a new asset/review to a newly verified hash.
 
 Real source association: [BOTS-117](https://priyanshchordia-1779372280524.atlassian.net/browse/BOTS-117). This change does not update Jira or claim publication.
+
+## WHB-013..016 silent upload-ready assets — BOTS-122 / S04-01
+
+Four additional explainers are bound as **silent** (TTS-free) hashed MP4s in this directory. Narrated Samantha variants remain local evidence only and are not the queue `media_url`.
+
+| ID | Canonical silent asset | SHA-256 |
+|---|---|---|
+| WHB-013 | `WHB-013-earth-moon-gap-df5a1bebc85c537f7e4003e06d616dfaad33d642221440938a193cc940b4dafe.mp4` | `df5a1beb…b4dafe` |
+| WHB-014 | `WHB-014-sun-volume-earths-ec3a5da266fa32508fe5ca27ccba95a49590d7add3ab501b3390fe33dc98187e.mp4` | `ec3a5da2…98187e` |
+| WHB-015 | `WHB-015-everest-challenger-deep-990027e1999461b6e8cdc9490a4e83a7656c4712ffe546a0930243c586fc0bcf.mp4` | `990027e1…fc0bcf` |
+| WHB-016 | `WHB-016-million-vs-billion-hours-78e14b2d4137f3503685e54d0e656d674720320b5605dc69a2e76bd1e3383492.mp4` | `78e14b2d…83492` |
+
+Each is 12.0s (not 20s), 1080×1920, 30fps, H.264, `audio_tracks=0`. WHB-014 captions use ~109× diameter ratio (not stale ~100×). Queue rows WHB-000..012 are untouched except that 013–016 now reference these silent URLs. Live social posting remains a separate credentialed step (S04-02).
