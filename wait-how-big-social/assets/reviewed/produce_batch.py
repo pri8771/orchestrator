@@ -32,8 +32,8 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def load_prior_ids() -> set[str]:
-    done: set[str] = set()
+def load_prior_ids() -> set[tuple[str, str]]:
+    done: set[tuple[str, str]] = set()
     if not STATE_PATH.exists():
         return done
     for line in STATE_PATH.read_text(encoding="utf-8").splitlines():
@@ -41,7 +41,7 @@ def load_prior_ids() -> set[str]:
             continue
         row = json.loads(line)
         if row.get("result") == "ok" and row.get("sha256_match") is True:
-            done.add(row["content_id"])
+            done.add((row["content_id"], row.get("sha256", "")))
     return done
 
 
@@ -68,7 +68,7 @@ def main() -> int:
         expected = item["sha256"]
         path = ROOT / item["relative_path"]
         t0 = time.perf_counter()
-        if cid in prior:
+        if (cid, expected) in prior and path.is_file() and sha256_file(path) == expected:
             row = {
                 "content_id": cid,
                 "result": "skipped_duplicate",
