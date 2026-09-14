@@ -58,7 +58,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: gui/.build
           # gui/Package.resolved doesn't exist today (zero external SPM deps),
