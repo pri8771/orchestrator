@@ -1,0 +1,262 @@
+diff --git a/.github/workflows/wait-how-big-operator.yml b/.github/workflows/wait-how-big-operator.yml
+index 414a7cb..680be81 100644
+--- a/.github/workflows/wait-how-big-operator.yml
++++ b/.github/workflows/wait-how-big-operator.yml
+@@ -36,7 +36,7 @@ jobs:
+ 
+       - name: Verify and unpack reviewed operator
+         run: |
+-          echo '4212083fbcfbad290ce2fd365674fff120229227e6c30df2723ada4dc560722a  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
++          echo 'ad9e5f4b1f1558c86d917fbfed56e27eb3fceb1c005db6b27b09d06e8fc3b638  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
+           mkdir -p "$RUNNER_TEMP/whb-operator"
+           unzip -q wait-how-big-social/operator/operator_bundle.zip -d "$RUNNER_TEMP/whb-operator"
+           cp wait-how-big-social/operator/state.json "$RUNNER_TEMP/whb-operator/state.json"
+diff --git a/wait-how-big-social/operator/README.md b/wait-how-big-social/operator/README.md
+index 7b009d3..8822989 100644
+--- a/wait-how-big-social/operator/README.md
++++ b/wait-how-big-social/operator/README.md
+@@ -52,7 +52,7 @@ $env:WHB_KILL_SWITCH = 'true'
+ python 'D:\DEPLOYMENT\wait-how-big-social\operator\whb_operator.py'
+ ```
+ 
+-`plan.json` is written beside the source, separate from actual state. Its output includes `plan_sha256` and four binding hashes. Review its exact channel, caption, media, due time and current media/source acceptance. Read history through the official account: the API's latest 100 posts per channel is a bounded observation, **not proof of lifetime absence**. Preserve that actual review in `history_review_ref`. If a schedule is now past due, set `WHB_PROPOSED_ANCHOR_UTC` to an explicitly reviewed future UTC time during the next dry run; this changes the proposed plan without rewriting actual historical anchor.
++`plan.json` is written beside the source, separate from actual state. Its output includes `plan_sha256` and four binding hashes. Review its exact channel, caption, media, due time and current media/source acceptance. Read history through the official account: the API's latest 100 posts per status per channel is a bounded observation, **not proof of lifetime absence**. Preserve that actual review in `history_review_ref`. If a schedule is now past due, set `WHB_PROPOSED_ANCHOR_UTC` to an explicitly reviewed future UTC time during the next dry run; this changes the proposed plan without rewriting actual historical anchor.
+ 
+ Copy `canary-grant.example.json` to an untracked `*.grant.json`. Fill the actual authorization reference, history review reference, expiry, exact reviewed `plan_sha256`, four bindings, and one target such as `WHB-000:twitter`. Only the root's already-authorized reviewed release sets `authorized: true`. The included example is intentionally invalid/expired. A grant never selects more than one mutation.
+ 
+@@ -92,3 +92,9 @@ If the host was killed, `operator.lock` may remain. First establish that no publ
+ [BOTS-117](https://priyanshchordia-1779372280524.atlassian.net/browse/BOTS-117) is the real source association. No native Jira edit or Done transition is performed. Historical account/launch directions and existing independent account grants remain authoritative for root's release; this repair creates none.
+ 
+ Usable now: reviewable source, deterministic bundle, offline tests, read-only bootstrap while held, and a narrowly granted local canary with durable intent/reconciliation. Remaining live inputs: independent final review/integration, current official account/API/media verification, exact release grant, durable host admission and destination readback. Continuous GitHub publishing remains unavailable until a separately reviewed durable remote intent mechanism exists; this is an explicit safe release boundary, not a claimed autonomous launch.
++
++## Live history-filter correction — BOTS-117
++
++On September 13, 2026, Buffer returned an empty collection for the combined status filter although the known WHB-001 post was returned by a single-status query and a direct-ID lookup. Sorting was checked independently and did not cause the omission. The adapter now sends one request with five aliased single-status queries, each bounded to the latest 100 posts for the exact channel. It returns at most 500 records per channel. Missing or malformed branches, invalid channel/status records and duplicate IDs fail closed. An explicit valid empty collection remains empty. This is bounded history, not proof of lifetime absence.
++
++The first WHB-001 X post is already public. Keep its durable effect and publication receipt; do not recreate it as a test. This patch changes history lookup only, not credentials, media, authorization, mutation retry, or unattended publishing policy.
+diff --git a/wait-how-big-social/operator/whb_operator.py b/wait-how-big-social/operator/whb_operator.py
+index 9b33106..75a0f77 100644
+--- a/wait-how-big-social/operator/whb_operator.py
++++ b/wait-how-big-social/operator/whb_operator.py
+@@ -145,31 +145,46 @@ def get_org_and_channels(api_key: str) -> tuple[str, dict[str, dict[str, Any]]]:
+ 
+ 
+ def get_channel_posts(api_key: str, org_id: str, channel_id: str) -> list[dict[str, Any]]:
+-    data = gql(
+-        api_key,
+-        """query GetPosts($organizationId: OrganizationId!, $channelId: ChannelId!) {
+-          posts(
+-            first: 100
+-            input: {
+-              organizationId: $organizationId
+-              sort: [{ field: createdAt, direction: desc }]
+-              filter: {
+-                channelIds: [$channelId]
+-                status: [scheduled, sending, needs_approval, sent, error]
+-              }
+-            }
+-          ) {
+-            edges {
+-              node {
+-                id text dueAt status channelId externalLink
+-                assets { source }
+-              }
+-            }
+-          }
+-        }""",
+-        {"organizationId": org_id, "channelId": channel_id},
+-    )
+-    return [edge.get("node") or {} for edge in ((data.get("posts") or {}).get("edges") or [])]
++    # Buffer returned an empty collection for a combined status filter even when
++    # the same post was visible to a single-status query and direct-ID lookup.
++    # Query each status independently in one HTTP request; never infer absence
++    # from a missing/malformed branch of the response.
++    statuses = ("scheduled", "sending", "needs_approval", "sent", "error")
++    branches = []
++    for status in statuses:
++        branches.append(f"""history_{status}: posts(
++          first: 100
++          input: {{
++            organizationId: $organizationId
++            sort: [{{ field: createdAt, direction: desc }}]
++            filter: {{ channelIds: [$channelId], status: [{status}] }}
++          }}
++        ) {{
++          edges {{ node {{
++            id text dueAt status channelId externalLink assets {{ source }}
++          }} }}
++        }}""")
++    query = ("query GetPosts($organizationId: OrganizationId!, $channelId: ChannelId!) {\n"
++             + "\n".join(branches) + "\n}")
++    data = gql(api_key, query, {"organizationId": org_id, "channelId": channel_id})
++    if not isinstance(data, dict):
++        raise RuntimeError("Malformed Buffer history response")
++    posts, seen = [], set()
++    for status in statuses:
++        branch = data.get("history_" + status)
++        if not isinstance(branch, dict) or not isinstance(branch.get("edges"), list):
++            raise RuntimeError("Incomplete Buffer status history")
++        if len(branch["edges"]) > 100:
++            raise RuntimeError("Buffer history exceeds per-status bound")
++        for edge in branch["edges"]:
++            post = edge.get("node") if isinstance(edge, dict) else None
++            if (not isinstance(post, dict) or not isinstance(post.get("id"), str)
++                    or not post["id"].strip() or post.get("channelId") != channel_id
++                    or post.get("status") != status or post["id"] in seen):
++                raise RuntimeError("Invalid or inconsistent Buffer history record")
++            seen.add(post["id"])
++            posts.append(post)
++    return posts
+ 
+ 
+ def media_available(url: str) -> bool:
+@@ -342,7 +357,7 @@ def build_plan(queue: list[dict[str, Any]], state: dict[str, Any], org_id: str,
+             "organization_id": org_id, "proposed_anchor_utc": iso(anchor),
+             "planned": planned, "observed_existing": observed,
+             "publication_held": True, "actual_mutations": 0,
+-            "history_limit": "latest_100_per_channel_is_not_proof_of_lifetime_absence",
++            "history_limit": "latest_100_per_status_per_channel_is_not_proof_of_lifetime_absence",
+             "normal_github_publishing": "disabled_ephemeral_runner_state"}
+ 
+ 
+diff --git a/wait-how-big-social/tests/test_whb_history_adapter.py b/wait-how-big-social/tests/test_whb_history_adapter.py
+new file mode 100644
+index 0000000..01f82df
+--- /dev/null
++++ b/wait-how-big-social/tests/test_whb_history_adapter.py
+@@ -0,0 +1,135 @@
++"""BOTS-117: exercise the Buffer history adapter without network or state writes."""
++import copy
++import importlib.util
++from pathlib import Path
++import re
++import unittest
++from unittest.mock import patch
++
++
++SOURCE = Path(__file__).resolve().parents[1] / 'operator/whb_operator.py'
++SPEC = importlib.util.spec_from_file_location('whb_history_adapter', SOURCE)
++whb = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(whb)
++
++STATUSES = ('scheduled', 'sending', 'needs_approval', 'sent', 'error')
++CHANNEL = '6a8f2926ccaf649a671fa86d'
++ORG = 'fixture-whb-organization'
++# Sanitized public observation: BUFFER_SENT_READBACK.json, 2026-09-13T02:24:28Z.
++SENT = {
++    'id': '6aa608727da3ee968d09eba9',
++    'text': ('A million seconds is 11.6 days.\nA billion seconds is 31.7 years.\n\n'
++             'Three extra zeros changed days into decades.'),
++    'dueAt': '2026-09-13T02:23:59.731Z',
++    'status': 'sent',
++    'channelId': CHANNEL,
++    'externalLink': 'https://x.com/2092627545267027968/status/2098960869526835492',
++    'assets': [{'source': 'https://raw.githubusercontent.com/pri8771/orchestrator/main/'
++                'wait-how-big-social/assets/reviewed/WHB-001-million-vs-billion-seconds-'
++                '2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec.mp4'}],
++}
++
++
++def empty_history():
++    return {f'history_{status}': {'edges': []} for status in STATUSES}
++
++
++def post(status, identifier):
++    value = copy.deepcopy(SENT)
++    value.update(status=status, id=identifier)
++    if status != 'sent':
++        value.update(dueAt='2026-09-14T12:00:00Z', externalLink=None)
++    return value
++
++
++class HistoryAdapterTests(unittest.TestCase):
++    def read(self, response):
++        with patch.object(whb, 'gql', return_value=copy.deepcopy(response)) as gql:
++            result = whb.get_channel_posts('fixture-only', ORG, CHANNEL)
++        gql.assert_called_once()
++        return result, gql.call_args
++
++    def assert_rejected(self, response):
++        with patch.object(whb, 'gql', return_value=copy.deepcopy(response)) as gql:
++            with self.assertRaises(RuntimeError):
++                whb.get_channel_posts('fixture-only', ORG, CHANNEL)
++        gql.assert_called_once()
++
++    def test_observed_sent_and_scheduled_posts_survive_one_single_status_query(self):
++        response = empty_history()
++        scheduled = post('scheduled', 'fixture-scheduled-post')
++        response['history_sent']['edges'] = [{'node': copy.deepcopy(SENT)}]
++        response['history_scheduled']['edges'] = [{'node': scheduled}]
++        result, call = self.read(response)
++        self.assertEqual({p['id']: p for p in result},
++                         {SENT['id']: SENT, scheduled['id']: scheduled})
++        key, query, variables = call.args
++        self.assertEqual(key, 'fixture-only')
++        self.assertEqual(variables, {'organizationId': ORG, 'channelId': CHANNEL})
++        self.assertCountEqual(re.findall(r'status\s*:\s*\[([^]]*)\]', query), STATUSES)
++        for status in STATUSES:
++            self.assertRegex(query, rf'history_{status}\s*:\s*posts\s*\(\s*first\s*:\s*100\b')
++        self.assertEqual(len(re.findall(r'channelIds\s*:\s*\[\s*\$channelId\s*\]', query)), 5)
++        self.assertEqual(len(re.findall(r'field\s*:\s*createdAt\s*,\s*direction\s*:\s*desc', query)), 5)
++        self.assertNotIn('mutation', query)
++
++    def test_explicit_empty_edges_for_every_alias_are_valid(self):
++        result, _ = self.read(empty_history())
++        self.assertEqual(result, [])
++
++    def test_missing_alias_is_not_empty_history(self):
++        for status in STATUSES:
++            with self.subTest(status=status):
++                response = empty_history()
++                del response[f'history_{status}']
++                self.assert_rejected(response)
++
++    def test_null_or_malformed_alias_and_edges_are_not_empty_history(self):
++        for invalid in (None, [], 'invalid', {}, {'edges': None},
++                        {'edges': {}}, {'edges': 'invalid'}):
++            with self.subTest(alias=invalid):
++                response = empty_history()
++                response['history_sent'] = invalid
++                self.assert_rejected(response)
++
++    def test_null_or_malformed_edges_and_nodes_are_rejected(self):
++        for edge in (None, [], 'invalid', {}, {'node': None}, {'node': []},
++                     {'node': 'invalid'}, {'node': {}}):
++            with self.subTest(edge=edge):
++                response = empty_history()
++                response['history_sent']['edges'] = [edge]
++                self.assert_rejected(response)
++
++    def test_id_channel_and_status_must_match_the_requested_bucket(self):
++        invalid_fields = [('id', ''), ('id', '   '), ('id', None), ('id', 123),
++                          ('channelId', 'another-channel'), ('channelId', None),
++                          ('status', 'scheduled'), ('status', None)]
++        for field, value in invalid_fields:
++            with self.subTest(field=field, value=value):
++                response = empty_history()
++                invalid = copy.deepcopy(SENT)
++                invalid[field] = value
++                response['history_sent']['edges'] = [{'node': invalid}]
++                self.assert_rejected(response)
++
++    def test_duplicate_ids_within_or_across_statuses_are_rejected(self):
++        response = empty_history()
++        response['history_sent']['edges'] = [{'node': copy.deepcopy(SENT)}] * 2
++        self.assert_rejected(response)
++        response['history_sent']['edges'] = [{'node': copy.deepcopy(SENT)}]
++        response['history_scheduled']['edges'] = [{'node': post('scheduled', SENT['id'])}]
++        self.assert_rejected(response)
++
++    def test_each_status_accepts_100_posts_but_rejects_101(self):
++        response = empty_history()
++        for status in STATUSES:
++            response[f'history_{status}']['edges'] = [
++                {'node': post(status, f'fixture-{status}-{i}')} for i in range(100)]
++        result, _ = self.read(response)
++        self.assertEqual(len(result), 500)
++        response['history_sent']['edges'].append({'node': post('sent', 'fixture-sent-100')})
++        self.assert_rejected(response)
++
++
++if __name__ == '__main__':
++    unittest.main()

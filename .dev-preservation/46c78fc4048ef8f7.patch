@@ -1,0 +1,542 @@
+diff --git a/tests/test_whb_batch_integrity.py b/tests/test_whb_batch_integrity.py
+new file mode 100644
+index 0000000..206f0df
+--- /dev/null
++++ b/tests/test_whb_batch_integrity.py
+@@ -0,0 +1,91 @@
++import contextlib
++import hashlib
++import importlib.util
++import io
++import json
++from pathlib import Path
++import tempfile
++import unittest
++from unittest import mock
++
++SOURCE = Path(__file__).resolve().parents[1] / "wait-how-big-social/assets/reviewed/produce_batch.py"
++
++
++class BatchIntegrityTests(unittest.TestCase):
++    def setUp(self):
++        spec = importlib.util.spec_from_file_location("whb_batch_under_test", SOURCE)
++        assert spec is not None and spec.loader is not None
++        self.batch = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(self.batch)
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.batch.ROOT = self.root
++        self.batch.PACKET_PATH = self.root / "packet.json"
++        self.batch.STATE_PATH = self.root / "state.jsonl"
++        self.batch.STOP_FILE = self.root / "STOP"
++        self.asset = self.root / "asset.bin"
++        self.asset.write_bytes(b"approved artifact")
++        self.packet(self.asset.read_bytes())
++
++    def packet(self, content):
++        digest = hashlib.sha256(content).hexdigest()
++        self.batch.PACKET_PATH.write_text(json.dumps({"max_items": 1, "items": [
++            {"content_id": "same-id", "sha256": digest, "relative_path": "asset.bin"}
++        ]}), encoding="utf-8")
++
++    def run_batch(self):
++        with contextlib.redirect_stdout(io.StringIO()):
++            code = self.batch.main()
++        receipt = json.loads((self.root / "S04_05_BATCH_RECEIPT.json").read_text())
++        return code, receipt
++
++    def test_unchanged_artifact_skips_duplicate(self):
++        self.assertEqual(self.run_batch()[0], 0)
++        code, receipt = self.run_batch()
++        self.assertEqual(code, 0)
++        self.assertEqual(receipt["skipped_duplicate_count"], 1)
++
++    def test_same_id_tampering_is_rejected(self):
++        self.assertEqual(self.run_batch()[0], 0)
++        self.asset.write_bytes(b"unexpected replacement")
++        code, receipt = self.run_batch()
++        self.assertEqual(code, 1)
++        self.assertEqual(receipt["skipped_duplicate_count"], 0)
++        self.assertTrue(all(row["result"] == "hash_mismatch" for row in receipt["items"]))
++
++    def test_new_expected_revision_is_checked(self):
++        self.assertEqual(self.run_batch()[0], 0)
++        self.asset.write_bytes(b"approved revised artifact")
++        self.packet(self.asset.read_bytes())
++        code, receipt = self.run_batch()
++        self.assertEqual(code, 0)
++        self.assertEqual(receipt["ok_count"], 1)
++        self.assertEqual(receipt["skipped_duplicate_count"], 0)
++
++    def test_transient_read_error_can_recover(self):
++        digest = hashlib.sha256(self.asset.read_bytes()).hexdigest()
++        with mock.patch.object(self.batch, "sha256_file", side_effect=[OSError("transient read error"), digest]):
++            code, receipt = self.run_batch()
++        self.assertEqual(code, 0)
++        self.assertEqual([row["result"] for row in receipt["items"]], ["error", "ok"])
++        self.assertEqual(receipt["ok_count"], 1)
++
++    def test_persistent_read_error_fails(self):
++        with mock.patch.object(self.batch, "sha256_file", side_effect=OSError("persistent read error")):
++            code, receipt = self.run_batch()
++        self.assertEqual(code, 1)
++        self.assertEqual([row["result"] for row in receipt["items"]], ["error", "error"])
++        self.assertEqual(receipt["ok_count"], 0)
++
++    def test_stop_preserves_ledger(self):
++        self.run_batch()
++        before = self.batch.STATE_PATH.read_bytes()
++        self.batch.STOP_FILE.write_text("stop")
++        with contextlib.redirect_stdout(io.StringIO()):
++            self.assertEqual(self.batch.main(), 0)
++        self.assertEqual(self.batch.STATE_PATH.read_bytes(), before)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/wait-how-big-social/assets/reviewed/produce_batch.py b/wait-how-big-social/assets/reviewed/produce_batch.py
+new file mode 100644
+index 0000000..f2170c9
+--- /dev/null
++++ b/wait-how-big-social/assets/reviewed/produce_batch.py
+@@ -0,0 +1,151 @@
++#!/usr/bin/env python3
++"""BOTS-120 / S04-05 prep: finite local preparation batch with receipts, dedupe, stop.
++
++Does not publish, does not call LLMs, does not touch WHB-001 or Guru.
++Windows note: hashing/receipts are portable; silent encode remains macOS Swift or ffmpeg per PACKET.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import platform
++import time
++from datetime import datetime, timezone
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent
++PACKET_PATH = ROOT / "S04_05_PACKET.json"
++STATE_PATH = ROOT / "content_state.jsonl"
++STOP_FILE = ROOT / "STOP"
++
++
++def utc_now() -> str:
++    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
++
++
++def sha256_file(path: Path) -> str:
++    h = hashlib.sha256()
++    with path.open("rb") as f:
++        for chunk in iter(lambda: f.read(1024 * 1024), b""):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def load_prior_ids() -> set[tuple[str, str]]:
++    done: set[tuple[str, str]] = set()
++    if not STATE_PATH.exists():
++        return done
++    for line in STATE_PATH.read_text(encoding="utf-8").splitlines():
++        if not line.strip():
++            continue
++        row = json.loads(line)
++        if row.get("result") == "ok" and row.get("sha256_match") is True:
++            done.add((row["content_id"], row.get("sha256", "")))
++    return done
++
++
++def append_receipt(row: dict) -> None:
++    with STATE_PATH.open("a", encoding="utf-8") as f:
++        f.write(json.dumps(row, ensure_ascii=False) + "\n")
++
++
++def main() -> int:
++    if STOP_FILE.exists() or os.environ.get("WHB_STOP") == "1":
++        print("STOP engaged; no items processed")
++        return 0
++    packet = json.loads(PACKET_PATH.read_text(encoding="utf-8"))
++    max_items = int(packet.get("max_items", 3))
++    items = packet["items"][:max_items]
++    prior = load_prior_ids()
++    started_batch = time.perf_counter()
++    results = []
++    completed_items = 0
++    for item in items:
++        if STOP_FILE.exists() or os.environ.get("WHB_STOP") == "1":
++            print("STOP engaged mid-batch")
++            break
++        cid = item["content_id"]
++        expected = item["sha256"]
++        path = ROOT / item["relative_path"]
++        t0 = time.perf_counter()
++        if (cid, expected) in prior and path.is_file() and sha256_file(path) == expected:
++            row = {
++                "content_id": cid,
++                "result": "skipped_duplicate",
++                "sha256_expected": expected,
++                "started_at": utc_now(),
++                "finished_at": utc_now(),
++                "runtime_seconds": round(time.perf_counter() - t0, 6),
++                "tokens": None,
++                "attempt": 1,
++            }
++            append_receipt(row)
++            results.append(row)
++            completed_items += 1
++            continue
++        attempt = 0
++        last_err = None
++        while attempt < 2:
++            attempt += 1
++            try:
++                if not path.exists():
++                    raise FileNotFoundError(path)
++                digest = sha256_file(path)
++                match = digest == expected
++                row = {
++                    "content_id": cid,
++                    "path": str(path),
++                    "sha256": digest,
++                    "sha256_expected": expected,
++                    "sha256_match": match,
++                    "bytes": path.stat().st_size,
++                    "result": "ok" if match else "hash_mismatch",
++                    "started_at": utc_now(),
++                    "finished_at": utc_now(),
++                    "runtime_seconds": round(time.perf_counter() - t0, 6),
++                    "tokens": None,
++                    "attempt": attempt,
++                    "machine": platform.node(),
++                }
++                append_receipt(row)
++                results.append(row)
++                if match:
++                    completed_items += 1
++                    break
++                last_err = "hash_mismatch"
++            except Exception as exc:  # noqa: BLE001 — receipt must record failure
++                last_err = str(exc)
++                row = {
++                    "content_id": cid,
++                    "result": "error",
++                    "error": last_err,
++                    "started_at": utc_now(),
++                    "finished_at": utc_now(),
++                    "runtime_seconds": round(time.perf_counter() - t0, 6),
++                    "tokens": None,
++                    "attempt": attempt,
++                }
++                append_receipt(row)
++                results.append(row)
++        if last_err and not any(r.get("content_id") == cid and r.get("result") == "ok" for r in results):
++            print(f"{cid} failed: {last_err}")
++    ok_count = sum(1 for r in results if r.get("result") == "ok")
++    skipped = sum(1 for r in results if r.get("result") == "skipped_duplicate")
++    summary = {
++        "batch_runtime_seconds": round(time.perf_counter() - started_batch, 6),
++        "items": results,
++        "ok_count": ok_count,
++        "skipped_duplicate_count": skipped,
++        "tokens": None,
++        "jira_key": "BOTS-120",
++        "recorded_at_utc": utc_now(),
++    }
++    (ROOT / "S04_05_BATCH_RECEIPT.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(summary))
++    # Success if every requested item is ok or an intentional dedupe skip; failures otherwise.
++    return 0 if completed_items == len(items) else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/wait-how-big-social/assets/reviewed/render_whb_s04.py b/wait-how-big-social/assets/reviewed/render_whb_s04.py
+index 203d6aa..7a461ad 100644
+--- a/wait-how-big-social/assets/reviewed/render_whb_s04.py
++++ b/wait-how-big-social/assets/reviewed/render_whb_s04.py
+@@ -3,6 +3,7 @@
+ import json
+ import sys
+ from pathlib import Path
++from typing import TypedDict
+ from PIL import Image, ImageDraw, ImageFont
+ 
+ W, H = 1080, 1920
+@@ -19,7 +20,17 @@ REG_CANDIDATES = [
+     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+ ]
+ 
+-ITEMS = {
++class SceneSpec(TypedDict):
++    hook: str
++    big: str
++    sub: str
++    visual: str
++    frame_counts: list[int]
++    phases: list[float]
++    duration_seconds: int
++
++
++ITEMS: dict[str, SceneSpec] = {
+     "WHB-013": {
+         "hook": "THIRTY EARTHS TO THE MOON",
+         "big": "~30 EARTHS IN THE GAP",
+diff --git a/wait-how-big-social/assets/reviewed/render_whb_s04_03.py b/wait-how-big-social/assets/reviewed/render_whb_s04_03.py
+new file mode 100644
+index 0000000..c09768b
+--- /dev/null
++++ b/wait-how-big-social/assets/reviewed/render_whb_s04_03.py
+@@ -0,0 +1,251 @@
++#!/usr/bin/env python3
++"""BOTS-120 / S04-03: render WHB-017..022 scene graphics (1080x1920). Silent/caption path."""
++import json
++import sys
++from pathlib import Path
++from typing import TypedDict
++from PIL import Image, ImageDraw, ImageFont
++
++W, H = 1080, 1920
++BG, PANEL, CREAM, MUTED = "#0D1117", "#171D26", "#F7F1E7", "#AEB7C4"
++LIME, CORAL, BLUE, PURPLE, YELLOW = "#CFFF47", "#FF6B6B", "#6BCBFF", "#B99CFF", "#FFD166"
++ACCENTS = [LIME, CORAL, BLUE, PURPLE, YELLOW]
++
++FONT_CANDIDATES = [
++    "C:/Windows/Fonts/arialbd.ttf",
++    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
++    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
++]
++REG_CANDIDATES = [
++    "C:/Windows/Fonts/arial.ttf",
++    "/System/Library/Fonts/Supplemental/Arial.ttf",
++    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
++]
++
++FRAME = [58, 50, 65, 65, 58, 64]
++PHASES = [0.12, 0.28, 0.45, 0.62, 0.80, 1.0]
++
++class SceneSpec(TypedDict):
++    hook: str
++    big: str
++    sub: str
++    visual: str
++    frame_counts: list[int]
++    phases: list[float]
++    duration_seconds: int
++
++
++ITEMS: dict[str, SceneSpec] = {
++    "WHB-017": {
++        "hook": "ONE LIGHT-YEAR IN AUs",
++        "big": "≈ 63,241 AU",
++        "sub": "IAU definitions — distance math, not a star map.",
++        "visual": "light_year_au",
++        "frame_counts": FRAME,
++        "phases": PHASES,
++        "duration_seconds": 12,
++    },
++    "WHB-018": {
++        "hook": "LAKE SUPERIOR VS A POOL",
++        "big": "≈ 4.8 BILLION POOLS",
++        "sub": "Volume order-of-magnitude — not a packing diagram.",
++        "visual": "superior_pool",
++        "frame_counts": FRAME,
++        "phases": PHASES,
++        "duration_seconds": 12,
++    },
++    "WHB-019": {
++        "hook": "HEARTBEATS IN 80 YEARS",
++        "big": "≈ 2.9 BILLION BEATS",
++        "sub": "Illustrative 70 bpm mid-range — not medical advice.",
++        "visual": "heartbeats",
++        "frame_counts": FRAME,
++        "phases": PHASES,
++        "duration_seconds": 12,
++    },
++    "WHB-020": {
++        "hook": "EVEREST VS CRUISE ALTITUDE",
++        "big": "FL350 ≈ 10.7 KM",
++        "sub": "Altitude band comparison — not a flight path chart.",
++        "visual": "everest_cruise",
++        "frame_counts": FRAME,
++        "phases": PHASES,
++        "duration_seconds": 12,
++    },
++    "WHB-021": {
++        "hook": "ANTARCTIC ICE FRESHWATER",
++        "big": "~26.5 MILLION KM³",
++        "sub": "Ice-sheet volume estimate — cite range, not exact stock.",
++        "visual": "antarctica_ice",
++        "frame_counts": FRAME,
++        "phases": PHASES,
++        "duration_seconds": 12,
++    },
++    "WHB-022": {
++        "hook": "WHAT “4K” ACTUALLY MEANS",
++        "big": "8,294,400 PIXELS",
++        "sub": "3840 × 2160 — arithmetic, not a camera review.",
++        "visual": "uhd_pixels",
++        "frame_counts": FRAME,
++        "phases": PHASES,
++        "duration_seconds": 12,
++    },
++}
++
++
++def font(size: int, bold: bool = True):
++    candidates = FONT_CANDIDATES if bold else REG_CANDIDATES
++    for path in candidates:
++        if Path(path).exists():
++            return ImageFont.truetype(path, size)
++    return ImageFont.load_default()
++
++
++def wrap(text: str, fnt, max_width: int) -> list[str]:
++    words, lines, current = text.split(), [], ""
++    probe = Image.new("RGB", (10, 10))
++    draw = ImageDraw.Draw(probe)
++    for word in words:
++        test = f"{current} {word}".strip()
++        if draw.textbbox((0, 0), test, font=fnt)[2] <= max_width or not current:
++            current = test
++        else:
++            lines.append(current)
++            current = word
++    if current:
++        lines.append(current)
++    return lines
++
++
++def centered(draw, text: str, y: int, fnt, fill, max_width=900, spacing=14):
++    lines = wrap(text, fnt, max_width)
++    total = sum(draw.textbbox((0, 0), line, font=fnt)[3] for line in lines) + spacing * (len(lines) - 1)
++    cy = y - total // 2
++    for line in lines:
++        box = draw.textbbox((0, 0), line, font=fnt)
++        draw.text(((W - (box[2] - box[0])) / 2, cy), line, font=fnt, fill=fill)
++        cy += box[3] + spacing
++
++
++def panel_header(draw, title: str):
++    draw.rounded_rectangle((100, 630, 980, 1260), 44, fill=PANEL, outline="#2A3340", width=3)
++    centered(draw, title, 685, font(27), MUTED, 800)
++
++
++def rows(draw, triples):
++    for label, value, y, color in triples:
++        draw.text((150, y), label, font=font(28), fill=CREAM)
++        draw.text((150, y + 48), value, font=font(48), fill=color)
++
++
++def visual(draw, kind: str, accent: str):
++    if kind == "light_year_au":
++        panel_header(draw, "DISTANCE COMPARISON — NOT A STAR MAP")
++        rows(draw, [
++            ("1 ASTRONOMICAL UNIT (IAU)", "149,597,870.7 km", 755, BLUE),
++            ("1 LIGHT-YEAR (IAU)", "≈ 9.461×10¹² km", 900, LIME),
++            ("LIGHT-YEARS IN AU", "≈ 63,241 AU", 1045, CORAL),
++        ])
++        centered(draw, "9.4607e12 / 1.496e8 ≈ 63,241", 1200, font(30), CREAM, 820)
++    elif kind == "superior_pool":
++        panel_header(draw, "VOLUME COMPARISON — NOT PACKING")
++        rows(draw, [
++            ("OLYMPIC POOL (50×25×2 m)", "2,500 m³", 755, BLUE),
++            ("LAKE SUPERIOR VOLUME", "~12,100 km³", 900, LIME),
++            ("POOLS TO MATCH SUPERIOR", "≈ 4.84 billion", 1045, CORAL),
++        ])
++        centered(draw, "1.21e13 m³ / 2,500 ≈ 4.84e9", 1200, font(30), CREAM, 820)
++    elif kind == "heartbeats":
++        panel_header(draw, "TIME COMPARISON — ILLUSTRATIVE RANGE")
++        rows(draw, [
++            ("ASSUMED RESTING RATE", "70 beats/min", 755, YELLOW),
++            ("80-YEAR LIFETIME", "≈ 2.94 billion beats", 900, CORAL),
++            ("SECONDS IN ONE DAY", "86,400", 1045, BLUE),
++        ])
++        centered(draw, "Not medical advice — mid-range illustration", 1200, font(28), MUTED, 820)
++    elif kind == "everest_cruise":
++        panel_header(draw, "ALTITUDE COMPARISON — NOT A FLIGHT PATH")
++        rows(draw, [
++            ("MT. EVEREST SUMMIT", "~8,849 m", 755, LIME),
++            ("TYPICAL CRUISE FL350", "≈ 10,668 m", 900, BLUE),
++            ("CRUISE ABOVE EVEREST", "≈ 1.8 km higher", 1045, CORAL),
++        ])
++        centered(draw, "10,668 − 8,849 = 1,819 m", 1200, font(34), CREAM, 790)
++    elif kind == "antarctica_ice":
++        panel_header(draw, "VOLUME ESTIMATE — CITE THE RANGE")
++        rows(draw, [
++            ("ANTARCTIC ICE SHEET", "~26.5 million km³", 755, BLUE),
++            ("IF MELTED (SEA-LEVEL EQ.)", "~58 m SLE (approx.)", 900, YELLOW),
++            ("LABEL", "Ice volume ≠ liquid now", 1045, CORAL),
++        ])
++        centered(draw, "NSIDC/USGS-class estimates — rounded", 1200, font(28), MUTED, 820)
++    elif kind == "uhd_pixels":
++        panel_header(draw, "PIXEL MATH — NOT A PRODUCT REVIEW")
++        rows(draw, [
++            ("UHD / 4K FRAME", "3840 × 2160", 755, LIME),
++            ("TOTAL PIXELS", "8,294,400", 900, CORAL),
++            ("≈ MEGAPIXELS", "≈ 8.3 MP", 1045, BLUE),
++        ])
++        centered(draw, "3840 × 2160 = 8,294,400", 1200, font(34), CREAM, 790)
++    else:
++        raise ValueError(f"Unknown visual kind: {kind}")
++
++
++def render(item: dict, phase: float) -> Image.Image:
++    image = Image.new("RGB", (W, H), BG)
++    draw = ImageDraw.Draw(image)
++    accent = ACCENTS[int(item["id"][-1]) % len(ACCENTS)]
++    draw.text((72, 60), "WAIT, HOW BIG?", font=font(38), fill=accent)
++    draw.text((72, 112), item["id"], font=font(24, False), fill=MUTED)
++    draw.rounded_rectangle((72, 170, 1008, 190), 10, fill="#2A3340")
++    draw.rounded_rectangle((72, 170, 72 + 936 * phase, 190), 10, fill=accent)
++    centered(draw, item["hook"], 390, font(58), CREAM, 900, 12)
++    visual(draw, item["visual"], accent)
++    if phase > 0.42:
++        centered(draw, item["big"], 1435, font(64), accent, 900, 12)
++    if phase > 0.70:
++        centered(draw, item["sub"], 1650, font(36, False), MUTED, 860, 10)
++        centered(draw, "FOLLOW FOR THE NEXT PERSPECTIVE SHIFT", 1810, font(28), CREAM, 860, 8)
++    return image
++
++
++def render_item(content_id: str, root: Path):
++    spec = ITEMS[content_id]
++    item = {
++        "id": content_id,
++        "hook": spec["hook"],
++        "big": spec["big"],
++        "sub": spec["sub"],
++        "visual": spec["visual"],
++    }
++    scene_dir = root / "scenes"
++    scene_dir.mkdir(parents=True, exist_ok=True)
++    for index, phase in enumerate(spec["phases"]):
++        render(item, phase).save(scene_dir / f"scene-{index}.png", optimize=True)
++    render(item, 1.0).save(root / f"{content_id}-cover.png", optimize=True)
++    manifest = {
++        "content_id": content_id,
++        "fps": 30,
++        "frame_counts": spec["frame_counts"],
++        "duration_seconds": 12,
++        "phases": spec["phases"],
++        "repair": "Numerical comparison with explicit caveat label; silent/caption path.",
++        "jira_key": "BOTS-120",
++    }
++    (root / "SCENE_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
++    return manifest
++
++
++def main():
++    if len(sys.argv) < 3:
++        raise SystemExit("Usage: python3 render_whb_s04_03.py CONTENT_ID OUTPUT_DIRECTORY")
++    content_id = sys.argv[1]
++    if content_id not in ITEMS:
++        raise SystemExit(f"Unknown content_id {content_id}; expected one of {sorted(ITEMS)}")
++    root = Path(sys.argv[2]).resolve()
++    root.mkdir(parents=True, exist_ok=True)
++    print(json.dumps(render_item(content_id, root)))
++
++
++if __name__ == "__main__":
++    main()

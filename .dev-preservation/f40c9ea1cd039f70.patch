@@ -1,0 +1,62 @@
+diff --git a/wait-how-big-social/.gitattributes b/wait-how-big-social/.gitattributes
+new file mode 100644
+index 0000000..228b1f3
+--- /dev/null
++++ b/wait-how-big-social/.gitattributes
+@@ -0,0 +1,4 @@
++# BOTS-117: the reviewed bundle and source hashes must survive Windows checkout.
++*.py text eol=lf
++*.json text eol=lf
++*.zip binary
+diff --git a/wait-how-big-social/tests/test_whb_operator_release.py b/wait-how-big-social/tests/test_whb_operator_release.py
+index 47d13a0..2a602e2 100644
+--- a/wait-how-big-social/tests/test_whb_operator_release.py
++++ b/wait-how-big-social/tests/test_whb_operator_release.py
+@@ -31,7 +31,7 @@ class ReleaseTests(unittest.TestCase):
+         self.config_path = self.base / 'config.json'
+         self.plan_path = self.base / 'plan.json'
+         self.grant_path = self.base / 'release.grant.json'
+-        queue = json.loads((ROOT / 'operator/queue.json').read_text())
++        queue = json.loads((ROOT / 'operator/queue.json').read_text(encoding='utf-8'))
+         queue['queue'] = queue['queue'][:2]
+         whb.write_json(self.queue_path, queue)
+         self.config_path.write_bytes((ROOT / 'operator/config.json').read_bytes())
+@@ -246,7 +246,7 @@ w.main()
+ 
+ class BundleTests(unittest.TestCase):
+     def test_organization_selection_uses_exact_existing_channels_not_first_org(self):
+-        config = json.loads((ROOT / 'operator/config.json').read_text())
++        config = json.loads((ROOT / 'operator/config.json').read_text(encoding='utf-8'))
+         exact = [{'id': config['channels'][s]['id'], 'service': s, 'isQueuePaused': False}
+                  for s in whb.REQUIRED]
+         responses = [{'account': {'organizations': [{'id': 'unrelated'}, {'id': 'correct'}]}},
+@@ -275,7 +275,7 @@ class BundleTests(unittest.TestCase):
+             self.assertEqual(sorted(bundle.namelist()), ['config.json', 'queue.json', 'whb_operator.py'])
+             for name in bundle.namelist(): self.assertEqual(bundle.read(name), (ROOT / 'operator' / name).read_bytes())
+         digest = hashlib.sha256((ROOT / 'operator/operator_bundle.zip').read_bytes()).hexdigest()
+-        self.assertIn(digest, WORKFLOW.read_text())
++        self.assertIn(digest, WORKFLOW.read_text(encoding='utf-8'))
+ 
+     def test_packaged_executable_does_not_shadow_operator_and_no_key_is_clean(self):
+         with tempfile.TemporaryDirectory() as tmp:
+@@ -289,7 +289,7 @@ class BundleTests(unittest.TestCase):
+             self.assertEqual(check.returncode, 0)
+ 
+     def test_workflow_is_read_only_and_has_no_post_effect_git_state_persistence(self):
+-        workflow = WORKFLOW.read_text()
++        workflow = WORKFLOW.read_text(encoding='utf-8')
+         self.assertIn('contents: read', workflow)
+         self.assertIn('default: true', workflow)
+         self.assertIn("github.event_name == 'schedule' || inputs.dry_run", workflow)
+@@ -297,9 +297,9 @@ class BundleTests(unittest.TestCase):
+         self.assertNotIn('/operator.py', workflow)
+ 
+     def test_queue_preserves_all_thirteen_existing_media_and_channel_ids(self):
+-        queue = json.loads((ROOT / 'operator/queue.json').read_text())
++        queue = json.loads((ROOT / 'operator/queue.json').read_text(encoding='utf-8'))
+         self.assertEqual(len(queue['queue']), 13)
+-        config = json.loads((ROOT / 'operator/config.json').read_text())
++        config = json.loads((ROOT / 'operator/config.json').read_text(encoding='utf-8'))
+         self.assertEqual({s:c['id'] for s,c in config['channels'].items()}, {
+             'twitter':'6a8f2926ccaf649a671fa86d', 'instagram':'6a8f1d89ccaf649a671f69fc',
+             'tiktok':'6a8fb214ccaf649a6724d002'})

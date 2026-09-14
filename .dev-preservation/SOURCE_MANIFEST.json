@@ -1,0 +1,502 @@
+{
+  "project": "orchestrator",
+  "remote": "https://github.com/pri8771/orchestrator",
+  "visibility": null,
+  "previous_dev": "ea7fc48f41ab3cbf4e947ae8e716ae54b8cef46e",
+  "status": "in_progress",
+  "source_tip_count": 25,
+  "recovery": [
+    {
+      "sha": "5e4993a7238d070cdd63da11561c1712d96050df",
+      "refs": [
+        "refs/windows/orchestrator-overnight/codex/windows-capture-20260914-c3-whb"
+      ],
+      "base": "21ef54f596a00a9c4631c8894a72467ab47a80f3",
+      "patch": ".dev-preservation/5e4993a7238d070c.patch",
+      "sha256": "ed586cf534466ae8379407077e33ce6b05a9373d630adad1eb8a51b5be636231",
+      "status": "preserved_not_integrated",
+      "omitted": [
+        {
+          "path": "wait-how-big-social/assets/reviewed/S04_03_UPLOAD_READY_INDEX.local.json",
+          "reason": "local configuration or runtime/account data"
+        }
+      ]
+    },
+    {
+      "sha": "bffc2030059d56dab7c26f31089017decb2f8b24",
+      "refs": [
+        "refs/remotes/origin/main"
+      ],
+      "base": "21ef54f596a00a9c4631c8894a72467ab47a80f3",
+      "patch": ".dev-preservation/bffc2030059d56da.patch",
+      "sha256": "7a466c22e587c4901c5e0ff3ba754cf2974bf40da83de6b9e2a72c38b5521ec8",
+      "status": "preserved_not_integrated",
+      "omitted": []
+    },
+    {
+      "sha": "b0edba231c6a79075ff031b277d382ca9725429a",
+      "refs": [
+        "refs/source-heads/1",
+        "refs/source/bae460ac/codex/BOTS-120-finite-windows-encoder",
+        "refs/windows/orchestrator-overnight/codex/BOTS-120-finite-windows-encoder"
+      ],
+      "base": "21ef54f596a00a9c4631c8894a72467ab47a80f3",
+      "patch": ".dev-preservation/b0edba231c6a7907.patch",
+      "sha256": "7a466c22e587c4901c5e0ff3ba754cf2974bf40da83de6b9e2a72c38b5521ec8",
+      "status": "preserved_not_integrated",
+      "omitted": []
+    },
+    {
+      "sha": "1ab0a5773079ccc06e8442598506a84d30435e8b",
+      "refs": [
+        "refs/source-heads/0",
+        "refs/source/bae460ac/codex/BOTS-117-buffer-status-history"
+      ],
+      "base": "83546974de229935480656a3f5ce1007921c1ebe",
+      "patch": ".dev-preservation/1ab0a5773079ccc0.patch",
+      "sha256": "3202a84a2cc66cfb903e00fabc73ac33022b14925867cc917b081e6b49bf29ff",
+      "status": "preserved_not_integrated",
+      "omitted": [
+        {
+          "path": "wait-how-big-social/operator/operator_bundle.zip",
+          "reason": "secret/runtime database or generated binary"
+        }
+      ]
+    },
+    {
+      "sha": "2e19ae12386427ccbd9a9c4e00c520d91d262435",
+      "refs": [
+        "refs/source/bae460ac/codex/BOTS-117-correct-million-billion-media"
+      ],
+      "base": "c3493f1e8f2e099301df647a5defde52096111d0",
+      "patch": ".dev-preservation/2e19ae12386427cc.patch",
+      "sha256": "f413bb2255373d7106733c315bdb15696e72786425671666f8c15c6f50d44928",
+      "status": "preserved_not_integrated",
+      "omitted": [
+        {
+          "path": "wait-how-big-social/assets/reviewed/WHB-001-million-vs-billion-seconds-2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec.mp4",
+          "reason": "secret/runtime database or generated binary"
+        },
+        {
+          "path": "wait-how-big-social/operator/operator_bundle.zip",
+          "reason": "secret/runtime database or generated binary"
+        }
+      ]
+    },
+    {
+      "sha": "f40c9ea1cd039f70b260d0095f9d61626faf27cf",
+      "refs": [
+        "refs/source/bae460ac/codex/BOTS-117-windows-portability"
+      ],
+      "base": "881a927e9c38afe686abdad0247217c818380d6d",
+      "patch": ".dev-preservation/f40c9ea1cd039f70.patch",
+      "sha256": "718e56f7d5140d23f16473dfd2fcf9b0e6833f41cc166574e371b289aa6f295b",
+      "status": "preserved_not_integrated",
+      "omitted": []
+    },
+    {
+      "sha": "ecd48728399f3888a9403c82bca118b467dddc9f",
+      "refs": [
+        "refs/source/bae460ac/codex/BOTS-117-whb-safe-release"
+      ],
+      "base": "270ccb5a59e053df1ec5f415358b03f93bf9c69e",
+      "patch": ".dev-preservation/ecd48728399f3888.patch",
+      "sha256": "92967dfaf1100df9c1d54219946b8cb2b52c7891e42d039111a666f32974e52b",
+      "status": "preserved_not_integrated",
+      "omitted": [
+        {
+          "path": "wait-how-big-social/operator/operator_bundle.zip",
+          "reason": "secret/runtime database or generated binary"
+        }
+      ]
+    },
+    {
+      "sha": "e23083ea24c208d5bf1ce74c0aa988eb35c084e3",
+      "refs": [
+        "refs/source-heads/4",
+        "refs/source/d36e2f74/claude/m5.0-documentation-manifest"
+      ],
+      "base": "1c532cba31bd370b0c76eadae9a3083c7c5e97d4",
+      "patch": ".dev-preservation/e23083ea24c208d5.patch",
+      "sha256": "f4938d2bd175bda7a93197e688b62a4372b9f38847903af011cbdff8ce3d9e09",
+      "status": "preserved_not_integrated",
+      "omitted": []
+    },
+    {
+      "sha": "6aee44566e14be24b817ea914a5b642591f1a45b",
+      "refs": [
+        "windows/orchestrator-stash/refs/stash"
+      ],
+      "base": "270ccb5a59e053df1ec5f415358b03f93bf9c69e",
+      "patch": ".dev-preservation/6aee44566e14be24.patch",
+      "sha256": "e9530376d1968d04353ef0dfc56359a8483f3c55c60d650760af79a83d8dc468",
+      "status": "preserved_not_integrated",
+      "omitted": [
+        {
+          "path": "wait-how-big-social/operator/operator_bundle.zip",
+          "reason": "secret/runtime database or generated binary"
+        }
+      ]
+    },
+    {
+      "sha": "46c78fc4048ef8f70bc1f0829cbdfddfa99992f4",
+      "refs": [
+        "windows/orchestrator-overnight/HEAD"
+      ],
+      "base": "21ef54f596a00a9c4631c8894a72467ab47a80f3",
+      "patch": ".dev-preservation/46c78fc4048ef8f7.patch",
+      "sha256": "f6a7fa875f0a49316da60b9aced5792b48b151fe6a0c8b6291c4dd0ca342a93b",
+      "status": "preserved_not_integrated",
+      "omitted": []
+    }
+  ],
+  "excluded": [
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/S04_03_UPLOAD_READY_INDEX.local.json",
+      "reason": "local configuration or runtime/account data"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-013-narrated-09c08fd0829fa13759393752465b1abfbaabde51dee53fba4e900279225564c3.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-013/WHB-013-narrated-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-013/narration.aiff",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-014-narrated-fc1d98a432832cf0f07451c29b15ed5a390e0b87ae26bf0285ba7da1d3cd4adb.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-014/WHB-014-narrated-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-014/narration.aiff",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-015-narrated-dff2eefeec74a96938ae33a47423ba72ba8563ac594a38afdf3c071da32d8464.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-015/WHB-015-narrated-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-015/narration.aiff",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-016-narrated-9d5c76d374cb0a537f18629ec6f02020e83211196d1dbab6aa5ca022c40add07.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-016/WHB-016-narrated-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-016/narration.aiff",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-017-light-year-in-aus-7e38a8da65023d5a55fcb591d208f5a452439061b5a3a9dceaf57426292df676.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-017/WHB-017-silent-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-018-superior-vs-olympic-pool-44ea2ff3e0139c01849a9ea1c99d1628c8fcc18fc4554a96cb4ca509bfe94a5b.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-018/WHB-018-silent-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-019-lifetime-heartbeats-6e7dbbcc365a7a5206a118762908ddbfc19085ec54aad459d9fdc508841fc8e7.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-019/WHB-019-silent-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-020-everest-vs-cruise-40d6b60d3bfe811311163566e22ea36c04415654103ac073d4280828e7c19388.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-020/WHB-020-silent-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-021-antarctica-ice-volume-cc76b404885909d7248b2da9cac36df4d1ff2d7d62b7fed8106976d6df553e69.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-021/WHB-021-silent-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-022-uhd-pixel-count-0ddd4d52922385e37335e52a0d07207447445480592cfc1769ccc1ad58c9ffd0.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "path": "wait-how-big-social/assets/reviewed/WHB-022/WHB-022-silent-video.mp4",
+      "reason": "secret/runtime database or generated binary"
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/wip_apps/core_apps/orchestrator",
+      "path": "config.yaml",
+      "reason": "local configuration or runtime/account data"
+    }
+  ],
+  "source_merged": [],
+  "windows_imports": [
+    {
+      "sha": "6aee44566e14be24b817ea914a5b642591f1a45b",
+      "ref": "refs/stash",
+      "bundle": "orchestrator-stash"
+    },
+    {
+      "sha": "46c78fc4048ef8f70bc1f0829cbdfddfa99992f4",
+      "ref": "HEAD",
+      "bundle": "orchestrator-overnight"
+    },
+    {
+      "sha": "b0edba231c6a79075ff031b277d382ca9725429a",
+      "ref": "refs/heads/codex/BOTS-120-finite-windows-encoder",
+      "bundle": "orchestrator-overnight"
+    },
+    {
+      "sha": "46c78fc4048ef8f70bc1f0829cbdfddfa99992f4",
+      "ref": "refs/heads/codex/BOTS-120-windows-production-20260914",
+      "bundle": "orchestrator-overnight"
+    },
+    {
+      "sha": "5e4993a7238d070cdd63da11561c1712d96050df",
+      "ref": "refs/heads/codex/windows-capture-20260914-c3-whb",
+      "bundle": "orchestrator-overnight"
+    }
+  ],
+  "source_tips": {
+    "61bdee5abf5ede5ea7b2b95dfda2677d3c878891": [
+      "refs/captured/orchestrator-2"
+    ],
+    "ce6899be23f4d08db8573225aa76f53fbd003d2d": [
+      "refs/captured/orchestrator-3",
+      "refs/captured/orchestrator-5"
+    ],
+    "1ab0a5773079ccc06e8442598506a84d30435e8b": [
+      "refs/source-heads/0",
+      "refs/source/bae460ac/codex/BOTS-117-buffer-status-history"
+    ],
+    "b0edba231c6a79075ff031b277d382ca9725429a": [
+      "refs/source-heads/1",
+      "refs/source/bae460ac/codex/BOTS-120-finite-windows-encoder",
+      "refs/windows/orchestrator-overnight/codex/BOTS-120-finite-windows-encoder"
+    ],
+    "21ef54f596a00a9c4631c8894a72467ab47a80f3": [
+      "refs/source-heads/2",
+      "refs/source/bae460ac/codex/S04-whb-h09-w205"
+    ],
+    "ea7fc48f41ab3cbf4e947ae8e716ae54b8cef46e": [
+      "refs/source-heads/3",
+      "refs/source-heads/5",
+      "refs/source/d36e2f74/dev",
+      "refs/source/d36e2f74/factory/v1-m0"
+    ],
+    "e23083ea24c208d5bf1ce74c0aa988eb35c084e3": [
+      "refs/source-heads/4",
+      "refs/source/d36e2f74/claude/m5.0-documentation-manifest"
+    ],
+    "2e19ae12386427ccbd9a9c4e00c520d91d262435": [
+      "refs/source/bae460ac/codex/BOTS-117-correct-million-billion-media"
+    ],
+    "ecd48728399f3888a9403c82bca118b467dddc9f": [
+      "refs/source/bae460ac/codex/BOTS-117-whb-safe-release"
+    ],
+    "f40c9ea1cd039f70b260d0095f9d61626faf27cf": [
+      "refs/source/bae460ac/codex/BOTS-117-windows-portability"
+    ],
+    "46c78fc4048ef8f70bc1f0829cbdfddfa99992f4": [
+      "refs/source/bae460ac/codex/BOTS-120-windows-production-20260914",
+      "refs/windows/orchestrator-overnight/HEAD",
+      "refs/windows/orchestrator-overnight/codex/BOTS-120-windows-production-20260914"
+    ],
+    "270ccb5a59e053df1ec5f415358b03f93bf9c69e": [
+      "refs/source/bae460ac/main"
+    ],
+    "f72a2f6a57551826d7ac8419a5af5aafe3743b31": [
+      "refs/source/d36e2f74/codex/enroll-board"
+    ],
+    "9a6dd7c8a77ecc40ee604dbea433bfdcacd082c0": [
+      "refs/source/d36e2f74/codex/v3-8.5"
+    ],
+    "e8efd0c4bae6453a3c0ff2472cff0220f1210e5d": [
+      "refs/source/d36e2f74/codex/v3-8.6"
+    ],
+    "4d1ef812f37c246b173a0d73e65921b4c03e88a0": [
+      "refs/source/d36e2f74/codex/v3-8.8"
+    ],
+    "c7876cff8cd63dd4453483144868ccef71a90090": [
+      "refs/source/d36e2f74/codex/v3-9.1b"
+    ],
+    "a156c8cb84004f133561bb5b8d249cb10012474c": [
+      "refs/source/d36e2f74/codex/v3-9.2"
+    ],
+    "be79d161cb2b844db913efb21be2bab4676d5290": [
+      "refs/source/d36e2f74/codex/v3-9.2-engine-preview"
+    ],
+    "1ce599805ab7b07ba9bc00354270c39dd6983321": [
+      "refs/source/d36e2f74/codex/v3-9.3"
+    ],
+    "6efeb74c754dc21b2a3d7541d29573ff3fc741ec": [
+      "refs/source/d36e2f74/codex/v3-9.3-audit"
+    ],
+    "0588e7e3db9a9d4fa82305d390f89f3776d3627c": [
+      "refs/source/d36e2f74/main"
+    ],
+    "e352df17373d3741d0a80a6ea3bf647915373467": [
+      "refs/source/d36e2f74/qa"
+    ],
+    "5e4993a7238d070cdd63da11561c1712d96050df": [
+      "refs/windows/orchestrator-overnight/codex/windows-capture-20260914-c3-whb"
+    ],
+    "bffc2030059d56dab7c26f31089017decb2f8b24": [
+      "refs/remotes/origin/main"
+    ]
+  },
+  "captured_worktrees": [
+    {
+      "worktree": "/Users/pchordia/Documents/ChatGPT/Astra/worktrees/s04-whb-20260913",
+      "sha": "61bdee5abf5ede5ea7b2b95dfda2677d3c878891",
+      "ref": "refs/codex-preservation/20260914/orchestrator-2",
+      "paths": [
+        "wait-how-big-social/assets/reviewed/MATH_CHECKS_S04_03.json",
+        "wait-how-big-social/assets/reviewed/S04_05_BATCH_RECEIPT.json",
+        "wait-how-big-social/assets/reviewed/S04_05_PACKET.json",
+        "wait-how-big-social/assets/reviewed/WHB-017/SCENE_MANIFEST.json",
+        "wait-how-big-social/assets/reviewed/WHB-017/WHB-017-cover.png",
+        "wait-how-big-social/assets/reviewed/WHB-017/WHB-017-editorial-provenance.json",
+        "wait-how-big-social/assets/reviewed/WHB-017/media.sha256",
+        "wait-how-big-social/assets/reviewed/WHB-017/narration.txt",
+        "wait-how-big-social/assets/reviewed/WHB-017/scenes/scene-0.png",
+        "wait-how-big-social/assets/reviewed/WHB-017/scenes/scene-1.png",
+        "wait-how-big-social/assets/reviewed/WHB-017/scenes/scene-2.png",
+        "wait-how-big-social/assets/reviewed/WHB-017/scenes/scene-3.png",
+        "wait-how-big-social/assets/reviewed/WHB-017/scenes/scene-4.png",
+        "wait-how-big-social/assets/reviewed/WHB-017/scenes/scene-5.png",
+        "wait-how-big-social/assets/reviewed/WHB-018/SCENE_MANIFEST.json",
+        "wait-how-big-social/assets/reviewed/WHB-018/WHB-018-cover.png",
+        "wait-how-big-social/assets/reviewed/WHB-018/WHB-018-editorial-provenance.json",
+        "wait-how-big-social/assets/reviewed/WHB-018/media.sha256",
+        "wait-how-big-social/assets/reviewed/WHB-018/narration.txt",
+        "wait-how-big-social/assets/reviewed/WHB-018/scenes/scene-0.png",
+        "wait-how-big-social/assets/reviewed/WHB-018/scenes/scene-1.png",
+        "wait-how-big-social/assets/reviewed/WHB-018/scenes/scene-2.png",
+        "wait-how-big-social/assets/reviewed/WHB-018/scenes/scene-3.png",
+        "wait-how-big-social/assets/reviewed/WHB-018/scenes/scene-4.png",
+        "wait-how-big-social/assets/reviewed/WHB-018/scenes/scene-5.png",
+        "wait-how-big-social/assets/reviewed/WHB-019/SCENE_MANIFEST.json",
+        "wait-how-big-social/assets/reviewed/WHB-019/WHB-019-cover.png",
+        "wait-how-big-social/assets/reviewed/WHB-019/WHB-019-editorial-provenance.json",
+        "wait-how-big-social/assets/reviewed/WHB-019/media.sha256",
+        "wait-how-big-social/assets/reviewed/WHB-019/narration.txt",
+        "wait-how-big-social/assets/reviewed/WHB-019/scenes/scene-0.png",
+        "wait-how-big-social/assets/reviewed/WHB-019/scenes/scene-1.png",
+        "wait-how-big-social/assets/reviewed/WHB-019/scenes/scene-2.png",
+        "wait-how-big-social/assets/reviewed/WHB-019/scenes/scene-3.png",
+        "wait-how-big-social/assets/reviewed/WHB-019/scenes/scene-4.png",
+        "wait-how-big-social/assets/reviewed/WHB-019/scenes/scene-5.png",
+        "wait-how-big-social/assets/reviewed/WHB-020/SCENE_MANIFEST.json",
+        "wait-how-big-social/assets/reviewed/WHB-020/WHB-020-cover.png",
+        "wait-how-big-social/assets/reviewed/WHB-020/WHB-020-editorial-provenance.json",
+        "wait-how-big-social/assets/reviewed/WHB-020/media.sha256",
+        "wait-how-big-social/assets/reviewed/WHB-020/narration.txt",
+        "wait-how-big-social/assets/reviewed/WHB-020/scenes/scene-0.png",
+        "wait-how-big-social/assets/reviewed/WHB-020/scenes/scene-1.png",
+        "wait-how-big-social/assets/reviewed/WHB-020/scenes/scene-2.png",
+        "wait-how-big-social/assets/reviewed/WHB-020/scenes/scene-3.png",
+        "wait-how-big-social/assets/reviewed/WHB-020/scenes/scene-4.png",
+        "wait-how-big-social/assets/reviewed/WHB-020/scenes/scene-5.png",
+        "wait-how-big-social/assets/reviewed/WHB-021/SCENE_MANIFEST.json",
+        "wait-how-big-social/assets/reviewed/WHB-021/WHB-021-cover.png",
+        "wait-how-big-social/assets/reviewed/WHB-021/WHB-021-editorial-provenance.json",
+        "wait-how-big-social/assets/reviewed/WHB-021/media.sha256",
+        "wait-how-big-social/assets/reviewed/WHB-021/narration.txt",
+        "wait-how-big-social/assets/reviewed/WHB-021/scenes/scene-0.png",
+        "wait-how-big-social/assets/reviewed/WHB-021/scenes/scene-1.png",
+        "wait-how-big-social/assets/reviewed/WHB-021/scenes/scene-2.png",
+        "wait-how-big-social/assets/reviewed/WHB-021/scenes/scene-3.png",
+        "wait-how-big-social/assets/reviewed/WHB-021/scenes/scene-4.png",
+        "wait-how-big-social/assets/reviewed/WHB-021/scenes/scene-5.png",
+        "wait-how-big-social/assets/reviewed/WHB-022/SCENE_MANIFEST.json",
+        "wait-how-big-social/assets/reviewed/WHB-022/WHB-022-cover.png",
+        "wait-how-big-social/assets/reviewed/WHB-022/WHB-022-editorial-provenance.json",
+        "wait-how-big-social/assets/reviewed/WHB-022/media.sha256",
+        "wait-how-big-social/assets/reviewed/WHB-022/narration.txt",
+        "wait-how-big-social/assets/reviewed/WHB-022/scenes/scene-0.png",
+        "wait-how-big-social/assets/reviewed/WHB-022/scenes/scene-1.png",
+        "wait-how-big-social/assets/reviewed/WHB-022/scenes/scene-2.png",
+        "wait-how-big-social/assets/reviewed/WHB-022/scenes/scene-3.png",
+        "wait-how-big-social/assets/reviewed/WHB-022/scenes/scene-4.png",
+        "wait-how-big-social/assets/reviewed/WHB-022/scenes/scene-5.png",
+        "wait-how-big-social/assets/reviewed/content_state.jsonl",
+        "wait-how-big-social/assets/reviewed/encode_silent.swift",
+        "wait-how-big-social/assets/reviewed/encode_silent_ffmpeg.sh",
+        "wait-how-big-social/assets/reviewed/produce_batch.py",
+        "wait-how-big-social/assets/reviewed/produce_s04_03.sh",
+        "wait-how-big-social/assets/reviewed/render_whb_s04_03.py",
+        "wait-how-big-social/assets/reviewed/whb_s04_03_packets.py"
+      ]
+    },
+    {
+      "worktree": "/Users/pchordia/Documents/wip_apps/core_apps/orchestrator",
+      "sha": "ce6899be23f4d08db8573225aa76f53fbd003d2d",
+      "ref": "refs/codex-preservation/20260914/orchestrator-3",
+      "paths": [
+        "APP_FACTORY_V1_MASTER_PLAN.md"
+      ]
+    },
+    {
+      "worktree": "/Users/pchordia/code/factory/orchestrator",
+      "sha": "ce6899be23f4d08db8573225aa76f53fbd003d2d",
+      "ref": "refs/codex-preservation/20260914/orchestrator-5",
+      "paths": [
+        "APP_FACTORY_V1_MASTER_PLAN.md"
+      ]
+    }
+  ]
+}

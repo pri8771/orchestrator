@@ -1,0 +1,1153 @@
+diff --git a/docs.py b/docs.py
+index 6fc749e..21505b5 100644
+--- a/docs.py
++++ b/docs.py
+@@ -17,6 +17,8 @@ import re
+ 
+ import schemas
+ 
++HERE = os.path.dirname(os.path.abspath(__file__))
++
+ 
+ def _write(path, text):
+     # Per-writer temp name so concurrent renders don't share one ".tmp", and
+@@ -458,6 +460,159 @@ QA_SOURCES = ("build_verification", "human_qa_checklist", "app_store_readiness",
+ 
+ _NA = "_N/A — this phase did not run._"
+ 
++# Intros for the composed spec docs — hoisted to constants so the built-in doc
++# map (below) and the direct renderers share ONE copy of each string (V3 board
++# 5.1). Byte-for-byte identical to the previous inline literals.
++_PRD_INTRO = ("_Deterministic render of the discovery/scoping phases' final "
++              "decisions. Non-AI; missing phases are N/A, never invented._")
++_ARCH_INTRO = ("_Deterministic render of the design/spec/planning phases' final "
++               "decisions. Non-AI; missing phases are N/A, never invented._")
++_QA_INTRO = ("_Deterministic render of the review phase's decision and the real "
++             "verification result. Non-AI; nothing here is fabricated._")
++
++# The App Factory 11-category / 40-section handoff blueprint (§ sections plan
++# 2). Additive + inert at 5.1: owner_section is filled by 5.3, min_chars used by
++# 5.4, and artifact→slot ingestion is 5.2. Nothing in the render path reads
++# slots[] yet — it ships so 5.2–5.4 extend THIS file rather than a new one.
++_BLUEPRINT_CATEGORIES = [
++    {"id": "product", "title": "Product & Requirements"},
++    {"id": "research", "title": "Research & Discovery"},
++    {"id": "design", "title": "Design & UX"},
++    {"id": "architecture", "title": "Technical Architecture"},
++    {"id": "engineering", "title": "Engineering & Build"},
++    {"id": "quality", "title": "Quality & Testing"},
++    {"id": "security", "title": "Security & Privacy"},
++    {"id": "gtm", "title": "Go-to-Market"},
++    {"id": "legal", "title": "Legal & Compliance"},
++    {"id": "operations", "title": "Execution & Operations"},
++    {"id": "knowledge", "title": "Library & Knowledge"},
++]
++
++# 40 slots across the 11 categories. sources/owner_section left empty at 5.1 —
++# slots are filled by routed artifacts (5.2) and owned per 5.3, not by phases.
++_BLUEPRINT_SLOTS = [
++    ("product", "vision_scope", "Vision & Scope"),
++    ("product", "personas", "Personas & Audience"),
++    ("product", "product_requirements", "Product Requirements"),
++    ("product", "success_metrics", "Success Metrics"),
++    ("research", "market_analysis", "Market Analysis"),
++    ("research", "user_research", "User Research"),
++    ("research", "competitive_landscape", "Competitive Landscape"),
++    ("design", "information_architecture", "Information Architecture"),
++    ("design", "user_flows", "User Flows"),
++    ("design", "design_language", "Design Language"),
++    ("design", "ux_copy", "UX Copy"),
++    ("architecture", "system_architecture", "System Architecture"),
++    ("architecture", "data_model", "Data Model"),
++    ("architecture", "api_contracts", "API Contracts"),
++    ("architecture", "tech_stack", "Technology Stack"),
++    ("engineering", "build_overview", "Build Overview"),
++    ("engineering", "code_structure", "Code Structure"),
++    ("engineering", "dependencies", "Dependencies"),
++    ("engineering", "environment_setup", "Environment & Setup"),
++    ("quality", "test_plan", "Test Plan"),
++    ("quality", "qa_report", "QA Report"),
++    ("quality", "known_limitations", "Known Limitations"),
++    ("quality", "acceptance_criteria", "Acceptance Criteria"),
++    ("security", "threat_model", "Threat Model"),
++    ("security", "secret_scan", "Secret Scan"),
++    ("security", "privacy_data_handling", "Privacy & Data Handling"),
++    ("gtm", "positioning", "Positioning & Messaging"),
++    ("gtm", "marketing_plan", "Marketing Plan"),
++    ("gtm", "launch_checklist", "Launch Checklist"),
++    ("gtm", "pricing", "Pricing"),
++    ("legal", "terms_of_service", "Terms of Service"),
++    ("legal", "privacy_policy", "Privacy Policy"),
++    ("legal", "compliance_review", "Compliance Review"),
++    ("operations", "release_runbook", "Release Runbook"),
++    ("operations", "monitoring_ops", "Monitoring & Operations"),
++    ("operations", "incident_postmortem", "Incident & Postmortem"),
++    ("operations", "follow_on_roadmap", "Follow-on Roadmap"),
++    ("knowledge", "lessons_learned", "Lessons Learned"),
++    ("knowledge", "reusable_patterns", "Reusable Patterns"),
++    ("knowledge", "glossary", "Glossary"),
++]
++
++# The three composed docs rendered today, expressed as data. sources/intros are
++# the SAME values used before externalization, so the default map renders
++# byte-identically. verify_appendix flags the QA doc's extra Build Verification
++# block. PRD/ARCH/QA_SOURCES above stay the single source of truth.
++_BUILTIN_DOCS = [
++    {"doc_id": "prd", "title": "Product Requirements (PRD)",
++     "filename": "PRD.md", "intro": _PRD_INTRO, "sources": list(PRD_SOURCES)},
++    {"doc_id": "technical_architecture", "title": "Technical Architecture",
++     "filename": "TECHNICAL_ARCHITECTURE.md", "intro": _ARCH_INTRO,
++     "sources": list(ARCH_SOURCES)},
++    {"doc_id": "qa_report", "title": "QA Report", "filename": "QA_REPORT.md",
++     "intro": _QA_INTRO, "sources": list(QA_SOURCES), "verify_appendix": True},
++]
++
++
++def _builtin_doc_map():
++    """The default doc map: the three composed docs plus the 40-slot blueprint."""
++    return {
++        "schema_version": schemas.SCHEMA_VERSION,
++        "docs": [dict(d) for d in _BUILTIN_DOCS],
++        "categories": [dict(c) for c in _BLUEPRINT_CATEGORIES],
++        "slots": [{"slot_id": s, "category": c, "title": t, "sources": [],
++                   "owner_section": None, "min_chars": 400}
++                  for (c, s, t) in _BLUEPRINT_SLOTS],
++    }
++
++
++def _doc_map_path(orch_dir):
++    base = orch_dir if orch_dir is not None else HERE
++    return os.path.join(base, "sections", "documentation", "doc_map.json")
++
++
++def _valid_doc_map(data):
++    """A loaded map is usable only if docs[] is a non-empty list of entries that
++    each name a filename and a sources list — the fields the renderer needs."""
++    if not isinstance(data, dict):
++        return False
++    docs = data.get("docs")
++    if not isinstance(docs, list) or not docs:
++        return False
++    for d in docs:
++        if not isinstance(d, dict) or not d.get("filename") \
++                or not isinstance(d.get("sources"), list):
++            return False
++    return True
++
++
++def load_doc_map(orch_dir=None, on_warn=None):
++    """Load sections/documentation/doc_map.json, seed-then-disk-wins like
++    workflows.ensure_seeded: materialize the built-in default on first run
++    (never clobbering an existing file), then on-disk edits win. ANY parse or
++    validation failure falls back to the built-in defaults AND fires on_warn
++    with a visible banner (docs.py has no emit channel of its own). Never raises.
++
++    on_warn is an optional callback(str) wired from the orchestrator call site so
++    a fallback is visible in the run log while keeping docs.py import-light."""
++    path = _doc_map_path(orch_dir)
++    if not os.path.exists(path):
++        try:
++            os.makedirs(os.path.dirname(path), exist_ok=True)
++            with open(path, "w", encoding="utf-8") as fh:
++                json.dump(_builtin_doc_map(), fh, indent=2)
++        except OSError:
++            pass
++        return _builtin_doc_map()
++    try:
++        with open(path, encoding="utf-8") as fh:
++            data = json.load(fh)
++    except (OSError, ValueError) as exc:
++        if on_warn:
++            on_warn("doc_map.json unreadable (%s) — using the built-in default "
++                    "doc map." % exc)
++        return _builtin_doc_map()
++    if not _valid_doc_map(data):
++        if on_warn:
++            on_warn("doc_map.json is malformed (no usable docs[]) — using the "
++                    "built-in default doc map.")
++        return _builtin_doc_map()
++    return data
++
+ 
+ def render_composed_doc(app, doc_title, source_keys, ordered_phases,
+                         phase_outputs, intro=""):
+@@ -478,12 +633,13 @@ def render_composed_doc(app, doc_title, source_keys, ordered_phases,
+     return "\n".join(lines)
+ 
+ 
+-def render_qa_report(app, ordered_phases, phase_outputs, verify_summary=""):
+-    """QA_REPORT.md: the final review phase plus the structured verify result."""
++def render_qa_report(app, ordered_phases, phase_outputs, verify_summary="",
++                     title="QA Report", sources=QA_SOURCES, intro=_QA_INTRO):
++    """QA_REPORT.md: the final review phase plus the structured verify result.
++    title/sources/intro default to the built-ins so a direct call is unchanged;
++    write_project_docs passes the doc-map entry's values (V3 board 5.1)."""
+     md = render_composed_doc(
+-        app, "QA Report", QA_SOURCES, ordered_phases, phase_outputs,
+-        intro="_Deterministic render of the review phase's decision and the real "
+-              "verification result. Non-AI; nothing here is fabricated._")
++        app, title, sources, ordered_phases, phase_outputs, intro=intro)
+     if md is None:
+         return None
+     return (md + "## Build Verification\n\n"
+@@ -549,7 +705,7 @@ def render_known_limitations(app, ordered_phases, phase_outputs, consensus_statu
+ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
+                        consensus_status=None, workflow_name="app_build",
+                        verify_summary="", findings=None, blocked_conflict=None,
+-                       conversation_end=None):
++                       conversation_end=None, orch_dir=None, on_warn=None):
+     """Render + persist the full doc set (§24) into <app_dir>/docs/:
+     PROJECT_DOCUMENTATION.md, LAUNCH_READINESS.md, phase_outputs.json, plus
+     PRD.md / TECHNICAL_ARCHITECTURE.md / QA_REPORT.md when their source phases
+@@ -570,26 +726,27 @@ def write_project_docs(app_dir, app, ordered_phases, phase_outputs,
+                                        consensus_status, verify_summary,
+                                        findings=findings))
+         written.append("docs/LAUNCH_READINESS.md")
+-        prd = render_composed_doc(
+-            app, "Product Requirements (PRD)", PRD_SOURCES, ordered_phases,
+-            phase_outputs,
+-            intro="_Deterministic render of the discovery/scoping phases' final "
+-                  "decisions. Non-AI; missing phases are N/A, never invented._")
+-        if prd is not None:
+-            _write(os.path.join(docs_dir, "PRD.md"), prd)
+-            written.append("docs/PRD.md")
+-        arch = render_composed_doc(
+-            app, "Technical Architecture", ARCH_SOURCES, ordered_phases,
+-            phase_outputs,
+-            intro="_Deterministic render of the design/spec/planning phases' final "
+-                  "decisions. Non-AI; missing phases are N/A, never invented._")
+-        if arch is not None:
+-            _write(os.path.join(docs_dir, "TECHNICAL_ARCHITECTURE.md"), arch)
+-            written.append("docs/TECHNICAL_ARCHITECTURE.md")
+-        qa = render_qa_report(app, ordered_phases, phase_outputs, verify_summary)
+-        if qa is not None:
+-            _write(os.path.join(docs_dir, "QA_REPORT.md"), qa)
+-            written.append("docs/QA_REPORT.md")
++        # V3 board 5.1: the composed spec docs are now data. Iterate the loaded
++        # doc map (seed-then-disk-wins; malformed → built-in default + banner)
++        # instead of the hardcoded PRD/ARCH/QA blocks. Default map renders
++        # byte-identically; a doc whose sources are all absent is still skipped.
++        for entry in load_doc_map(orch_dir, on_warn).get("docs", []):
++            filename = entry.get("filename")
++            if not filename:
++                continue
++            title = entry.get("title", "")
++            sources = entry.get("sources") or []
++            intro = entry.get("intro", "")
++            if entry.get("verify_appendix"):
++                rendered = render_qa_report(
++                    app, ordered_phases, phase_outputs, verify_summary,
++                    title=title, sources=sources, intro=intro)
++            else:
++                rendered = render_composed_doc(
++                    app, title, sources, ordered_phases, phase_outputs, intro=intro)
++            if rendered is not None:
++                _write(os.path.join(docs_dir, filename), rendered)
++                written.append("docs/" + filename)
+         _write(os.path.join(docs_dir, "KNOWN_LIMITATIONS.md"),
+                render_known_limitations(app, ordered_phases, phase_outputs,
+                                         consensus_status, verify_summary,
+diff --git a/orchestrator.py b/orchestrator.py
+index b199ab3..a6cd478 100755
+--- a/orchestrator.py
++++ b/orchestrator.py
+@@ -9173,7 +9173,9 @@ def _run_app_pipeline(cfg, app, app_dir, prompt):
+                 workflow_name=workflow.name, verify_summary=_vsum,
+                 findings=load_docs_findings(app_dir),
+                 blocked_conflict=state.get("blocked_conflict"),
+-                conversation_end=state.get("conversation_end", {}))
++                conversation_end=state.get("conversation_end", {}),
++                orch_dir=HERE,
++                on_warn=lambda m: emit("WARN DOCS: %s" % m))
+             written += docslib.write_project_archive(
+                 app_dir, app, phases, prompt, state,
+                 workflow_name=workflow.name, verify_summary=_vsum,
+diff --git a/sections/documentation/contracts.json b/sections/documentation/contracts.json
+new file mode 100644
+index 0000000..32f2df5
+--- /dev/null
++++ b/sections/documentation/contracts.json
+@@ -0,0 +1,12 @@
++{
++  "schema_version": 1,
++  "contracts": [
++    {
++      "phase_key": "doc_gap_fill",
++      "contract": "doc_gap_fill",
++      "fence_tag": "phase-output-json",
++      "required_fields": "phase_structured_output",
++      "prompt_snippet": "MACHINE CONTRACT (required): in your wrap-up, alongside the prose, emit ONE fenced ```phase-output-json``` block containing a single JSON object of the form {\"phase\": \"doc_gap_fill\", \"doc_sections\": {\"<slot id>\": \"<that slot's finished markdown, grounded ONLY in published artifacts>\"}}. One key per documentation slot you filled; the value is that slot's complete content. Leave a slot OUT entirely (never invent it) when no artifact supports it — an unfilled slot becomes an honest gap, not fabricated prose. This block is what the renderer assembles into docs/PROJECT_DOCUMENTATION.md, so make each slot self-contained.\n"
++    }
++  ]
++}
+diff --git a/sections/documentation/doc_map.json b/sections/documentation/doc_map.json
+new file mode 100644
+index 0000000..fa6b095
+--- /dev/null
++++ b/sections/documentation/doc_map.json
+@@ -0,0 +1,417 @@
++{
++  "schema_version": 1,
++  "docs": [
++    {
++      "doc_id": "prd",
++      "title": "Product Requirements (PRD)",
++      "filename": "PRD.md",
++      "intro": "_Deterministic render of the discovery/scoping phases' final decisions. Non-AI; missing phases are N/A, never invented._",
++      "sources": [
++        "prompt_contract",
++        "product_research",
++        "portfolio_selection",
++        "initial_discussion",
++        "per_app_product_brief",
++        "next_steps_small",
++        "detailed_discussion",
++        "app_features"
++      ]
++    },
++    {
++      "doc_id": "technical_architecture",
++      "title": "Technical Architecture",
++      "filename": "TECHNICAL_ARCHITECTURE.md",
++      "intro": "_Deterministic render of the design/spec/planning phases' final decisions. Non-AI; missing phases are N/A, never invented._",
++      "sources": [
++        "design_discussion",
++        "design_handoff",
++        "ios_architecture_review",
++        "tech_specs",
++        "project_plan",
++        "implementation_readiness_gate"
++      ]
++    },
++    {
++      "doc_id": "qa_report",
++      "title": "QA Report",
++      "filename": "QA_REPORT.md",
++      "intro": "_Deterministic render of the review phase's decision and the real verification result. Non-AI; nothing here is fabricated._",
++      "sources": [
++        "build_verification",
++        "human_qa_checklist",
++        "app_store_readiness",
++        "final_review",
++        "portfolio_audit"
++      ],
++      "verify_appendix": true
++    }
++  ],
++  "categories": [
++    {
++      "id": "product",
++      "title": "Product & Requirements"
++    },
++    {
++      "id": "research",
++      "title": "Research & Discovery"
++    },
++    {
++      "id": "design",
++      "title": "Design & UX"
++    },
++    {
++      "id": "architecture",
++      "title": "Technical Architecture"
++    },
++    {
++      "id": "engineering",
++      "title": "Engineering & Build"
++    },
++    {
++      "id": "quality",
++      "title": "Quality & Testing"
++    },
++    {
++      "id": "security",
++      "title": "Security & Privacy"
++    },
++    {
++      "id": "gtm",
++      "title": "Go-to-Market"
++    },
++    {
++      "id": "legal",
++      "title": "Legal & Compliance"
++    },
++    {
++      "id": "operations",
++      "title": "Execution & Operations"
++    },
++    {
++      "id": "knowledge",
++      "title": "Library & Knowledge"
++    }
++  ],
++  "slots": [
++    {
++      "slot_id": "vision_scope",
++      "category": "product",
++      "title": "Vision & Scope",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "personas",
++      "category": "product",
++      "title": "Personas & Audience",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "product_requirements",
++      "category": "product",
++      "title": "Product Requirements",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "success_metrics",
++      "category": "product",
++      "title": "Success Metrics",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "market_analysis",
++      "category": "research",
++      "title": "Market Analysis",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "user_research",
++      "category": "research",
++      "title": "User Research",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "competitive_landscape",
++      "category": "research",
++      "title": "Competitive Landscape",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "information_architecture",
++      "category": "design",
++      "title": "Information Architecture",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "user_flows",
++      "category": "design",
++      "title": "User Flows",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "design_language",
++      "category": "design",
++      "title": "Design Language",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "ux_copy",
++      "category": "design",
++      "title": "UX Copy",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "system_architecture",
++      "category": "architecture",
++      "title": "System Architecture",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "data_model",
++      "category": "architecture",
++      "title": "Data Model",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "api_contracts",
++      "category": "architecture",
++      "title": "API Contracts",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "tech_stack",
++      "category": "architecture",
++      "title": "Technology Stack",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "build_overview",
++      "category": "engineering",
++      "title": "Build Overview",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "code_structure",
++      "category": "engineering",
++      "title": "Code Structure",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "dependencies",
++      "category": "engineering",
++      "title": "Dependencies",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "environment_setup",
++      "category": "engineering",
++      "title": "Environment & Setup",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "test_plan",
++      "category": "quality",
++      "title": "Test Plan",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "qa_report",
++      "category": "quality",
++      "title": "QA Report",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "known_limitations",
++      "category": "quality",
++      "title": "Known Limitations",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "acceptance_criteria",
++      "category": "quality",
++      "title": "Acceptance Criteria",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "threat_model",
++      "category": "security",
++      "title": "Threat Model",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "secret_scan",
++      "category": "security",
++      "title": "Secret Scan",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "privacy_data_handling",
++      "category": "security",
++      "title": "Privacy & Data Handling",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "positioning",
++      "category": "gtm",
++      "title": "Positioning & Messaging",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "marketing_plan",
++      "category": "gtm",
++      "title": "Marketing Plan",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "launch_checklist",
++      "category": "gtm",
++      "title": "Launch Checklist",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "pricing",
++      "category": "gtm",
++      "title": "Pricing",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "terms_of_service",
++      "category": "legal",
++      "title": "Terms of Service",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "privacy_policy",
++      "category": "legal",
++      "title": "Privacy Policy",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "compliance_review",
++      "category": "legal",
++      "title": "Compliance Review",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "release_runbook",
++      "category": "operations",
++      "title": "Release Runbook",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "monitoring_ops",
++      "category": "operations",
++      "title": "Monitoring & Operations",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "incident_postmortem",
++      "category": "operations",
++      "title": "Incident & Postmortem",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "follow_on_roadmap",
++      "category": "operations",
++      "title": "Follow-on Roadmap",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "lessons_learned",
++      "category": "knowledge",
++      "title": "Lessons Learned",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "reusable_patterns",
++      "category": "knowledge",
++      "title": "Reusable Patterns",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    },
++    {
++      "slot_id": "glossary",
++      "category": "knowledge",
++      "title": "Glossary",
++      "sources": [],
++      "owner_section": null,
++      "min_chars": 400
++    }
++  ]
++}
+diff --git a/sections/documentation/roles.json b/sections/documentation/roles.json
+new file mode 100644
+index 0000000..02ef845
+--- /dev/null
++++ b/sections/documentation/roles.json
+@@ -0,0 +1,20 @@
++{
++  "personalities": [
++    {
++      "id": "archivist",
++      "name": "the Archivist",
++      "style": "guard completeness and provenance — every statement must trace to a published artifact; surface the gaps and the unsourced claims instead of smoothing over them"
++    },
++    {
++      "id": "editor",
++      "name": "the Editor",
++      "style": "cut for clarity and one voice — kill contradictions between sections, prefer plain language over jargon, and make each slot read on its own"
++    },
++    {
++      "id": "synthesist",
++      "name": "the Synthesist",
++      "style": "pull scattered artifacts into a coherent whole — connect an idea to the spec that realizes it and the QA finding that tests it, so the document tells one story"
++    }
++  ],
++  "agent_role_overrides": {}
++}
+diff --git a/sections/documentation/routing.json b/sections/documentation/routing.json
+new file mode 100644
+index 0000000..000ec4f
+--- /dev/null
++++ b/sections/documentation/routing.json
+@@ -0,0 +1,3 @@
++{
++  "phases": {}
++}
+diff --git a/sections/documentation/rules.json b/sections/documentation/rules.json
+new file mode 100644
+index 0000000..5e242e2
+--- /dev/null
++++ b/sections/documentation/rules.json
+@@ -0,0 +1,4 @@
++{
++  "schema_version": 1,
++  "phases": {}
++}
+diff --git a/sections/documentation/section.json b/sections/documentation/section.json
+new file mode 100644
+index 0000000..aace4f5
+--- /dev/null
++++ b/sections/documentation/section.json
+@@ -0,0 +1,71 @@
++{
++  "id": "documentation",
++  "title": "Documentation",
++  "workflow": {
++    "name": "documentation",
++    "title": "Documentation",
++    "description": "The assembly hall: gather the project's published artifacts into its documentation, fill the empty or thin slots with grounded gap-fill passes, then a coherence review so the whole reads as one honest document.",
++    "target": "research",
++    "build_phase": null,
++    "budget": null,
++    "overrides": null,
++    "phases": [
++      {
++        "key": "doc_gap_fill",
++        "folder": "doc_gap_fill",
++        "file": "doc_gap_fill.md",
++        "title": "Gap fill",
++        "purpose": "Assemble the project's published artifacts into the documentation slots and fill the empty or thin ones. Write only what the artifacts support; leave a genuinely unsupported slot OUT as an honest gap rather than inventing content.",
++        "rounds": 3,
++        "roles": [
++          "product",
++          "backend",
++          "qa"
++        ],
++        "writes": false,
++        "reads_target": false,
++        "verify": null,
++        "checkpoint": false,
++        "structurally_required": false,
++        "requires_verification": false,
++        "doc_sections": [],
++        "test_deliverable": null,
++        "conversational": false
++      },
++      {
++        "key": "doc_coherence",
++        "folder": "doc_coherence",
++        "file": "doc_coherence.md",
++        "title": "Coherence",
++        "purpose": "Read the assembled documentation end to end: reconcile contradictions between sections, hold one voice, and confirm every slot's content traces to a published artifact. Note any remaining gaps honestly instead of papering over them.",
++        "rounds": 2,
++        "roles": [
++          "qa",
++          "product",
++          "delivery"
++        ],
++        "writes": false,
++        "reads_target": false,
++        "verify": null,
++        "checkpoint": false,
++        "structurally_required": false,
++        "requires_verification": false,
++        "doc_sections": [],
++        "test_deliverable": null,
++        "conversational": false
++      }
++    ]
++  },
++  "default_mode": "manual",
++  "artifact_types_emitted": [
++    "gap",
++    "reconcile"
++  ],
++  "artifact_types_accepted": [
++    "idea",
++    "research_brief",
++    "spec_bundle",
++    "finding_report"
++  ],
++  "dod_tier": "standard"
++}
+diff --git a/tests/test_docs.py b/tests/test_docs.py
+index 74db1f0..001b573 100644
+--- a/tests/test_docs.py
++++ b/tests/test_docs.py
+@@ -226,5 +226,143 @@ class TestSpecDocs(unittest.TestCase):
+         self.assertFalse(os.path.exists(os.path.join(self.app_dir, "docs", "PRD.md")))
+ 
+ 
++class TestDocMap(unittest.TestCase):
++    """V3 board 5.1: the composed-doc source tuples externalized to
++    sections/documentation/doc_map.json (seed-then-disk-wins + visible
++    fallback), with the default map rendering byte-identically."""
++
++    def setUp(self):
++        self.app_dir = tempfile.mkdtemp()
++        self.orch_dir = tempfile.mkdtemp()  # isolated: never touches the repo map
++        self.phases = [("prompt_contract", "Prompt Contract"),
++                       ("app_features", "App Features"),
++                       ("design_discussion", "Design Discussion"),
++                       ("tech_specs", "Tech Specs"),
++                       ("final_review", "Final Review"),
++                       ("build_verification", "Build Verification")]
++        self.outputs = {"prompt_contract": "PC.", "design_discussion": "DD.",
++                        "final_review": "FR."}
++
++    def _map_path(self):
++        return os.path.join(self.orch_dir, "sections", "documentation",
++                            "doc_map.json")
++
++    def _read(self, *parts):
++        with open(os.path.join(*parts), encoding="utf-8") as fh:
++            return fh.read()
++
++    def _read_json(self, path):
++        with open(path, encoding="utf-8") as fh:
++            return json.load(fh)
++
++    def test_seed_then_disk_wins(self):
++        # First load with no file on disk seeds the built-in default and returns
++        # it; the file now exists and is a re-load-able copy of the built-in map.
++        self.assertFalse(os.path.exists(self._map_path()))
++        m = docs.load_doc_map(self.orch_dir)
++        self.assertTrue(os.path.exists(self._map_path()))
++        self.assertEqual([d["doc_id"] for d in m["docs"]],
++                         ["prd", "technical_architecture", "qa_report"])
++        self.assertEqual(self._read_json(self._map_path()),
++                         docs._builtin_doc_map())
++
++    def test_seed_never_clobbers_existing(self):
++        os.makedirs(os.path.dirname(self._map_path()))
++        custom = docs._builtin_doc_map()
++        custom["docs"][0]["sources"] = ["prompt_contract"]
++        with open(self._map_path(), "w", encoding="utf-8") as fh:
++            json.dump(custom, fh)
++        # A subsequent load must NOT re-seed over the user's edited file.
++        m = docs.load_doc_map(self.orch_dir)
++        self.assertEqual(m["docs"][0]["sources"], ["prompt_contract"])
++
++    def test_default_map_byte_parity(self):
++        # write_project_docs off the seeded default map == direct renders using
++        # the original module constants + intros (the externalization changed
++        # nothing observable).
++        written = docs.write_project_docs(
++            self.app_dir, "Demo", self.phases, self.outputs,
++            workflow_name="app_build", verify_summary="VERIFIED (ok)",
++            orch_dir=self.orch_dir)
++        self.assertIn("docs/PRD.md", written)
++
++        def rd(fn):
++            return self._read(self.app_dir, "docs", fn)
++        self.assertEqual(rd("PRD.md"), docs.render_composed_doc(
++            "Demo", "Product Requirements (PRD)", docs.PRD_SOURCES,
++            self.phases, self.outputs, intro=docs._PRD_INTRO))
++        self.assertEqual(rd("TECHNICAL_ARCHITECTURE.md"), docs.render_composed_doc(
++            "Demo", "Technical Architecture", docs.ARCH_SOURCES,
++            self.phases, self.outputs, intro=docs._ARCH_INTRO))
++        self.assertEqual(rd("QA_REPORT.md"), docs.render_qa_report(
++            "Demo", self.phases, self.outputs, "VERIFIED (ok)"))
++
++    def test_disk_override_changes_sources_without_code(self):
++        # Editing the on-disk map changes which phases feed a doc — no code change.
++        m = docs._builtin_doc_map()
++        m["docs"][0]["sources"] = ["final_review"]  # PRD now sourced from review
++        os.makedirs(os.path.dirname(self._map_path()))
++        with open(self._map_path(), "w", encoding="utf-8") as fh:
++            json.dump(m, fh)
++        docs.write_project_docs(self.app_dir, "Demo", self.phases, self.outputs,
++                                orch_dir=self.orch_dir)
++        prd = self._read(self.app_dir, "docs", "PRD.md")
++        self.assertIn("## Final Review", prd)
++        self.assertNotIn("## Prompt Contract", prd)
++
++    def test_doc_skipped_when_no_source_phase_exists(self):
++        # A doc whose sources are all absent from the workflow is still skipped
++        # (returns None), never emitted empty or fabricated — via the map path.
++        audit_phases = [("recon", "Recon"), ("report", "Report")]
++        written = docs.write_project_docs(
++            self.app_dir, "Demo", audit_phases, {"recon": "x"},
++            workflow_name="audit", orch_dir=self.orch_dir)
++        self.assertNotIn("docs/PRD.md", written)
++        self.assertFalse(os.path.exists(
++            os.path.join(self.app_dir, "docs", "PRD.md")))
++
++    def test_na_line_preserved_for_unrun_source_phase(self):
++        # A source phase present but never run still renders the exact _NA line.
++        docs.write_project_docs(self.app_dir, "Demo", self.phases, self.outputs,
++                                orch_dir=self.orch_dir)
++        prd = self._read(self.app_dir, "docs", "PRD.md")
++        self.assertIn("## App Features", prd)   # present in workflow
++        self.assertIn(docs._NA, prd)            # but never ran -> N/A verbatim
++
++    def test_corrupt_map_falls_back_with_banner(self):
++        # A malformed doc_map.json must NOT crash and must NOT fall back
++        # silently: built-in defaults are used AND on_warn fires.
++        os.makedirs(os.path.dirname(self._map_path()))
++        with open(self._map_path(), "w", encoding="utf-8") as fh:
++            fh.write("{ this is not valid json ]")
++        warnings = []
++        m = docs.load_doc_map(self.orch_dir, on_warn=warnings.append)
++        self.assertEqual(m, docs._builtin_doc_map())
++        self.assertEqual(len(warnings), 1)
++        self.assertIn("doc_map.json", warnings[0])
++
++    def test_valid_json_but_no_docs_falls_back_with_banner(self):
++        # Valid JSON that lacks a usable docs[] is a malformed map, not a crash.
++        os.makedirs(os.path.dirname(self._map_path()))
++        with open(self._map_path(), "w", encoding="utf-8") as fh:
++            json.dump({"schema_version": 1, "docs": []}, fh)
++        warnings = []
++        m = docs.load_doc_map(self.orch_dir, on_warn=warnings.append)
++        self.assertEqual(m, docs._builtin_doc_map())
++        self.assertEqual(len(warnings), 1)
++
++    def test_blueprint_ships_11_categories_40_slots(self):
++        m = docs.load_doc_map(self.orch_dir)
++        self.assertEqual(len(m["categories"]), 11)
++        self.assertEqual(len(m["slots"]), 40)
++        cat_ids = {c["id"] for c in m["categories"]}
++        for slot in m["slots"]:
++            self.assertIn(slot["category"], cat_ids)        # every slot categorized
++            self.assertIsNone(slot["owner_section"])        # unowned at 5.1 (5.3)
++            self.assertIn("min_chars", slot)                # field present for 5.4
++        # slot ids are unique
++        self.assertEqual(len({s["slot_id"] for s in m["slots"]}), 40)
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_sections_documentation.py b/tests/test_sections_documentation.py
+new file mode 100644
+index 0000000..dd2111f
+--- /dev/null
++++ b/tests/test_sections_documentation.py
+@@ -0,0 +1,172 @@
++"""V3 board 5.0: the Documentation section — a pure-data manifest under
++sections/documentation/ that loads, lints, and serves its gap-fill contract
++through the EXISTING render path, with zero core-code changes.
++
++The section is deliberately NOT in sections._BUILTINS: it lives on disk and is
++discovered by the loader/list_sections, proving a real section can ship as data
++alone. These tests pin the four acceptance seams the card names — manifest
++parses under the loader, corrupt-file fallback raises the visible banner,
++workflow loads via load_workflow semantics, and the contract round-trips
++through schemas.extract_structured_blocks into docs._phase_section — plus a
++registry-integrity guard (the card's example types 'doc_section'/'spec' do not
++exist in artifact_types.json; only real types may be declared).
++"""
++import json
++import os
++import shutil
++import tempfile
++import unittest
++
++import docs
++import events as evlib
++import schemas
++import sections as seclib
++
++HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++SECTION = "documentation"
++
++
++class TestDocumentationManifest(unittest.TestCase):
++    """The shipped manifest loads clean and serves its layers from JSON alone."""
++
++    def setUp(self):
++        self.app = tempfile.mkdtemp(prefix="orch_docsec_")
++        self.addCleanup(shutil.rmtree, self.app, True)
++
++    def _banners(self):
++        return evlib.read_events(self.app, kinds=["config_fallback"])
++
++    def test_loads_with_zero_banners_and_inline_workflow(self):
++        s = seclib.load_section(SECTION, HERE, app_dir=self.app)
++        self.assertEqual(s.id, "documentation")
++        self.assertEqual(s.title, "Documentation")
++        # An inline workflow object, not a named workflows/*.json file.
++        self.assertEqual(s.workflow_name, "(inline)")
++        self.assertEqual([p.key for p in s.workflow.phases],
++                         ["doc_gap_fill", "doc_coherence"])
++        self.assertEqual(self._banners(), [],
++                         "the shipped manifest must load with ZERO banners")
++
++    def test_not_a_builtin_but_discovered_on_disk(self):
++        # "Zero core-code changes": documentation is NOT seeded into _BUILTINS,
++        # yet list_sections finds it via its on-disk section.json.
++        self.assertNotIn(SECTION, seclib._BUILTINS)
++        self.assertIn(SECTION, seclib.list_sections(HERE))
++
++    def test_workflow_is_non_writing_non_conversational(self):
++        # A docs section assembles published artifacts; it must never gain
++        # build/write capability or block on a human inbox by accident.
++        s = seclib.load_section(SECTION, HERE)
++        self.assertIsNone(s.workflow.build_phase)
++        for p in s.workflow.phases:
++            self.assertFalse(p.writes, "%s must not write" % p.key)
++            self.assertFalse(p.conversational,
++                             "%s must not be conversational" % p.key)
++            self.assertTrue(p.roles, "%s must cast a roster" % p.key)
++
++    def test_lints_error_free(self):
++        report = seclib.lint_section(SECTION, HERE)
++        self.assertEqual([e for e in report if e["severity"] == "error"], [],
++                         "documentation must lint error-free: %r" % report)
++
++    def test_editorial_cast_replaces_pool_and_functional_cast_resolves(self):
++        import roles as roleslib
++        p, r = roleslib.load_roles_layered(
++            HERE, section_dir=os.path.join(HERE, "sections", SECTION))
++        self.assertEqual([x["id"] for x in p],
++                         ["archivist", "editor", "synthesist"],
++                         "documentation debates with its own editorial cast")
++        # The roles pool is NOT overridden -> inherits the global functional
++        # roles, and every phase's cast must resolve against that pool.
++        role_ids = {x["id"] for x in r}
++        for phase in seclib.load_section(SECTION, HERE).workflow.phases:
++            for rid in (phase.roles or []):
++                self.assertIn(rid, role_ids,
++                              "phase cast %r must resolve in the inherited "
++                              "pool" % rid)
++
++
++class TestDocumentationContract(unittest.TestCase):
++    """The doc_gap_fill contract overlays the shipped defaults and its output
++    round-trips through the existing extraction + render path (docs.py)."""
++
++    def test_contract_overlays_and_wires_into_wrapup(self):
++        cons = seclib.load_contracts(HERE, section=SECTION)
++        dgf = [c for c in cons if c["phase_key"] == "doc_gap_fill"]
++        self.assertEqual(len(dgf), 1, "exactly one doc_gap_fill contract")
++        self.assertEqual(dgf[0]["fence_tag"], "phase-output-json")
++        # required_fields names a REAL schemas.REQUIRED_FIELDS key, so the
++        # publication snippet and any extraction call can never drift.
++        self.assertEqual(schemas.REQUIRED_FIELDS[dgf[0]["required_fields"]],
++                         ["phase", "doc_sections"])
++        # The overlay ADDS without dropping the engine-gated defaults.
++        self.assertTrue(any(c["phase_key"] == "@summary" for c in cons))
++        # The snippet is actually assembled into the phase's wrap-up prompt.
++        assembled = seclib.assemble_contract(
++            cons, "doc_gap_fill", "research", include_decisions=False)
++        self.assertIn("phase-output-json", assembled)
++
++    def test_output_round_trips_through_extraction_and_render(self):
++        sample = (
++            "prose the agent wrote\n"
++            "```phase-output-json\n"
++            '{"phase": "doc_gap_fill", "doc_sections": '
++            '{"overview.summary": "TeaTimer brews the perfect cup.", '
++            '"architecture.storage": "SwiftData persists the timers."}}\n'
++            "```\n")
++        blocks = schemas.extract_structured_blocks(
++            sample, "phase-output-json",
++            required_fields=schemas.REQUIRED_FIELDS["phase_structured_output"])
++        self.assertEqual(len(blocks), 1)
++        self.assertEqual(set(blocks[0]["doc_sections"]),
++                         {"overview.summary", "architecture.storage"})
++        # docs._phase_section is the exact path the renderer uses per phase.
++        rendered = docs._phase_section("Documentation", sample)
++        self.assertIn("TeaTimer brews the perfect cup.", rendered)
++        self.assertIn("SwiftData persists the timers.", rendered)
++
++
++class TestDocumentationFallback(unittest.TestCase):
++    """A corrupt manifest fails CLOSED with exactly one visible banner — since
++    documentation is not a builtin, its default carries no bus capability."""
++
++    def setUp(self):
++        self.orch = tempfile.mkdtemp(prefix="orch_docsec_orch_")
++        self.app = tempfile.mkdtemp(prefix="orch_docsec_app_")
++        self.addCleanup(shutil.rmtree, self.orch, True)
++        self.addCleanup(shutil.rmtree, self.app, True)
++
++    def test_corrupt_manifest_fails_closed_with_one_banner(self):
++        path = seclib.section_path(SECTION, self.orch)
++        os.makedirs(os.path.dirname(path), exist_ok=True)
++        with open(path, "w", encoding="utf-8") as fh:
++            fh.write("{ not valid json at all")
++        s = seclib.load_section(SECTION, self.orch, app_dir=self.app)
++        self.assertEqual(s.id, "documentation")
++        self.assertEqual(s.artifact_types_emitted, [],
++                         "a corrupt custom section must not inherit bus caps")
++        self.assertEqual(s.artifact_types_accepted, [])
++        evts = evlib.read_events(self.app, kinds=["config_fallback"])
++        self.assertEqual(len(evts), 1, "exactly one banner per substitution")
++        self.assertEqual(evts[0]["section"], "documentation")
++        self.assertIn("section.json", evts[0]["file"])
++
++
++class TestDocumentationRegistryIntegrity(unittest.TestCase):
++    """Every artifact type the section declares must be a REAL registered type.
++    Guards the card's stale example (doc_section/spec are not in the registry)
++    and any future removal of a type documentation depends on."""
++
++    def test_declared_types_exist_in_the_registry(self):
++        with open(os.path.join(HERE, "artifact_types.json"),
++                  encoding="utf-8") as fh:
++            registered = set(json.load(fh)["types"])
++        s = seclib.load_section(SECTION, HERE)
++        for t in s.artifact_types_emitted + s.artifact_types_accepted:
++            self.assertIn(t, registered,
++                          "documentation declares unregistered artifact "
++                          "type %r" % t)
++
++
++if __name__ == "__main__":
++    unittest.main()

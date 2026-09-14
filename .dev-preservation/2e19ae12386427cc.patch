@@ -1,0 +1,482 @@
+diff --git a/.github/workflows/wait-how-big-operator.yml b/.github/workflows/wait-how-big-operator.yml
+index 2ab32bc..414a7cb 100644
+--- a/.github/workflows/wait-how-big-operator.yml
++++ b/.github/workflows/wait-how-big-operator.yml
+@@ -36,7 +36,7 @@ jobs:
+ 
+       - name: Verify and unpack reviewed operator
+         run: |
+-          echo '646894095014994e473a76c8aa7d295a2b6ca07e049c9689b4921b52e297eaff  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
++          echo '4212083fbcfbad290ce2fd365674fff120229227e6c30df2723ada4dc560722a  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
+           mkdir -p "$RUNNER_TEMP/whb-operator"
+           unzip -q wait-how-big-social/operator/operator_bundle.zip -d "$RUNNER_TEMP/whb-operator"
+           cp wait-how-big-social/operator/state.json "$RUNNER_TEMP/whb-operator/state.json"
+diff --git a/wait-how-big-social/assets/reviewed/README.md b/wait-how-big-social/assets/reviewed/README.md
+new file mode 100644
+index 0000000..26c7498
+--- /dev/null
++++ b/wait-how-big-social/assets/reviewed/README.md
+@@ -0,0 +1,31 @@
++# WHB-001 reviewed media correction — BOTS-117
++
++The original million/billion video labeled bars whose lengths were 220/800, implying about 3.6:1 rather than the actual 1,000:1 relationship. This correction removes those data bars and presents numerical durations with an explicit **NOT A SCALE CHART** label and **1 BILLION = 1,000 × 1 MILLION**. The existing queue captions remain accurate and unchanged.
++
++Accepted bytes: `WHB-001-million-vs-billion-seconds-2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec.mp4`.
++
++SHA-256: `2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec`.
++
++The asset is 12 seconds, 1080×1920, 30 fps, H.264 with a retained silent AAC track. Producer verification decoded all 360 frames and the entire audio track (all decoded samples zero), and visually inspected all six authored scene states. Independent `claude-haiku-4-5-20251001` editorial review returned PASS on the exact representative scene-2/scene-5 images plus complete scene text/math and supplied decode evidence. Root also accepted the corrected visual approach. The review inspected two images, not the full video; it does not establish perceptual playback, platform overlays or publishing authority. Exact hashes, scope, actual model/usage and review clarifications are in `WHB-001-editorial-provenance.json`.
++
++The original asset and generator on the historical `wait-how-big-social-media` branch are preserved. Only WHB-001 changes URL in the operator queue. All other items/captions and actual state remain unchanged. Rebuilding the operator archive binds the new queue bytes; old queue-bound plans/grants are invalid. After integration, root must verify the public asset URL returns these exact bytes before applying current release controls. GitHub publishing remains disabled by the unchanged operator.
++
++## Reproduction on macOS
++
++The helpers reuse the original generator's branding/layout and require existing Pillow, Swift and macOS AVFoundation. They perform no installation, account access or publishing. The available Arial fallback changes font geometry from the original Linux rendering. No duplicate generated PNG set is stored in this repository.
++
++Obtain the preserved original WHB-001 video only if rebuilding. Its source URL and required SHA-256 (`53f9389d20eda9a7bdd4dbfbfd81888ad9350b0591236d2e9afe4af5473f2c3e`) are in the provenance file. It supplies the existing silent AAC track. Verify those input bytes before reproduction.
++
++From this directory, choose an output directory outside the checkout that does not already exist:
++
++```sh
++python3 render_whb001.py /absolute/path/to/new-output
++swift -suppress-warnings encode_native.swift /absolute/path/to/new-output /absolute/path/to/original-WHB-001.mp4
++swift -suppress-warnings verify_native.swift /absolute/path/to/new-output/WHB-001_million-vs-billion-seconds-repaired.mp4 /absolute/path/to/new-output WHB-001-rebuilt
++```
++
++The renderer writes six PNG scene states and a manifest; the native encoder creates H.264 then retains the input AAC track. Encoding refuses to overwrite existing outputs. The verifier decodes every frame and PCM sample and extracts six representative states. Reproduction helper graphics were checked byte-for-byte against all six original repaired scene PNGs and the cover.
++
++MP4 container metadata can differ on a rebuild. Do not rename different bytes to the accepted hash filename: retain the approved asset above, or bind a new asset/review to a newly verified hash.
++
++Real source association: [BOTS-117](https://priyanshchordia-1779372280524.atlassian.net/browse/BOTS-117). This change does not update Jira or claim publication.
+diff --git a/wait-how-big-social/assets/reviewed/WHB-001-editorial-provenance.json b/wait-how-big-social/assets/reviewed/WHB-001-editorial-provenance.json
+new file mode 100644
+index 0000000..e0f5bf8
+--- /dev/null
++++ b/wait-how-big-social/assets/reviewed/WHB-001-editorial-provenance.json
+@@ -0,0 +1,131 @@
++{
++  "content_id": "WHB-001",
++  "source_task": "BOTS-117",
++  "asset": "WHB-001-million-vs-billion-seconds-2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec.mp4",
++  "sha256": "2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec",
++  "bytes": 918675,
++  "original_asset_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-001_million-vs-billion-seconds.mp4",
++  "original_asset_sha256": "53f9389d20eda9a7bdd4dbfbfd81888ad9350b0591236d2e9afe4af5473f2c3e",
++  "original_generator_ref": "a528dce41833c6abdea3be713cb30f02379e7220",
++  "original_generator_path": "wait-how-big-social/scripts/render_media.py",
++  "repair": "Replace arbitrary 220/800 bars with numerical durations, explicit NOT A SCALE CHART label and exact 1 BILLION = 1,000 \u00d7 1 MILLION relationship.",
++  "format": {
++    "duration_seconds": 12,
++    "width": 1080,
++    "height": 1920,
++    "fps": 30,
++    "codec": "H.264/avc1",
++    "audio": "retained original silent AAC track"
++  },
++  "author_verification": {
++    "all_video_frames_decoded": 360,
++    "authored_scene_states_visually_inspected": 6,
++    "decoded_audio_channel_samples": 1050610,
++    "nonzero_audio_samples": 0,
++    "perceptual_full_playback_claimed": false
++  },
++  "editorial_review": {
++    "verdict": "PASS",
++    "blocking_findings": [],
++    "reviewed_at_utc": "2026-09-12T23:41:55.449787+00:00",
++    "actual_model": "claude-haiku-4-5-20251001",
++    "thinking_tokens": 0,
++    "native_image_blocks": 2,
++    "tool_calls": 0,
++    "invocations": 1,
++    "reported_cost_usd": 0.007078,
++    "cost_basis": "CLI reported list-price equivalent; incremental subscription billing was not independently verified.",
++    "usage": {
++      "input_tokens": 3633,
++      "cache_creation_input_tokens": 0,
++      "cache_read_input_tokens": 0,
++      "output_tokens": 327,
++      "output_tokens_details": {
++        "thinking_tokens": 0
++      },
++      "server_tool_use": {
++        "web_search_requests": 0,
++        "web_fetch_requests": 0
++      },
++      "service_tier": "standard",
++      "cache_creation": {
++        "ephemeral_1h_input_tokens": 0,
++        "ephemeral_5m_input_tokens": 0
++      },
++      "inference_geo": "not_available",
++      "iterations": [
++        {
++          "input_tokens": 3633,
++          "output_tokens": 327,
++          "cache_read_input_tokens": 0,
++          "cache_creation_input_tokens": 0,
++          "cache_creation": {
++            "ephemeral_5m_input_tokens": 0,
++            "ephemeral_1h_input_tokens": 0
++          },
++          "type": "message"
++        }
++      ],
++      "speed": "standard"
++    },
++    "model_usage": {
++      "claude-haiku-4-5-20251001": {
++        "inputTokens": 5333,
++        "outputTokens": 349,
++        "cacheReadInputTokens": 0,
++        "cacheCreationInputTokens": 0,
++        "webSearchRequests": 0,
++        "costUSD": 0.007078,
++        "contextWindow": 200000,
++        "maxOutputTokens": 32000,
++        "thinkingTokens": 0,
++        "canonicalModel": "claude-haiku-4-5",
++        "provider": "firstParty",
++        "costBasis": "list"
++      }
++    },
++    "images": [
++      {
++        "scene_index": 2,
++        "video_timestamp_seconds": 4.666666666666667,
++        "sha256": "4cd699230b3ed4f8b4d40ba5718a96ea12cd591ac8e1660b403180b466d62146",
++        "width": 720,
++        "height": 1280
++      },
++      {
++        "scene_index": 5,
++        "video_timestamp_seconds": 10.9,
++        "sha256": "a8227fe8dc0e7c6e8afef90e63330d086052b1d39ac5a9932f430cc1ccd8174d",
++        "width": 720,
++        "height": 1280
++      }
++    ],
++    "scope": "Actual independent model inspection of exactly two native PNG image blocks from repaired WHB-001: scenes 2/5 at 4.666667 and 10.9 seconds. Supplied complete six-scene text, exact unit arithmetic and author full-decode evidence were also reviewed. The model did not inspect the MP4, the other four frames, hear audio, run tools or verify platform presentation.",
++    "raw_verdict": "```json\n{\n  \"verdict\": \"PASS\",\n  \"blocking_findings\": [],\n  \"image_observations\": \"Scene 2 (4.67s): progress bar ~45% filled (coral). Scene 5 (10.9s): progress bar ~100% filled (coral). Both frames display identical text layout with time comparison box. Scene 5 adds footer text 'A billion is one thousand millions.' and 'FOLLOW FOR THE NEXT PERSPECTIVE SHIFT.' confirming sequential progression through six scenes.\",\n  \"math_assessment\": \"Conversions verified: 1,000,000 seconds \u00f7 86,400 sec/day = 11.574... \u2192 11.6 days (correct rounding). 1,000,000,000 seconds \u00f7 (86,400 \u00d7 365.25) = 31.688... \u2192 31.7 Julian years (correct rounding). Ratio 1,000:1 stated accurately. Explicit 'NOT A SCALE CHART' disclaimer prevents misinterpretation of visual bar proportions.\",\n  \"coverage_limit\": \"Review scope: visual layout, text consistency, mathematical accuracy across two representative frames only. Audio zero-sampled (silent); full playback, user experience, and platform acceptance outside scope. Author decode confirms successful decoding of all 360 frames; only two frames inspected.\",\n  \"issues_none\": true\n}\n```",
++    "clarifications": [
++      "The reviewer statement about sequential progression through six scenes is supported by supplied text/timing, not six-image model coverage; only two frames were supplied.",
++      "The repaired central comparison has no quantitative bars. The remaining strip is scene progress. Reviewer wording about visual bar proportions should not be read as asserting remaining data bars.",
++      "All-zero audio and 360-frame decode are author-supplied native decoder evidence, not actions performed or perceptually reviewed by Haiku.",
++      "No full perceptual playback, motion-safety, destination overlay, platform or public-post acceptance is conferred."
++    ],
++    "full_review_receipt_sha256": "caa7b77ba57cccbe2e8154e71f80c78deba1e747a7e7a9d3558b21f7098b5975"
++  },
++  "arithmetic": {
++    "seconds_per_day": 86400,
++    "conventional_julian_days_per_year": 365.25,
++    "million_seconds_days": "11.574074074...",
++    "billion_seconds_julian_years": "31.688087814...",
++    "rounded_values": [
++      "11.6 days",
++      "31.7 years"
++    ],
++    "exact_billion_to_million_ratio": 1000,
++    "gregorian_mean_days_per_year": 365.2425
++  },
++  "publication_authority": false,
++  "limitations": [
++    "Independent model visually inspected only two representative frames; full scene text/math and author decode evidence were supplied.",
++    "No real-time perceptual playback or platform-overlay acceptance is claimed.",
++    "Changing the queue URL invalidates old queue-bound plans/grants. Root must verify exact public asset bytes after merge and obtain current applicable release evidence."
++  ]
++}
+diff --git a/wait-how-big-social/assets/reviewed/encode_native.swift b/wait-how-big-social/assets/reviewed/encode_native.swift
+new file mode 100644
+index 0000000..918fdbf
+--- /dev/null
++++ b/wait-how-big-social/assets/reviewed/encode_native.swift
+@@ -0,0 +1,61 @@
++import Foundation
++import AVFoundation
++import AppKit
++import CoreVideo
++
++let dir = URL(fileURLWithPath: CommandLine.arguments[1])
++let output = dir.appendingPathComponent("WHB-001-repaired-silent-video.mp4")
++let writer = try AVAssetWriter(outputURL: output, fileType: .mp4)
++let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 1080, AVVideoHeightKey: 1920, AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 2_500_000, AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]])
++input.expectsMediaDataInRealTime = false
++let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB, kCVPixelBufferWidthKey as String: 1080, kCVPixelBufferHeightKey as String: 1920, kCVPixelBufferCGImageCompatibilityKey as String: true, kCVPixelBufferCGBitmapContextCompatibilityKey as String: true])
++writer.add(input)
++guard writer.startWriting() else { fatalError(String(describing: writer.error)) }
++writer.startSession(atSourceTime: .zero)
++let counts = [58, 50, 65, 65, 58, 64]
++var frame = 0
++for (index,count) in counts.enumerated() {
++    let data = try Data(contentsOf: dir.appendingPathComponent("scenes/scene-\(index).png"))
++    let bitmap = NSBitmapImageRep(data: data)!
++    let cg = bitmap.cgImage!
++    var buffer: CVPixelBuffer?
++    let status = CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &buffer)
++    guard status == kCVReturnSuccess, let pixel = buffer else { fatalError("pixel allocation") }
++    CVPixelBufferLockBaseAddress(pixel, [])
++    let context = CGContext(data: CVPixelBufferGetBaseAddress(pixel), width: 1080, height: 1920, bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixel), space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)!
++    context.draw(cg, in: CGRect(x: 0, y: 0, width: 1080, height: 1920))
++    CVPixelBufferUnlockBaseAddress(pixel, [])
++    for _ in 0..<count {
++        let deadline = Date().addingTimeInterval(15)
++        while !input.isReadyForMoreMediaData {
++            if Date() > deadline || writer.status == .failed { fatalError("bounded encoder wait failed: \(String(describing: writer.error))") }
++            Thread.sleep(forTimeInterval: 0.01)
++        }
++        guard adaptor.append(pixel, withPresentationTime: CMTime(value: Int64(frame), timescale: 30)) else { fatalError("append: \(String(describing: writer.error))") }
++        frame += 1
++    }
++}
++input.markAsFinished()
++writer.endSession(atSourceTime: CMTime(value: 360, timescale: 30))
++let done = DispatchSemaphore(value: 0)
++writer.finishWriting { done.signal() }
++guard done.wait(timeout: .now()+30) == .success, writer.status == .completed else { fatalError("finish: \(String(describing: writer.error))") }
++print("encoded \(frame) frames at 30 fps: \(output.path)")
++// Preserve the original asset's silent AAC track without generating speech/music.
++let composition = AVMutableComposition()
++let videoAsset = AVURLAsset(url: output)
++let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
++try video.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 12, preferredTimescale: 600)), of: videoAsset.tracks(withMediaType: .video)[0], at: .zero)
++let original = AVURLAsset(url: URL(fileURLWithPath: CommandLine.arguments[2]))
++let originalAudio = original.tracks(withMediaType: .audio)[0]
++let audio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
++try audio.insertTimeRange(originalAudio.timeRange, of: originalAudio, at: .zero)
++let final = dir.appendingPathComponent("WHB-001_million-vs-billion-seconds-repaired.mp4")
++let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough)!
++export.outputURL = final
++export.outputFileType = .mp4
++export.shouldOptimizeForNetworkUse = true
++let exported = DispatchSemaphore(value: 0)
++export.exportAsynchronously { exported.signal() }
++guard exported.wait(timeout: .now()+30) == .success, export.status == .completed else { fatalError("export: \(String(describing: export.error))") }
++print("finished: \(final.path)")
+diff --git a/wait-how-big-social/assets/reviewed/render_whb001.py b/wait-how-big-social/assets/reviewed/render_whb001.py
+new file mode 100644
+index 0000000..737390f
+--- /dev/null
++++ b/wait-how-big-social/assets/reviewed/render_whb001.py
+@@ -0,0 +1,106 @@
++#!/usr/bin/env python3
++"""BOTS-117: reproduce only repaired WHB-001 scene graphics. Requires existing Pillow.
++Derived from original render_media.py at a528dce41833c6abdea3be713cb30f02379e7220.
++Writes only to an explicitly supplied new output directory; no publishing behavior.
++"""
++import json
++import sys
++from pathlib import Path
++from PIL import Image, ImageDraw, ImageFont
++W, H = 1080, 1920
++BG, PANEL, CREAM, MUTED = "#0D1117", "#171D26", "#F7F1E7", "#AEB7C4"
++LIME, CORAL, BLUE, PURPLE, YELLOW = "#CFFF47", "#FF6B6B", "#6BCBFF", "#B99CFF", "#FFD166"
++ACCENTS = [LIME, CORAL, BLUE, PURPLE, YELLOW]
++
++
++FONT_CANDIDATES = [
++ "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
++ "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
++ "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
++]
++
++REG_CANDIDATES = [
++ "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
++ "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
++ "/System/Library/Fonts/Supplemental/Arial.ttf"
++]
++
++def font(size: int, bold: bool = True):
++    candidates = FONT_CANDIDATES if bold else REG_CANDIDATES
++    for path in candidates:
++        if Path(path).exists():
++            return ImageFont.truetype(path, size)
++    return ImageFont.load_default()
++
++def wrap(text: str, fnt, max_width: int) -> list[str]:
++    words, lines, current = text.split(), [], ""
++    probe = Image.new("RGB", (10, 10)); draw = ImageDraw.Draw(probe)
++    for word in words:
++        test = f"{current} {word}".strip()
++        if draw.textbbox((0, 0), test, font=fnt)[2] <= max_width or not current:
++            current = test
++        else:
++            lines.append(current); current = word
++    if current: lines.append(current)
++    return lines
++
++def centered(draw, text: str, y: int, fnt, fill, max_width=900, spacing=14):
++    lines = wrap(text, fnt, max_width)
++    total = sum(draw.textbbox((0,0), line, font=fnt)[3] for line in lines) + spacing * (len(lines)-1)
++    cy = y - total // 2
++    for line in lines:
++        box = draw.textbbox((0,0), line, font=fnt)
++        draw.text(((W-(box[2]-box[0]))/2, cy), line, font=fnt, fill=fill)
++        cy += box[3] + spacing
++
++def visual(draw, kind: str, phase: float, accent: str):
++    if kind != "seconds":
++        raise ValueError("Only WHB-001 is supported")
++    draw.rounded_rectangle((100, 630, 980, 1260), 44, fill=PANEL, outline="#2A3340", width=3)
++    centered(draw, "TIME COMPARISON — NOT A SCALE CHART", 685, font(27), MUTED, 800)
++    for label, value, y, color in [
++        ("1 MILLION SECONDS", "≈ 11.6 DAYS", 755, LIME),
++        ("1 BILLION SECONDS", "≈ 31.7 YEARS", 975, CORAL),
++    ]:
++        draw.text((150, y), label, font=font(32), fill=CREAM)
++        draw.text((150, y + 58), value, font=font(62), fill=color)
++    centered(draw, "1 BILLION = 1,000 × 1 MILLION", 1200, font(34), CREAM, 790)
++
++
++def render(item: dict, phase: float, size=(W,H)) -> Image.Image:
++    image=Image.new("RGB", size, BG); draw=ImageDraw.Draw(image)
++    accent=ACCENTS[int(item['id'][-1])%len(ACCENTS)] if item['id'][-1].isdigit() else LIME
++    draw.text((72,60), "WAIT, HOW BIG?", font=font(38), fill=accent)
++    draw.text((72,112), item['id'], font=font(24,False), fill=MUTED)
++    draw.rounded_rectangle((72,170,1008,190),10,fill="#2A3340")
++    draw.rounded_rectangle((72,170,72+936*phase,190),10,fill=accent)
++    centered(draw,item['hook'],390,font(58),CREAM,900,12)
++    visual(draw,item['visual'],phase,accent)
++    if phase>0.42:
++        centered(draw,item['big'],1435,font(64),accent,900,12)
++    if phase>0.70:
++        centered(draw,item['sub'],1650,font(36,False),MUTED,860,10)
++        centered(draw,"FOLLOW FOR THE NEXT PERSPECTIVE SHIFT",1810,font(28),CREAM,860,8)
++    return image
++
++def main():
++    if len(sys.argv) != 2:
++        raise SystemExit("Usage: python3 render_whb001.py NEW_OUTPUT_DIRECTORY")
++    root = Path(sys.argv[1]).resolve()
++    root.mkdir(parents=True, exist_ok=False)
++    scene_dir = root / "scenes"
++    scene_dir.mkdir()
++    item = {"id":"WHB-001", "hook":"A MILLION SECONDS", "big":"11.6 DAYS vs 31.7 YEARS", "sub":"A billion is one thousand millions.", "visual":"seconds"}
++    phases = [0.12, 0.28, 0.45, 0.62, 0.80, 1.0]
++    frame_counts = [58, 50, 65, 65, 58, 64]
++    for index, phase in enumerate(phases):
++        render(item, phase).save(scene_dir / f"scene-{index}.png", optimize=True)
++    render(item, 1.0).save(root / "WHB-001-cover-repaired.png", optimize=True)
++    (root / "SCENE_MANIFEST.json").write_text(json.dumps({
++        "content_id": "WHB-001", "fps": 30, "frame_counts": frame_counts,
++        "duration_seconds": 12, "phases": phases,
++        "repair": "Replace arbitrary 220/800 bars with numerical duration comparison and explicit not-a-scale-chart label."
++    }, indent=2) + "\n", encoding="utf-8")
++
++if __name__ == "__main__":
++    main()
+diff --git a/wait-how-big-social/assets/reviewed/verify_native.swift b/wait-how-big-social/assets/reviewed/verify_native.swift
+new file mode 100644
+index 0000000..f072f17
+--- /dev/null
++++ b/wait-how-big-social/assets/reviewed/verify_native.swift
+@@ -0,0 +1,84 @@
++import Foundation
++import AVFoundation
++import AppKit
++import CoreMedia
++
++let inputURL = URL(fileURLWithPath: CommandLine.arguments[1])
++let outputDirectory = URL(fileURLWithPath: CommandLine.arguments[2])
++let label = CommandLine.arguments[3]
++let asset = AVURLAsset(url: inputURL)
++var result: [String: Any] = ["path": inputURL.path, "duration_seconds": asset.duration.seconds, "method": "AVAssetReader full video and audio decode; AVAssetImageGenerator scene samples"]
++let videoTracks = asset.tracks(withMediaType: .video)
++let audioTracks = asset.tracks(withMediaType: .audio)
++func fourcc(_ code: FourCharCode) -> String {
++    String(bytes: [UInt8((code >> 24) & 255), UInt8((code >> 16) & 255), UInt8((code >> 8) & 255), UInt8(code & 255)], encoding: .ascii) ?? String(code)
++}
++result["video_tracks"] = videoTracks.map { ["width": $0.naturalSize.width, "height": $0.naturalSize.height, "fps": $0.nominalFrameRate, "codec": $0.formatDescriptions.map { fourcc(CMFormatDescriptionGetMediaSubType($0 as! CMFormatDescription)) }] as [String: Any] }
++let reader = try AVAssetReader(asset: asset)
++let videoOutput = AVAssetReaderTrackOutput(track: videoTracks[0], outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
++reader.add(videoOutput)
++guard reader.startReading() else { fatalError("video start failed") }
++var frameCount = 0
++var firstPTS: Double? = nil
++var lastPTS: Double? = nil
++while let sample = videoOutput.copyNextSampleBuffer() {
++    guard CMSampleBufferGetImageBuffer(sample) != nil else { fatalError("missing decoded pixel buffer") }
++    let seconds = CMSampleBufferGetPresentationTimeStamp(sample).seconds
++    if firstPTS == nil { firstPTS = seconds }
++    lastPTS = seconds
++    frameCount += 1
++}
++result["full_video_decode"] = ["frames": frameCount, "first_pts_seconds": firstPTS ?? -1, "last_pts_seconds": lastPTS ?? -1, "completed": reader.status == .completed, "error": String(describing: reader.error)]
++var audioResults: [[String: Any]] = []
++for track in audioTracks {
++    let audioReader = try AVAssetReader(asset: asset)
++    let audioOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false])
++    audioReader.add(audioOutput)
++    guard audioReader.startReading() else { fatalError("audio start failed") }
++    var samples = 0
++    var peak = 0.0
++    var sumSquares = 0.0
++    var nonzero = 0
++    var bufferCount = 0
++    while let sample = audioOutput.copyNextSampleBuffer() {
++        guard let block = CMSampleBufferGetDataBuffer(sample) else { fatalError("audio block missing") }
++        let length = CMBlockBufferGetDataLength(block)
++        guard length % 4 == 0 else { fatalError("audio alignment") }
++        var data = Data(count: length)
++        let status = data.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
++        guard status == kCMBlockBufferNoErr else { fatalError("audio read error") }
++        data.withUnsafeBytes { bytes in
++            for value in bytes.bindMemory(to: Float.self) {
++                let f = Double(value)
++                guard f.isFinite else { fatalError("nonfinite PCM") }
++                samples += 1
++                if f != 0 { nonzero += 1 }
++                peak = max(peak, abs(f))
++                sumSquares += f*f
++            }
++        }
++        bufferCount += 1
++    }
++    audioResults.append(["codec": track.formatDescriptions.map { fourcc(CMFormatDescriptionGetMediaSubType($0 as! CMFormatDescription)) }, "duration_seconds": track.timeRange.duration.seconds, "decoded_pcm_samples_including_channels": samples, "buffers": bufferCount, "nonzero_samples": nonzero, "peak_absolute": peak, "rms": samples > 0 ? sqrt(sumSquares / Double(samples)) : 0, "completed": audioReader.status == .completed, "error": String(describing: audioReader.error)])
++}
++result["full_audio_decode"] = audioResults
++let generator = AVAssetImageGenerator(asset: asset)
++generator.appliesPreferredTrackTransform = true
++generator.requestedTimeToleranceBefore = .zero
++generator.requestedTimeToleranceAfter = .zero
++generator.maximumSize = CGSize(width: 720, height: 1280)
++let fractions: [Double] = [0.08, 0.23, 0.39, 0.57, 0.74, 0.91]
++var frames: [[String: Any]] = []
++for (index,fraction) in fractions.enumerated() {
++    let requested = asset.duration.seconds * fraction
++    var actual = CMTime.zero
++    let cg = try generator.copyCGImage(at: CMTime(seconds: requested, preferredTimescale: 600), actualTime: &actual)
++    let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])!
++    let path = outputDirectory.appendingPathComponent("\(label)-scene-\(index).png")
++    try png.write(to: path)
++    frames.append(["path": path.path, "requested_seconds": requested, "actual_seconds": actual.seconds, "width": cg.width, "height": cg.height])
++}
++result["scene_frames"] = frames
++let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
++try data.write(to: outputDirectory.appendingPathComponent("\(label)-FULL_DECODE.json"))
++print(String(data: data, encoding: .utf8)!)
+diff --git a/wait-how-big-social/operator/README.md b/wait-how-big-social/operator/README.md
+index b5a358b..7b009d3 100644
+--- a/wait-how-big-social/operator/README.md
++++ b/wait-how-big-social/operator/README.md
+@@ -4,7 +4,7 @@ The operator is runnable and fail-closed. This repair changes local source and t
+ 
+ ## What changed
+ 
+-`whb_operator.py`, `queue.json` and `config.json` are now plain reviewable source beside their deterministic `operator_bundle.zip`. The executable no longer shadows Python's `operator` module. The original thirteen queue items, media URLs, captions and three established channel IDs are preserved exactly.
++`whb_operator.py`, `queue.json` and `config.json` are now plain reviewable source beside their deterministic `operator_bundle.zip`. The executable no longer shadows Python's `operator` module. The thirteen queue items, captions and three established channel IDs are preserved. WHB-001 now references the [reviewed media correction](../assets/reviewed/README.md); the other twelve media URLs are unchanged.
+ 
+ A read-only dry run is explicitly allowed while `WHB_KILL_SWITCH=true` or local publication is paused. It queries the intended channels/history, checks media availability and writes only `plan.json`. It never writes fake post IDs/statuses, actual posts, or the accepted scheduling anchor. The proposed anchor and proposed payloads are labeled planned. Current-state input `state.json` remains byte-for-byte unchanged.
+ 
+diff --git a/wait-how-big-social/operator/queue.json b/wait-how-big-social/operator/queue.json
+index 57dde73..38e501f 100644
+--- a/wait-how-big-social/operator/queue.json
++++ b/wait-how-big-social/operator/queue.json
+@@ -15,7 +15,7 @@
+     {
+       "content_id": "WHB-001",
+       "relative_hours": 2,
+-      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-001_million-vs-billion-seconds.mp4",
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/main/wait-how-big-social/assets/reviewed/WHB-001-million-vs-billion-seconds-2039fa4c0a3b5fe56ed1351e3b5092e42042dfc5dcfba072580dd76abe6101ec.mp4",
+       "captions": {
+         "twitter": "A million seconds is 11.6 days.\nA billion seconds is 31.7 years.\n\nThree extra zeros changed days into decades.",
+         "instagram": "A million seconds: 11.6 days. A billion seconds: 31.7 years. Save this for the next time someone says “just add three zeros.”\n\n#dataviz #mathfacts #visuallearning",

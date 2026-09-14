@@ -1,0 +1,1380 @@
+diff --git a/.github/workflows/wait-how-big-operator.yml b/.github/workflows/wait-how-big-operator.yml
+index 246d5eb..2ab32bc 100644
+--- a/.github/workflows/wait-how-big-operator.yml
++++ b/.github/workflows/wait-how-big-operator.yml
+@@ -6,13 +6,13 @@ on:
+   workflow_dispatch:
+     inputs:
+       dry_run:
+-        description: 'Validate without creating Buffer posts'
++        description: 'Read-only validation; publishing is disabled on ephemeral GitHub runners'
+         required: false
+-        default: false
++        default: true
+         type: boolean
+ 
+ permissions:
+-  contents: write
++  contents: read
+ 
+ concurrency:
+   group: wait-how-big-social-operator
+@@ -25,7 +25,8 @@ jobs:
+     env:
+       BUFFER_API_KEY: ${{ secrets.WHB_BUFFER_API_KEY }}
+       WHB_KILL_SWITCH: ${{ vars.WHB_KILL_SWITCH }}
+-      WHB_DRY_RUN: ${{ inputs.dry_run || 'false' }}
++      # Scheduled runs are always read-only. Explicit false dispatch fails closed in the operator.
++      WHB_DRY_RUN: ${{ github.event_name == 'schedule' || inputs.dry_run }}
+     steps:
+       - uses: actions/checkout@v4
+ 
+@@ -33,29 +34,24 @@ jobs:
+         with:
+           python-version: '3.12'
+ 
+-      - name: Verify and unpack operator
++      - name: Verify and unpack reviewed operator
+         run: |
+-          echo '058a5fa940a5ab88da54084ee92ff9d783fb0039aae5c4904da212221dcf4009  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
+-          rm -rf /tmp/whb-operator
+-          mkdir -p /tmp/whb-operator
+-          unzip -q wait-how-big-social/operator/operator_bundle.zip -d /tmp/whb-operator
+-          cp wait-how-big-social/operator/state.json /tmp/whb-operator/state.json
++          echo '646894095014994e473a76c8aa7d295a2b6ca07e049c9689b4921b52e297eaff  wait-how-big-social/operator/operator_bundle.zip' | sha256sum -c -
++          mkdir -p "$RUNNER_TEMP/whb-operator"
++          unzip -q wait-how-big-social/operator/operator_bundle.zip -d "$RUNNER_TEMP/whb-operator"
++          cp wait-how-big-social/operator/state.json "$RUNNER_TEMP/whb-operator/state.json"
+ 
+-      - name: Operate publishing queue
+-        run: python /tmp/whb-operator/operator.py
++      - name: Validate queue without publication
++        run: python "$RUNNER_TEMP/whb-operator/whb_operator.py"
+ 
+-      - name: Persist non-secret operator state
++      - name: Preserve planned validation evidence
+         if: always()
+-        run: |
+-          if [ -f /tmp/whb-operator/state.json ]; then
+-            cp /tmp/whb-operator/state.json wait-how-big-social/operator/state.json
+-          fi
+-          git config user.name 'github-actions[bot]'
+-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+-          git add wait-how-big-social/operator/state.json
+-          if git diff --cached --quiet; then
+-            echo 'No state changes.'
+-            exit 0
+-          fi
+-          git commit -m 'social: update Wait How Big operator state'
+-          git push
++        uses: actions/upload-artifact@v4
++        with:
++          name: whb-read-only-plan-${{ github.run_id }}
++          path: ${{ runner.temp }}/whb-operator/plan.json
++          if-no-files-found: ignore
++          retention-days: 14
++
++      # No post-POST git push, state commit, cache, or artifact is treated as durable intent.
++      # Live canaries require the operator's exact grant and durable local host state.
+diff --git a/.github/workflows/whb-tests.yml b/.github/workflows/whb-tests.yml
+new file mode 100644
+index 0000000..307fe56
+--- /dev/null
++++ b/.github/workflows/whb-tests.yml
+@@ -0,0 +1,31 @@
++name: Wait How Big operator tests
++
++on:
++  push:
++    paths:
++      - 'wait-how-big-social/operator/**'
++      - 'wait-how-big-social/tests/**'
++      - '.github/workflows/whb-tests.yml'
++      - '.github/workflows/wait-how-big-operator.yml'
++  pull_request:
++    paths:
++      - 'wait-how-big-social/operator/**'
++      - 'wait-how-big-social/tests/**'
++      - '.github/workflows/whb-tests.yml'
++      - '.github/workflows/wait-how-big-operator.yml'
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++jobs:
++  offline-tests:
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++      - name: Test account, state, dry-run and uncertain-effect behavior without credentials
++        run: python -m unittest discover -s wait-how-big-social/tests -v
+diff --git a/wait-how-big-social/operator/.gitignore b/wait-how-big-social/operator/.gitignore
+new file mode 100644
+index 0000000..de859c8
+--- /dev/null
++++ b/wait-how-big-social/operator/.gitignore
+@@ -0,0 +1,5 @@
++__pycache__/
++plan.json
++*.grant.json
++operator.lock
++state.json.*
+diff --git a/wait-how-big-social/operator/README.md b/wait-how-big-social/operator/README.md
+index c67e3e2..b5a358b 100644
+--- a/wait-how-big-social/operator/README.md
++++ b/wait-how-big-social/operator/README.md
+@@ -1,60 +1,94 @@
+-# Wait, How Big? social operator
+-
+-See [`../README.md`](../README.md) for the complete launch handoff and
+-[`../CURSOR_HANDOFF.md`](../CURSOR_HANDOFF.md) for the continuation prompt.
+-
+-The owner-controlled account bootstrap is complete: Buffer Free has exactly X
+-`@WaitHowBig`, Instagram `@waithowbig`, and TikTok `@waithowbignow`, and the
+-Buffer email is verified. The operator is **not launched**: the personal API key
+-has not been generated, `WHB_BUFFER_API_KEY` is absent, no dry run has passed,
+-and no public post has been verified.
+-
+-## Remaining owner bootstrap
+-
+-1. Fix the packaged executable's Python module-name collision described below.
+-2. Keep scheduled publishing blocked with `WHB_KILL_SWITCH=true` (or disable the
+-   cron trigger) before installing a usable secret.
+-3. In Buffer **Settings -> API**, generate a personal key named
+-   `Wait How Big Operator`, expiring in one year, with only `account:read`,
+-   `posts:read`, and `posts:write`. Obtain explicit owner approval immediately
+-   before generation.
+-4. Add the value directly as repository Actions secret `WHB_BUFFER_API_KEY`.
+-   Never place it in a file, issue, commit, shell history, log, or chat.
+-5. Dispatch **Wait How Big social operator** once with `dry_run=true` while the
+-   publish block remains active. Review the run and `state.json` before asking
+-   for a separate decision to allow a normal run.
+-
+-## Known packaged-executable blocker
+-
+-`operator_bundle.zip` currently contains `operator.py`, and the workflow runs
+-`python /tmp/whb-operator/operator.py`. Python adds that directory to
+-`sys.path`; standard-library imports of `operator` resolve the local script and
+-fail with a circular import. Scheduled run `33342049065` demonstrated the
+-failure under Python 3.12.
+-
+-Rename the executable (for example, `whb_operator.py`), rebuild the archive
+-deterministically, update the workflow command and SHA-256, and add a smoke test
+-that launches the packaged executable with no API key. The no-key path should
+-exit cleanly with `WAIT_HOW_BIG_NOT_CONFIGURED`, never an import traceback.
+-
+-## Behavior
+-
+-- Discovers the Buffer organization and connected channels automatically.
+-- Requires one unlocked X, one Instagram, and one TikTok channel; otherwise it fails closed.
+-- Verifies every direct media URL before creating a post.
+-- Rebuilds idempotency from Buffer post history, so a state-write failure does not duplicate posts.
+-- Keeps at most ten scheduled posts per channel.
+-- Uses platform-specific captions and exact scheduled times.
+-- Applies AI-assistance metadata to supported platform payloads.
+-- Stops when Buffer reports an existing post error.
+-- Supports an emergency repository variable: set `WHB_KILL_SWITCH=true` to stop all posting.
+-
+-The operator source and queue are contained in `operator_bundle.zip`; the workflow verifies its SHA-256 before execution. No social credentials or API keys are stored in this directory.
+-
+-## Current state snapshot
+-
+-As of 2026-08-31, `state.json` still reports
+-`awaiting_accounts_and_buffer_key`, with `anchor_utc: null`, no run timestamp,
+-and no post receipts. The recurring workflow runs every three hours at minute
+-17 and currently fails. Connected channels and a queued schedule are not public
+-publication evidence.
++# Wait, How Big? operator — BOTS-117 release repair
++
++The operator is runnable and fail-closed. This repair changes local source and tests only; it does not claim a current live key, successful Buffer run, scheduled job or public post. The account/channel observations in `../README.md` are historical and must be rechecked by the release owner.
++
++## What changed
++
++`whb_operator.py`, `queue.json` and `config.json` are now plain reviewable source beside their deterministic `operator_bundle.zip`. The executable no longer shadows Python's `operator` module. The original thirteen queue items, media URLs, captions and three established channel IDs are preserved exactly.
++
++A read-only dry run is explicitly allowed while `WHB_KILL_SWITCH=true` or local publication is paused. It queries the intended channels/history, checks media availability and writes only `plan.json`. It never writes fake post IDs/statuses, actual posts, or the accepted scheduling anchor. The proposed anchor and proposed payloads are labeled planned. Current-state input `state.json` remains byte-for-byte unchanged.
++
++Bootstrap is an exact successful plan, valid for at most 24 hours, bound to queue bytes, operator source bytes, config bytes and the observed organization/channel identities. A successful timestamp alone is insufficient. A release also requires the exact canonical plan hash and selected payload. Source, captions, media URLs, IDs, configuration or channel changes invalidate the old bootstrap/grant.
++
++The operator identifies the unique Buffer organization containing the three exact configured channel IDs; it never selects the first organization or first account of a platform. Discovery is bounded to five organizations. Original IDs remain:
++
++- X `WaitHowBig`: `6a8f2926ccaf649a671fa86d`
++- Instagram `waithowbig`: `6a8f1d89ccaf649a671f69fc`
++- TikTok `waithowbignow`: `6a8fb214ccaf649a6724d002`
++
++## Local checks without credentials
++
++From the repository root:
++
++```sh
++python3 -m unittest discover -s wait-how-big-social/tests -v
++python3 wait-how-big-social/operator/build_bundle.py
++```
++
++The tests substitute all provider/media calls and include a real child-process exit after durable intent. They verify exact channel selection, dry-run/actual separation, bootstrap/plan/grant drift, no automatic resend, payload readback, reproducible archive bytes, and clean packaged execution without a key. No API or media request occurs during these checks. Use Python 3.10+; the workflow selects Python 3.12.
++
++The builder only packages the three named plain files with fixed metadata and updates the one workflow checksum. Rebuild after source/config/queue changes. Do not edit the archive by itself.
++
++## GitHub stays read-only
++
++The existing three-hour schedule is retained, but scheduled runs are always dry runs. Manual dispatch defaults `dry_run=true`. `dry_run=false` refuses publication on GitHub even if a secret, grant, or purported local-state path is supplied.
++
++The workflow has `contents: read`, uploads only the planned validation artifact, and does not commit/push runtime state. A commit, cache or artifact after a POST cannot protect against runner loss before that save. This repair therefore **does not enable normal GitHub publishing**. The root release owner may integrate this safe workflow without enabling an unattended publishing loop.
++
++A successful GitHub plan can be inspected and transferred to the same-byte local deployment, but its exact bindings and expiry still apply. The workflow's ten-minute execution timeout bounds read-only validation; no LLM remains running.
++
++## One exact canary on a durable local host
++
++The release owner supplies an already-authorized `BUFFER_API_KEY` securely through the environment. This code does not inspect/generate keys, purchase plans or change account/production settings. Key/entitlement and current Buffer schema acceptance remain live checks for root; tests do not prove them.
++
++Choose one stable local host and absolute local-disk state directory, outside repository checkout, cloud sync and network shares. All invocations must share that directory; copied independent state is not a distributed lease. Keep a backup. A single-run external process timeout is appropriate; a killed process leaves a durable intent/lock for explicit recovery.
++
++First, leave publishing held and make a read-only plan. Example PowerShell environment, with the existing key supplied externally:
++
++```powershell
++$env:WHB_DURABLE_STATE_DIR = 'D:\AstraState\wait-how-big'
++$env:WHB_DRY_RUN = 'true'
++$env:WHB_KILL_SWITCH = 'true'
++python 'D:\DEPLOYMENT\wait-how-big-social\operator\whb_operator.py'
++```
++
++`plan.json` is written beside the source, separate from actual state. Its output includes `plan_sha256` and four binding hashes. Review its exact channel, caption, media, due time and current media/source acceptance. Read history through the official account: the API's latest 100 posts per channel is a bounded observation, **not proof of lifetime absence**. Preserve that actual review in `history_review_ref`. If a schedule is now past due, set `WHB_PROPOSED_ANCHOR_UTC` to an explicitly reviewed future UTC time during the next dry run; this changes the proposed plan without rewriting actual historical anchor.
++
++Copy `canary-grant.example.json` to an untracked `*.grant.json`. Fill the actual authorization reference, history review reference, expiry, exact reviewed `plan_sha256`, four bindings, and one target such as `WHB-000:twitter`. Only the root's already-authorized reviewed release sets `authorized: true`. The included example is intentionally invalid/expired. A grant never selects more than one mutation.
++
++When root admits that exact canary:
++
++```powershell
++$env:WHB_DRY_RUN = 'false'
++$env:WHB_KILL_SWITCH = 'false'
++$env:WHB_MANUAL_CANARY = 'true'
++$env:WHB_CANARY_GRANT = 'D:\AstraConfig\WHB-000-twitter.grant.json'
++python 'D:\DEPLOYMENT\wait-how-big-social\operator\whb_operator.py'
++```
++
++No production variable is changed by this document. The operator requires a local absolute state path, exact current bindings, fresh valid plan and grant, intended queue payload/channel, active channel, current capacity, available media and future due time. It takes a sole-writer lock and refreshes history after locking. It records and flushes an intent with exact payload/authority **before** the only mutation. Its existing limit of ten scheduled posts per channel remains enforced. No generic batch-release flag exists; root admits each subsequent target independently.
++
++## Effect recovery and honest receipts
++
++Actual state records are separate from the plan. Each target progresses from durable `intent` to `uncertain` to `verified_buffer`. Provider-accepted IDs are saved before readback. A Buffer receipt is accepted only when channel, caption, media URL, scheduled due time and provider ID match the intended payload. Matching only a caption or media URL is a conflict, not idempotency evidence. A verified scheduled Buffer record is not yet a public launch; root verifies the actual destination permalink, rendered media/caption, account and timestamp.
++
++A timeout, rejected/malformed mutation, interrupted host process or missing readback cannot trigger an automatic resend. A replay finds the existing durable effect and exits. Other uncertain effects also block new mutations. No missing-history result resets an effect.
++
++For a read-only recovery on the same durable host:
++
++```powershell
++$env:WHB_DRY_RUN = 'false'
++$env:WHB_KILL_SWITCH = 'true'
++$env:WHB_RECONCILE = 'true'
++python 'D:\DEPLOYMENT\wait-how-big-social\operator\whb_operator.py'
++```
++
++Reconciliation is permitted while publishing is held. It accepts exactly one full payload/due-time match, and preserves a known provider-accepted ID. Missing/multiple matches remain uncertain. This version does not automatically clear or resend a genuinely failed uncertain target.
++
++If the host was killed, `operator.lock` may remain. First establish that no publisher process is running and inspect the persisted state/effect with root. Preserve the lock and intent evidence, then root may remove the stale lock to allow **read-only reconciliation**. Do not delete the effect or restore a clean initial state to get around it. If the provider cannot resolve the outcome, keep that target blocked. Scheduled public content requires official-account moderation/withdrawal by the release owner; a local hold does not delete a public post.
++
++## Scope and release limitation
++
++[BOTS-117](https://priyanshchordia-1779372280524.atlassian.net/browse/BOTS-117) is the real source association. No native Jira edit or Done transition is performed. Historical account/launch directions and existing independent account grants remain authoritative for root's release; this repair creates none.
++
++Usable now: reviewable source, deterministic bundle, offline tests, read-only bootstrap while held, and a narrowly granted local canary with durable intent/reconciliation. Remaining live inputs: independent final review/integration, current official account/API/media verification, exact release grant, durable host admission and destination readback. Continuous GitHub publishing remains unavailable until a separately reviewed durable remote intent mechanism exists; this is an explicit safe release boundary, not a claimed autonomous launch.
+diff --git a/wait-how-big-social/operator/build_bundle.py b/wait-how-big-social/operator/build_bundle.py
+new file mode 100644
+index 0000000..bf6ac40
+--- /dev/null
++++ b/wait-how-big-social/operator/build_bundle.py
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python3
++"""BOTS-117: deterministic bundle from checked-in, reviewable plain source."""
++from pathlib import Path
++import hashlib
++import re
++import zipfile
++
++ROOT = Path(__file__).resolve().parent
++WORKFLOW = ROOT.parents[1] / '.github/workflows/wait-how-big-operator.yml'
++MEMBERS = ('config.json', 'queue.json', 'whb_operator.py')
++
++
++def build():
++    destination = ROOT / 'operator_bundle.zip'
++    with zipfile.ZipFile(destination, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
++        for name in MEMBERS:
++            info = zipfile.ZipInfo(name, date_time=(2026, 9, 12, 0, 0, 0))
++            info.compress_type = zipfile.ZIP_DEFLATED
++            info.create_system = 3
++            info.external_attr = 0o100644 << 16
++            bundle.writestr(info, (ROOT / name).read_bytes(), compresslevel=9)
++    digest = hashlib.sha256(destination.read_bytes()).hexdigest()
++    text, count = re.subn(r"[a-f0-9]{64}  wait-how-big-social/operator/operator_bundle\.zip",
++                        digest + '  wait-how-big-social/operator/operator_bundle.zip',
++                        WORKFLOW.read_text(encoding='utf-8'))
++    if count != 1: raise RuntimeError('Expected exactly one workflow bundle checksum')
++    WORKFLOW.write_text(text, encoding='utf-8', newline='\n')
++    print(digest)
++    return digest
++
++
++if __name__ == '__main__': build()
+diff --git a/wait-how-big-social/operator/canary-grant.example.json b/wait-how-big-social/operator/canary-grant.example.json
+new file mode 100644
+index 0000000..f9513a5
+--- /dev/null
++++ b/wait-how-big-social/operator/canary-grant.example.json
+@@ -0,0 +1,16 @@
++{
++  "authorized": false,
++  "mode": "manual_canary",
++  "target": "WHB-000:twitter",
++  "max_mutations": 1,
++  "authorization_ref": null,
++  "history_review_ref": null,
++  "expires_at": "2000-01-01T00:00:00Z",
++  "plan_sha256": "COPY_EXACT_REVIEWED_PLAN_HASH",
++  "binding": {
++    "queue_sha256": "COPY_FROM_REVIEWED_PLAN",
++    "source_sha256": "COPY_FROM_REVIEWED_PLAN",
++    "config_sha256": "COPY_FROM_REVIEWED_PLAN",
++    "channels_sha256": "COPY_FROM_REVIEWED_PLAN"
++  }
++}
+diff --git a/wait-how-big-social/operator/config.json b/wait-how-big-social/operator/config.json
+new file mode 100644
+index 0000000..7b8c6d6
+--- /dev/null
++++ b/wait-how-big-social/operator/config.json
+@@ -0,0 +1,14 @@
++{
++  "version": 1,
++  "jira_key": "BOTS-117",
++  "channels": {
++    "twitter": {"id": "6a8f2926ccaf649a671fa86d", "handle": "WaitHowBig"},
++    "instagram": {"id": "6a8f1d89ccaf649a671f69fc", "handle": "waithowbig"},
++    "tiktok": {"id": "6a8fb214ccaf649a6724d002", "handle": "waithowbignow"}
++  },
++  "max_scheduled_per_channel": 10,
++  "maximum_queue_items": 13,
++  "maximum_mutations_per_run": 1,
++  "bootstrap_max_age_hours": 24,
++  "publishing_mode": "durable_local_manual_canary_only"
++}
+diff --git a/wait-how-big-social/operator/queue.json b/wait-how-big-social/operator/queue.json
+new file mode 100644
+index 0000000..57dde73
+--- /dev/null
++++ b/wait-how-big-social/operator/queue.json
+@@ -0,0 +1,148 @@
++{
++  "version": 1,
++  "queue": [
++    {
++      "content_id": "WHB-000",
++      "relative_hours": 0,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-000_brand-trailer.mp4",
++      "captions": {
++        "twitter": "Big numbers lie to your brain.\n\nWe turn them into pictures.\n\nThis is Wait, How Big? — one perspective shift a day.",
++        "instagram": "Big numbers are hard to feel. We turn them into pictures. Follow for one perspective shift a day.\n\n#visuallearning #dataviz #sciencecommunication",
++        "tiktok": "Big numbers are hard to feel. So we’re making them visible. Follow the 30-day experiment. #visuallearning #facts #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-001",
++      "relative_hours": 2,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-001_million-vs-billion-seconds.mp4",
++      "captions": {
++        "twitter": "A million seconds is 11.6 days.\nA billion seconds is 31.7 years.\n\nThree extra zeros changed days into decades.",
++        "instagram": "A million seconds: 11.6 days. A billion seconds: 31.7 years. Save this for the next time someone says “just add three zeros.”\n\n#dataviz #mathfacts #visuallearning",
++        "tiktok": "Your brain hears “million” and “billion” as neighbors. They are not. Which comparison should we visualize next? #math #facts #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-002",
++      "relative_hours": 7,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-002_thirty-earths-to-the-moon.mp4",
++      "captions": {
++        "twitter": "The Moon is not “right next to” Earth.\n\nAt the average distance, about 30 Earths fit in the gap.\n\nMost diagrams compress space beyond recognition.",
++        "instagram": "Most textbook diagrams compress this distance beyond recognition: about 30 Earths fit between Earth and Moon at the average gap.\n\nSource: NASA Science\n#spacefacts #visualscience #dataviz",
++        "tiktok": "The Moon looks close because diagrams cheat. The average gap can fit about 30 Earths. #space #nasa #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-003",
++      "relative_hours": 26,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-003_sun-volume-earths.mp4",
++      "captions": {
++        "twitter": "The Sun is about 100× wider than Earth.\n\nBut width is only one dimension.\n\nBy volume, about 1.3 million Earths fit inside it.",
++        "instagram": "The Sun is roughly 100× wider than Earth, but volume grows in three dimensions. About 1.3 million Earths would fill its volume.\n\nSource: NASA Science\n#spacefacts #visuallearning #sciencecommunication",
++        "tiktok": "The Sun is about 100× wider than Earth—but volume grows in three dimensions. Result: ~1.3 million Earths. #space #science #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-004",
++      "relative_hours": 32,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-004_challenger-deep.mp4",
++      "captions": {
++        "twitter": "Drop Everest into Challenger Deep and its summit would still sit roughly 2.1 km underwater.\n\nTallest mountain above sea level: ~8.85 km\nDeepest ocean point: ~10.94 km",
++        "instagram": "Put Everest at Challenger Deep and the summit would remain about 2.1 km below the surface.\n\nDepth source: NOAA Ocean Exploration\n#oceanfacts #geography #visualscience",
++        "tiktok": "Everest is enormous. Challenger Deep is deeper. The summit would still be roughly 2.1 km underwater. #ocean #geography #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-005",
++      "relative_hours": 50,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-005_pacific-vs-land.mp4",
++      "captions": {
++        "twitter": "The Pacific Ocean is larger than all continental landmass combined.\n\nIt covers more than 155 million km².\n\nFlat maps make that scale difficult to feel.",
++        "instagram": "The Pacific Ocean covers more than 155 million km²—larger than all continental landmass combined.\n\nSource: NOAA Ocean Exploration\n#geographyfacts #oceanfacts #dataviz",
++        "tiktok": "One ocean is larger than all the continents combined. Maps make this surprisingly hard to feel. #geography #ocean #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-006",
++      "relative_hours": 56,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-006_people-standing-square.mp4",
++      "captions": {
++        "twitter": "Give every person on Earth exactly 1 m² of standing room.\n\n8.2 billion people would form a square about 91 km on each side.\n\nImportant: standing room is not housing or a functioning city.",
++        "instagram": "Thought experiment: give 8.2 billion people exactly 1 m² each. The resulting standing square is roughly 91 km per side. It says nothing about homes, roads, food, or infrastructure.\n\nPopulation basis: UN World Population Prospects\n#population #dataviz #visuallearning",
++        "tiktok": "At one square meter each, 8.2 billion people need a square about 91 km wide. This is standing space only—not a livable city. #population #math #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-007",
++      "relative_hours": 74,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-007_billion-vs-trillion-dollars.mp4",
++      "captions": {
++        "twitter": "$1 billion in stacked $100 bills: ~0.69 mile.\n$1 trillion: ~690 miles.\n\nA trillion is not “a somewhat larger billion.” It is one thousand billions.",
++        "instagram": "Using the U.S. Currency Education Program’s estimate of more than 14.5 million notes per mile: $1B in $100s stacks to ~0.69 mile; $1T stacks to ~690 miles.\n\n#moneyfacts #dataviz #visuallearning",
++        "tiktok": "In $100 bills, a billion-dollar stack is under a mile. A trillion-dollar stack is roughly 690 miles. #money #math #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-008",
++      "relative_hours": 80,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-008_earth-history-one-year.mp4",
++      "captions": {
++        "twitter": "Compress Earth’s ~4.5-billion-year history into one calendar year.\n\nHomo sapiens arrive on Dec 31 at about 11:25 PM.\n\nOur entire species fits into the final ~35 minutes.",
++        "instagram": "Earth’s history as one year: Homo sapiens arrive on December 31 at roughly 11:25 PM. The exact minute varies with the age estimates used; the point is the scale.\n\nSources: NASA Science; Smithsonian Human Origins\n#deeptime #visualscience #history",
++        "tiktok": "If Earth’s 4.5-billion-year history were one year, our species appears only in the final ~35 minutes. #history #science #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-009",
++      "relative_hours": 98,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-009_saturn-between-earth-and-moon.mp4",
++      "captions": {
++        "twitter": "Saturn and its main rings would fit between Earth and Moon.\n\nMain-ring diameter: ~273,550 km\nAverage Earth–Moon gap: ~384,400 km\n\nThe diffuse outer E ring is excluded.",
++        "instagram": "Yes: Saturn and its main rings would fit between Earth and Moon at the average gap. NASA notes that this excludes Saturn’s diffuse outer E ring.\n\n#spacefacts #saturn #visualscience",
++        "tiktok": "Saturn plus its main rings would fit in the average Earth–Moon gap. The diffuse outer E ring is excluded. #saturn #space #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-010",
++      "relative_hours": 104,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-010_mid-ocean-ridge.mp4",
++      "captions": {
++        "twitter": "Earth’s longest mountain range is mostly underwater.\n\nThe mid-ocean ridge runs about 65,000 km—roughly 1.6 times around the equator.",
++        "instagram": "The mid-ocean ridge stretches about 65,000 km—roughly 1.6 times around Earth at the equator.\n\nSource: NOAA Ocean Exploration\n#earthscience #oceanfacts #geography",
++        "tiktok": "The world’s longest mountain range is mostly invisible beneath the ocean: about 65,000 km long. #ocean #earthscience #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-011",
++      "relative_hours": 122,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-011_blue-whale-basketball-court.mp4",
++      "captions": {
++        "twitter": "A blue whale can be longer than an NBA court.\n\nBlue whale: up to roughly 100–110 ft\nNBA court: 94 ft",
++        "instagram": "Blue whales can reach roughly 100–110 feet. An NBA court is 94 feet long.\n\nSources: NOAA Fisheries; NBA Jr.\n#bluewhale #animalfacts #visuallearning",
++        "tiktok": "The largest animal on Earth can be longer than an NBA court. #animals #ocean #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    },
++    {
++      "content_id": "WHB-012",
++      "relative_hours": 128,
++      "media_url": "https://raw.githubusercontent.com/pri8771/orchestrator/wait-how-big-social-media/wait-how-big-social/assets/launch/videos/WHB-012_million-vs-billion-hours.mp4",
++      "captions": {
++        "twitter": "1 million hours ≈ 114 years.\n1 billion hours ≈ 114,000 years.\n\nThree extra zeros move from a lifetime into deep prehistory.",
++        "instagram": "One million hours: about 114 years. One billion hours: about 114,000 years. Three zeros move the comparison from a lifetime to deep prehistory.\n\n#mathfacts #dataviz #visuallearning",
++        "tiktok": "A million hours is 114 years. A billion hours is about 114,000 years. #time #math #scale"
++      },
++      "thumbnail_offset_ms": 2000
++    }
++  ]
++}
+diff --git a/wait-how-big-social/operator/whb_operator.py b/wait-how-big-social/operator/whb_operator.py
+new file mode 100644
+index 0000000..9b33106
+--- /dev/null
++++ b/wait-how-big-social/operator/whb_operator.py
+@@ -0,0 +1,541 @@
++#!/usr/bin/env python3
++"""Fail-closed Buffer operator for the Wait, How Big? launch queue (executable: whb_operator.py).
++
++The only secret is BUFFER_API_KEY, supplied through the environment. The script
++never prints it or writes it to disk. It discovers the Buffer organization and
++connected X, Instagram, and TikTok channels, rebuilds idempotency from Buffer's
++own post history, and keeps no more than ten scheduled posts per channel.
++"""
++from __future__ import annotations
++
++import contextlib
++import hashlib
++import json
++import os
++import sys
++import tempfile
++import urllib.error
++import urllib.request
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++from typing import Any
++
++API_URL = "https://api.buffer.com"
++ROOT = Path(__file__).resolve().parent
++QUEUE_PATH = ROOT / "queue.json"
++STATE_PATH = ROOT / "state.json"
++CONFIG_PATH = ROOT / "config.json"
++PLAN_PATH = ROOT / "plan.json"
++MAX_SCHEDULED_PER_CHANNEL = 10
++REQUIRED = ("twitter", "instagram", "tiktok")
++SERVICE_ALIASES = {
++    "twitter": {"twitter", "x", "x_twitter"},
++    "instagram": {"instagram"},
++    "tiktok": {"tiktok", "tik_tok"},
++}
++
++
++def utc_now() -> datetime:
++    return datetime.now(timezone.utc)
++
++
++def iso(dt: datetime) -> str:
++    return dt.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
++
++
++def parse_iso(value: str) -> datetime:
++    result = datetime.fromisoformat(value.replace("Z", "+00:00"))
++    if result.tzinfo is None:
++        raise RuntimeError("Timezone is required")
++    return result.astimezone(timezone.utc)
++
++
++def load_json(path: Path, default: Any) -> Any:
++    if not path.exists():
++        return default
++    return json.loads(path.read_text(encoding="utf-8"))
++
++
++def write_json(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
++    try:
++        with os.fdopen(fd, "w", encoding="utf-8") as stream:
++            stream.write(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
++            stream.flush()
++            os.fsync(stream.fileno())
++        os.replace(tmp, path)
++        if os.name != "nt":
++            directory = os.open(path.parent, os.O_RDONLY)
++            try: os.fsync(directory)
++            finally: os.close(directory)
++    finally:
++        if os.path.exists(tmp): os.unlink(tmp)
++
++
++class NoRedirect(urllib.request.HTTPRedirectHandler):
++    def redirect_request(self, *args, **kwargs):
++        raise RuntimeError("Buffer redirect refused")
++
++
++def gql(api_key: str, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
++    body = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
++    request = urllib.request.Request(
++        API_URL,
++        data=body,
++        method="POST",
++        headers={
++            "Authorization": f"Bearer {api_key}",
++            "Content-Type": "application/json",
++            "User-Agent": "wait-how-big-operator/1.0",
++        },
++    )
++    try:
++        with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
++            raw = response.read(2 * 1024 * 1024 + 1)
++            if len(raw) > 2 * 1024 * 1024:
++                raise RuntimeError("Buffer response exceeds bounded size")
++            payload = json.loads(raw.decode("utf-8"))
++    except urllib.error.HTTPError as exc:
++        raise RuntimeError(f"Buffer HTTP {exc.code}") from None
++    except urllib.error.URLError:
++        raise RuntimeError("Buffer network error") from None
++    if payload.get("errors"):
++        raise RuntimeError("Buffer GraphQL error; inspect through the official account")
++    return payload.get("data") or {}
++
++
++def get_org_and_channels(api_key: str) -> tuple[str, dict[str, dict[str, Any]]]:
++    expected = load_json(CONFIG_PATH, {})["channels"]
++    account = gql(
++        api_key,
++        """query GetOrganizations {
++          account { organizations { id } }
++        }""",
++    )
++    organizations = ((account.get("account") or {}).get("organizations") or [])
++    if not organizations:
++        raise RuntimeError("No Buffer organization is available for this API key.")
++    if len(organizations) > 5:
++        raise RuntimeError("Organization discovery exceeds bounded scope")
++    matches = []
++    for org in organizations:
++        org_id = org["id"]
++        data = gql(
++            api_key,
++        """query GetChannels($organizationId: OrganizationId!) {
++          channels(input: { organizationId: $organizationId, filter: { isLocked: false } }) {
++            id name displayName service isQueuePaused
++          }
++        }""",
++            {"organizationId": org_id},
++        )
++        selected: dict[str, dict[str, Any]] = {}
++        for channel in data.get("channels") or []:
++            raw = str(channel.get("service") or "").lower()
++            for canonical, aliases in SERVICE_ALIASES.items():
++                if raw in aliases and channel.get("id") == expected[canonical]["id"]:
++                    if canonical in selected:
++                        raise RuntimeError("Duplicate expected channel")
++                    selected[canonical] = channel
++        if set(selected) == set(REQUIRED): matches.append((org_id, selected))
++    if len(matches) != 1:
++        raise RuntimeError("Exact three existing WHB channels not uniquely verified")
++    return matches[0]
++
++
++def get_channel_posts(api_key: str, org_id: str, channel_id: str) -> list[dict[str, Any]]:
++    data = gql(
++        api_key,
++        """query GetPosts($organizationId: OrganizationId!, $channelId: ChannelId!) {
++          posts(
++            first: 100
++            input: {
++              organizationId: $organizationId
++              sort: [{ field: createdAt, direction: desc }]
++              filter: {
++                channelIds: [$channelId]
++                status: [scheduled, sending, needs_approval, sent, error]
++              }
++            }
++          ) {
++            edges {
++              node {
++                id text dueAt status channelId externalLink
++                assets { source }
++              }
++            }
++          }
++        }""",
++        {"organizationId": org_id, "channelId": channel_id},
++    )
++    return [edge.get("node") or {} for edge in ((data.get("posts") or {}).get("edges") or [])]
++
++
++def media_available(url: str) -> bool:
++    request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "wait-how-big-operator/1.0"})
++    try:
++        with urllib.request.urlopen(request, timeout=30) as response:
++            content_type = (response.headers.get("Content-Type") or "").lower()
++            return response.status == 200 and ("video" in content_type or url.lower().endswith(".mp4"))
++    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
++        return False
++
++
++def create_video_post(
++    api_key: str,
++    service: str,
++    channel_id: str,
++    text: str,
++    media_url: str,
++    due_at: datetime,
++    thumbnail_offset_ms: int,
++) -> dict[str, Any]:
++    video: dict[str, Any] = {"url": media_url}
++    if service in {"instagram", "tiktok"}:
++        video["metadata"] = {"thumbnailOffset": int(thumbnail_offset_ms)}
++
++    post_input: dict[str, Any] = {
++        "text": text,
++        "channelId": channel_id,
++        "schedulingType": "automatic",
++        "mode": "customScheduled",
++        "dueAt": iso(due_at),
++        "aiAssisted": True,
++        "needsApproval": False,
++        "saveToDraft": False,
++        "source": "wait-how-big-operator",
++        "assets": [{"video": video}],
++    }
++    if service == "instagram":
++        post_input["metadata"] = {
++            "instagram": {
++                "type": "reel",
++                "shouldShareToFeed": True,
++                "isAiGenerated": True,
++            }
++        }
++    elif service == "tiktok":
++        post_input["metadata"] = {"tiktok": {"isAiGenerated": True}}
++    elif service == "twitter":
++        post_input["metadata"] = {"twitter": {"isAiGenerated": True}}
++
++    data = gql(
++        api_key,
++        """mutation CreatePost($input: CreatePostInput!) {
++          createPost(input: $input) {
++            ... on PostActionSuccess {
++              post { id text dueAt status channelId externalLink assets { source } }
++            }
++            ... on MutationError { message }
++          }
++        }""",
++        {"input": post_input},
++    )
++    result = data.get("createPost") or {}
++    if result.get("message"):
++        raise RuntimeError("Buffer rejected post")
++    post = result.get("post")
++    if not post:
++        raise RuntimeError("Buffer returned no post object")
++    return post
++
++
++def canonical(value: Any) -> bytes:
++    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++
++
++def sha(value: bytes) -> str:
++    return hashlib.sha256(value).hexdigest()
++
++
++def enabled(name: str) -> bool:
++    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
++
++
++def binding(org_id: str, channels: dict[str, Any]) -> dict[str, str]:
++    return {
++        "queue_sha256": sha(QUEUE_PATH.read_bytes()),
++        "source_sha256": sha(Path(__file__).read_bytes()),
++        "config_sha256": sha(CONFIG_PATH.read_bytes()),
++        "channels_sha256": sha(canonical({"organization_id": org_id,
++            "channels": {s: {"id": channels[s]["id"], "service": channels[s]["service"],
++                              "isQueuePaused": channels[s].get("isQueuePaused")} for s in REQUIRED}})),
++    }
++
++
++def default_state() -> dict[str, Any]:
++    return {"version": 2, "paused": False, "anchor_utc": None, "posts": {}, "effects": {}, "errors": []}
++
++
++def exact_match(post: dict[str, Any], payload: dict[str, Any], require_due: bool = False) -> bool:
++    if not post.get("id") or post.get("id") == "dry-run": return False
++    if post.get("channelId") != payload["channel_id"] or post.get("text") != payload["caption"]:
++        return False
++    if not any(a.get("source") == payload["media_url"] for a in post.get("assets") or []):
++        return False
++    if require_due:
++        try:
++            if parse_iso(post["dueAt"]) != parse_iso(payload["due_at"]): return False
++        except (ValueError, KeyError, TypeError): return False
++    return True
++
++
++def validate_queue(queue_doc: dict[str, Any]) -> list[dict[str, Any]]:
++    queue = queue_doc.get("queue") or []
++    if not 1 <= len(queue) <= 13: raise RuntimeError("Queue must contain 1 to 13 items")
++    ids = [item.get("content_id") for item in queue]
++    if any(not x for x in ids) or len(set(ids)) != len(ids): raise RuntimeError("Queue IDs must be unique")
++    for item in queue:
++        if not str(item.get("media_url", "")).startswith("https://raw.githubusercontent.com/pri8771/orchestrator/"):
++            raise RuntimeError("Unexpected mission media origin")
++        if set(item.get("captions", {})) != set(REQUIRED): raise RuntimeError("Three platform captions required")
++        if not all(isinstance(c, str) and c.strip() for c in item["captions"].values()):
++            raise RuntimeError("Nonempty captions required")
++        if not isinstance(item.get("relative_hours"), (int, float)) or not 0 <= item["relative_hours"] <= 1000:
++            raise RuntimeError("Relative schedule outside bounded queue")
++    return queue
++
++
++def build_plan(queue: list[dict[str, Any]], state: dict[str, Any], org_id: str,
++               channels: dict[str, Any], posts_by_service: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
++    now = utc_now()
++    # This is a proposed anchor only. Never write it into actual state during dry-run.
++    proposed = os.environ.get("WHB_PROPOSED_ANCHOR_UTC")
++    anchor = parse_iso(proposed) if proposed else (parse_iso(state["anchor_utc"]) if state.get("anchor_utc") else now + timedelta(minutes=30))
++    planned, observed, conflicts = [], [], []
++    media_cache = {}
++    for service in REQUIRED:
++        posts = posts_by_service[service]
++        if any(p.get("status") == "error" for p in posts):
++            raise RuntimeError("Existing Buffer errors require review")
++        count = sum(p.get("status") in {"scheduled", "sending", "needs_approval"} for p in posts)
++        capacity = max(0, MAX_SCHEDULED_PER_CHANNEL - count)
++        for item in queue:
++            payload = {"content_id": item["content_id"], "service": service,
++                       "channel_id": channels[service]["id"], "caption": item["captions"][service],
++                       "media_url": item["media_url"], "thumbnail_offset_ms": int(item.get("thumbnail_offset_ms", 2000))}
++            matches = [p for p in posts if exact_match(p, payload)]
++            partial = [p for p in posts if p.get("text") == payload["caption"] or
++                       any(a.get("source") == payload["media_url"] for a in p.get("assets") or [])]
++            key = item["content_id"] + ":" + service
++            if len(matches) == 1:
++                observed.append({"target": key, "post_id": matches[0]["id"], "status": matches[0].get("status")})
++                continue
++            if partial:
++                conflicts.append({"target": key, "reason": "multiple_or_partial_payload_matches"})
++                continue
++            if capacity == 0: continue
++            if payload["media_url"] not in media_cache:
++                media_cache[payload["media_url"]] = media_available(payload["media_url"])
++            if not media_cache[payload["media_url"]]: raise RuntimeError("Media unavailable; bootstrap not accepted")
++            due = anchor + timedelta(hours=float(item["relative_hours"]))
++            if due <= now + timedelta(minutes=10):
++                raise RuntimeError("Past-due queue requires a reviewed new scheduling plan")
++            payload["due_at"] = iso(due)
++            planned.append({"target": key, "kind": "planned_only", "payload": payload,
++                            "payload_sha256": sha(canonical(payload))})
++            capacity -= 1
++    if conflicts: raise RuntimeError("Conflicting historical posts require review")
++    return {"version": 2, "jira_key": "BOTS-117", "result": "dry_run_ok",
++            "created_at": iso(now), "binding": binding(org_id, channels),
++            "organization_id": org_id, "proposed_anchor_utc": iso(anchor),
++            "planned": planned, "observed_existing": observed,
++            "publication_held": True, "actual_mutations": 0,
++            "history_limit": "latest_100_per_channel_is_not_proof_of_lifetime_absence",
++            "normal_github_publishing": "disabled_ephemeral_runner_state"}
++
++
++@contextlib.contextmanager
++def state_lock(directory: Path):
++    directory.mkdir(parents=True, exist_ok=True)
++    lock = directory / "operator.lock"
++    try: fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++    except FileExistsError: raise RuntimeError("State lock exists; review host/process and intents before recovery") from None
++    try:
++        with os.fdopen(fd, "w") as stream:
++            stream.write(json.dumps({"pid": os.getpid(), "created_at": iso(utc_now())}))
++            stream.flush(); os.fsync(stream.fileno())
++        yield
++    finally:
++        lock.unlink(missing_ok=True)
++
++
++def record_post(state: dict[str, Any], target: str, effect: dict[str, Any], post: dict[str, Any]) -> None:
++    payload = effect["payload"]
++    state.setdefault("posts", {}).setdefault(payload["content_id"], {})[payload["service"]] = {
++        "post_id": post["id"], "status": post.get("status"), "due_at": post.get("dueAt"),
++        "external_link": post.get("externalLink"), "channel_id": payload["channel_id"],
++        "verification": "exact_Buffer_history_readback", "verified_at": iso(utc_now())}
++    effect.update({"state": "verified_buffer", "post_id": post["id"], "verified_at": iso(utc_now())})
++    if not state.get("anchor_utc") and effect.get("proposed_anchor_utc"):
++        state["anchor_utc"] = effect["proposed_anchor_utc"]
++    state["last_result"] = "buffer_receipt_verified_not_publication_claim"
++
++
++def reconcile(api_key: str, state_path: Path, state: dict[str, Any], org_id: str,
++              channels: dict[str, Any], histories: dict[str, list[dict[str, Any]]]) -> int:
++    changed = False
++    for target, effect in state.get("effects", {}).items():
++        if effect["state"] == "verified_buffer": continue
++        payload = effect["payload"]
++        if effect["organization_id"] != org_id or payload["channel_id"] != channels[payload["service"]]["id"]:
++            raise RuntimeError("Reconciliation account mismatch")
++        found = [p for p in histories[payload["service"]] if exact_match(p, payload, True)]
++        if effect.get("post_id"):
++            found = [p for p in found if p["id"] == effect["post_id"]]
++        effect["last_reconciliation_at"] = iso(utc_now())
++        if len(found) == 1:
++            record_post(state, target, effect, found[0])
++            changed = True
++        else:
++            effect["state"] = "uncertain"
++            effect["last_match_count"] = len(found)
++    write_json(state_path, state)
++    unresolved = any(e["state"] != "verified_buffer" for e in state.get("effects", {}).values())
++    print(json.dumps({"result": "uncertain_hold" if unresolved else "reconciliation_complete",
++                      "mutations": 0, "changed": changed, "automatic_resend": False}))
++    return 2 if unresolved else 0
++
++
++def publish_canary(api_key: str, state_path: Path, state: dict[str, Any], org_id: str,
++                   channels: dict[str, Any], histories: dict[str, list[dict[str, Any]]]) -> int:
++    plan = load_json(PLAN_PATH, {})
++    grant_path = os.environ.get("WHB_CANARY_GRANT")
++    if not grant_path: raise RuntimeError("Explicit canary grant path required")
++    grant = load_json(Path(grant_path), {})
++    current_binding = binding(org_id, channels)
++    if plan.get("result") != "dry_run_ok" or plan.get("binding") != current_binding:
++        raise RuntimeError("Exact queue/channel/source/config bootstrap is required")
++    age = utc_now() - parse_iso(plan["created_at"])
++    if age < timedelta(0) or age > timedelta(hours=24): raise RuntimeError("Bootstrap expired")
++    if (grant.get("authorized") is not True or grant.get("mode") != "manual_canary" or
++        grant.get("max_mutations") != 1 or not grant.get("authorization_ref") or
++        not grant.get("history_review_ref") or grant.get("binding") != current_binding or
++        grant.get("plan_sha256") != sha(canonical(plan)) or
++        parse_iso(grant.get("expires_at", "2000-01-01T00:00:00Z")) <= utc_now()):
++        raise RuntimeError("Exact expiring single-canary grant and history review required")
++    target = grant.get("target")
++    selected = [p for p in plan.get("planned", []) if p["target"] == target]
++    if len(selected) != 1: raise RuntimeError("Grant target is not exactly one planned candidate")
++    payload = selected[0]["payload"]
++    if selected[0]["payload_sha256"] != sha(canonical(payload)):
++        raise RuntimeError("Planned payload hash mismatch")
++    service = payload.get("service")
++    items = [item for item in validate_queue(load_json(QUEUE_PATH, {}))
++             if item["content_id"] == payload.get("content_id")]
++    if service not in REQUIRED or len(items) != 1 or target != payload["content_id"] + ":" + service:
++        raise RuntimeError("Canary must name one existing queue item and service")
++    item = items[0]
++    expected_due = parse_iso(plan["proposed_anchor_utc"]) + timedelta(hours=float(item["relative_hours"]))
++    if (payload["channel_id"] != channels[service]["id"] or payload["caption"] != item["captions"][service] or
++        payload["media_url"] != item["media_url"] or payload["thumbnail_offset_ms"] != int(item.get("thumbnail_offset_ms", 2000)) or
++        parse_iso(payload["due_at"]) != expected_due):
++        raise RuntimeError("Planned payload does not match exact queue/channel/schedule")
++    prior = state.get("effects", {}).get(target)
++    if prior:
++        print(json.dumps({"result": "already_verified" if prior["state"] == "verified_buffer" else "uncertain_hold",
++                          "target": target, "mutations": 0, "automatic_resend": False}))
++        return 0 if prior["state"] == "verified_buffer" else 2
++    if any(e["state"] != "verified_buffer" for e in state.get("effects", {}).values()):
++        raise RuntimeError("Unresolved external effect requires read-only reconciliation")
++    posts = histories[payload["service"]]
++    if any(p.get("text") == payload["caption"] or any(a.get("source") == payload["media_url"]
++            for a in p.get("assets") or []) for p in posts):
++        raise RuntimeError("Canary payload appears in history; reconcile instead of sending")
++    if any(p.get("status") == "error" for p in posts): raise RuntimeError("Existing Buffer error")
++    if sum(p.get("status") in {"scheduled", "sending", "needs_approval"} for p in posts) >= MAX_SCHEDULED_PER_CHANNEL:
++        raise RuntimeError("Channel scheduled capacity reached")
++    due = parse_iso(payload["due_at"])
++    if due <= utc_now() + timedelta(minutes=10): raise RuntimeError("Planned canary time expired; generate a new plan")
++    if not media_available(payload["media_url"]): raise RuntimeError("Canary media unavailable")
++    if parse_iso(grant["expires_at"]) <= utc_now(): raise RuntimeError("Grant expired before send")
++    effect = {"state": "intent", "recorded_at": iso(utc_now()), "organization_id": org_id,
++              "payload": payload, "payload_sha256": selected[0]["payload_sha256"],
++              "binding": current_binding, "authorization_ref": grant["authorization_ref"],
++              "plan_sha256": grant["plan_sha256"], "proposed_anchor_utc": plan["proposed_anchor_utc"]}
++    state.setdefault("effects", {})[target] = effect
++    # Durable local intent is committed and fsynced BEFORE the only external mutation.
++    write_json(state_path, state)
++    try:
++        post = create_video_post(api_key, payload["service"], payload["channel_id"], payload["caption"],
++                                 payload["media_url"], due, payload["thumbnail_offset_ms"])
++        effect["state"] = "uncertain"
++        if post.get("id") and post["id"] != "dry-run": effect["post_id"] = post["id"]
++        write_json(state_path, state)
++        if not effect.get("post_id"): raise RuntimeError("Provider ID unavailable")
++        readback = get_channel_posts(api_key, org_id, payload["channel_id"])
++        found = [p for p in readback if p.get("id") == effect["post_id"] and exact_match(p, payload, True)]
++        if len(found) != 1: raise RuntimeError("Exact provider readback unavailable")
++        record_post(state, target, effect, found[0])
++        # An observed scheduled record supports the actual anchor; dry-run never does.
++        if not state.get("anchor_utc"): state["anchor_utc"] = plan["proposed_anchor_utc"]
++        write_json(state_path, state)
++        print(json.dumps({"result": "buffer_receipt_verified_not_publication_claim",
++                          "target": target, "post_id": post["id"], "mutations": 1}))
++        return 0
++    except Exception:
++        effect["state"] = "uncertain"
++        effect["failure_at"] = iso(utc_now())
++        write_json(state_path, state)
++        print(json.dumps({"result": "uncertain_hold", "target": target, "automatic_resend": False}))
++        return 2
++
++
++def main() -> int:
++    api_key = os.environ.get("BUFFER_API_KEY", "").strip()
++    if not api_key:
++        print("WAIT_HOW_BIG_NOT_CONFIGURED: BUFFER_API_KEY is absent; no action taken.")
++        return 0
++    dry_run = enabled("WHB_DRY_RUN")
++    is_reconcile = enabled("WHB_RECONCILE")
++    state_dir = os.environ.get("WHB_DURABLE_STATE_DIR")
++    state_path = Path(state_dir) / "state.json" if state_dir else STATE_PATH
++    state = load_json(state_path, default_state())
++    if any(p.get("post_id") == "dry-run" for services in state.get("posts", {}).values() for p in services.values()):
++        raise RuntimeError("Legacy synthetic actuals require explicit evidence reconciliation")
++    held = state.get("paused") or enabled("WHB_KILL_SWITCH")
++    if not dry_run and not is_reconcile and held:
++        print("WAIT_HOW_BIG_PAUSED: publication remains held; WHB_DRY_RUN=true permits read-only validation.")
++        return 0
++    if not dry_run:
++        # GitHub always refuses effects. A post-POST git push/artifact is not durable intent.
++        if enabled("GITHUB_ACTIONS") or not state_dir or not Path(state_dir).is_absolute():
++            print("WAIT_HOW_BIG_DURABLE_HOST_REQUIRED: GitHub publishing is disabled; use an admitted local manual canary.")
++            return 2
++        if not is_reconcile and not enabled("WHB_MANUAL_CANARY"):
++            print("WAIT_HOW_BIG_MANUAL_CANARY_REQUIRED: no automatic normal publishing.")
++            return 2
++    queue = validate_queue(load_json(QUEUE_PATH, {}))
++    org_id, channels = get_org_and_channels(api_key)
++    if any(channels[s].get("isQueuePaused") is not False for s in REQUIRED):
++        if not dry_run and not is_reconcile: raise RuntimeError("Expected Buffer channel is paused")
++    if dry_run:
++        histories = {s: get_channel_posts(api_key, org_id, channels[s]["id"]) for s in REQUIRED}
++        plan = build_plan(queue, state, org_id, channels, histories)
++        plan["publication_held"] = bool(held or any(channels[s].get("isQueuePaused") is not False for s in REQUIRED))
++        write_json(PLAN_PATH, plan)
++        print(json.dumps({"result": "dry_run_ok", "planned_count": len(plan["planned"]),
++                          "actual_mutations": 0, "plan_sha256": sha(canonical(plan)),
++                          "binding": plan["binding"], "actual_state_changed": False}))
++        return 0
++    # The dry-run branch returned above; every remaining path needs durable state.
++    if state_dir is None:
++        raise RuntimeError("Durable state directory is required")
++    with state_lock(Path(state_dir)):
++        # Reload after taking the sole-writer lock to prevent races with another local process.
++        state = load_json(state_path, default_state())
++        histories = {s: get_channel_posts(api_key, org_id, channels[s]["id"]) for s in REQUIRED}
++        if is_reconcile: return reconcile(api_key, state_path, state, org_id, channels, histories)
++        if state.get("paused") or enabled("WHB_KILL_SWITCH"):
++            raise RuntimeError("Publication paused before send")
++        return publish_canary(api_key, state_path, state, org_id, channels, histories)
++
++
++if __name__ == "__main__":
++    try:
++        raise SystemExit(main())
++    except Exception:
++        # Provider messages may contain private content. Never echo arbitrary exceptions.
++        print("WAIT_HOW_BIG_OPERATOR_FAILED: inspect the preserved plan/intent and official account; no automatic retry.", file=sys.stderr)
++        raise SystemExit(2)
+diff --git a/wait-how-big-social/tests/test_whb_operator_release.py b/wait-how-big-social/tests/test_whb_operator_release.py
+new file mode 100644
+index 0000000..47d13a0
+--- /dev/null
++++ b/wait-how-big-social/tests/test_whb_operator_release.py
+@@ -0,0 +1,308 @@
++"""BOTS-117: no live API calls, real durable state and process-exit regression checks."""
++import copy
++import hashlib
++import importlib.util
++import io
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++import zipfile
++
++ROOT = Path(__file__).resolve().parents[1]
++SOURCE = ROOT / 'operator/whb_operator.py'
++WORKFLOW = ROOT.parent / '.github/workflows/wait-how-big-operator.yml'
++spec = importlib.util.spec_from_file_location('whb_release', SOURCE)
++whb = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(whb)
++
++
++class ReleaseTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.base = Path(self.tmp.name)
++        self.durable = self.base / 'durable'; self.durable.mkdir()
++        self.state_path = self.durable / 'state.json'
++        self.queue_path = self.base / 'queue.json'
++        self.config_path = self.base / 'config.json'
++        self.plan_path = self.base / 'plan.json'
++        self.grant_path = self.base / 'release.grant.json'
++        queue = json.loads((ROOT / 'operator/queue.json').read_text())
++        queue['queue'] = queue['queue'][:2]
++        whb.write_json(self.queue_path, queue)
++        self.config_path.write_bytes((ROOT / 'operator/config.json').read_bytes())
++        whb.write_json(self.state_path, whb.default_state())
++        config = whb.load_json(self.config_path, {})
++        self.channels = {s: {'id': config['channels'][s]['id'], 'service': s,
++                             'name': config['channels'][s]['handle'], 'isQueuePaused': False}
++                         for s in whb.REQUIRED}
++        self.histories = {s: [] for s in whb.REQUIRED}
++        self.sent = 0
++        self.fail = None
++        self.patchers = [patch.multiple(whb, QUEUE_PATH=self.queue_path, STATE_PATH=self.state_path,
++                                       CONFIG_PATH=self.config_path, PLAN_PATH=self.plan_path),
++                         patch.dict(os.environ, {'BUFFER_API_KEY': 'fixture-only', 'WHB_DRY_RUN': 'true',
++                                   'WHB_KILL_SWITCH': 'true', 'WHB_DURABLE_STATE_DIR': str(self.durable)}, clear=True),
++                         patch.object(whb, 'get_org_and_channels', return_value=('fixture-org', self.channels)),
++                         patch.object(whb, 'get_channel_posts', side_effect=self.history),
++                         patch.object(whb, 'media_available', return_value=True),
++                         patch.object(whb, 'create_video_post', side_effect=self.create)]
++        self.patchers.append(patch('sys.stdout', new=io.StringIO()))
++        for p in self.patchers: p.start()
++
++    def tearDown(self):
++        for p in reversed(self.patchers): p.stop()
++        self.tmp.cleanup()
++
++    def history(self, key, org, channel_id):
++        service = next(s for s, c in self.channels.items() if c['id'] == channel_id)
++        return copy.deepcopy(self.histories[service])
++
++    def create(self, api_key, service, channel_id, text, media_url, due_at, thumbnail):
++        # Assert pre-send intent is already on disk, not merely in process memory.
++        state = whb.load_json(self.state_path, {})
++        self.assertTrue(any(e['state'] == 'intent' for e in state['effects'].values()))
++        self.sent += 1
++        post = {'id': 'fixture-post-' + str(self.sent), 'channelId': channel_id, 'text': text,
++                'assets': [{'source': media_url}], 'dueAt': whb.iso(due_at), 'status': 'scheduled',
++                'externalLink': None}
++        self.histories[service].append(post)
++        if self.fail: raise self.fail
++        return post
++
++    def prepare(self):
++        self.assertEqual(whb.main(), 0)
++        plan = whb.load_json(self.plan_path, {})
++        grant = {'authorized': True, 'mode': 'manual_canary', 'max_mutations': 1,
++                 'authorization_ref': 'fixture-grant', 'history_review_ref': 'fixture-history-reviewed',
++                 'plan_sha256': whb.sha(whb.canonical(plan)), 'binding': plan['binding'],
++                 'target': plan['planned'][0]['target'],
++                 'expires_at': whb.iso(whb.utc_now() + whb.timedelta(hours=1))}
++        whb.write_json(self.grant_path, grant)
++        os.environ.update(WHB_DRY_RUN='false', WHB_KILL_SWITCH='false', WHB_MANUAL_CANARY='true',
++                          WHB_CANARY_GRANT=str(self.grant_path))
++        return plan, grant
++
++    def test_dry_run_with_kill_switch_preserves_actual_state_byte_for_byte(self):
++        before = self.state_path.read_bytes()
++        self.assertEqual(whb.main(), 0)
++        self.assertEqual(before, self.state_path.read_bytes())
++        plan = whb.load_json(self.plan_path, {})
++        self.assertEqual(plan['actual_mutations'], 0)
++        self.assertTrue(plan['publication_held'])
++        self.assertEqual(len(plan['planned']), 6)
++        self.assertNotIn('post_id', plan['planned'][0])
++        self.assertNotIn('scheduled', json.dumps(plan['planned']))
++        self.assertIsNone(whb.load_json(self.state_path, {})['anchor_utc'])
++        self.assertEqual(self.sent, 0)
++
++    def test_paused_actual_state_still_allows_read_only_bootstrap(self):
++        state = whb.load_json(self.state_path, {}); state['paused'] = True
++        whb.write_json(self.state_path, state); before = self.state_path.read_bytes()
++        self.assertEqual(whb.main(), 0)
++        self.assertEqual(before, self.state_path.read_bytes())
++
++    def test_normal_github_publish_refused_even_with_grant_and_local_path(self):
++        self.prepare(); os.environ['GITHUB_ACTIONS'] = 'true'
++        self.assertEqual(whb.main(), 2)
++        self.assertEqual(self.sent, 0)
++
++    def test_normal_run_requires_durable_state_and_explicit_canary(self):
++        self.prepare(); os.environ.pop('WHB_DURABLE_STATE_DIR')
++        self.assertEqual(whb.main(), 2)
++        os.environ['WHB_DURABLE_STATE_DIR'] = str(self.durable)
++        os.environ.pop('WHB_MANUAL_CANARY')
++        self.assertEqual(whb.main(), 2)
++        self.assertEqual(self.sent, 0)
++
++    def test_arbitrary_bootstrap_timestamp_cannot_authorize_effect(self):
++        self.prepare(); self.plan_path.unlink()
++        state = whb.load_json(self.state_path, {})
++        state['bootstrap'] = {'successful_dry_run_utc': whb.iso(whb.utc_now())}
++        whb.write_json(self.state_path, state)
++        with self.assertRaisesRegex(RuntimeError, 'bootstrap'): whb.main()
++        self.assertEqual(self.sent, 0)
++
++    def test_queue_config_channels_and_source_binding_drift_rejected(self):
++        plan, grant = self.prepare()
++        for field in ('queue_sha256', 'config_sha256', 'channels_sha256', 'source_sha256'):
++            modified = copy.deepcopy(plan); modified['binding'][field] = 'wrong'
++            whb.write_json(self.plan_path, modified)
++            with self.assertRaisesRegex(RuntimeError, 'bootstrap'): whb.main()
++        whb.write_json(self.plan_path, plan)
++        queue = whb.load_json(self.queue_path, {}); queue['queue'][0]['captions']['twitter'] += '!'
++        whb.write_json(self.queue_path, queue)
++        with self.assertRaisesRegex(RuntimeError, 'bootstrap'): whb.main()
++        self.assertEqual(self.sent, 0)
++
++    def test_exact_grant_plan_hash_expiry_and_target_are_enforced(self):
++        plan, grant = self.prepare()
++        for change in [{'plan_sha256': 'wrong'}, {'expires_at': '2000-01-01T00:00:00Z'},
++                       {'target': 'absent'}, {'max_mutations': 3}, {'history_review_ref': None}]:
++            whb.write_json(self.grant_path, grant | change)
++            with self.assertRaises(RuntimeError): whb.main()
++        self.assertEqual(self.sent, 0)
++
++    def test_unknown_channel_pause_state_cannot_publish(self):
++        self.channels['twitter'].pop('isQueuePaused')
++        self.prepare()
++        with self.assertRaisesRegex(RuntimeError, 'paused'): whb.main()
++        self.assertEqual(self.sent, 0)
++
++    def test_success_creates_one_verified_buffer_receipt_and_replay_is_zero_effect(self):
++        plan, grant = self.prepare()
++        self.assertEqual(whb.main(), 0)
++        state = whb.load_json(self.state_path, {})
++        self.assertEqual(state['effects'][grant['target']]['state'], 'verified_buffer')
++        self.assertEqual(state['anchor_utc'], plan['proposed_anchor_utc'])
++        self.assertEqual(whb.main(), 0)
++        self.assertEqual(self.sent, 1)
++
++    def test_timeout_is_uncertain_and_never_automatically_resent(self):
++        plan, grant = self.prepare(); self.fail = TimeoutError()
++        self.assertEqual(whb.main(), 2)
++        self.assertEqual(whb.main(), 2)
++        self.assertEqual(self.sent, 1)
++        state = whb.load_json(self.state_path, {})
++        self.assertEqual(state['effects'][grant['target']]['state'], 'uncertain')
++        self.assertEqual(state['posts'], {})
++        os.environ['WHB_RECONCILE'] = 'true'
++        self.assertEqual(whb.main(), 0)
++        self.assertEqual(self.sent, 1)
++
++    def test_inconclusive_reconciliation_does_not_clear_intent(self):
++        plan, grant = self.prepare(); self.fail = TimeoutError(); whb.main()
++        self.histories = {s: [] for s in whb.REQUIRED}; os.environ['WHB_RECONCILE'] = 'true'
++        self.assertEqual(whb.main(), 2)
++        self.assertEqual(whb.load_json(self.state_path, {})['effects'][grant['target']]['state'], 'uncertain')
++        self.assertEqual(self.sent, 1)
++
++    def test_same_caption_or_media_alone_never_counts_as_exact_receipt(self):
++        queue = whb.load_json(self.queue_path, {})['queue']
++        self.histories['twitter'] = [{'id': 'foreign', 'channelId': self.channels['twitter']['id'],
++                                    'text': queue[0]['captions']['twitter'], 'assets': [{'source': 'different'}]}]
++        with self.assertRaisesRegex(RuntimeError, 'Conflicting'): whb.main()
++        self.assertEqual(whb.load_json(self.state_path, {})['posts'], {})
++
++    def test_media_failure_does_not_create_successful_plan(self):
++        with patch.object(whb, 'media_available', return_value=False):
++            with self.assertRaisesRegex(RuntimeError, 'Media unavailable'): whb.main()
++        self.assertFalse(self.plan_path.exists())
++        self.assertEqual(self.sent, 0)
++
++    def test_legacy_dry_run_fake_actuals_fail_closed(self):
++        state = whb.default_state(); state['posts'] = {'WHB-000': {'twitter': {'post_id': 'dry-run'}}}
++        whb.write_json(self.state_path, state)
++        with self.assertRaisesRegex(RuntimeError, 'synthetic'): whb.main()
++
++    def test_stale_process_lock_is_not_automatically_reclaimed(self):
++        self.prepare(); (self.durable / 'operator.lock').write_text('old process, must inspect')
++        with self.assertRaisesRegex(RuntimeError, 'State lock'): whb.main()
++        self.assertEqual(self.sent, 0)
++
++    def test_tampered_plan_cannot_redirect_valid_grant_outside_queue_or_channel(self):
++        plan, grant = self.prepare()
++        plan['planned'][0]['payload']['channel_id'] = 'unrelated-account'
++        plan['planned'][0]['payload_sha256'] = whb.sha(whb.canonical(plan['planned'][0]['payload']))
++        grant['plan_sha256'] = whb.sha(whb.canonical(plan))
++        whb.write_json(self.plan_path, plan); whb.write_json(self.grant_path, grant)
++        with self.assertRaisesRegex(RuntimeError, 'exact queue/channel'): whb.main()
++        self.assertEqual(self.sent, 0)
++
++    def test_explicit_proposed_anchor_replans_without_overwriting_actual_anchor(self):
++        state = whb.load_json(self.state_path, {}); state['anchor_utc'] = '2020-01-01T00:00:00Z'
++        whb.write_json(self.state_path, state); before = self.state_path.read_bytes()
++        os.environ['WHB_PROPOSED_ANCHOR_UTC'] = whb.iso(whb.utc_now() + whb.timedelta(hours=1))
++        self.assertEqual(whb.main(), 0)
++        self.assertEqual(before, self.state_path.read_bytes())
++
++    def test_real_process_exit_preserves_intent_before_mutation(self):
++        plan, grant = self.prepare()
++        program = '''import importlib.util,json,os
++from pathlib import Path
++spec=importlib.util.spec_from_file_location("whb_child",os.environ["FIXTURE_SOURCE"])
++w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w)
++base=Path(os.environ["FIXTURE_BASE"])
++w.QUEUE_PATH=base/"queue.json";w.CONFIG_PATH=base/"config.json";w.PLAN_PATH=base/"plan.json"
++channels=json.loads(os.environ["FIXTURE_CHANNELS"])
++w.get_org_and_channels=lambda key:("fixture-org",channels)
++w.get_channel_posts=lambda *args:[]
++w.media_available=lambda url:True
++w.create_video_post=lambda *args:os._exit(17)
++w.main()
++'''
++        env = dict(os.environ, FIXTURE_SOURCE=str(SOURCE), FIXTURE_BASE=str(self.base),
++                   FIXTURE_CHANNELS=json.dumps(self.channels))
++        proc = subprocess.run([sys.executable, '-c', program], env=env, capture_output=True, timeout=10)
++        self.assertEqual(proc.returncode, 17, proc.stderr)
++        self.assertEqual(whb.load_json(self.state_path, {})['effects'][grant['target']]['state'], 'intent')
++        self.assertTrue((self.durable / 'operator.lock').exists())
++        with self.assertRaisesRegex(RuntimeError, 'State lock'): whb.main()
++
++
++class BundleTests(unittest.TestCase):
++    def test_organization_selection_uses_exact_existing_channels_not_first_org(self):
++        config = json.loads((ROOT / 'operator/config.json').read_text())
++        exact = [{'id': config['channels'][s]['id'], 'service': s, 'isQueuePaused': False}
++                 for s in whb.REQUIRED]
++        responses = [{'account': {'organizations': [{'id': 'unrelated'}, {'id': 'correct'}]}},
++                     {'channels': [{'id': 'other-id', 'service': 'twitter'}]}, {'channels': exact}]
++        with patch.object(whb, 'gql', side_effect=responses):
++            org, channels = whb.get_org_and_channels('fixture-only')
++        self.assertEqual(org, 'correct')
++        self.assertEqual(set(channels), set(whb.REQUIRED))
++        with patch.object(whb, 'gql', side_effect=[responses[0], {'channels': exact}, {'channels': exact}]):
++            with self.assertRaisesRegex(RuntimeError, 'not uniquely'): whb.get_org_and_channels('fixture-only')
++
++    def test_rebuilding_plain_sources_is_byte_reproducible(self):
++        build_spec = importlib.util.spec_from_file_location('build_whb', ROOT / 'operator/build_bundle.py')
++        build = importlib.util.module_from_spec(build_spec); build_spec.loader.exec_module(build)
++        with tempfile.TemporaryDirectory() as tmp:
++            base = Path(tmp); operator = base / 'operator'; operator.mkdir()
++            workflow = base / 'workflow.yml'; workflow.write_bytes(WORKFLOW.read_bytes())
++            for name in build.MEMBERS: (operator / name).write_bytes((ROOT / 'operator' / name).read_bytes())
++            with patch.multiple(build, ROOT=operator, WORKFLOW=workflow), patch('sys.stdout', new=io.StringIO()):
++                first = build.build(); second = build.build()
++            self.assertEqual(first, second)
++            self.assertEqual((operator / 'operator_bundle.zip').read_bytes(), (ROOT / 'operator/operator_bundle.zip').read_bytes())
++
++    def test_plain_source_matches_every_zip_member(self):
++        with zipfile.ZipFile(ROOT / 'operator/operator_bundle.zip') as bundle:
++            self.assertEqual(sorted(bundle.namelist()), ['config.json', 'queue.json', 'whb_operator.py'])
++            for name in bundle.namelist(): self.assertEqual(bundle.read(name), (ROOT / 'operator' / name).read_bytes())
++        digest = hashlib.sha256((ROOT / 'operator/operator_bundle.zip').read_bytes()).hexdigest()
++        self.assertIn(digest, WORKFLOW.read_text())
++
++    def test_packaged_executable_does_not_shadow_operator_and_no_key_is_clean(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            with zipfile.ZipFile(ROOT / 'operator/operator_bundle.zip') as bundle: bundle.extractall(tmp)
++            proc = subprocess.run([sys.executable, str(Path(tmp) / 'whb_operator.py')], cwd=tmp,
++                                  env={}, capture_output=True, text=True, timeout=10)
++            self.assertEqual(proc.returncode, 0, proc.stderr)
++            self.assertIn('WAIT_HOW_BIG_NOT_CONFIGURED', proc.stdout)
++            check = subprocess.run([sys.executable, '-c', 'from operator import eq; assert eq(1,1)'],
++                                   cwd=tmp, env={}, capture_output=True, timeout=10)
++            self.assertEqual(check.returncode, 0)
++
++    def test_workflow_is_read_only_and_has_no_post_effect_git_state_persistence(self):
++        workflow = WORKFLOW.read_text()
++        self.assertIn('contents: read', workflow)
++        self.assertIn('default: true', workflow)
++        self.assertIn("github.event_name == 'schedule' || inputs.dry_run", workflow)
++        self.assertNotIn('\n          git push', workflow)
++        self.assertNotIn('/operator.py', workflow)
++
++    def test_queue_preserves_all_thirteen_existing_media_and_channel_ids(self):
++        queue = json.loads((ROOT / 'operator/queue.json').read_text())
++        self.assertEqual(len(queue['queue']), 13)
++        config = json.loads((ROOT / 'operator/config.json').read_text())
++        self.assertEqual({s:c['id'] for s,c in config['channels'].items()}, {
++            'twitter':'6a8f2926ccaf649a671fa86d', 'instagram':'6a8f1d89ccaf649a671f69fc',
++            'tiktok':'6a8fb214ccaf649a6724d002'})
++
++
++if __name__ == '__main__': unittest.main()
